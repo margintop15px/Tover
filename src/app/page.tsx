@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useI18n } from "@/i18n/context";
 import KpiCard from "@/components/KpiCard";
 import DateRangePicker from "@/components/DateRangePicker";
 import DataTable from "@/components/DataTable";
 import UploadCard from "@/components/UploadCard";
 import CriticalStockTable from "@/components/CriticalStockTable";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
 
 interface KpiData {
   gmvGross: number;
@@ -28,20 +30,23 @@ interface OrderRow {
   [key: string]: unknown;
 }
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
+function formatCurrency(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale === "ru" ? "ru-RU" : "en-US", {
     style: "currency",
     currency: "EUR",
     minimumFractionDigits: 2,
   }).format(value);
 }
 
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+function formatDate(dateStr: string, locale: string): string {
+  return new Date(dateStr).toLocaleDateString(
+    locale === "ru" ? "ru-RU" : "en-US",
+    {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    }
+  );
 }
 
 function defaultDateRange() {
@@ -56,6 +61,7 @@ function defaultDateRange() {
 
 export default function Dashboard() {
   const router = useRouter();
+  const { t, locale } = useI18n();
   const [dateRange, setDateRange] = useState(defaultDateRange);
   const [kpis, setKpis] = useState<KpiData | null>(null);
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -95,18 +101,23 @@ export default function Dashboard() {
     fetchData();
   }, [fetchData]);
 
+  const fmtCur = (v: number) => formatCurrency(v, locale);
+
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
       <header className="border-b border-zinc-200 bg-white px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900">
         <div className="mx-auto flex max-w-7xl items-center justify-between">
           <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-50">
-            Tover
+            {t.appName}
           </h1>
-          <DateRangePicker
-            from={dateRange.from}
-            to={dateRange.to}
-            onChange={(from, to) => setDateRange({ from, to })}
-          />
+          <div className="flex items-center gap-4">
+            <DateRangePicker
+              from={dateRange.from}
+              to={dateRange.to}
+              onChange={(from, to) => setDateRange({ from, to })}
+            />
+            <LanguageSwitcher />
+          </div>
         </div>
       </header>
 
@@ -114,19 +125,19 @@ export default function Dashboard() {
         {/* KPI Cards */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <KpiCard
-            title="GMV (Gross)"
+            title={t.gmvGross}
             value={
               loading
                 ? "..."
                 : kpis
-                  ? formatCurrency(kpis.gmvGross)
-                  : formatCurrency(0)
+                  ? fmtCur(kpis.gmvGross)
+                  : fmtCur(0)
             }
-            subtitle="Click to see orders"
+            subtitle={t.clickToSeeOrders}
             onClick={() => setShowOrders(true)}
           />
           <KpiCard
-            title="Units Sold"
+            title={t.unitsSold}
             value={
               loading
                 ? "..."
@@ -136,7 +147,7 @@ export default function Dashboard() {
             }
           />
           <KpiCard
-            title="Orders"
+            title={t.orders}
             value={
               loading
                 ? "..."
@@ -146,18 +157,18 @@ export default function Dashboard() {
             }
           />
           <KpiCard
-            title="Stock Value"
+            title={t.stockValue}
             value={
               loading
                 ? "..."
                 : kpis?.stockValueCost !== null && kpis?.stockValueCost !== undefined
-                  ? formatCurrency(kpis.stockValueCost)
-                  : "N/A"
+                  ? fmtCur(kpis.stockValueCost)
+                  : t.na
             }
             subtitle={
               kpis?.inventorySnapshotDate
-                ? `Snapshot: ${kpis.inventorySnapshotDate}`
-                : "No inventory data"
+                ? `${t.snapshot}: ${kpis.inventorySnapshotDate}`
+                : t.noInventoryData
             }
           />
         </div>
@@ -167,39 +178,39 @@ export default function Dashboard() {
           <section className="mt-8">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                Orders
+                {t.orders}
               </h2>
               <button
                 onClick={() => setShowOrders(false)}
                 className="text-sm text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
               >
-                Hide
+                {t.hide}
               </button>
             </div>
             <DataTable<OrderRow>
               columns={[
                 {
                   key: "orderedAt",
-                  header: "Date",
-                  render: (item) => formatDate(item.orderedAt),
+                  header: t.date,
+                  render: (item) => formatDate(item.orderedAt, locale),
                 },
-                { key: "source", header: "Source" },
-                { key: "externalOrderId", header: "Order ID" },
-                { key: "status", header: "Status" },
+                { key: "source", header: t.source },
+                { key: "externalOrderId", header: t.orderId },
+                { key: "status", header: t.status },
                 {
                   key: "orderGmv",
-                  header: "GMV",
-                  render: (item) => formatCurrency(item.orderGmv),
+                  header: t.gmv,
+                  render: (item) => fmtCur(item.orderGmv),
                 },
                 {
                   key: "orderUnits",
-                  header: "Units",
+                  header: t.units,
                   render: (item) => item.orderUnits.toLocaleString(),
                 },
               ]}
               data={orders}
               onRowClick={(item) => router.push(`/orders/${item.id}`)}
-              emptyMessage="No orders in this date range"
+              emptyMessage={t.noOrdersInRange}
             />
           </section>
         )}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useI18n } from "@/i18n/context";
 
 interface UploadResult {
   importId: string;
@@ -14,6 +15,7 @@ export default function UploadCard({
 }: {
   onImportComplete?: () => void;
 }) {
+  const { t } = useI18n();
   const [file, setFile] = useState<File | null>(null);
   const [importType, setImportType] = useState("orders_csv");
   const [uploading, setUploading] = useState(false);
@@ -41,7 +43,7 @@ export default function UploadCard({
         onImportComplete?.();
       }
     } catch {
-      setResult({ importId: "", status: "error", error: "Upload failed" });
+      setResult({ importId: "", status: "error", error: t.uploadFailed });
     } finally {
       setUploading(false);
     }
@@ -50,27 +52,27 @@ export default function UploadCard({
   return (
     <div className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
       <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-        Import CSV
+        {t.importCsv}
       </h3>
       <form onSubmit={handleSubmit} className="mt-4 space-y-4">
         <div>
           <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400">
-            Import type
+            {t.importType}
           </label>
           <select
             value={importType}
             onChange={(e) => setImportType(e.target.value)}
             className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
           >
-            <option value="orders_csv">Orders</option>
-            <option value="order_lines_csv">Order Lines</option>
-            <option value="inventory_csv">Inventory Snapshots</option>
-            <option value="payments_csv">Payments</option>
+            <option value="orders_csv">{t.importTypeOrders}</option>
+            <option value="order_lines_csv">{t.importTypeOrderLines}</option>
+            <option value="inventory_csv">{t.importTypeInventory}</option>
+            <option value="payments_csv">{t.importTypePayments}</option>
           </select>
         </div>
         <div>
           <label className="block text-sm font-medium text-zinc-600 dark:text-zinc-400">
-            CSV file
+            {t.csvFile}
           </label>
           <input
             type="file"
@@ -84,7 +86,7 @@ export default function UploadCard({
           disabled={!file || uploading}
           className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
         >
-          {uploading ? "Uploading..." : "Upload & Import"}
+          {uploading ? t.uploading : t.uploadAndImport}
         </button>
       </form>
 
@@ -100,13 +102,12 @@ export default function UploadCard({
             <p>{result.error}</p>
           ) : result.summary ? (
             <p>
-              Imported {result.summary.inserted} of {result.summary.totalRows}{" "}
-              rows.{" "}
+              {t.importedOf(result.summary.inserted, result.summary.totalRows)}{" "}
               {result.summary.errors > 0 &&
-                `${result.summary.errors} errors.`}
+                t.errorsCount(result.summary.errors)}
             </p>
           ) : (
-            <p>Import {result.status}</p>
+            <p>{t.importStatus(result.status)}</p>
           )}
         </div>
       )}

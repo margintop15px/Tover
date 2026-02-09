@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useI18n } from "@/i18n/context";
 import DataTable from "./DataTable";
 
 interface CriticalStockItem {
@@ -11,6 +12,7 @@ interface CriticalStockItem {
 }
 
 export default function CriticalStockTable() {
+  const { t } = useI18n();
   const [items, setItems] = useState<CriticalStockItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -34,7 +36,7 @@ export default function CriticalStockTable() {
   if (loading) {
     return (
       <div className="rounded-lg border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
-        Loading critical stock...
+        {t.loadingCriticalStock}
       </div>
     );
   }
@@ -42,24 +44,24 @@ export default function CriticalStockTable() {
   return (
     <div>
       <h3 className="mb-3 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-        Critical Stock (runs out in 14 days)
+        {t.criticalStockTitle}
       </h3>
       <DataTable<CriticalStockItem>
         columns={[
-          { key: "sku", header: "SKU" },
+          { key: "sku", header: t.sku },
           {
             key: "onHandQty",
-            header: "On Hand",
+            header: t.onHand,
             render: (item) => item.onHandQty.toLocaleString(),
           },
           {
             key: "avgUnitsPerDay",
-            header: "Avg/Day",
+            header: t.avgPerDay,
             render: (item) => item.avgUnitsPerDay.toFixed(1),
           },
           {
             key: "daysRemaining",
-            header: "Days Left",
+            header: t.daysLeft,
             render: (item) => (
               <span
                 className={
@@ -76,7 +78,7 @@ export default function CriticalStockTable() {
           },
         ]}
         data={items}
-        emptyMessage="No critical stock items"
+        emptyMessage={t.noCriticalStockItems}
       />
     </div>
   );
