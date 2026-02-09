@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useI18n } from "@/i18n/context";
 import DataTable from "@/components/DataTable";
 
 interface OrderLine {
@@ -15,8 +16,8 @@ interface OrderLine {
   [key: string]: unknown;
 }
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
+function formatCurrency(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale === "ru" ? "ru-RU" : "en-US", {
     style: "currency",
     currency: "EUR",
     minimumFractionDigits: 2,
@@ -26,6 +27,7 @@ function formatCurrency(value: number): string {
 export default function OrderDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const { t, locale } = useI18n();
   const orderId = params.id as string;
 
   const [lines, setLines] = useState<OrderLine[]>([]);
@@ -48,6 +50,8 @@ export default function OrderDetailPage() {
     if (orderId) fetchLines();
   }, [orderId]);
 
+  const fmtCur = (v: number) => formatCurrency(v, locale);
+
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
       <header className="border-b border-zinc-200 bg-white px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900">
@@ -56,55 +60,55 @@ export default function OrderDetailPage() {
             onClick={() => router.back()}
             className="text-sm text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
           >
-            &larr; Back
+            &larr; {t.back}
           </button>
           <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-50">
-            Order Lines
+            {t.orderLines}
           </h1>
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl px-6 py-8">
         <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">
-          Order ID: <code className="font-mono">{orderId}</code>
+          {t.orderIdLabel}: <code className="font-mono">{orderId}</code>
         </p>
 
         {loading ? (
           <div className="rounded-lg border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
-            Loading order lines...
+            {t.loadingOrderLines}
           </div>
         ) : (
           <DataTable<OrderLine>
             columns={[
-              { key: "sku", header: "SKU" },
+              { key: "sku", header: t.sku },
               {
                 key: "quantity",
-                header: "Qty",
+                header: t.qty,
                 render: (item) => item.quantity.toLocaleString(),
               },
               {
                 key: "unitPriceGross",
-                header: "Unit Price",
-                render: (item) => formatCurrency(item.unitPriceGross),
+                header: t.unitPrice,
+                render: (item) => fmtCur(item.unitPriceGross),
               },
               {
                 key: "discountAmount",
-                header: "Discount",
-                render: (item) => formatCurrency(item.discountAmount),
+                header: t.discount,
+                render: (item) => fmtCur(item.discountAmount),
               },
               {
                 key: "taxAmount",
-                header: "Tax",
-                render: (item) => formatCurrency(item.taxAmount),
+                header: t.tax,
+                render: (item) => fmtCur(item.taxAmount),
               },
               {
                 key: "lineGmv",
-                header: "Line GMV",
-                render: (item) => formatCurrency(item.lineGmv),
+                header: t.lineGmv,
+                render: (item) => fmtCur(item.lineGmv),
               },
             ]}
             data={lines}
-            emptyMessage="No order lines found"
+            emptyMessage={t.noOrderLinesFound}
           />
         )}
       </main>
