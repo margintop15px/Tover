@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient, getWorkspaceId } from "@/lib/supabase-server";
+import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 import {
   parseCSV,
   validateOrderHeaders,
@@ -23,6 +23,10 @@ type ImportType = (typeof VALID_IMPORT_TYPES)[number];
 
 export async function POST(request: NextRequest) {
   try {
+    const { supabase, workspaceId } = await getRouteContext(request, {
+      requireManager: true,
+    });
+
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
     const importType = formData.get("import_type") as string | null;
@@ -30,10 +34,8 @@ export async function POST(request: NextRequest) {
     if (!file) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
-    if (
-      !importType ||
-      !VALID_IMPORT_TYPES.includes(importType as ImportType)
-    ) {
+
+    if (!importType || !VALID_IMPORT_TYPES.includes(importType as ImportType)) {
       return NextResponse.json(
         {
           error: `Invalid import_type. Must be one of: ${VALID_IMPORT_TYPES.join(", ")}`,
@@ -42,11 +44,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const supabase = createServerClient();
-    const workspaceId = getWorkspaceId();
     const text = await file.text();
 
-    // Create import record
     const { data: importRecord, error: importError } = await supabase
       .from("imports")
       .insert({
@@ -85,9 +84,9 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Validate headers
     const headers = Object.keys(rows[0].data);
     let headerError: string | null = null;
+
     switch (importType) {
       case "orders_csv":
         headerError = validateOrderHeaders(headers);
@@ -119,7 +118,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Process based on import type
     let inserted = 0;
     let allErrors: RowError[] = [];
 
@@ -127,19 +125,21 @@ export async function POST(request: NextRequest) {
       case "orders_csv": {
         const result = validateOrderRows(rows);
         allErrors = result.errors;
+
         if (result.valid.length > 0) {
           const { error } = await supabase.from("orders").upsert(
-            result.valid.map((o) => ({
+            result.valid.map((order) => ({
               workspace_id: workspaceId,
-              source: o.source,
-              external_order_id: o.external_order_id,
-              ordered_at: o.ordered_at,
-              currency: o.currency,
-              status: o.status,
+              source: order.source,
+              external_order_id: order.external_order_id,
+              ordered_at: order.ordered_at,
+              currency: order.currency,
+              status: order.status,
               updated_at: new Date().toISOString(),
             })),
             { onConflict: "workspace_id,source,external_order_id" }
           );
+
           if (error) {
             allErrors.push({
               rowNumber: 0,
@@ -157,15 +157,14 @@ export async function POST(request: NextRequest) {
       case "order_lines_csv": {
         const result = validateOrderLineRows(rows);
         allErrors = result.errors;
+
         if (result.valid.length > 0) {
-          // Group by order, look up order IDs
           const orderKeys = [
             ...new Set(
-              result.valid.map((l) => `${l.source}::${l.external_order_id}`)
+              result.valid.map((line) => `${line.source}::${line.external_order_id}`)
             ),
           ];
 
-          // Fetch order IDs for the referenced orders
           const orderMap = new Map<string, string>();
           for (const key of orderKeys) {
             const [source, extId] = key.split("::");
@@ -176,6 +175,7 @@ export async function POST(request: NextRequest) {
               .eq("source", source)
               .eq("external_order_id", extId)
               .single();
+
             if (data) {
               orderMap.set(key, data.id);
             }
@@ -185,6 +185,7 @@ export async function POST(request: NextRequest) {
           for (const line of result.valid) {
             const key = `${line.source}::${line.external_order_id}`;
             const orderId = orderMap.get(key);
+
             if (!orderId) {
               allErrors.push({
                 rowNumber: 0,
@@ -194,6 +195,7 @@ export async function POST(request: NextRequest) {
               });
               continue;
             }
+
             linesToInsert.push({
               order_id: orderId,
               sku: line.sku,
@@ -205,9 +207,8 @@ export async function POST(request: NextRequest) {
           }
 
           if (linesToInsert.length > 0) {
-            const { error } = await supabase
-              .from("order_lines")
-              .insert(linesToInsert);
+            const { error } = await supabase.from("order_lines").insert(linesToInsert);
+
             if (error) {
               allErrors.push({
                 rowNumber: 0,
@@ -220,23 +221,26 @@ export async function POST(request: NextRequest) {
             }
           }
         }
+
         break;
       }
 
       case "inventory_csv": {
         const result = validateInventoryRows(rows);
         allErrors = result.errors;
+
         if (result.valid.length > 0) {
           const { error } = await supabase.from("inventory_snapshots").upsert(
-            result.valid.map((inv) => ({
+            result.valid.map((inventory) => ({
               workspace_id: workspaceId,
-              snapshot_date: inv.snapshot_date,
-              sku: inv.sku,
-              on_hand_qty: inv.on_hand_qty,
-              unit_cost: inv.unit_cost,
+              snapshot_date: inventory.snapshot_date,
+              sku: inventory.sku,
+              on_hand_qty: inventory.on_hand_qty,
+              unit_cost: inventory.unit_cost,
             })),
             { onConflict: "workspace_id,snapshot_date,sku" }
           );
+
           if (error) {
             allErrors.push({
               rowNumber: 0,
@@ -254,20 +258,22 @@ export async function POST(request: NextRequest) {
       case "payments_csv": {
         const result = validatePaymentRows(rows);
         allErrors = result.errors;
+
         if (result.valid.length > 0) {
           const { error } = await supabase.from("payments").upsert(
-            result.valid.map((p) => ({
+            result.valid.map((payment) => ({
               workspace_id: workspaceId,
-              source: p.source,
-              external_payment_id: p.external_payment_id,
-              amount: p.amount,
-              fee_amount: p.fee_amount,
-              currency: p.currency,
-              paid_at: p.paid_at,
-              status: p.status,
+              source: payment.source,
+              external_payment_id: payment.external_payment_id,
+              amount: payment.amount,
+              fee_amount: payment.fee_amount,
+              currency: payment.currency,
+              paid_at: payment.paid_at,
+              status: payment.status,
             })),
             { onConflict: "workspace_id,source,external_payment_id" }
           );
+
           if (error) {
             allErrors.push({
               rowNumber: 0,
@@ -283,15 +289,14 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Store errors
     if (allErrors.length > 0) {
       await supabase.from("import_errors").insert(
-        allErrors.map((e) => ({
+        allErrors.map((entry) => ({
           import_id: importId,
-          row_number: e.rowNumber,
-          error_code: e.errorCode,
-          error_detail: e.errorDetail,
-          raw_row: e.rawRow,
+          row_number: entry.rowNumber,
+          error_code: entry.errorCode,
+          error_detail: entry.errorDetail,
+          raw_row: entry.rawRow,
         }))
       );
     }
@@ -312,19 +317,14 @@ export async function POST(request: NextRequest) {
       .eq("id", importId);
 
     return NextResponse.json({ importId, status: "completed", summary });
-  } catch (err) {
-    console.error("Import error:", err);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+  } catch (error) {
+    return toRouteErrorResponse(error);
   }
 }
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = createServerClient();
-    const workspaceId = getWorkspaceId();
+    const { supabase, workspaceId } = await getRouteContext(request);
     const { searchParams } = new URL(request.url);
     const limit = parseInt(searchParams.get("limit") || "20", 10);
     const offset = parseInt(searchParams.get("offset") || "0", 10);
@@ -344,10 +344,7 @@ export async function GET(request: NextRequest) {
       page: { limit, offset, total: count },
       items: data,
     });
-  } catch {
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+  } catch (error) {
+    return toRouteErrorResponse(error);
   }
 }

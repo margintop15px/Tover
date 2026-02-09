@@ -1,13 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient, getWorkspaceId } from "@/lib/supabase-server";
+import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = createServerClient();
+    const { supabase, workspaceId } = await getRouteContext(request);
     const { searchParams } = new URL(request.url);
-    const workspaceId = searchParams.get("workspaceId") || getWorkspaceId();
 
     const now = new Date();
     const thirtyDaysAgo = new Date(now);
@@ -18,7 +17,6 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get("limit") || "50", 10);
     const offset = parseInt(searchParams.get("offset") || "0", 10);
 
-    // Get orders in range
     const { data: orders, error, count } = await supabase
       .from("orders")
       .select("*", { count: "exact" })
@@ -39,12 +37,8 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Compute per-order GMV and units
     const orderIds = orders.map((o) => o.id);
-    const linesMap = new Map<
-      string,
-      { gmv: number; units: number }
-    >();
+    const linesMap = new Map<string, { gmv: number; units: number }>();
 
     for (let i = 0; i < orderIds.length; i += 100) {
       const batch = orderIds.slice(i, i + 100);
@@ -55,10 +49,7 @@ export async function GET(request: NextRequest) {
 
       if (lines) {
         for (const line of lines) {
-          const existing = linesMap.get(line.order_id) || {
-            gmv: 0,
-            units: 0,
-          };
+          const existing = linesMap.get(line.order_id) || { gmv: 0, units: 0 };
           existing.gmv += line.quantity * line.unit_price_gross;
           existing.units += line.quantity;
           linesMap.set(line.order_id, existing);
@@ -84,11 +75,7 @@ export async function GET(request: NextRequest) {
       page: { limit, offset, totalEstimate: count },
       items,
     });
-  } catch (err) {
-    console.error("Orders list error:", err);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+  } catch (error) {
+    return toRouteErrorResponse(error);
   }
 }

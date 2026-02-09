@@ -1,17 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient, getWorkspaceId } from "@/lib/supabase-server";
+import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = createServerClient();
+    const { supabase, workspaceId } = await getRouteContext(request);
     const { searchParams } = new URL(request.url);
-    const workspaceId = searchParams.get("workspaceId") || getWorkspaceId();
     const nDays = parseInt(searchParams.get("days") || "14", 10);
     const lookbackDays = parseInt(searchParams.get("lookback") || "7", 10);
 
-    // Get latest snapshot per SKU
     const { data: allSnapshots } = await supabase
       .from("inventory_snapshots")
       .select("sku, snapshot_date, on_hand_qty")
@@ -22,21 +20,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ items: [] });
     }
 
-    // Keep only latest snapshot per SKU
-    const latestBySkuMap = new Map<
-      string,
-      { sku: string; on_hand_qty: number }
-    >();
-    for (const s of allSnapshots) {
-      if (!latestBySkuMap.has(s.sku)) {
-        latestBySkuMap.set(s.sku, {
-          sku: s.sku,
-          on_hand_qty: s.on_hand_qty,
+    const latestBySkuMap = new Map<string, { sku: string; on_hand_qty: number }>();
+    for (const snapshot of allSnapshots) {
+      if (!latestBySkuMap.has(snapshot.sku)) {
+        latestBySkuMap.set(snapshot.sku, {
+          sku: snapshot.sku,
+          on_hand_qty: snapshot.on_hand_qty,
         });
       }
     }
 
-    // Get sales velocity over lookback period
     const lookbackDate = new Date();
     lookbackDate.setDate(lookbackDate.getDate() - lookbackDays);
 
@@ -51,7 +44,6 @@ export async function GET(request: NextRequest) {
     if (orders && orders.length > 0) {
       const orderIds = orders.map((o) => o.id);
 
-      // Fetch lines in batches
       for (let i = 0; i < orderIds.length; i += 100) {
         const batch = orderIds.slice(i, i + 100);
         const { data: lines } = await supabase
@@ -70,7 +62,6 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Compute critical stock
     const items: Array<{
       sku: string;
       onHandQty: number;
@@ -98,11 +89,7 @@ export async function GET(request: NextRequest) {
     items.sort((a, b) => a.daysRemaining - b.daysRemaining);
 
     return NextResponse.json({ items: items.slice(0, 50) });
-  } catch (err) {
-    console.error("Critical stock error:", err);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+  } catch (error) {
+    return toRouteErrorResponse(error);
   }
 }

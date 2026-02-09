@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase-server";
+import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 
 export async function GET(
   request: NextRequest,
@@ -7,7 +7,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const supabase = createServerClient();
+    const { supabase } = await getRouteContext(request);
     const { searchParams } = new URL(request.url);
     const limit = parseInt(searchParams.get("limit") || "50", 10);
     const offset = parseInt(searchParams.get("offset") || "0", 10);
@@ -27,10 +27,7 @@ export async function GET(
       page: { limit, offset, total: count },
       items: data,
     });
-  } catch {
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+  } catch (error) {
+    return toRouteErrorResponse(error);
   }
 }

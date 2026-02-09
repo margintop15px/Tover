@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase-server";
+import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    const supabase = createServerClient();
+    const { supabase } = await getRouteContext(request);
 
     const { data, error } = await supabase
       .from("imports")
@@ -20,10 +20,7 @@ export async function GET(
     }
 
     return NextResponse.json(data);
-  } catch {
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+  } catch (error) {
+    return toRouteErrorResponse(error);
   }
 }
