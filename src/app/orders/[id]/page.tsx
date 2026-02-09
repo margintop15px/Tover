@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { ArrowLeft } from "lucide-react";
 import { useI18n } from "@/i18n/context";
+import { Button } from "@/components/ui/button";
 import DataTable from "@/components/DataTable";
 
 interface OrderLine {
@@ -53,28 +55,28 @@ export default function OrderDetailPage() {
   const fmtCur = (v: number) => formatCurrency(v, locale);
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
-      <header className="border-b border-zinc-200 bg-white px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="min-h-screen bg-background">
+      <header className="border-b bg-card px-6 py-4">
         <div className="mx-auto flex max-w-7xl items-center gap-4">
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => router.back()}
-            className="text-sm text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
           >
-            &larr; {t.back}
-          </button>
-          <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-50">
-            {t.orderLines}
-          </h1>
+            <ArrowLeft className="size-4" />
+            {t.back}
+          </Button>
+          <h1 className="text-xl font-bold">{t.orderLines}</h1>
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl px-6 py-8">
-        <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">
-          {t.orderIdLabel}: <code className="font-mono">{orderId}</code>
+        <p className="mb-4 text-sm text-muted-foreground">
+          {t.orderIdLabel}: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm">{orderId}</code>
         </p>
 
         {loading ? (
-          <div className="rounded-lg border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
             {t.loadingOrderLines}
           </div>
         ) : (
