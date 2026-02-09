@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/i18n/context";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import KpiCard from "@/components/KpiCard";
 import DateRangePicker from "@/components/DateRangePicker";
 import DataTable from "@/components/DataTable";
@@ -104,12 +106,10 @@ export default function Dashboard() {
   const fmtCur = (v: number) => formatCurrency(v, locale);
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
-      <header className="border-b border-zinc-200 bg-white px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="min-h-screen bg-background">
+      <header className="border-b bg-card px-6 py-4">
         <div className="mx-auto flex max-w-7xl items-center justify-between">
-          <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-50">
-            {t.appName}
-          </h1>
+          <h1 className="text-xl font-bold">{t.appName}</h1>
           <div className="flex items-center gap-4">
             <DateRangePicker
               from={dateRange.from}
@@ -177,15 +177,14 @@ export default function Dashboard() {
         {showOrders && (
           <section className="mt-8">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                {t.orders}
-              </h2>
-              <button
+              <h2 className="text-sm font-semibold">{t.orders}</h2>
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => setShowOrders(false)}
-                className="text-sm text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
               >
                 {t.hide}
-              </button>
+              </Button>
             </div>
             <DataTable<OrderRow>
               columns={[
@@ -196,7 +195,13 @@ export default function Dashboard() {
                 },
                 { key: "source", header: t.source },
                 { key: "externalOrderId", header: t.orderId },
-                { key: "status", header: t.status },
+                {
+                  key: "status",
+                  header: t.status,
+                  render: (item) => (
+                    <Badge variant="secondary">{item.status}</Badge>
+                  ),
+                },
                 {
                   key: "orderGmv",
                   header: t.gmv,

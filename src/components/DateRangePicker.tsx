@@ -1,6 +1,8 @@
 "use client";
 
 import { useI18n } from "@/i18n/context";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 interface DateRangePickerProps {
   from: string;
@@ -17,23 +19,19 @@ export default function DateRangePicker({
 
   return (
     <div className="flex items-center gap-3">
-      <label className="text-sm font-medium text-zinc-600 dark:text-zinc-400">
-        {t.from}
-      </label>
-      <input
+      <Label className="text-muted-foreground">{t.from}</Label>
+      <Input
         type="date"
         value={from}
         onChange={(e) => onChange(e.target.value, to)}
-        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+        className="w-auto"
       />
-      <label className="text-sm font-medium text-zinc-600 dark:text-zinc-400">
-        {t.to}
-      </label>
-      <input
+      <Label className="text-muted-foreground">{t.to}</Label>
+      <Input
         type="date"
         value={to}
         onChange={(e) => onChange(from, e.target.value)}
-        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+        className="w-auto"
       />
     </div>
   );

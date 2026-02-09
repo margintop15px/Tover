@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
+import { Badge } from "@/components/ui/badge";
 import DataTable from "./DataTable";
 
 interface CriticalStockItem {
@@ -35,7 +36,7 @@ export default function CriticalStockTable() {
 
   if (loading) {
     return (
-      <div className="rounded-lg border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
         {t.loadingCriticalStock}
       </div>
     );
@@ -43,7 +44,7 @@ export default function CriticalStockTable() {
 
   return (
     <div>
-      <h3 className="mb-3 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+      <h3 className="mb-3 text-sm font-semibold">
         {t.criticalStockTitle}
       </h3>
       <DataTable<CriticalStockItem>
@@ -63,17 +64,17 @@ export default function CriticalStockTable() {
             key: "daysRemaining",
             header: t.daysLeft,
             render: (item) => (
-              <span
-                className={
+              <Badge
+                variant={
                   item.daysRemaining <= 3
-                    ? "font-bold text-red-600"
+                    ? "destructive"
                     : item.daysRemaining <= 7
-                      ? "font-medium text-amber-600"
-                      : ""
+                      ? "outline"
+                      : "secondary"
                 }
               >
-                {item.daysRemaining.toFixed(1)}
-              </span>
+                {item.daysRemaining.toFixed(1)}d
+              </Badge>
             ),
           },
         ]}
