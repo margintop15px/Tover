@@ -2,19 +2,23 @@
 
 Multi-tenant marketplace turnover tracker built with Next.js + Supabase.
 
-This app supports:
-- email/password auth with Supabase
-- organization creation at signup
-- role-based access (`owner`, `admin`, `member`)
-- member invites per organization
-- CSV imports for orders, order lines, inventory, and payments
-- dashboard KPIs and order drill-down
+## Features
+
+- **Auth & Multi-tenancy** — email/password auth, organization creation at signup, role-based access (`owner`, `admin`, `member`), member invites
+- **Inventory Management** — products, warehouses, suppliers, categories, stores
+- **Operations Engine** — 8 operation types: purchase, sale, return, write-off, transfer, production, defect, payment
+- **Weighted-Average Cost Tracking** — automatic cost recalculation on purchases and production
+- **Product Balance Tracking** — real-time per-warehouse stock and cost balances
+- **CSV Imports** — orders, order lines, inventory snapshots, payments
+- **Dashboard** — KPI summary and critical stock alerts
+- **Bilingual UI** — English and Russian with runtime locale switching
 
 ## Stack
 
 - Next.js 16 (App Router)
 - React 19 + TypeScript
-- Supabase (Auth + Postgres)
+- Supabase (Auth + Postgres + RLS)
+- shadcn/ui (New York style) + Radix UI + Lucide icons
 - Tailwind CSS 4
 - Playwright (E2E)
 
@@ -27,7 +31,6 @@ This app supports:
 ## Quick Start
 
 ```bash
-cd /Users/usuario/Projects/tover-app
 cp .env.local.example .env.local
 # fill values in .env.local
 npm install
@@ -38,7 +41,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Environment Variables
 
-Use `/Users/usuario/Projects/tover-app/.env.local.example` as template.
+Use `.env.local.example` as template.
 
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
@@ -55,18 +58,20 @@ Notes:
 
 ### 1. Run migrations (in order)
 
-Files:
-- `/Users/usuario/Projects/tover-app/supabase/migrations/001_initial_schema.sql`
-- `/Users/usuario/Projects/tover-app/supabase/migrations/002_auth_orgs_rbac.sql`
+Files in `supabase/migrations/`:
+- `001_initial_schema.sql` — orders, order lines, inventory snapshots, payments, imports
+- `002_auth_orgs_rbac.sql` — auth, organizations, RBAC, RLS policies
+- `003_inventory_system.sql` — inventory entities, operations, balances, RPCs
 
 Option A (Supabase SQL Editor):
-- Run `001` first, then `002`.
+- Run `001` first, then `002`, then `003`.
 
 Option B (psql):
 
 ```bash
 psql "$SUPABASE_DB_URL" -f supabase/migrations/001_initial_schema.sql
 psql "$SUPABASE_DB_URL" -f supabase/migrations/002_auth_orgs_rbac.sql
+psql "$SUPABASE_DB_URL" -f supabase/migrations/003_inventory_system.sql
 ```
 
 ### 2. Configure Auth URLs in Supabase
@@ -80,6 +85,14 @@ In Auth settings:
 - Go to `/signup`
 - Enter full name, organization name, email, password
 - Confirm email (if email confirmations are enabled)
+
+### 4. Seed demo data (optional)
+
+Populate the database with sample inventory data (categories, warehouses, suppliers, products, operations):
+
+```bash
+npm run seed  # requires dev server running + E2E_EMAIL/E2E_PASSWORD env vars
+```
 
 ## Auth + Organization Model
 
@@ -96,8 +109,7 @@ Roles:
 - `member`: standard read/use access
 
 Tenant scoping:
-- Existing business tables still use `workspace_id`.
-- In this project, `workspace_id` maps to `organizations.id`.
+- All data tables use `workspace_id` which maps to `organizations.id`.
 - RLS policies enforce organization membership.
 
 ## Developer Commands
@@ -105,20 +117,11 @@ Tenant scoping:
 ### App lifecycle
 
 ```bash
-npm run dev
-npm run build
-npm run start
-npm run lint
-```
-
-### Useful checks
-
-```bash
-# Type-check without emitting files
-npx tsc --noEmit
-
-# Build with webpack (useful fallback if Turbopack has local issues)
-npm run build -- --webpack
+npm run dev              # Start dev server
+npm run build            # Production build
+npm run start            # Start production server
+npm run lint             # ESLint (flat config, ESLint 9)
+npm run seed             # Seed demo inventory data
 ```
 
 ### E2E tests (Playwright)
@@ -150,13 +153,13 @@ What runs by default:
 - public route tests (no credentials required)
 - authenticated tests are skipped unless `E2E_EMAIL` and `E2E_PASSWORD` are set
 
-## Demo Data
+## Demo Data (CSV)
 
-CSV files are available in:
-- `/Users/usuario/Projects/tover-app/supabase/demo-data/orders_demo.csv`
-- `/Users/usuario/Projects/tover-app/supabase/demo-data/order_lines_demo.csv`
-- `/Users/usuario/Projects/tover-app/supabase/demo-data/inventory_demo.csv`
-- `/Users/usuario/Projects/tover-app/supabase/demo-data/payments_demo.csv`
+CSV files for the original import pipeline are in `supabase/demo-data/`:
+- `orders_demo.csv`
+- `order_lines_demo.csv`
+- `inventory_demo.csv`
+- `payments_demo.csv`
 
 Use the dashboard upload card after logging in as an `owner` or `admin`.
 
@@ -164,28 +167,119 @@ Use the dashboard upload card after logging in as an `owner` or `admin`.
 
 All routes require authenticated session unless noted.
 
-- `GET /api/auth/me`: current user profile + memberships
-- `PATCH /api/auth/me`: update display name
-- `POST /api/auth/invite`: invite user to an organization (`owner`/`admin`)
+### Auth & User
 
-- `GET /api/metrics/summary`: KPI summary for active organization
-- `GET /api/metrics/critical-stock`: critical stock list
+- `GET /api/auth/me` — current user profile + memberships
+- `PATCH /api/auth/me` — update display name
+- `POST /api/auth/invite` — invite user to organization (`owner`/`admin`)
 
-- `GET /api/orders`: orders list
-- `GET /api/orders/:id/lines`: order line details
+### Dashboard & Metrics
 
-- `POST /api/imports`: upload/import CSV (`owner`/`admin`)
-- `GET /api/imports`: list imports
-- `GET /api/imports/:id`: import detail
-- `GET /api/imports/:id/errors`: import errors
+- `GET /api/metrics/summary` — KPI summary for active organization
+- `GET /api/metrics/critical-stock` — critical stock list
+
+### Orders
+
+- `GET /api/orders` — orders list
+- `GET /api/orders/:id/lines` — order line details
+
+### CSV Imports
+
+- `POST /api/imports` — upload/import CSV (`owner`/`admin`)
+- `GET /api/imports` — list imports
+- `GET /api/imports/:id` — import detail
+- `GET /api/imports/:id/errors` — import errors
+
+### Inventory — Master Data
+
+- `GET|POST /api/categories` — list / create category
+- `GET|PUT|DELETE /api/categories/:id` — get / update / delete category
+- `GET|POST /api/stores` — list / create store
+- `GET|PUT|DELETE /api/stores/:id` — get / update / delete store
+- `GET|POST /api/warehouses` — list / create warehouse
+- `GET|PUT|DELETE /api/warehouses/:id` — get / update / delete warehouse
+- `GET|POST /api/suppliers` — list / create supplier
+- `GET|PUT|DELETE /api/suppliers/:id` — get / update / delete supplier
+- `GET|POST /api/products` — list / create product
+- `GET|PUT|DELETE /api/products/:id` — get / update / delete product
+
+### Inventory — Operations & Balances
+
+- `GET /api/operations` — list operations (with filters)
+- `POST /api/operations` — create operation (dispatches to type-specific processor)
+- `GET /api/operations/:id` — operation detail with items
+- `GET /api/product-balances` — current product balances per warehouse
+
+## Navigation Structure
+
+The app uses a sidebar layout (`AppShell` + `AppSidebar`):
+
+```
+Dashboard        /
+Orders           /orders
+Team             /team
+
+Master Data (collapsible group):
+  Products       /products
+  Categories     /categories
+  Warehouses     /warehouses
+  Stores         /stores
+  Suppliers      /suppliers
+
+Operations       /operations
+```
 
 ## Project Structure
 
-- `/Users/usuario/Projects/tover-app/src/app` - Next.js pages/routes
-- `/Users/usuario/Projects/tover-app/src/app/api` - route handlers
-- `/Users/usuario/Projects/tover-app/src/lib` - Supabase clients and request context
-- `/Users/usuario/Projects/tover-app/supabase/migrations` - SQL migrations
-- `/Users/usuario/Projects/tover-app/tests/e2e` - Playwright tests
+```
+src/
+  app/                          Next.js App Router pages and API routes
+    api/                        Route handlers (auth, metrics, orders, imports, inventory)
+    categories/                 Category management page
+    stores/                     Store management page
+    warehouses/                 Warehouse management page
+    suppliers/                  Supplier management page
+    products/                   Product management page
+    operations/                 Operations page
+  components/
+    ui/                         shadcn/ui primitives (button, card, dialog, field, input,
+                                label, select, table, tabs, sheet, scroll-area, etc.)
+    AppShell.tsx                Sidebar layout wrapper (hidden on auth pages)
+    AppSidebar.tsx              Sidebar navigation with collapsible groups
+    DataTable.tsx               Reusable data table component
+    KpiCard.tsx                 Dashboard KPI card
+    UploadCard.tsx              CSV upload component
+    ...
+  lib/
+    operations/                 Operation processors and validation
+      validate-operation.ts     Input validation
+      process-purchase.ts       Purchase processor (updates balances + cost)
+      process-production.ts     Production processor
+      process-transfer.ts       Transfer processor
+      process-simple.ts         Sale, return, write-off, defect processor
+      process-payment.ts        Payment processor
+      update-balances.ts        Balance update helpers
+      index.ts                  Dispatcher
+    supabase-server.ts          Server-side Supabase client factories
+    supabase-browser.ts         Browser Supabase client singleton
+    request-context.ts          Route context helper (auth + workspace resolution)
+    csv-parsers.ts              CSV import parsers
+  types/
+    database.ts                 DB table interfaces and API response types
+    inventory.ts                Inventory entity, operation, and request types
+  i18n/                         Custom i18n (English + Russian)
+scripts/
+  seed.ts                       Seed script for demo inventory data
+docs/
+  initial-plan.md               Original project plan
+  inventory-system-plan.md      Inventory system design document
+  design-prototype.jpg          UI design prototype
+supabase/
+  migrations/                   SQL migrations (001, 002, 003)
+  demo-data/                    CSV demo files for import pipeline
+tests/
+  e2e/                          Playwright E2E tests
+```
 
 ## Troubleshooting
 

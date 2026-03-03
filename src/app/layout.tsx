@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import { I18nProvider } from "@/i18n/context";
+import AppShell from "@/components/AppShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Tover - Marketplace Turnover Tracker",
-  description: "Track your marketplace turnover, stock health, and critical inventory",
+  title: "Tover - Inventory Management",
+  description: "Inventory management, warehouse operations, and sales tracking",
 };
 
 export default function RootLayout({
@@ -15,7 +16,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
-        <I18nProvider>{children}</I18nProvider>
+        <I18nProvider>
+          <AppShell>{children}</AppShell>
+        </I18nProvider>
       </body>
     </html>
   );

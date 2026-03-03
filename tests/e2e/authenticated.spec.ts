@@ -15,7 +15,7 @@ test.describe("authenticated area", () => {
   test("dashboard renders for authenticated user", async ({ page }) => {
     await page.goto("/");
     await expect(page).toHaveURL(/\/$/);
-    await expect(page.getByRole("button", { name: "Team" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Team" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
   });
 

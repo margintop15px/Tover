@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/i18n/context";
 import { Button } from "@/components/ui/button";
@@ -11,8 +10,6 @@ import DateRangePicker from "@/components/DateRangePicker";
 import DataTable from "@/components/DataTable";
 import UploadCard from "@/components/UploadCard";
 import CriticalStockTable from "@/components/CriticalStockTable";
-import LanguageSwitcher from "@/components/LanguageSwitcher";
-import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
 
 interface KpiData {
   gmvGross: number;
@@ -71,7 +68,6 @@ export default function Dashboard() {
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [showOrders, setShowOrders] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -111,46 +107,18 @@ export default function Dashboard() {
     fetchData();
   }, [fetchData]);
 
-  const handleSignOut = useCallback(async () => {
-    setSigningOut(true);
-    try {
-      const supabase = createBrowserSupabaseClient();
-      await supabase.auth.signOut();
-      router.push("/login");
-      router.refresh();
-    } finally {
-      setSigningOut(false);
-    }
-  }, [router]);
-
   const fmtCur = (v: number) => formatCurrency(v, locale);
 
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b bg-card px-6 py-4">
         <div className="mx-auto flex max-w-7xl items-center justify-between">
-          <h1 className="text-xl font-bold">{t.appName}</h1>
-          <div className="flex items-center gap-4">
-            <Link href="/team">
-              <Button size="sm" variant="outline">
-                Team
-              </Button>
-            </Link>
-            <DateRangePicker
-              from={dateRange.from}
-              to={dateRange.to}
-              onChange={(from, to) => setDateRange({ from, to })}
-            />
-            <LanguageSwitcher />
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={signingOut}
-              onClick={handleSignOut}
-            >
-              {signingOut ? "Logging out..." : "Log out"}
-            </Button>
-          </div>
+          <h1 className="text-xl font-bold">{t.dashboard}</h1>
+          <DateRangePicker
+            from={dateRange.from}
+            to={dateRange.to}
+            onChange={(from, to) => setDateRange({ from, to })}
+          />
         </div>
       </header>
 
