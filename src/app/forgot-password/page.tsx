@@ -3,8 +3,11 @@
 import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
+import { useI18n } from "@/i18n/context";
 
 export default function ForgotPasswordPage() {
+  const { t } = useI18n();
+
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +35,7 @@ export default function ForgotPasswordPage() {
         return;
       }
 
-      setSuccess("Password recovery email sent.");
+      setSuccess(t.recoveryEmailSent);
     } finally {
       setLoading(false);
     }
@@ -41,15 +44,15 @@ export default function ForgotPasswordPage() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md items-center px-6 py-10">
       <div className="w-full rounded-lg border border-border bg-card p-6 shadow-sm">
-        <h1 className="text-2xl font-semibold">Recover password</h1>
+        <h1 className="text-2xl font-semibold">{t.recoverPasswordTitle}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          We will send a reset link to your email.
+          {t.recoverPasswordSubtitle}
         </p>
 
         <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
           <div>
             <label className="mb-1 block text-sm font-medium" htmlFor="email">
-              Email
+              {t.email}
             </label>
             <input
               id="email"
@@ -69,13 +72,13 @@ export default function ForgotPasswordPage() {
             disabled={loading}
             className="h-10 w-full rounded-md bg-foreground text-sm font-medium text-background disabled:opacity-60"
           >
-            {loading ? "Sending..." : "Send reset email"}
+            {loading ? t.sending : t.sendResetEmail}
           </button>
         </form>
 
         <div className="mt-4 text-sm">
           <Link className="underline" href="/login">
-            Back to login
+            {t.backToLogin}
           </Link>
         </div>
       </div>

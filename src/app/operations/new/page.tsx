@@ -351,7 +351,7 @@ export default function NewOperationPage() {
           <div>
             <div className="mb-2 flex items-center justify-between">
               <Label className="text-base font-semibold">
-                {type === "purchase" ? t.opPurchase : ""} Items
+                {t.items}
               </Label>
               <Button variant="outline" size="sm" onClick={addItem}>
                 <Plus className="mr-1 h-4 w-4" />
@@ -575,7 +575,7 @@ export default function NewOperationPage() {
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <Label className="text-base font-semibold">
-                  Source Materials ({t.directionOut})
+                  {t.sourceMaterials} ({t.directionOut})
                 </Label>
                 <Button variant="outline" size="sm" onClick={addItem}>
                   <Plus className="mr-1 h-4 w-4" />
@@ -657,7 +657,7 @@ export default function NewOperationPage() {
             {/* Output item */}
             <div>
               <Label className="mb-2 block text-base font-semibold">
-                Output Product ({t.directionIn})
+                {t.outputProduct} ({t.directionIn})
               </Label>
               <div className="rounded-md border p-3 space-y-3">
                 <div className="grid grid-cols-2 gap-4">

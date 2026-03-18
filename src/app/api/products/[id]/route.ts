@@ -66,6 +66,34 @@ export async function PATCH(
       updates.category_id = body.categoryId || null;
     if (body.storeId !== undefined) updates.store_id = body.storeId || null;
 
+    // Check workspace settings for required fields
+    const { data: wsSettings } = await supabase
+      .from("workspace_settings")
+      .select("category_required, store_required")
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+
+    if (
+      wsSettings?.category_required &&
+      body.categoryId !== undefined &&
+      !body.categoryId
+    ) {
+      return NextResponse.json(
+        { error: "Category is required" },
+        { status: 400 }
+      );
+    }
+    if (
+      wsSettings?.store_required &&
+      body.storeId !== undefined &&
+      !body.storeId
+    ) {
+      return NextResponse.json(
+        { error: "Store is required" },
+        { status: 400 }
+      );
+    }
+
     if (Object.keys(updates).length === 0) {
       return NextResponse.json(
         { error: "No fields to update" },
@@ -83,8 +111,15 @@ export async function PATCH(
 
     if (error) {
       if (error.code === "23505") {
+        const field = error.message.includes("sku_code") ? "sku" : "name";
         return NextResponse.json(
-          { error: "A product with this SKU already exists" },
+          {
+            error:
+              field === "sku"
+                ? "A product with this SKU already exists"
+                : "A product with this name already exists",
+            field,
+          },
           { status: 409 }
         );
       }

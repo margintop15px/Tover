@@ -100,7 +100,7 @@ export default function StoresPage() {
       ) : (
         <DataTable<Store & Record<string, unknown>>
           columns={[
-            { key: "name", header: t.name },
+            { key: "name", header: t.name, required: true },
             {
               key: "actions",
               header: t.actions,

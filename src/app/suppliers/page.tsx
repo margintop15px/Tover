@@ -114,8 +114,9 @@ export default function SuppliersPage() {
         <p className="text-muted-foreground">{t.loading}</p>
       ) : (
         <DataTable<Supplier & Record<string, unknown>>
+          tableId="suppliers"
           columns={[
-            { key: "name", header: t.name },
+            { key: "name", header: t.name, required: true },
             {
               key: "address",
               header: t.supplierAddress,

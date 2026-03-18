@@ -13,8 +13,28 @@ export async function GET(request: NextRequest) {
     const offset = parseInt(searchParams.get("offset") || "0", 10);
     const type = searchParams.get("type");
     const supplierId = searchParams.get("supplierId");
+    const productId = searchParams.get("productId");
+    const warehouseId = searchParams.get("warehouseId");
     const from = searchParams.get("from");
     const to = searchParams.get("to");
+
+    // If filtering by product or warehouse, first find matching operation IDs
+    let operationIdFilter: string[] | null = null;
+    if (productId || warehouseId) {
+      let itemQuery = supabase
+        .from("operation_items")
+        .select("operation_id");
+      if (productId) itemQuery = itemQuery.eq("product_id", productId);
+      if (warehouseId) itemQuery = itemQuery.eq("warehouse_id", warehouseId);
+      const { data: matchingItems } = await itemQuery;
+      operationIdFilter = [...new Set((matchingItems || []).map((i) => i.operation_id))];
+      if (operationIdFilter.length === 0) {
+        return NextResponse.json({
+          page: { limit, offset, totalEstimate: 0 },
+          items: [],
+        });
+      }
+    }
 
     let query = supabase
       .from("operations")
@@ -28,6 +48,7 @@ export async function GET(request: NextRequest) {
     if (supplierId) query = query.eq("supplier_id", supplierId);
     if (from) query = query.gte("operation_date", from);
     if (to) query = query.lte("operation_date", to);
+    if (operationIdFilter) query = query.in("id", operationIdFilter);
 
     const { data, error, count } = await query;
 

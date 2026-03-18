@@ -240,6 +240,26 @@ export interface CreateOperationRequest {
 }
 
 // ============================================================
+// Workspace settings
+// ============================================================
+
+export interface WorkspaceSettingsResponse {
+  currency: string;
+  categoryRequired: boolean;
+  defaultCategoryId: string | null;
+  storeRequired: boolean;
+  defaultStoreId: string | null;
+}
+
+export interface UpdateWorkspaceSettingsRequest {
+  currency?: string;
+  categoryRequired?: boolean;
+  defaultCategoryId?: string;
+  storeRequired?: boolean;
+  defaultStoreId?: string;
+}
+
+// ============================================================
 // Paginated response
 // ============================================================
 
@@ -250,4 +270,77 @@ export interface PaginatedResponse<T> {
     totalEstimate: number | null;
   };
   items: T[];
+}
+
+// ============================================================
+// Report response interfaces
+// ============================================================
+
+export interface InventoryBalanceCell {
+  warehouseId: string;
+  warehouseName: string;
+  quantity: number;
+  totalCost: number;
+}
+
+export interface InventoryBalanceRow {
+  productId: string;
+  productName: string;
+  skuCode: string | null;
+  categoryName: string | null;
+  storeName: string | null;
+  warehouses: InventoryBalanceCell[];
+  totalQuantity: number;
+  totalCost: number;
+}
+
+export interface InventoryBalancesReport {
+  asOfDate: string;
+  warehouseColumns: { id: string; name: string }[];
+  rows: InventoryBalanceRow[];
+  totals: { totalQuantity: number; totalCost: number };
+}
+
+export interface ProductMovementRow {
+  groupId: string;
+  groupName: string;
+  skuCode?: string | null;
+  purchaseIn: number;
+  saleOut: number;
+  returnIn: number;
+  writeOffOut: number;
+  transferIn: number;
+  transferOut: number;
+  productionIn: number;
+  productionOut: number;
+  defectOut: number;
+  net: number;
+}
+
+export interface ProductMovementReport {
+  from: string;
+  to: string;
+  groupBy: string;
+  rows: ProductMovementRow[];
+}
+
+export interface SupplierDebtRow {
+  supplierId: string;
+  supplierName: string;
+  purchasedInPeriod: number;
+  paidInPeriod: number;
+  currentDebt: number;
+  debtType: "creditor" | "debitor" | "settled";
+}
+
+export interface SupplierDebtReport {
+  asOfDate: string;
+  periodFrom: string;
+  periodTo: string;
+  rows: SupplierDebtRow[];
+  totals: {
+    totalPurchased: number;
+    totalPaid: number;
+    totalDebt: number;
+  };
 }

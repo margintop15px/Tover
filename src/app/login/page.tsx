@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
+import { useI18n } from "@/i18n/context";
 
 function getSafeNextPath(path: string | null): string {
   if (!path || !path.startsWith("/")) {
@@ -15,6 +16,7 @@ function getSafeNextPath(path: string | null): string {
 
 export default function LoginPage() {
   const router = useRouter();
+  const { t } = useI18n();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -52,15 +54,15 @@ export default function LoginPage() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md items-center px-6 py-10">
       <div className="w-full rounded-lg border border-border bg-card p-6 shadow-sm">
-        <h1 className="text-2xl font-semibold">Log in</h1>
+        <h1 className="text-2xl font-semibold">{t.loginTitle}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Sign in with your email and password.
+          {t.loginSubtitle}
         </p>
 
         <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
           <div>
             <label className="mb-1 block text-sm font-medium" htmlFor="email">
-              Email
+              {t.email}
             </label>
             <input
               id="email"
@@ -74,7 +76,7 @@ export default function LoginPage() {
 
           <div>
             <label className="mb-1 block text-sm font-medium" htmlFor="password">
-              Password
+              {t.password}
             </label>
             <input
               id="password"
@@ -93,16 +95,16 @@ export default function LoginPage() {
             disabled={loading}
             className="h-10 w-full rounded-md bg-foreground text-sm font-medium text-background disabled:opacity-60"
           >
-            {loading ? "Signing in..." : "Log in"}
+            {loading ? t.signingIn : t.logIn}
           </button>
         </form>
 
         <div className="mt-4 flex items-center justify-between text-sm">
           <Link className="underline" href="/forgot-password">
-            Forgot password?
+            {t.forgotPassword}
           </Link>
           <Link className="underline" href="/signup">
-            Create account
+            {t.createAccount}
           </Link>
         </div>
       </div>

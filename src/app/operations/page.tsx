@@ -124,15 +124,18 @@ export default function OperationsPage() {
         <p className="text-muted-foreground">{t.loading}</p>
       ) : (
         <DataTable<OperationListItem>
+          tableId="operations"
           columns={[
             {
               key: "operationDate",
               header: t.operationDate,
+              required: true,
               render: (item) => formatDate(item.operationDate),
             },
             {
               key: "type",
               header: t.operationType,
+              required: true,
               render: (item) => (
                 <Badge
                   className={TYPE_COLORS[item.type]}
@@ -145,6 +148,7 @@ export default function OperationsPage() {
             {
               key: "products",
               header: t.product,
+              defaultVisible: true,
               render: (item) => {
                 if (item.type === "payment") return "-";
                 return item.itemsSummary
@@ -158,6 +162,7 @@ export default function OperationsPage() {
             {
               key: "warehouse",
               header: t.warehouse,
+              defaultVisible: true,
               render: (item) => {
                 if (item.type === "payment") return "-";
                 const warehouses = [

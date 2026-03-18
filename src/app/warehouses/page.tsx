@@ -136,16 +136,18 @@ export default function WarehousesPage() {
         <p className="text-muted-foreground">{t.loading}</p>
       ) : (
         <DataTable<Warehouse & Record<string, unknown>>
+          tableId="warehouses"
           columns={[
-            { key: "name", header: t.name },
+            { key: "name", header: t.name, required: true },
             {
               key: "purpose",
               header: t.warehousePurpose,
+              defaultVisible: true,
               render: (item) => purposeLabel(item.purpose),
             },
             {
               key: "isDefaultDefect",
-              header: "",
+              header: t.defaultDefect,
               className: "w-32",
               render: (item) =>
                 item.isDefaultDefect ? (

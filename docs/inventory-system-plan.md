@@ -413,7 +413,7 @@ Each operation type has specific validation rules and side effects on `product_b
 
 ## 5. Implementation Phases
 
-### Phase 1: Database & Reference Data (Foundation)
+### Phase 1: Database & Reference Data (Foundation) ✅ COMPLETE
 
 **Goal**: Schema in place, CRUD for all master data entities, basic UI pages.
 
@@ -442,7 +442,7 @@ Each operation type has specific validation rules and side effects on `product_b
 
 **Estimated scope**: ~25-30 files changed/created
 
-### Phase 2: Operations Engine (Core Logic)
+### Phase 2: Operations Engine (Core Logic) ✅ COMPLETE
 
 **Goal**: Users can record all 8 operation types, balances update automatically.
 
@@ -472,7 +472,7 @@ Each operation type has specific validation rules and side effects on `product_b
 
 **Estimated scope**: ~20-25 files
 
-### Phase 3: Reports (Analytics)
+### Phase 3: Reports (Analytics) ✅ COMPLETE
 
 **Goal**: All 4 report types functional with basic filtering.
 
@@ -499,18 +499,21 @@ Each operation type has specific validation rules and side effects on `product_b
 
 **Estimated scope**: ~15-20 files
 
-### Phase 4: Polish & Advanced Features
+### Phase 4: Polish & Advanced Features — PENDING
 
 **Goal**: Production-ready quality, advanced features from requirements.
 
-**Tasks:**
+**Note**: Workspace settings (currency, category/store requirement toggles) were implemented early as part of Phase 3.
+
+**Remaining tasks:**
 1. Warehouse purpose-based operation restrictions (warn/block)
 2. Defect naming customization in workspace settings
 3. Customizable report column ordering (drag-and-drop)
 4. Performance optimization for historical inventory queries (snapshot caching)
 5. Validation: prevent deleting warehouses/products that have active balances or operations
 6. Bulk initial balance import (CSV upload for starting inventory)
-7. Future-proof: document AI-powered data extraction extension points for product name/SKU recognition from uploaded files
+7. Rich dashboard with KPI cards, stock alerts, production visualization
+8. Future-proof: document AI-powered data extraction extension points for product name/SKU recognition from uploaded files
 
 **Estimated scope**: ~10-15 files
 

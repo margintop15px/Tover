@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import AppSidebar from "@/components/AppSidebar";
+import { WorkspaceSettingsProvider } from "@/contexts/WorkspaceSettingsContext";
 
 const PUBLIC_PREFIXES = ["/login", "/signup", "/forgot-password", "/reset-password", "/auth/"];
 
@@ -10,5 +11,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const isPublic = PUBLIC_PREFIXES.some((p) => pathname.startsWith(p));
 
   if (isPublic) return <>{children}</>;
-  return <AppSidebar>{children}</AppSidebar>;
+  return (
+    <WorkspaceSettingsProvider>
+      <AppSidebar>{children}</AppSidebar>
+    </WorkspaceSettingsProvider>
+  );
 }

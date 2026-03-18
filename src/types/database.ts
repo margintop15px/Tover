@@ -66,6 +66,18 @@ export interface ImportError {
   created_at: string;
 }
 
+export interface WorkspaceSettingsRow {
+  id: string;
+  workspace_id: string;
+  currency: string;
+  category_required: boolean;
+  default_category_id: string | null;
+  store_required: boolean;
+  default_store_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // API response types
 export interface MetricsSummary {
   workspaceId: string;

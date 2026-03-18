@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
+import { useWorkspaceSettings } from "@/contexts/WorkspaceSettingsContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field, FieldLabel } from "@/components/ui/field";
@@ -24,6 +25,7 @@ import { Pencil, Trash2, Plus } from "lucide-react";
 
 export default function ProductsPage() {
   const { t } = useI18n();
+  const { settings } = useWorkspaceSettings();
   const [items, setItems] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
@@ -116,11 +118,13 @@ export default function ProductsPage() {
       });
       if (!res.ok) {
         const data = await res.json();
-        setError(
-          res.status === 409
-            ? t.duplicateError
-            : data.error || t.unexpectedError
-        );
+        if (res.status === 409) {
+          setError(
+            data.field === "sku" ? t.duplicateSkuError : t.duplicateNameError
+          );
+        } else {
+          setError(data.error || t.unexpectedError);
+        }
         return;
       }
       setDialogOpen(false);
@@ -192,9 +196,10 @@ export default function ProductsPage() {
         <p className="text-muted-foreground">{t.loading}</p>
       ) : (
         <DataTable<Product & Record<string, unknown>>
+          tableId="products"
           columns={[
-            { key: "name", header: t.productName },
-            { key: "skuCode", header: t.productSku, render: (item) => item.skuCode || "-" },
+            { key: "name", header: t.productName, required: true },
+            { key: "skuCode", header: t.productSku, defaultVisible: true, render: (item) => item.skuCode || "-" },
             {
               key: "categoryName",
               header: t.productCategory,
@@ -266,13 +271,18 @@ export default function ProductsPage() {
               />
             </Field>
             <Field>
-              <FieldLabel>{t.productCategory}</FieldLabel>
+              <FieldLabel>
+                {t.productCategory}
+                {settings.categoryRequired && <span className="ml-1 text-destructive">*</span>}
+              </FieldLabel>
               <Select value={categoryId} onValueChange={(v) => setCategoryId(v === "none" ? "" : v)}>
                 <SelectTrigger>
                   <SelectValue placeholder={t.purposeNone} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">{t.purposeNone}</SelectItem>
+                  {!settings.categoryRequired && (
+                    <SelectItem value="none">{t.purposeNone}</SelectItem>
+                  )}
                   {categories.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
                       {c.name}
@@ -282,13 +292,18 @@ export default function ProductsPage() {
               </Select>
             </Field>
             <Field>
-              <FieldLabel>{t.productStore}</FieldLabel>
+              <FieldLabel>
+                {t.productStore}
+                {settings.storeRequired && <span className="ml-1 text-destructive">*</span>}
+              </FieldLabel>
               <Select value={storeId} onValueChange={(v) => setStoreId(v === "none" ? "" : v)}>
                 <SelectTrigger>
                   <SelectValue placeholder={t.purposeNone} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">{t.purposeNone}</SelectItem>
+                  {!settings.storeRequired && (
+                    <SelectItem value="none">{t.purposeNone}</SelectItem>
+                  )}
                   {stores.map((s) => (
                     <SelectItem key={s.id} value={s.id}>
                       {s.name}

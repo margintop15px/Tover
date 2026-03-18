@@ -4,8 +4,10 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { useI18n } from "@/i18n/context";
+import { useWorkspaceSettings } from "@/contexts/WorkspaceSettingsContext";
 import { Button } from "@/components/ui/button";
 import DataTable from "@/components/DataTable";
+import { formatCurrency } from "@/lib/format-currency";
 
 interface OrderLine {
   id: string;
@@ -18,18 +20,11 @@ interface OrderLine {
   [key: string]: unknown;
 }
 
-function formatCurrency(value: number, locale: string): string {
-  return new Intl.NumberFormat(locale === "ru" ? "ru-RU" : "en-US", {
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2,
-  }).format(value);
-}
-
 export default function OrderDetailPage() {
   const params = useParams();
   const router = useRouter();
   const { t, locale } = useI18n();
+  const { settings } = useWorkspaceSettings();
   const orderId = params.id as string;
 
   const [lines, setLines] = useState<OrderLine[]>([]);
@@ -52,7 +47,7 @@ export default function OrderDetailPage() {
     if (orderId) fetchLines();
   }, [orderId]);
 
-  const fmtCur = (v: number) => formatCurrency(v, locale);
+  const fmtCur = (v: number) => formatCurrency(v, locale, settings.currency);
 
   return (
     <div className="min-h-screen bg-background">

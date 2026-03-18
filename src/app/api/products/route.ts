@@ -73,6 +73,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Check workspace settings for required fields
+    const { data: wsSettings } = await supabase
+      .from("workspace_settings")
+      .select("category_required, store_required")
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+
+    if (wsSettings?.category_required && !body.categoryId) {
+      return NextResponse.json(
+        { error: "Category is required" },
+        { status: 400 }
+      );
+    }
+    if (wsSettings?.store_required && !body.storeId) {
+      return NextResponse.json(
+        { error: "Store is required" },
+        { status: 400 }
+      );
+    }
+
     const insert: Record<string, unknown> = {
       workspace_id: workspaceId,
       name,
@@ -92,8 +112,15 @@ export async function POST(request: NextRequest) {
 
     if (error) {
       if (error.code === "23505") {
+        const field = error.message.includes("sku_code") ? "sku" : "name";
         return NextResponse.json(
-          { error: "A product with this SKU already exists" },
+          {
+            error:
+              field === "sku"
+                ? "A product with this SKU already exists"
+                : "A product with this name already exists",
+            field,
+          },
           { status: 409 }
         );
       }

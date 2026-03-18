@@ -35,13 +35,14 @@ E2E tests require `E2E_EMAIL` and `E2E_PASSWORD` env vars for authenticated test
 ### Key Directories
 - `src/app/` — Next.js App Router pages and API routes
 - `src/components/ui/` — shadcn/ui primitives (button, card, dialog, field, input, table, tabs, sheet, etc.)
-- `src/components/` — app-specific components (AppShell, AppSidebar, DataTable, KpiCard, UploadCard, etc.)
-- `src/lib/` — Supabase clients, auth helpers, CSV parsers, utilities
+- `src/components/` — app-specific components (AppShell, AppSidebar, DataTable, Pagination, ReportFilterBar, InviteForm, KpiCard, UploadCard, etc.)
+- `src/contexts/` — React context providers (WorkspaceSettingsContext)
+- `src/lib/` — Supabase clients, auth helpers, CSV parsers, currency formatting, utilities
 - `src/lib/operations/` — operation processors and validation (purchase, sale, transfer, production, etc.)
 - `src/types/database.ts` — TypeScript interfaces for all DB tables and API responses
 - `src/types/inventory.ts` — inventory entity, operation, and request types
 - `src/i18n/` — Custom i18n with Context API (English + Russian)
-- `supabase/migrations/` — SQL migrations (schema, auth, RLS, inventory)
+- `supabase/migrations/` — SQL migrations (schema, auth, RLS, inventory, reports, settings)
 - `scripts/` — seed script for demo data
 - `docs/` — design docs and plans
 
@@ -92,6 +93,9 @@ Custom Context API solution in `src/i18n/`. Uses `useI18n()` hook returning `{ l
 - `update_product_balance` — generic balance upsert
 - `process_purchase_balance` — updates balance with weighted-average cost recalculation
 - `process_production_balances` — deducts components and adds produced product
+- `report_inventory_balances_at_date` — compute historical balances by replaying operations
+- `report_product_movement` — aggregate movement quantities by product/warehouse/type
+- `report_supplier_debt` — calculate purchased/paid totals per supplier
 
 **Processor files** in `src/lib/operations/`:
 - `validate-operation.ts` — input validation
@@ -103,16 +107,37 @@ Custom Context API solution in `src/i18n/`. Uses `useI18n()` hook returning `{ l
 - `update-balances.ts` — shared balance update helpers
 - `index.ts` — dispatcher that routes to correct processor by operation type
 
+### Reports System
+4 report types with dedicated pages and API routes:
+- **Inventory Balances** (`/reports/inventory`) — current or historical, units/cost toggle, dynamic warehouse columns
+- **Product Movement** (`/reports/movement`) — aggregated by product/warehouse within date range
+- **Supplier Debt** (`/reports/supplier-debt`) — period + all-time totals, creditor/debitor classification, drill-down
+- **Operations Log** (`/reports/operations`) — filterable/paginated operations list
+
+Report API routes: `/api/reports/inventory-balances`, `/api/reports/product-movement`, `/api/reports/supplier-debt`, `/api/reports/supplier-debt/[supplierId]`
+
+Shared components: `Pagination.tsx` (offset-based), `ReportFilterBar.tsx` (flex layout wrapper)
+
+### Workspace Settings
+- `workspace_settings` table: `currency` (3-letter ISO, default EUR), `category_required`, `default_category_id`, `store_required`, `default_store_id`
+- API: `GET|PATCH /api/settings` (PATCH requires manager role)
+- Client-side: `WorkspaceSettingsContext` (`src/contexts/WorkspaceSettingsContext.tsx`) provides settings + `refetch()`
+- Currency formatting: `formatCurrency()` in `src/lib/format-currency.ts` using `Intl.NumberFormat`
+
 ### UI Patterns
 - Entity pages follow CRUD pattern: fetch data → `DataTable` → `Dialog` for create/edit
+- `DataTable` supports column visibility control with localStorage persistence (`tover-columns-{tableId}`)
 - Forms use `Field`/`FieldLabel` from `@/components/ui/field`
 - `AppShell` (`src/components/AppShell.tsx`) conditionally renders sidebar (hidden on auth pages)
-- `AppSidebar` has collapsible "Master Data" group (products, categories, warehouses, stores, suppliers)
+- `AppSidebar` has collapsible "Master Data" and "Reports" groups, plus Settings link
 
 ### Database Migrations
 - `001_initial_schema.sql` — orders, order lines, inventory snapshots, payments, imports
 - `002_auth_orgs_rbac.sql` — auth, organizations, memberships, RBAC, RLS policies
 - `003_inventory_system.sql` — inventory entities, operations, balances, indexes, RPCs
+- `004_report_functions.sql` — report RPCs (inventory balances, product movement, supplier debt) + index
+- `005_workspace_settings.sql` — workspace settings table with RLS, auto-seeds defaults
+- `006_product_name_unique.sql` — partial unique constraint on product names (excludes defect copies)
 
 ## Environment Variables
 

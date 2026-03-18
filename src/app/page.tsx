@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/i18n/context";
+import { useWorkspaceSettings } from "@/contexts/WorkspaceSettingsContext";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import KpiCard from "@/components/KpiCard";
@@ -10,6 +11,7 @@ import DateRangePicker from "@/components/DateRangePicker";
 import DataTable from "@/components/DataTable";
 import UploadCard from "@/components/UploadCard";
 import CriticalStockTable from "@/components/CriticalStockTable";
+import { formatCurrency } from "@/lib/format-currency";
 
 interface KpiData {
   gmvGross: number;
@@ -29,14 +31,6 @@ interface OrderRow {
   orderGmv: number;
   orderUnits: number;
   [key: string]: unknown;
-}
-
-function formatCurrency(value: number, locale: string): string {
-  return new Intl.NumberFormat(locale === "ru" ? "ru-RU" : "en-US", {
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2,
-  }).format(value);
 }
 
 function formatDate(dateStr: string, locale: string): string {
@@ -63,6 +57,7 @@ function defaultDateRange() {
 export default function Dashboard() {
   const router = useRouter();
   const { t, locale } = useI18n();
+  const { settings } = useWorkspaceSettings();
   const [dateRange, setDateRange] = useState(defaultDateRange);
   const [kpis, setKpis] = useState<KpiData | null>(null);
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -107,7 +102,7 @@ export default function Dashboard() {
     fetchData();
   }, [fetchData]);
 
-  const fmtCur = (v: number) => formatCurrency(v, locale);
+  const fmtCur = (v: number) => formatCurrency(v, locale, settings.currency);
 
   return (
     <div className="min-h-screen bg-background">

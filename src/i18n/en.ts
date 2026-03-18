@@ -65,6 +65,7 @@ export const en = {
 
   // DataTable
   noData: "No data",
+  columns: "Columns",
 
   // --- Sidebar nav ---
   dashboard: "Dashboard",
@@ -94,6 +95,8 @@ export const en = {
   confirmDelete: "Are you sure you want to delete this item?",
   deleteConfirm: "Delete",
   duplicateError: "An item with this name already exists",
+  duplicateSkuError: "A product with this SKU already exists",
+  duplicateNameError: "A product with this name already exists",
   unexpectedError: "An unexpected error occurred",
 
   // --- Categories ---
@@ -186,6 +189,157 @@ export const en = {
   opProduction: "Production",
   opDefect: "Defect",
   opPayment: "Payment",
+
+  // --- Reports nav ---
+  reportsGroup: "Reports",
+  reportInventory: "Inventory Balances",
+  reportMovement: "Product Movement",
+  reportSupplierDebt: "Supplier Debt",
+  reportOperations: "Operations Log",
+
+  // --- Inventory Balances report ---
+  inventoryBalancesTitle: "Inventory Balances",
+  currentBalances: "Current",
+  historicalBalances: "Historical",
+  displayUnits: "Units",
+  displayCost: "Cost",
+  total: "Total",
+  hideZeros: "Hide zeros",
+  showNegativesOnly: "Negatives only",
+  noBalancesData: "No inventory balances data",
+  asOfDate: "As of date",
+
+  // --- Product Movement report ---
+  productMovementTitle: "Product Movement",
+  groupByProduct: "By Product",
+  groupByWarehouse: "By Warehouse",
+  purchaseIn: "Purchase In",
+  saleOut: "Sale Out",
+  returnIn: "Return In",
+  writeOffOut: "Write-off Out",
+  transferIn: "Transfer In",
+  transferOut: "Transfer Out",
+  productionIn: "Production In",
+  productionOut: "Production Out",
+  defectOut: "Defect Out",
+  net: "Net",
+  noMovementData: "No movement data for the selected period",
+  dateRangeRequired: "Date range is required",
+
+  // --- Supplier Debt report ---
+  supplierDebtTitle: "Supplier Debt",
+  purchasedInPeriod: "Purchased (period)",
+  paidInPeriod: "Paid (period)",
+  currentDebt: "Current Debt",
+  debtType: "Debt Type",
+  creditor: "Creditor",
+  debitor: "Debitor",
+  settled: "Settled",
+  noDebtData: "No supplier debt data",
+  allDebtTypes: "All types",
+  drillDownTitle: "Supplier Transactions",
+  totalPurchased: "Total Purchased",
+  totalPaid: "Total Paid",
+  totalDebt: "Total Debt",
+
+  // --- Operations Log report ---
+  operationsLogTitle: "Operations Log",
+  noOperationsLogData: "No operations found for the selected filters",
+  allTypes: "All types",
+  allWarehouses: "All warehouses",
+  allSuppliers: "All suppliers",
+  allProducts: "All products",
+
+  // --- Shared pagination ---
+  previousPage: "Previous",
+  nextPage: "Next",
+  pageInfo: (current: number, total: number) => `Page ${current} of ${total}`,
+
+  // --- Auth - Login ---
+  loginTitle: "Log in",
+  loginSubtitle: "Sign in with your email and password.",
+  email: "Email",
+  password: "Password",
+  signingIn: "Signing in...",
+  logIn: "Log in",
+  forgotPassword: "Forgot password?",
+  createAccount: "Create account",
+
+  // --- Auth - Signup ---
+  signupTitle: "Create account",
+  signupSubtitle: "Create your organization and the first admin account.",
+  fullName: "Full name",
+  organizationName: "Organization name",
+  confirmPassword: "Confirm password",
+  creatingAccount: "Creating account...",
+  passwordsMismatch: "Passwords do not match.",
+  checkEmailConfirm: "Check your email to confirm your account.",
+  alreadyHaveAccount: "Already have an account?",
+
+  // --- Auth - Forgot password ---
+  recoverPasswordTitle: "Recover password",
+  recoverPasswordSubtitle: "We will send a reset link to your email.",
+  sending: "Sending...",
+  sendResetEmail: "Send reset email",
+  backToLogin: "Back to login",
+  recoveryEmailSent: "Password recovery email sent.",
+
+  // --- Auth - Reset password ---
+  setNewPasswordTitle: "Set new password",
+  newPassword: "New password",
+  confirmNewPassword: "Confirm new password",
+  updating: "Updating...",
+  updatePassword: "Update password",
+  recoverySessionExpired:
+    "Recovery session is missing or expired. Request a new reset email.",
+  requestPasswordReset: "Request password reset",
+  passwordUpdated: "Password updated successfully.",
+
+  // --- Team page ---
+  teamTitle: "Team",
+  backToDashboard: "Back to dashboard",
+  organizationAccess: "Organization access",
+  organizationAccessSubtitle: "Select an organization and invite users.",
+  organization: "Organization",
+  userEmail: "User email",
+  roleLabel: "Role",
+  memberRole: "member",
+  adminRole: "admin",
+  roleInsufficientWarning: (role: string) =>
+    `Your role in this organization is ${role}. Invites require owner or admin.`,
+  sendingInvite: "Sending...",
+  sendInvite: "Send invite",
+  invitationSent: "Invitation sent.",
+  failedToLoad: "Failed to load account",
+  failedToSendInvite: "Failed to send invite",
+
+  // --- Operations form ---
+  items: "Items",
+  sourceMaterials: "Source Materials",
+  outputProduct: "Output Product",
+
+  // --- Sidebar ---
+  navigation: "Navigation",
+
+  // --- Settings ---
+  settings: "Settings",
+  settingsGeneral: "General",
+  settingsProducts: "Products",
+  settingsTeam: "Team",
+  currency: "Currency",
+  currencyDisplayNote: "Changes display currency only. Stored values are not converted.",
+  settingsSaved: "Settings saved",
+  categoryRequiredLabel: "Category required for products",
+  categoryRequiredHelp: "When enabled, all products must have a category assigned.",
+  storeRequiredLabel: "Store required for products",
+  storeRequiredHelp: "When enabled, all products must have a store assigned.",
+  defaultCategory: "Default category",
+  defaultStore: "Default store",
+  selectCategory: "Select category",
+  backfillWarning: (field: string) =>
+    `Products without a ${field} will be assigned the selected default.`,
+  categoryRequiredError: "Category is required",
+  storeRequiredError: "Store is required",
 
   // --- Validation errors ---
   required: "This field is required",

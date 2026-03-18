@@ -11,8 +11,11 @@ import {
   Tag,
   Store,
   ArrowRightLeft,
-  BarChart3,
-  Users,
+  ClipboardList,
+  TrendingUp,
+  CreditCard,
+  FileText,
+  Settings,
   LogOut,
   Menu,
   ChevronDown,
@@ -58,6 +61,16 @@ const navGroups: NavGroup[] = [
       { href: "/stores", labelKey: "stores", icon: <Store className={iconClass} /> },
     ],
   },
+  {
+    labelKey: "reportsGroup",
+    defaultOpen: false,
+    items: [
+      { href: "/reports/inventory", labelKey: "reportInventory", icon: <ClipboardList className={iconClass} /> },
+      { href: "/reports/movement", labelKey: "reportMovement", icon: <TrendingUp className={iconClass} /> },
+      { href: "/reports/supplier-debt", labelKey: "reportSupplierDebt", icon: <CreditCard className={iconClass} /> },
+      { href: "/reports/operations", labelKey: "reportOperations", icon: <FileText className={iconClass} /> },
+    ],
+  },
 ];
 
 const topItems: NavItem[] = [
@@ -71,7 +84,7 @@ const operationsItem: NavItem = {
 };
 
 const bottomItems: NavItem[] = [
-  { href: "/team", labelKey: "team", icon: <Users className={iconClass} /> },
+  { href: "/settings", labelKey: "settings", icon: <Settings className={iconClass} /> },
 ];
 
 function SidebarNavLink({
@@ -200,14 +213,6 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             />
           </div>
 
-          {/* Reports placeholder */}
-          <div className="mt-2">
-            <div className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground/50 cursor-not-allowed">
-              <BarChart3 className={iconClass} />
-              {t.reports}
-            </div>
-          </div>
-
           <Separator className="my-2" />
 
           {/* Bottom items */}
@@ -242,6 +247,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 export default function AppSidebar({ children }: { children: React.ReactNode }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
 
   return (
@@ -261,10 +267,10 @@ export default function AppSidebar({ children }: { children: React.ReactNode }) 
               <Menu className="h-5 w-5" />
             </Button>
           </SheetTrigger>
-          <span className="ml-3 text-lg font-bold">Tover</span>
+          <span className="ml-3 text-lg font-bold">{t.appName}</span>
         </div>
         <SheetContent side="left" className="w-60 p-0">
-          <SheetTitle className="sr-only">Navigation</SheetTitle>
+          <SheetTitle className="sr-only">{t.navigation}</SheetTitle>
           <SidebarContent onNavigate={() => setOpen(false)} />
         </SheetContent>
       </Sheet>

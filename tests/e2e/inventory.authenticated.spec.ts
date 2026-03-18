@@ -40,8 +40,8 @@ test.describe("inventory management", () => {
       // Log out button
       await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
 
-      // Reports placeholder (disabled text, not a link)
-      await expect(page.getByText("Reports")).toBeVisible();
+      // Reports group (collapsible nav group)
+      await expect(page.getByRole("button", { name: "Reports" })).toBeVisible();
     });
 
     test("Master Data group is collapsible", async ({ page }) => {

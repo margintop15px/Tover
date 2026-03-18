@@ -4,9 +4,11 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
+import { useI18n } from "@/i18n/context";
 
 export default function SignupPage() {
   const router = useRouter();
+  const { t } = useI18n();
 
   const [fullName, setFullName] = useState("");
   const [organizationName, setOrganizationName] = useState("");
@@ -21,7 +23,7 @@ export default function SignupPage() {
     event.preventDefault();
 
     if (password !== confirmPassword) {
-      setError("Passwords do not match.");
+      setError(t.passwordsMismatch);
       return;
     }
 
@@ -56,7 +58,7 @@ export default function SignupPage() {
         return;
       }
 
-      setSuccess("Check your email to confirm your account.");
+      setSuccess(t.checkEmailConfirm);
     } finally {
       setLoading(false);
     }
@@ -65,15 +67,15 @@ export default function SignupPage() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md items-center px-6 py-10">
       <div className="w-full rounded-lg border border-border bg-card p-6 shadow-sm">
-        <h1 className="text-2xl font-semibold">Create account</h1>
+        <h1 className="text-2xl font-semibold">{t.signupTitle}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Create your organization and the first admin account.
+          {t.signupSubtitle}
         </p>
 
         <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
           <div>
             <label className="mb-1 block text-sm font-medium" htmlFor="full-name">
-              Full name
+              {t.fullName}
             </label>
             <input
               id="full-name"
@@ -87,7 +89,7 @@ export default function SignupPage() {
 
           <div>
             <label className="mb-1 block text-sm font-medium" htmlFor="organization-name">
-              Organization name
+              {t.organizationName}
             </label>
             <input
               id="organization-name"
@@ -101,7 +103,7 @@ export default function SignupPage() {
 
           <div>
             <label className="mb-1 block text-sm font-medium" htmlFor="email">
-              Email
+              {t.email}
             </label>
             <input
               id="email"
@@ -115,7 +117,7 @@ export default function SignupPage() {
 
           <div>
             <label className="mb-1 block text-sm font-medium" htmlFor="password">
-              Password
+              {t.password}
             </label>
             <input
               id="password"
@@ -130,7 +132,7 @@ export default function SignupPage() {
 
           <div>
             <label className="mb-1 block text-sm font-medium" htmlFor="confirm-password">
-              Confirm password
+              {t.confirmPassword}
             </label>
             <input
               id="confirm-password"
@@ -151,14 +153,14 @@ export default function SignupPage() {
             disabled={loading}
             className="h-10 w-full rounded-md bg-foreground text-sm font-medium text-background disabled:opacity-60"
           >
-            {loading ? "Creating account..." : "Create account"}
+            {loading ? t.creatingAccount : t.createAccount}
           </button>
         </form>
 
         <div className="mt-4 text-sm">
-          <span>Already have an account? </span>
+          <span>{t.alreadyHaveAccount} </span>
           <Link className="underline" href="/login">
-            Log in
+            {t.logIn}
           </Link>
         </div>
       </div>

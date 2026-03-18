@@ -10,7 +10,10 @@ Multi-tenant marketplace turnover tracker built with Next.js + Supabase.
 - **Weighted-Average Cost Tracking** — automatic cost recalculation on purchases and production
 - **Product Balance Tracking** — real-time per-warehouse stock and cost balances
 - **CSV Imports** — orders, order lines, inventory snapshots, payments
+- **Reports** — Inventory Balances (current + historical), Product Movement, Supplier Debt (with drill-down), Operations Log
+- **Workspace Settings** — configurable currency, category/store requirement toggles with default backfill
 - **Dashboard** — KPI summary and critical stock alerts
+- **Column Visibility** — per-table column show/hide with localStorage persistence
 - **Bilingual UI** — English and Russian with runtime locale switching
 
 ## Stack
@@ -62,9 +65,12 @@ Files in `supabase/migrations/`:
 - `001_initial_schema.sql` — orders, order lines, inventory snapshots, payments, imports
 - `002_auth_orgs_rbac.sql` — auth, organizations, RBAC, RLS policies
 - `003_inventory_system.sql` — inventory entities, operations, balances, RPCs
+- `004_report_functions.sql` — report RPCs (inventory balances, product movement, supplier debt) and indexes
+- `005_workspace_settings.sql` — workspace settings table (currency, category/store requirements) with RLS
+- `006_product_name_unique.sql` — unique constraint on product names (excluding defect copies)
 
 Option A (Supabase SQL Editor):
-- Run `001` first, then `002`, then `003`.
+- Run migrations in order: `001` through `006`.
 
 Option B (psql):
 
@@ -72,6 +78,9 @@ Option B (psql):
 psql "$SUPABASE_DB_URL" -f supabase/migrations/001_initial_schema.sql
 psql "$SUPABASE_DB_URL" -f supabase/migrations/002_auth_orgs_rbac.sql
 psql "$SUPABASE_DB_URL" -f supabase/migrations/003_inventory_system.sql
+psql "$SUPABASE_DB_URL" -f supabase/migrations/004_report_functions.sql
+psql "$SUPABASE_DB_URL" -f supabase/migrations/005_workspace_settings.sql
+psql "$SUPABASE_DB_URL" -f supabase/migrations/006_product_name_unique.sql
 ```
 
 ### 2. Configure Auth URLs in Supabase
@@ -210,6 +219,18 @@ All routes require authenticated session unless noted.
 - `GET /api/operations/:id` — operation detail with items
 - `GET /api/product-balances` — current product balances per warehouse
 
+### Reports
+
+- `GET /api/reports/inventory-balances` — inventory balances (current or historical by date)
+- `GET /api/reports/product-movement` — product movement aggregation by date range
+- `GET /api/reports/supplier-debt` — supplier debt summary (all-time + period)
+- `GET /api/reports/supplier-debt/:supplierId` — drill-down: paginated operations for a supplier
+
+### Settings
+
+- `GET /api/settings` — workspace settings (currency, category/store requirements)
+- `PATCH /api/settings` — update workspace settings (`owner`/`admin`)
+
 ## Navigation Structure
 
 The app uses a sidebar layout (`AppShell` + `AppSidebar`):
@@ -217,7 +238,8 @@ The app uses a sidebar layout (`AppShell` + `AppSidebar`):
 ```
 Dashboard        /
 Orders           /orders
-Team             /team
+Operations       /operations
+Settings         /settings
 
 Master Data (collapsible group):
   Products       /products
@@ -226,7 +248,11 @@ Master Data (collapsible group):
   Stores         /stores
   Suppliers      /suppliers
 
-Operations       /operations
+Reports (collapsible group):
+  Inventory      /reports/inventory
+  Movement       /reports/movement
+  Supplier Debt  /reports/supplier-debt
+  Operations     /reports/operations
 ```
 
 ## Project Structure
@@ -234,22 +260,34 @@ Operations       /operations
 ```
 src/
   app/                          Next.js App Router pages and API routes
-    api/                        Route handlers (auth, metrics, orders, imports, inventory)
+    api/                        Route handlers (auth, metrics, orders, imports, inventory,
+                                reports, settings)
     categories/                 Category management page
     stores/                     Store management page
     warehouses/                 Warehouse management page
     suppliers/                  Supplier management page
     products/                   Product management page
-    operations/                 Operations page
+    operations/                 Operations list + create form
+    reports/                    Report pages
+      inventory/                Inventory balances (current + historical)
+      movement/                 Product movement report
+      supplier-debt/            Supplier debt report with drill-down
+      operations/               Operations log report
+    settings/                   Workspace settings (currency, requirements, team)
   components/
-    ui/                         shadcn/ui primitives (button, card, dialog, field, input,
-                                label, select, table, tabs, sheet, scroll-area, etc.)
+    ui/                         shadcn/ui primitives (button, card, dialog, dropdown-menu,
+                                field, input, label, select, switch, table, tabs, sheet, etc.)
     AppShell.tsx                Sidebar layout wrapper (hidden on auth pages)
     AppSidebar.tsx              Sidebar navigation with collapsible groups
-    DataTable.tsx               Reusable data table component
+    DataTable.tsx               Reusable data table with column visibility control
+    Pagination.tsx              Pagination controls for reports
+    ReportFilterBar.tsx         Shared filter bar for report pages
+    InviteForm.tsx              Team invite form component
     KpiCard.tsx                 Dashboard KPI card
     UploadCard.tsx              CSV upload component
     ...
+  contexts/
+    WorkspaceSettingsContext.tsx Workspace settings provider (currency, defaults)
   lib/
     operations/                 Operation processors and validation
       validate-operation.ts     Input validation
@@ -264,9 +302,10 @@ src/
     supabase-browser.ts         Browser Supabase client singleton
     request-context.ts          Route context helper (auth + workspace resolution)
     csv-parsers.ts              CSV import parsers
+    format-currency.ts          Currency formatting utility (Intl.NumberFormat)
   types/
     database.ts                 DB table interfaces and API response types
-    inventory.ts                Inventory entity, operation, and request types
+    inventory.ts                Inventory, operation, report, and settings types
   i18n/                         Custom i18n (English + Russian)
 scripts/
   seed.ts                       Seed script for demo inventory data
@@ -275,7 +314,7 @@ docs/
   inventory-system-plan.md      Inventory system design document
   design-prototype.jpg          UI design prototype
 supabase/
-  migrations/                   SQL migrations (001, 002, 003)
+  migrations/                   SQL migrations (001–006)
   demo-data/                    CSV demo files for import pipeline
 tests/
   e2e/                          Playwright E2E tests
