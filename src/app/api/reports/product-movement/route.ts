@@ -67,7 +67,8 @@ export async function GET(request: NextRequest) {
     }
 
     // Filter raw rows
-    let filtered = (rpcData || []).filter((row: { product_id: string }) => {
+    let filtered = (rpcData || []).filter((row: { product_id: string; operation_type: string }) => {
+      if (row.operation_type === "inventory_adjustment") return false;
       const prod = productNames.get(row.product_id);
       if (prod?.is_defect_copy) return false;
       return !(productId && row.product_id !== productId);
@@ -103,6 +104,7 @@ export async function GET(request: NextRequest) {
           productionIn: 0,
           productionOut: 0,
           defectOut: 0,
+          inventoryAdjustmentIn: 0,
           net: 0,
         };
         groupMap.set(groupId, entry);

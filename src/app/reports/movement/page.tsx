@@ -133,6 +133,7 @@ export default function ProductMovementPage() {
         <p className="text-muted-foreground">{t.loading}</p>
       ) : report ? (
         <DataTable<ProductMovementRow & Record<string, unknown>>
+          tableId="product-movement"
           columns={[
             { key: "groupName", header: groupBy === "product" ? t.product : t.warehouse },
             ...(groupBy === "product" ? [{ key: "skuCode" as const, header: t.sku, render: (item: ProductMovementRow) => item.skuCode || "-" }] : []),

@@ -14,7 +14,6 @@ import {
   ClipboardList,
   TrendingUp,
   CreditCard,
-  FileText,
   Settings,
   LogOut,
   Menu,
@@ -68,7 +67,6 @@ const navGroups: NavGroup[] = [
       { href: "/reports/inventory", labelKey: "reportInventory", icon: <ClipboardList className={iconClass} /> },
       { href: "/reports/movement", labelKey: "reportMovement", icon: <TrendingUp className={iconClass} /> },
       { href: "/reports/supplier-debt", labelKey: "reportSupplierDebt", icon: <CreditCard className={iconClass} /> },
-      { href: "/reports/operations", labelKey: "reportOperations", icon: <FileText className={iconClass} /> },
     ],
   },
 ];

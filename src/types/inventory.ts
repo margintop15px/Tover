@@ -10,7 +10,8 @@ export type OperationType =
   | "transfer"
   | "production"
   | "defect"
-  | "payment";
+  | "payment"
+  | "inventory_adjustment";
 
 export type WarehousePurpose = "storage" | "sales" | "production";
 
@@ -314,6 +315,7 @@ export interface ProductMovementRow {
   productionIn: number;
   productionOut: number;
   defectOut: number;
+  inventoryAdjustmentIn: number;
   net: number;
 }
 

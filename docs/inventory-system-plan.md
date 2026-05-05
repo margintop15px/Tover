@@ -395,19 +395,19 @@ Each operation type has specific validation rules and side effects on `product_b
 
 **API**: `GET /api/reports/supplier-debt?as_of=YYYY-MM-DD&from=...&to=...`
 
-### 4.4 Operations Log (Операции)
+### 4.4 Operations List (Операции)
 
 **Layout:**
 | Date | Type | Product | Warehouse | Quantity | Supplier | Amount | Comment |
 |------|------|---------|-----------|----------|----------|--------|---------|
 
 **Features:**
-- Date range filter
-- Filter by operation type, product, warehouse, supplier
-- Sortable by date (default: newest first)
+- Header filters by date range, operation type, product, warehouse, supplier
+- Item-level rows so product, quantity, and price are separate columns
+- Sortable by date, type, product, warehouse, supplier, quantity, unit price, and payment amount
 - Pagination
 
-**API**: `GET /api/reports/operations?from=...&to=...&type=...&product_id=...&limit=50&offset=0`
+**API**: `GET /api/operations?from=...&to=...&type=...&productId=...&limit=50&offset=0`
 
 ---
 
@@ -474,7 +474,7 @@ Each operation type has specific validation rules and side effects on `product_b
 
 ### Phase 3: Reports (Analytics) ✅ COMPLETE
 
-**Goal**: All 4 report types functional with basic filtering.
+**Goal**: All 3 dedicated report types functional with basic filtering; operations list lives at `/operations`.
 
 **Tasks:**
 1. Report API endpoints (Section 4):
@@ -490,7 +490,6 @@ Each operation type has specific validation rules and side effects on `product_b
    - `/reports/inventory` - with units/cost toggle, column visibility, filters
    - `/reports/movement` - with date range, grouping options, filters
    - `/reports/supplier-debt` - with date selector, debt type filter, drill-down
-   - `/reports/operations` - filterable operations list
 5. Shared report components:
    - Column visibility selector
    - Filter bar (multi-select for products, warehouses, etc.)

@@ -7,6 +7,7 @@ import { processPurchase } from "./process-purchase";
 import { processTransfer } from "./process-transfer";
 import { processDefect } from "./process-defect";
 import { processProduction } from "./process-production";
+import { processInventoryAdjustment } from "./process-inventory-adjustment";
 
 export { validateOperation } from "./validate-operation";
 
@@ -31,6 +32,9 @@ export async function processOperation(
       break;
     case "purchase":
       operation = await processPurchase(supabase, workspaceId, data);
+      break;
+    case "inventory_adjustment":
+      operation = await processInventoryAdjustment(supabase, workspaceId, data);
       break;
     case "sale":
     case "return":

@@ -76,6 +76,7 @@ export default function OrderDetailPage() {
           </div>
         ) : (
           <DataTable<OrderLine>
+            tableId="order-lines"
             columns={[
               { key: "sku", header: t.sku },
               {

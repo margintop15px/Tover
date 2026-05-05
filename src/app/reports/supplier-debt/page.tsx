@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
+import { useWorkspaceSettings } from "@/contexts/WorkspaceSettingsContext";
+import { formatCurrency } from "@/lib/format-currency";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
@@ -48,6 +50,7 @@ const DRILL_PAGE_SIZE = 20;
 
 export default function SupplierDebtPage() {
   const { t, locale } = useI18n();
+  const { settings } = useWorkspaceSettings();
   const [report, setReport] = useState<SupplierDebtReport | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -122,7 +125,7 @@ export default function SupplierDebtPage() {
     );
   };
 
-  const formatNum = (n: number) => n.toLocaleString(locale === "ru" ? "ru-RU" : "en-US", { maximumFractionDigits: 2 });
+  const formatMoney = (n: number) => formatCurrency(n, locale, settings.currency);
 
   const debtTypeLabel = (dt: string) => {
     const map: Record<string, string> = { creditor: t.creditor, debitor: t.debitor, settled: t.settled };
@@ -168,12 +171,13 @@ export default function SupplierDebtPage() {
         <>
           {/* KPI Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-            <KpiCard title={t.totalPurchased} value={formatNum(report.totals.totalPurchased)} />
-            <KpiCard title={t.totalPaid} value={formatNum(report.totals.totalPaid)} />
-            <KpiCard title={t.totalDebt} value={formatNum(report.totals.totalDebt)} />
+            <KpiCard title={t.totalPurchased} value={formatMoney(report.totals.totalPurchased)} />
+            <KpiCard title={t.totalPaid} value={formatMoney(report.totals.totalPaid)} />
+            <KpiCard title={t.totalDebt} value={formatMoney(report.totals.totalDebt)} />
           </div>
 
           <DataTable<SupplierDebtRow & Record<string, unknown>>
+            tableId="supplier-debt"
             columns={[
               {
                 key: "supplierName",
@@ -183,13 +187,13 @@ export default function SupplierDebtPage() {
                 key: "purchasedInPeriod",
                 header: t.purchasedInPeriod,
                 className: "text-right",
-                render: (item) => formatNum(item.purchasedInPeriod),
+                render: (item) => formatMoney(item.purchasedInPeriod),
               },
               {
                 key: "paidInPeriod",
                 header: t.paidInPeriod,
                 className: "text-right",
-                render: (item) => formatNum(item.paidInPeriod),
+                render: (item) => formatMoney(item.paidInPeriod),
               },
               {
                 key: "currentDebt",
@@ -197,7 +201,7 @@ export default function SupplierDebtPage() {
                 className: "text-right",
                 render: (item) => (
                   <span className={item.currentDebt > 0 ? "text-red-600 font-medium" : item.currentDebt < 0 ? "text-green-600 font-medium" : ""}>
-                    {formatNum(item.currentDebt)}
+                    {formatMoney(item.currentDebt)}
                   </span>
                 ),
               },
@@ -227,6 +231,7 @@ export default function SupplierDebtPage() {
           ) : (
             <div className="mt-4">
               <DataTable<DrillDownItem>
+                tableId="supplier-debt-drilldown"
                 columns={[
                   {
                     key: "operationDate",
@@ -248,13 +253,13 @@ export default function SupplierDebtPage() {
                     className: "text-right",
                     render: (item) => {
                       if (item.type === "payment") {
-                        return item.paymentAmount != null ? formatNum(item.paymentAmount) : "-";
+                        return item.paymentAmount != null ? formatMoney(item.paymentAmount) : "-";
                       }
                       const total = item.itemsSummary.reduce(
                         (s, i) => s + i.quantity * (i.unitPrice ?? 0),
                         0
                       );
-                      return formatNum(total);
+                      return formatMoney(total);
                     },
                   },
                   {

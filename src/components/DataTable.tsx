@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Table,
   TableBody,
@@ -22,11 +22,11 @@ import { SlidersHorizontal } from "lucide-react";
 
 interface Column<T> {
   key: string;
-  header: string;
+  header: React.ReactNode;
+  headerLabel?: string;
   render?: (item: T) => React.ReactNode;
   className?: string;
   required?: boolean;
-  defaultVisible?: boolean;
 }
 
 interface DataTableProps<T> {
@@ -35,32 +35,49 @@ interface DataTableProps<T> {
   onRowClick?: (item: T) => void;
   emptyMessage?: string;
   tableId?: string;
+  toolbarActions?: React.ReactNode;
 }
 
-function getInitialVisibility<T>(columns: Column<T>[], tableId?: string): Set<string> {
+const COLUMN_VISIBILITY_VERSION = 2;
+
+function isToggleableColumn<T>(col: Column<T>) {
+  return !col.required && col.key !== "actions";
+}
+
+function getStorageKey(tableId: string) {
+  return `tover-columns-${tableId}`;
+}
+
+function getInitialHiddenKeys<T>(columns: Column<T>[], tableId?: string): Set<string> {
   if (tableId) {
     try {
-      const stored = localStorage.getItem(`tover-columns-${tableId}`);
+      const stored = localStorage.getItem(getStorageKey(tableId));
       if (stored) {
-        const parsed = JSON.parse(stored) as string[];
-        // Always include required columns
-        const set = new Set(parsed);
-        for (const col of columns) {
-          if (col.required) set.add(col.key);
+        const parsed = JSON.parse(stored) as {
+          version?: number;
+          hidden?: unknown;
+        };
+
+        if (
+          parsed.version === COLUMN_VISIBILITY_VERSION &&
+          Array.isArray(parsed.hidden)
+        ) {
+          const toggleableKeys = new Set(
+            columns.filter(isToggleableColumn).map((col) => col.key)
+          );
+          return new Set(
+            parsed.hidden.filter(
+              (key): key is string =>
+                typeof key === "string" && toggleableKeys.has(key)
+            )
+          );
         }
-        return set;
       }
     } catch {
       // ignore
     }
   }
-  const set = new Set<string>();
-  for (const col of columns) {
-    if (col.required || col.defaultVisible) {
-      set.add(col.key);
-    }
-  }
-  return set;
+  return new Set<string>();
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -70,69 +87,84 @@ export default function DataTable<T extends Record<string, any>>({
   onRowClick,
   emptyMessage = "No data",
   tableId,
+  toolbarActions,
 }: DataTableProps<T>) {
   const { t } = useI18n();
-  const hasVisibilityControl = columns.some((col) => !col.required && col.key !== "actions");
+  const hasVisibilityControl = columns.some(isToggleableColumn);
   const allRequired = !hasVisibilityControl;
 
-  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() => {
-    if (allRequired) return new Set(columns.map((c) => c.key));
-    return getInitialVisibility(columns, tableId);
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(() => {
+    if (allRequired) return new Set<string>();
+    return getInitialHiddenKeys(columns, tableId);
   });
 
-  useEffect(() => {
-    if (tableId && !allRequired) {
-      localStorage.setItem(
-        `tover-columns-${tableId}`,
-        JSON.stringify([...visibleKeys])
-      );
-    }
-  }, [visibleKeys, tableId, allRequired]);
+  const persistHiddenKeys = (keys: Set<string>) => {
+    if (!tableId || allRequired) return;
+    localStorage.setItem(
+      getStorageKey(tableId),
+      JSON.stringify({
+        version: COLUMN_VISIBILITY_VERSION,
+        hidden: [...keys],
+      })
+    );
+  };
 
   const toggleColumn = (key: string) => {
-    setVisibleKeys((prev) => {
+    setHiddenKeys((prev) => {
       const next = new Set(prev);
       if (next.has(key)) {
         next.delete(key);
       } else {
         next.add(key);
       }
+      persistHiddenKeys(next);
       return next;
     });
   };
 
   const visibleColumns = allRequired
     ? columns
-    : columns.filter((col) => col.required || col.key === "actions" || visibleKeys.has(col.key));
+    : columns.filter(
+        (col) =>
+          col.required || col.key === "actions" || !hiddenKeys.has(col.key)
+      );
 
-  const toggleableColumns = columns.filter((col) => !col.required && col.key !== "actions");
+  const toggleableColumns = columns.filter(isToggleableColumn);
+
+  const isColumnVisible = (key: string) => !hiddenKeys.has(key);
+
+  const toolbar = (toolbarActions || !allRequired) && (
+    <div className="mb-2 flex justify-end gap-2">
+      {toolbarActions}
+      {!allRequired && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="gap-2">
+              <SlidersHorizontal className="h-4 w-4" />
+              {t.columns}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {toggleableColumns.map((col) => (
+              <DropdownMenuCheckboxItem
+                key={col.key}
+                checked={isColumnVisible(col.key)}
+                onSelect={(event) => event.preventDefault()}
+                onCheckedChange={() => toggleColumn(col.key)}
+              >
+                {col.headerLabel ?? col.header}
+              </DropdownMenuCheckboxItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </div>
+  );
 
   if (data.length === 0) {
     return (
       <div>
-        {!allRequired && (
-          <div className="mb-2 flex justify-end">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-2">
-                  <SlidersHorizontal className="h-4 w-4" />
-                  {t.columns}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {toggleableColumns.map((col) => (
-                  <DropdownMenuCheckboxItem
-                    key={col.key}
-                    checked={visibleKeys.has(col.key)}
-                    onCheckedChange={() => toggleColumn(col.key)}
-                  >
-                    {col.header}
-                  </DropdownMenuCheckboxItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        )}
+        {toolbar}
         <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
           {emptyMessage}
         </div>
@@ -142,29 +174,7 @@ export default function DataTable<T extends Record<string, any>>({
 
   return (
     <div>
-      {!allRequired && (
-        <div className="mb-2 flex justify-end">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2">
-                <SlidersHorizontal className="h-4 w-4" />
-                {t.columns}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {toggleableColumns.map((col) => (
-                <DropdownMenuCheckboxItem
-                  key={col.key}
-                  checked={visibleKeys.has(col.key)}
-                  onCheckedChange={() => toggleColumn(col.key)}
-                >
-                  {col.header}
-                </DropdownMenuCheckboxItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      )}
+      {toolbar}
       <div className="rounded-lg border">
         <Table>
           <TableHeader>

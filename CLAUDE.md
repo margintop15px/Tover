@@ -108,11 +108,10 @@ Custom Context API solution in `src/i18n/`. Uses `useI18n()` hook returning `{ l
 - `index.ts` — dispatcher that routes to correct processor by operation type
 
 ### Reports System
-4 report types with dedicated pages and API routes:
+3 report types with dedicated pages and API routes:
 - **Inventory Balances** (`/reports/inventory`) — current or historical, units/cost toggle, dynamic warehouse columns
 - **Product Movement** (`/reports/movement`) — aggregated by product/warehouse within date range
 - **Supplier Debt** (`/reports/supplier-debt`) — period + all-time totals, creditor/debitor classification, drill-down
-- **Operations Log** (`/reports/operations`) — filterable/paginated operations list
 
 Report API routes: `/api/reports/inventory-balances`, `/api/reports/product-movement`, `/api/reports/supplier-debt`, `/api/reports/supplier-debt/[supplierId]`
 

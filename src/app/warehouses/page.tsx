@@ -142,7 +142,6 @@ export default function WarehousesPage() {
             {
               key: "purpose",
               header: t.warehousePurpose,
-              defaultVisible: true,
               render: (item) => purposeLabel(item.purpose),
             },
             {

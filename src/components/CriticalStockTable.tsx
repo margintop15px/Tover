@@ -48,6 +48,7 @@ export default function CriticalStockTable() {
         {t.criticalStockTitle}
       </h3>
       <DataTable<CriticalStockItem>
+        tableId="critical-stock"
         columns={[
           { key: "sku", header: t.sku },
           {

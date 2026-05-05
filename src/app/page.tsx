@@ -183,6 +183,7 @@ export default function Dashboard() {
               </Button>
             </div>
             <DataTable<OrderRow>
+              tableId="dashboard-orders"
               columns={[
                 {
                   key: "orderedAt",
