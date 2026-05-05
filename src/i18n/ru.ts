@@ -89,6 +89,7 @@ export const ru: TranslationKeys = {
   delete: "Удалить",
   save: "Сохранить",
   cancel: "Отмена",
+  clearFilters: "Сбросить фильтры",
   actions: "Действия",
   name: "Название",
   description: "Описание",
@@ -155,6 +156,9 @@ export const ru: TranslationKeys = {
   // --- Operations ---
   operationsTitle: "Операции",
   newOperation: "Новая операция",
+  editOperation: "Редактировать операцию",
+  operationDetails: "Детали операции",
+  viewOperation: "Просмотреть операцию",
   operationDate: "Дата",
   operationType: "Тип",
   operationComment: "Комментарий",
@@ -191,13 +195,13 @@ export const ru: TranslationKeys = {
   opProduction: "Производство",
   opDefect: "Брак",
   opPayment: "Оплата",
+  opInventoryAdjustment: "Начальные остатки",
 
   // --- Reports nav ---
   reportsGroup: "Отчёты",
   reportInventory: "Остатки",
   reportMovement: "Движение товаров",
   reportSupplierDebt: "Долги поставщикам",
-  reportOperations: "Журнал операций",
 
   // --- Inventory Balances report ---
   inventoryBalancesTitle: "Остатки на складах",
@@ -224,6 +228,7 @@ export const ru: TranslationKeys = {
   productionIn: "Производство (приход)",
   productionOut: "Производство (расход)",
   defectOut: "Брак (расход)",
+  inventoryAdjustmentIn: "Начальные остатки (приход)",
   net: "Итого",
   noMovementData: "Нет данных о движении за выбранный период",
   dateRangeRequired: "Необходимо указать период",
@@ -244,9 +249,6 @@ export const ru: TranslationKeys = {
   totalPaid: "Всего оплачено",
   totalDebt: "Общий долг",
 
-  // --- Operations Log report ---
-  operationsLogTitle: "Журнал операций",
-  noOperationsLogData: "Нет операций по выбранным фильтрам",
   allTypes: "Все типы",
   allWarehouses: "Все склады",
   allSuppliers: "Все поставщики",
@@ -319,6 +321,22 @@ export const ru: TranslationKeys = {
   items: "Позиции",
   sourceMaterials: "Исходные материалы",
   outputProduct: "Готовый продукт",
+  operationItemsReadOnly: "Позиции операции пока доступны только для просмотра.",
+  operationGroupIncoming: "Приход",
+  operationGroupMovement: "Движение",
+  operationGroupOutgoing: "Расход",
+  operationGroupAdjustments: "Корректировка остатков",
+  operationGroupPayments: "Платежи",
+  opPurchaseDescription: "Поступление товара от поставщика",
+  opReturnDescription: "Возврат товара обратно на склад",
+  opTransferDescription: "Перемещение между складами",
+  opProductionDescription: "Списание материалов и выпуск товара",
+  opDefectDescription: "Перемещение повреждённого товара в брак",
+  opSaleDescription: "Продажа товара клиенту",
+  opWriteOffDescription: "Потери, брак или списание товара",
+  opInventoryAdjustmentDescription: "Ввод начальных остатков на складе",
+  opPaymentDescription: "Оплата поставщику",
+  unitCost: "Себестоимость",
 
   // --- Sidebar ---
   navigation: "Навигация",

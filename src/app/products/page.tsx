@@ -199,7 +199,7 @@ export default function ProductsPage() {
           tableId="products"
           columns={[
             { key: "name", header: t.productName, required: true },
-            { key: "skuCode", header: t.productSku, defaultVisible: true, render: (item) => item.skuCode || "-" },
+            { key: "skuCode", header: t.productSku, render: (item) => item.skuCode || "-" },
             {
               key: "categoryName",
               header: t.productCategory,

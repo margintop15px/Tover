@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/i18n/context";
+import { useWorkspaceSettings } from "@/contexts/WorkspaceSettingsContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Select,
   SelectContent,
@@ -25,7 +27,20 @@ import type {
   Warehouse,
   OperationItemInput,
 } from "@/types/inventory";
-import { Plus, Trash2 } from "lucide-react";
+import {
+  ArrowLeftRight,
+  ArrowUpFromLine,
+  CreditCard,
+  Factory,
+  PackageCheck,
+  PackagePlus,
+  PackageX,
+  Plus,
+  RotateCcw,
+  ShoppingCart,
+  Trash2,
+  type LucideIcon,
+} from "lucide-react";
 
 interface RefData {
   products: Product[];
@@ -35,19 +50,117 @@ interface RefData {
   categories: Category[];
 }
 
-const OPERATION_TYPES: OperationType[] = [
-  "purchase",
-  "sale",
-  "return",
-  "write_off",
-  "transfer",
-  "production",
-  "defect",
-  "payment",
+type OperationGroup =
+  | "incoming"
+  | "movement"
+  | "outgoing"
+  | "adjustments"
+  | "payments";
+
+const OPERATION_GROUPS: {
+  id: OperationGroup;
+  types: OperationType[];
+}[] = [
+  { id: "incoming", types: ["purchase", "return"] },
+  { id: "movement", types: ["transfer", "production", "defect"] },
+  { id: "outgoing", types: ["sale", "write_off"] },
+  { id: "adjustments", types: ["inventory_adjustment"] },
+  { id: "payments", types: ["payment"] },
 ];
 
+const OPERATION_ICONS: Record<OperationType, LucideIcon> = {
+  purchase: PackagePlus,
+  return: RotateCcw,
+  transfer: ArrowLeftRight,
+  production: Factory,
+  defect: PackageX,
+  sale: ShoppingCart,
+  write_off: ArrowUpFromLine,
+  inventory_adjustment: PackageCheck,
+  payment: CreditCard,
+};
+
+const OPERATION_GROUP_STYLES: Record<OperationGroup, string> = {
+  incoming:
+    "data-[state=active]:border-emerald-200 data-[state=active]:bg-emerald-50 data-[state=active]:text-emerald-700",
+  movement:
+    "data-[state=active]:border-sky-200 data-[state=active]:bg-sky-50 data-[state=active]:text-sky-700",
+  outgoing:
+    "data-[state=active]:border-rose-200 data-[state=active]:bg-rose-50 data-[state=active]:text-rose-700",
+  adjustments:
+    "data-[state=active]:border-violet-200 data-[state=active]:bg-violet-50 data-[state=active]:text-violet-700",
+  payments:
+    "data-[state=active]:border-teal-200 data-[state=active]:bg-teal-50 data-[state=active]:text-teal-700",
+};
+
+const OPERATION_STYLES: Record<
+  OperationType,
+  {
+    card: string;
+    icon: string;
+    title: string;
+    radio: string;
+  }
+> = {
+  purchase: {
+    card: "border-emerald-200 bg-emerald-50/40 hover:bg-emerald-50 has-data-[state=checked]:border-emerald-500 has-data-[state=checked]:bg-emerald-50",
+    icon: "text-emerald-600",
+    title: "text-emerald-800",
+    radio: "border-emerald-300 text-emerald-600",
+  },
+  return: {
+    card: "border-lime-200 bg-lime-50/40 hover:bg-lime-50 has-data-[state=checked]:border-lime-500 has-data-[state=checked]:bg-lime-50",
+    icon: "text-lime-600",
+    title: "text-lime-800",
+    radio: "border-lime-300 text-lime-600",
+  },
+  transfer: {
+    card: "border-sky-200 bg-sky-50/40 hover:bg-sky-50 has-data-[state=checked]:border-sky-500 has-data-[state=checked]:bg-sky-50",
+    icon: "text-sky-600",
+    title: "text-sky-800",
+    radio: "border-sky-300 text-sky-600",
+  },
+  production: {
+    card: "border-blue-200 bg-blue-50/40 hover:bg-blue-50 has-data-[state=checked]:border-blue-500 has-data-[state=checked]:bg-blue-50",
+    icon: "text-blue-600",
+    title: "text-blue-800",
+    radio: "border-blue-300 text-blue-600",
+  },
+  defect: {
+    card: "border-cyan-200 bg-cyan-50/40 hover:bg-cyan-50 has-data-[state=checked]:border-cyan-500 has-data-[state=checked]:bg-cyan-50",
+    icon: "text-cyan-600",
+    title: "text-cyan-800",
+    radio: "border-cyan-300 text-cyan-600",
+  },
+  sale: {
+    card: "border-rose-200 bg-rose-50/40 hover:bg-rose-50 has-data-[state=checked]:border-rose-500 has-data-[state=checked]:bg-rose-50",
+    icon: "text-rose-600",
+    title: "text-rose-800",
+    radio: "border-rose-300 text-rose-600",
+  },
+  write_off: {
+    card: "border-red-200 bg-red-50/40 hover:bg-red-50 has-data-[state=checked]:border-red-500 has-data-[state=checked]:bg-red-50",
+    icon: "text-red-600",
+    title: "text-red-800",
+    radio: "border-red-300 text-red-600",
+  },
+  inventory_adjustment: {
+    card: "border-violet-200 bg-violet-50/40 hover:bg-violet-50 has-data-[state=checked]:border-violet-500 has-data-[state=checked]:bg-violet-50",
+    icon: "text-violet-600",
+    title: "text-violet-800",
+    radio: "border-violet-300 text-violet-600",
+  },
+  payment: {
+    card: "border-teal-200 bg-teal-50/40 hover:bg-teal-50 has-data-[state=checked]:border-teal-500 has-data-[state=checked]:bg-teal-50",
+    icon: "text-teal-600",
+    title: "text-teal-800",
+    radio: "border-teal-300 text-teal-600",
+  },
+};
+
 export default function NewOperationPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const { settings } = useWorkspaceSettings();
   const router = useRouter();
 
   // Reference data
@@ -61,6 +174,7 @@ export default function NewOperationPage() {
   const [refLoading, setRefLoading] = useState(true);
 
   // Form state
+  const [group, setGroup] = useState<OperationGroup>("incoming");
   const [type, setType] = useState<OperationType>("purchase");
   const [operationDate, setOperationDate] = useState(
     new Date().toISOString().split("T")[0]
@@ -105,11 +219,51 @@ export default function NewOperationPage() {
         production: t.opProduction,
         defect: t.opDefect,
         payment: t.opPayment,
+        inventory_adjustment: t.opInventoryAdjustment,
       };
       return map[op];
     },
     [t]
   );
+
+  const typeDescription = useCallback(
+    (op: OperationType): string => {
+      const map: Record<OperationType, string> = {
+        purchase: t.opPurchaseDescription,
+        sale: t.opSaleDescription,
+        return: t.opReturnDescription,
+        write_off: t.opWriteOffDescription,
+        transfer: t.opTransferDescription,
+        production: t.opProductionDescription,
+        defect: t.opDefectDescription,
+        inventory_adjustment: t.opInventoryAdjustmentDescription,
+        payment: t.opPaymentDescription,
+      };
+      return map[op];
+    },
+    [t]
+  );
+
+  const groupLabel = useCallback(
+    (opGroup: OperationGroup): string => {
+      const map: Record<OperationGroup, string> = {
+        incoming: t.operationGroupIncoming,
+        movement: t.operationGroupMovement,
+        outgoing: t.operationGroupOutgoing,
+        adjustments: t.operationGroupAdjustments,
+        payments: t.operationGroupPayments,
+      };
+      return map[opGroup];
+    },
+    [t]
+  );
+
+  const handleGroupChange = (value: string) => {
+    const nextGroup = value as OperationGroup;
+    const nextConfig = OPERATION_GROUPS.find((item) => item.id === nextGroup);
+    setGroup(nextGroup);
+    if (nextConfig) setType(nextConfig.types[0]);
+  };
 
   useEffect(() => {
     async function load() {
@@ -184,6 +338,7 @@ export default function NewOperationPage() {
           break;
 
         case "purchase":
+        case "inventory_adjustment":
           body.supplierId = supplierId || undefined;
           body.items = items.map((item) => ({
             productId: item.productId,
@@ -269,29 +424,79 @@ export default function NewOperationPage() {
   const needsSupplier = type === "purchase" || type === "payment";
   const needsItems =
     type === "purchase" ||
+    type === "inventory_adjustment" ||
     type === "sale" ||
     type === "return" ||
     type === "write_off";
-  const needsPrice = type === "purchase";
+  const needsPrice = type === "purchase" || type === "inventory_adjustment";
+  const activeGroup = OPERATION_GROUPS.find((item) => item.id === group)!;
+  const currencySymbol =
+    new Intl.NumberFormat(locale === "ru" ? "ru-RU" : "en-US", {
+      style: "currency",
+      currency: settings.currency,
+    })
+      .formatToParts(0)
+      .find((part) => part.type === "currency")?.value ?? settings.currency;
 
   return (
     <div className="p-6">
       <h1 className="mb-6 text-2xl font-bold">{t.newOperation}</h1>
 
-      {/* Type Tabs */}
+      {/* Operation group and type selector */}
       <Tabs
-        value={type}
-        onValueChange={(v) => setType(v as OperationType)}
+        value={group}
+        onValueChange={handleGroupChange}
         className="mb-6"
       >
         <TabsList className="flex flex-wrap h-auto gap-1">
-          {OPERATION_TYPES.map((op) => (
-            <TabsTrigger key={op} value={op} className="text-xs">
-              {typeLabel(op)}
+          {OPERATION_GROUPS.map((opGroup) => (
+            <TabsTrigger
+              key={opGroup.id}
+              value={opGroup.id}
+              className={`border text-xs ${OPERATION_GROUP_STYLES[opGroup.id]}`}
+            >
+              {groupLabel(opGroup.id)}
             </TabsTrigger>
           ))}
         </TabsList>
       </Tabs>
+
+      <RadioGroup
+        value={type}
+        onValueChange={(value) => setType(value as OperationType)}
+        className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+      >
+        {activeGroup.types.map((op) => {
+          const Icon = OPERATION_ICONS[op];
+          const style = OPERATION_STYLES[op];
+          return (
+            <Label
+              key={op}
+              htmlFor={`operation-type-${op}`}
+              className="cursor-pointer"
+            >
+              <div
+                className={`flex min-h-24 w-full items-start gap-3 rounded-md border p-4 transition-colors ${style.card}`}
+              >
+                <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${style.icon}`} />
+                <div className="min-w-0 flex-1">
+                  <div className={`text-sm font-medium leading-tight ${style.title}`}>
+                    {typeLabel(op)}
+                  </div>
+                  <div className="mt-1 text-sm font-normal leading-snug text-muted-foreground">
+                    {typeDescription(op)}
+                  </div>
+                </div>
+                <RadioGroupItem
+                  id={`operation-type-${op}`}
+                  value={op}
+                  className={style.radio}
+                />
+              </div>
+            </Label>
+          );
+        })}
+      </RadioGroup>
 
       <div className="space-y-6 max-w-3xl">
         {/* Common fields */}
@@ -337,12 +542,18 @@ export default function NewOperationPage() {
         {type === "payment" && (
           <Field>
             <FieldLabel>{t.paymentAmount}</FieldLabel>
-            <Input
-              type="number"
-              step="0.01"
-              value={paymentAmount}
-              onChange={(e) => setPaymentAmount(e.target.value)}
-            />
+            <div className="relative">
+              <Input
+                type="number"
+                step="1"
+                value={paymentAmount}
+                onChange={(e) => setPaymentAmount(e.target.value)}
+                className="pr-10"
+              />
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
+                {currencySymbol}
+              </span>
+            </div>
           </Field>
         )}
 
@@ -405,7 +616,7 @@ export default function NewOperationPage() {
                     <FieldLabel className="text-xs">{t.quantity}</FieldLabel>
                     <Input
                       type="number"
-                      step="0.001"
+                      step="1"
                       value={item.quantity || ""}
                       onChange={(e) =>
                         updateItem(i, "quantity", parseFloat(e.target.value) || 0)
@@ -414,19 +625,27 @@ export default function NewOperationPage() {
                   </Field>
                   {needsPrice && (
                     <Field className="w-28">
-                      <FieldLabel className="text-xs">{t.price}</FieldLabel>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        value={item.unitPrice || ""}
-                        onChange={(e) =>
-                          updateItem(
-                            i,
-                            "unitPrice",
-                            parseFloat(e.target.value) || 0
-                          )
-                        }
-                      />
+                      <FieldLabel className="text-xs">
+                        {type === "inventory_adjustment" ? t.unitCost : t.price}
+                      </FieldLabel>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          step="1"
+                          value={item.unitPrice || ""}
+                          onChange={(e) =>
+                            updateItem(
+                              i,
+                              "unitPrice",
+                              parseFloat(e.target.value) || 0
+                            )
+                          }
+                          className="pr-9"
+                        />
+                        <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-xs text-muted-foreground">
+                          {currencySymbol}
+                        </span>
+                      </div>
                     </Field>
                   )}
                   {items.length > 1 && (
@@ -508,7 +727,7 @@ export default function NewOperationPage() {
               <FieldLabel>{t.quantity}</FieldLabel>
               <Input
                 type="number"
-                step="0.001"
+                step="1"
                 value={transferQty}
                 onChange={(e) => setTransferQty(e.target.value)}
               />
@@ -560,7 +779,7 @@ export default function NewOperationPage() {
               <FieldLabel>{t.quantity}</FieldLabel>
               <Input
                 type="number"
-                step="0.001"
+                step="1"
                 value={defectQty}
                 onChange={(e) => setDefectQty(e.target.value)}
               />
@@ -629,7 +848,7 @@ export default function NewOperationPage() {
                       <FieldLabel className="text-xs">{t.quantity}</FieldLabel>
                       <Input
                         type="number"
-                        step="0.001"
+                        step="1"
                         value={item.quantity || ""}
                         onChange={(e) =>
                           updateItem(
@@ -704,7 +923,7 @@ export default function NewOperationPage() {
                     <FieldLabel className="text-xs">{t.quantity}</FieldLabel>
                     <Input
                       type="number"
-                      step="0.001"
+                      step="1"
                       value={prodOutputQty}
                       onChange={(e) => setProdOutputQty(e.target.value)}
                     />

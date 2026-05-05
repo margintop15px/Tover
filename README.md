@@ -10,7 +10,7 @@ Multi-tenant marketplace turnover tracker built with Next.js + Supabase.
 - **Weighted-Average Cost Tracking** — automatic cost recalculation on purchases and production
 - **Product Balance Tracking** — real-time per-warehouse stock and cost balances
 - **CSV Imports** — orders, order lines, inventory snapshots, payments
-- **Reports** — Inventory Balances (current + historical), Product Movement, Supplier Debt (with drill-down), Operations Log
+- **Reports** — Inventory Balances (current + historical), Product Movement, Supplier Debt (with drill-down)
 - **Workspace Settings** — configurable currency, category/store requirement toggles with default backfill
 - **Dashboard** — KPI summary and critical stock alerts
 - **Column Visibility** — per-table column show/hide with localStorage persistence
@@ -252,7 +252,6 @@ Reports (collapsible group):
   Inventory      /reports/inventory
   Movement       /reports/movement
   Supplier Debt  /reports/supplier-debt
-  Operations     /reports/operations
 ```
 
 ## Project Structure

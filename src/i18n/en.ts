@@ -87,6 +87,7 @@ export const en = {
   delete: "Delete",
   save: "Save",
   cancel: "Cancel",
+  clearFilters: "Clear filters",
   actions: "Actions",
   name: "Name",
   description: "Description",
@@ -153,6 +154,9 @@ export const en = {
   // --- Operations ---
   operationsTitle: "Operations",
   newOperation: "New Operation",
+  editOperation: "Edit Operation",
+  operationDetails: "Operation Details",
+  viewOperation: "View operation",
   operationDate: "Date",
   operationType: "Type",
   operationComment: "Comment",
@@ -189,13 +193,13 @@ export const en = {
   opProduction: "Production",
   opDefect: "Defect",
   opPayment: "Payment",
+  opInventoryAdjustment: "Inventory Adjustment",
 
   // --- Reports nav ---
   reportsGroup: "Reports",
   reportInventory: "Inventory Balances",
   reportMovement: "Product Movement",
   reportSupplierDebt: "Supplier Debt",
-  reportOperations: "Operations Log",
 
   // --- Inventory Balances report ---
   inventoryBalancesTitle: "Inventory Balances",
@@ -222,6 +226,7 @@ export const en = {
   productionIn: "Production In",
   productionOut: "Production Out",
   defectOut: "Defect Out",
+  inventoryAdjustmentIn: "Inventory Adjustment In",
   net: "Net",
   noMovementData: "No movement data for the selected period",
   dateRangeRequired: "Date range is required",
@@ -242,9 +247,6 @@ export const en = {
   totalPaid: "Total Paid",
   totalDebt: "Total Debt",
 
-  // --- Operations Log report ---
-  operationsLogTitle: "Operations Log",
-  noOperationsLogData: "No operations found for the selected filters",
   allTypes: "All types",
   allWarehouses: "All warehouses",
   allSuppliers: "All suppliers",
@@ -317,6 +319,22 @@ export const en = {
   items: "Items",
   sourceMaterials: "Source Materials",
   outputProduct: "Output Product",
+  operationItemsReadOnly: "Line items are read-only for now.",
+  operationGroupIncoming: "Incoming",
+  operationGroupMovement: "Internal Movement",
+  operationGroupOutgoing: "Outgoing",
+  operationGroupAdjustments: "Adjustments",
+  operationGroupPayments: "Payments",
+  opPurchaseDescription: "Stock received from a supplier",
+  opReturnDescription: "Returned stock received back",
+  opTransferDescription: "Move stock between warehouses",
+  opProductionDescription: "Consume materials and create product",
+  opDefectDescription: "Move damaged stock to defects",
+  opSaleDescription: "Stock sold to a customer",
+  opWriteOffDescription: "Stock loss, damage, or disposal",
+  opInventoryAdjustmentDescription: "Initial warehouse stock backfill",
+  opPaymentDescription: "Money paid to a supplier",
+  unitCost: "Unit cost",
 
   // --- Sidebar ---
   navigation: "Navigation",

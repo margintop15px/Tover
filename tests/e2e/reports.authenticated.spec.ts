@@ -26,7 +26,7 @@ test.describe("reports", () => {
       // Expand the Reports group
       await reportsBtn.click();
 
-      // All 4 report links should be visible
+      // All 3 report links should be visible
       await expect(
         page.getByRole("link", { name: "Inventory Balances" })
       ).toBeVisible();
@@ -38,7 +38,7 @@ test.describe("reports", () => {
       ).toBeVisible();
       await expect(
         page.getByRole("link", { name: "Operations Log" })
-      ).toBeVisible();
+      ).not.toBeVisible();
 
       // Collapse the Reports group
       await reportsBtn.click();
@@ -47,9 +47,6 @@ test.describe("reports", () => {
       await expect(
         page.getByRole("link", { name: "Inventory Balances" })
       ).not.toBeVisible();
-      await expect(
-        page.getByRole("link", { name: "Operations Log" })
-      ).not.toBeVisible();
     });
 
     test("navigate to each report page via sidebar", async ({ page }) => {
@@ -57,13 +54,6 @@ test.describe("reports", () => {
 
       // Expand Reports group
       await page.getByRole("button", { name: "Reports" }).click();
-
-      // Operations Log
-      await page.getByRole("link", { name: "Operations Log" }).click();
-      await expect(page).toHaveURL(/\/reports\/operations$/);
-      await expect(
-        page.getByRole("heading", { name: "Operations Log" })
-      ).toBeVisible();
 
       // Supplier Debt
       await page.getByRole("link", { name: "Supplier Debt" }).click();
@@ -88,63 +78,12 @@ test.describe("reports", () => {
     });
   });
 
-  // ── Operations Log ──────────────────────────────────────────────────
+  // ── Removed Operations Log ──────────────────────────────────────────
 
-  test.describe("operations log", () => {
-    test("page renders with filters", async ({ page }) => {
-      await page.goto("/reports/operations");
-
-      await expect(
-        page.getByRole("heading", { name: "Operations Log" })
-      ).toBeVisible();
-
-      const main = page.locator("main");
-
-      // Date inputs
-      await expect(main.getByText("From")).toBeVisible();
-      await expect(main.getByText("To")).toBeVisible();
-
-      // Filter comboboxes (type, product, warehouse, supplier)
-      const comboboxes = main.getByRole("combobox");
-      await expect(comboboxes).toHaveCount(4);
-
-      // Data table or loading state
-      await expect(
-        main.getByRole("table").or(main.getByText("Loading..."))
-      ).toBeVisible();
-    });
-
-    test("type filter changes displayed results", async ({ page }) => {
-      await page.goto("/reports/operations");
-
-      const main = page.locator("main");
-
-      // Wait for data to load
-      await expect(main.getByText("Loading...")).not.toBeVisible();
-
-      // Open the first combobox (Type filter) and select Purchase
-      const typeCombobox = main.getByRole("combobox").first();
-      await typeCombobox.click();
-      await page.getByRole("option", { name: "Purchase" }).click();
-
-      // Wait for table to update and verify Purchase badge is visible
-      await expect(main.getByText("Loading...")).not.toBeVisible();
-      await expect(main.getByText("Purchase").first()).toBeVisible();
-    });
-
-    test("pagination controls are visible", async ({ page }) => {
-      await page.goto("/reports/operations");
-
-      const main = page.locator("main");
-      // Wait for table to load before checking pagination
-      await expect(main.getByRole("table")).toBeVisible({ timeout: 15000 });
-
-      await expect(
-        page.getByRole("button", { name: "Previous", exact: true })
-      ).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "Next", exact: true })
-      ).toBeVisible();
+  test.describe("operations log route", () => {
+    test("old report route returns 404", async ({ page }) => {
+      const response = await page.goto("/reports/operations");
+      expect(response?.status()).toBe(404);
     });
   });
 

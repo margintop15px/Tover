@@ -27,6 +27,7 @@ const VALID_TYPES: OperationType[] = [
   "production",
   "defect",
   "payment",
+  "inventory_adjustment",
 ];
 
 export function validateOperation(
@@ -54,6 +55,8 @@ export function validateOperation(
       return validatePayment(body, errors);
     case "purchase":
       return validatePurchase(body, errors);
+    case "inventory_adjustment":
+      return validateInventoryAdjustment(body, errors);
     case "sale":
     case "return":
     case "write_off":
@@ -126,6 +129,40 @@ function validatePurchase(
       operationDate: body.operationDate,
       comment: body.comment,
       supplierId: body.supplierId,
+      items: items.map((item) => ({
+        ...item,
+        direction: "in" as const,
+      })),
+    },
+  };
+}
+
+function validateInventoryAdjustment(
+  body: CreateOperationRequest,
+  errors: ValidationError[]
+): ReturnType<typeof validateOperation> {
+  const items = body.items || [];
+  if (items.length === 0) {
+    errors.push({ field: "items", message: "At least one item is required" });
+  }
+
+  items.forEach((item, i) => {
+    validateItemFields(item, i, errors);
+    if (!item.unitPrice || item.unitPrice <= 0) {
+      errors.push({
+        field: `items[${i}].unitPrice`,
+        message: "Unit cost must be positive",
+      });
+    }
+  });
+
+  if (errors.length > 0) return { errors };
+
+  return {
+    data: {
+      type: "inventory_adjustment",
+      operationDate: body.operationDate,
+      comment: body.comment,
       items: items.map((item) => ({
         ...item,
         direction: "in" as const,

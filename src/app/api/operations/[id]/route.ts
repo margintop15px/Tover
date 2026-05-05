@@ -57,3 +57,92 @@ export async function GET(
     return toRouteErrorResponse(error);
   }
 }
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { supabase, workspaceId } = await getRouteContext(request, {
+      requireManager: true,
+    });
+    const { id } = await params;
+    const body = await request.json();
+
+    const { data: operation, error: fetchError } = await supabase
+      .from("operations")
+      .select("id, type")
+      .eq("id", id)
+      .eq("workspace_id", workspaceId)
+      .single();
+
+    if (fetchError || !operation) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    const updates: {
+      operation_date?: string;
+      comment?: string | null;
+      supplier_id?: string | null;
+      payment_amount?: number | null;
+    } = {};
+
+    if (typeof body.operationDate === "string") {
+      if (isNaN(Date.parse(body.operationDate))) {
+        return NextResponse.json(
+          { error: "Valid date is required" },
+          { status: 400 }
+        );
+      }
+      updates.operation_date = body.operationDate;
+    }
+
+    if ("comment" in body) {
+      updates.comment =
+        typeof body.comment === "string" && body.comment.trim()
+          ? body.comment.trim()
+          : null;
+    }
+
+    if (operation.type === "purchase" || operation.type === "payment") {
+      if (typeof body.supplierId === "string") {
+        if (!body.supplierId) {
+          return NextResponse.json(
+            { error: "Supplier is required" },
+            { status: 400 }
+          );
+        }
+        updates.supplier_id = body.supplierId;
+      }
+    }
+
+    if (operation.type === "payment") {
+      if ("paymentAmount" in body) {
+        const paymentAmount = Number(body.paymentAmount);
+        if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+          return NextResponse.json(
+            { error: "Payment amount must be positive" },
+            { status: 400 }
+          );
+        }
+        updates.payment_amount = paymentAmount;
+      }
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from("operations")
+      .update(updates)
+      .eq("id", id)
+      .eq("workspace_id", workspaceId)
+      .select("id")
+      .single();
+
+    if (updateError) {
+      return NextResponse.json({ error: updateError.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ id: updated.id });
+  } catch (error) {
+    return toRouteErrorResponse(error);
+  }
+}

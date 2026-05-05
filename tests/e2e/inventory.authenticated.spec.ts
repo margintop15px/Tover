@@ -345,7 +345,7 @@ test.describe("inventory management", () => {
   // ── Operations ──────────────────────────────────────────────────────
 
   test.describe("operations", () => {
-    test("operations page renders with filter", async ({ page }) => {
+    test("operations page renders with header filters and pagination", async ({ page }) => {
       await page.goto("/operations");
       await expect(
         page.getByRole("heading", { name: "Operations" })
@@ -356,8 +356,67 @@ test.describe("inventory management", () => {
         page.getByRole("link", { name: "New Operation" })
       ).toBeVisible();
 
-      // Type filter combobox
-      await expect(page.getByRole("combobox")).toBeVisible();
+      const main = page.locator("main");
+      await expect(main.getByText("Loading...")).not.toBeVisible();
+      await expect(main.getByRole("table")).toBeVisible();
+
+      // Header filters are compact icon buttons and open controls on demand.
+      await expect(
+        main.getByRole("button", { name: /Filter/ })
+      ).toHaveCount(5);
+      await main.getByRole("button", { name: "Filter Date" }).click();
+      await expect(page.locator('input[type="date"]')).toHaveCount(2);
+      await page.keyboard.press("Escape");
+      await expect(
+        page.getByRole("button", { name: "Previous", exact: true })
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Next", exact: true })
+      ).toBeVisible();
+
+      await expect(
+        main.getByRole("columnheader", { name: /Quantity/ })
+      ).toBeVisible();
+      await expect(
+        main.getByRole("columnheader", { name: /Price/ })
+      ).toBeVisible();
+    });
+
+    test("operations type filter changes displayed results", async ({ page }) => {
+      await page.goto("/operations");
+
+      const main = page.locator("main");
+      await expect(main.getByText("Loading...")).not.toBeVisible();
+
+      await main.getByRole("button", { name: "Filter Type" }).click();
+      await page.getByRole("combobox", { name: "Type" }).fill("pur");
+      await page.getByRole("option", { name: "Purchase" }).click();
+
+      await expect(main.getByText("Loading...")).not.toBeVisible();
+      await expect(main.getByText("Purchase").first()).toBeVisible();
+    });
+
+    test("operations rows separate product, quantity, and currency values", async ({
+      page,
+    }) => {
+      await page.goto("/operations");
+
+      const main = page.locator("main");
+      await expect(main.getByText("Loading...")).not.toBeVisible();
+      await expect(main.getByRole("table")).toBeVisible();
+
+      const firstDataRow = main.locator("tbody tr").first();
+      if ((await firstDataRow.count()) > 0) {
+        await expect(firstDataRow.locator("td").nth(2)).not.toContainText(
+          /\(\d/
+        );
+        await expect(firstDataRow.locator("td").nth(3)).toBeVisible();
+      }
+
+      const currencyCells = main.locator("td").filter({ hasText: /[$€£₽]/ });
+      if ((await currencyCells.count()) > 0) {
+        await expect(currencyCells.first()).toBeVisible();
+      }
     });
 
     test("new operation form shows correct fields per type", async ({
@@ -376,21 +435,37 @@ test.describe("inventory management", () => {
       await expect(main.getByText("Date")).toBeVisible();
       await expect(main.getByText("Comment")).toBeVisible();
 
-      // Default tab is Purchase — supplier and items should be visible
+      // Default group is Incoming and Purchase should show supplier + items
+      await expect(page.getByRole("tab", { name: "Incoming" })).toBeVisible();
+      await expect(
+        page.getByRole("tab", { name: "Internal Movement" })
+      ).toBeVisible();
+      await expect(page.getByRole("tab", { name: "Outgoing" })).toBeVisible();
+      await expect(page.getByRole("tab", { name: "Adjustments" })).toBeVisible();
+      await expect(page.getByRole("tab", { name: "Payments" })).toBeVisible();
       await expect(main.getByText("Supplier", { exact: true })).toBeVisible();
       await expect(main.getByText("Add item")).toBeVisible();
 
-      // Switch to Payment — amount field, no items
-      await page.getByRole("tab", { name: "Payment" }).click();
+      // Switch to Adjustments — unit cost field, no supplier
+      await page.getByRole("tab", { name: "Adjustments" }).click();
+      await expect(main.getByText("Inventory Adjustment")).toBeVisible();
+      await expect(main.getByText("Unit cost")).toBeVisible();
+      await expect(
+        main.getByText("Supplier", { exact: true })
+      ).not.toBeVisible();
+
+      // Switch to Payments — amount field, no items
+      await page.getByRole("tab", { name: "Payments" }).click();
       await expect(main.getByText("Payment amount")).toBeVisible();
 
       // Switch to Transfer — source/dest warehouse
-      await page.getByRole("tab", { name: "Transfer" }).click();
+      await page.getByRole("tab", { name: "Internal Movement" }).click();
+      await main.getByText("Transfer", { exact: true }).click();
       await expect(main.getByText("Source warehouse")).toBeVisible();
       await expect(main.getByText("Destination warehouse")).toBeVisible();
 
       // Switch to Defect — product + source warehouse + quantity
-      await page.getByRole("tab", { name: "Defect" }).click();
+      await main.getByText("Defect", { exact: true }).click();
       await expect(main.getByText("Source warehouse")).toBeVisible();
       await expect(main.getByText("Quantity")).toBeVisible();
     });
