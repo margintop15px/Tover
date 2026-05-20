@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
+import { applyImportDefaultFlag } from "@/lib/master-data-import-defaults";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,7 @@ export async function GET(request: NextRequest) {
         description: r.description,
         purpose: r.purpose,
         isDefaultDefect: r.is_default_defect,
+        isImportDefault: r.is_import_default,
         createdAt: r.created_at,
       })),
     });
@@ -79,6 +81,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    if (body.isImportDefault === true) {
+      await applyImportDefaultFlag(
+        supabase,
+        "warehouses",
+        workspaceId,
+        data.id,
+        true
+      );
+    }
+
     return NextResponse.json(
       {
         id: data.id,
@@ -86,6 +98,7 @@ export async function POST(request: NextRequest) {
         description: data.description,
         purpose: data.purpose,
         isDefaultDefect: data.is_default_defect,
+        isImportDefault: body.isImportDefault === true,
         createdAt: data.created_at,
       },
       { status: 201 }

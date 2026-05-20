@@ -40,7 +40,8 @@ export async function processPurchase(
   if (itemError)
     throw new Error(`Failed to create operation items: ${itemError.message}`);
 
-  // Update balances with weighted-average cost recalculation
+  // Cost is a per-warehouse balance value, not a product attribute.
+  // Purchases recalculate it from the current balance and purchase unit price.
   for (const item of data.items) {
     await processPurchaseBalance(
       supabase,

@@ -4,10 +4,12 @@ import {
   type APIRequestContext,
   type APIResponse,
 } from "@playwright/test";
-
-function hasAuthCredentials(): boolean {
-  return Boolean(process.env.E2E_EMAIL && process.env.E2E_PASSWORD);
-}
+import {
+  authSkipReason,
+  hasAuthCredentials,
+  inventoryAdjustmentSchemaSkipReason,
+  supportsInventoryAdjustmentOperations,
+} from "./auth-helpers";
 
 const RUN_ID = Date.now().toString(36);
 
@@ -22,8 +24,9 @@ async function expectJson<T>(
   status: number
 ): Promise<T> {
   const response = await responsePromise;
-  expect(response.status()).toBe(status);
-  return (await response.json()) as T;
+  const bodyText = await response.text();
+  expect(response.status(), bodyText).toBe(status);
+  return JSON.parse(bodyText) as T;
 }
 
 async function postJson<T>(
@@ -33,8 +36,9 @@ async function postJson<T>(
   status = 201
 ): Promise<T> {
   const response = await request.post(url, { data });
-  expect(response.status()).toBe(status);
-  return (await response.json()) as T;
+  const bodyText = await response.text();
+  expect(response.status(), bodyText).toBe(status);
+  return JSON.parse(bodyText) as T;
 }
 
 interface EntityResponse {
@@ -90,6 +94,15 @@ interface OperationDetailsResponse {
   }[];
 }
 
+interface ProductBalancesResponse {
+  items: {
+    productId: string;
+    warehouseId: string;
+    quantity: number;
+    unitCost: number;
+  }[];
+}
+
 async function createProduct(
   request: APIRequestContext,
   name: string
@@ -123,15 +136,19 @@ async function createSupplier(
 
 test.describe("operations API", () => {
   test.beforeEach(() => {
-    test.skip(
-      !hasAuthCredentials(),
-      "Set E2E_EMAIL and E2E_PASSWORD to run authenticated tests"
-    );
+    test.skip(!hasAuthCredentials(), authSkipReason());
   });
 
   test("creates inventory adjustments, updates balances, and keeps audit rows out of the default list", async ({
     request,
   }, testInfo) => {
+    const supportsInventoryAdjustment =
+      await supportsInventoryAdjustmentOperations();
+    test.skip(
+      supportsInventoryAdjustment === false && !process.env.CI,
+      inventoryAdjustmentSchemaSkipReason()
+    );
+
     const product = await createProduct(
       request,
       uniqueName("AdjustmentProduct", testInfo)
@@ -166,19 +183,33 @@ test.describe("operations API", () => {
       ],
     });
 
-    const created = await postJson<{ id: string }>(request, "/api/operations", {
-      type: "inventory_adjustment",
-      operationDate,
-      comment: "  Initial counted stock  ",
-      items: [
-        {
-          productId: product.id,
-          warehouseId: warehouse.id,
-          quantity: 17,
-          unitPrice: 42,
-        },
-      ],
+    const createdResponse = await request.post("/api/operations", {
+      data: {
+        type: "inventory_adjustment",
+        operationDate,
+        comment: "  Initial counted stock  ",
+        items: [
+          {
+            productId: product.id,
+            warehouseId: warehouse.id,
+            quantity: 17,
+            unitPrice: 42,
+          },
+        ],
+      },
     });
+    const createdBodyText = await createdResponse.text();
+    if (
+      createdResponse.status() === 500 &&
+      createdBodyText.includes("operations_type_check")
+    ) {
+      test.skip(
+        !process.env.CI,
+        inventoryAdjustmentSchemaSkipReason()
+      );
+    }
+    expect(createdResponse.status(), createdBodyText).toBe(201);
+    const created = JSON.parse(createdBodyText) as { id: string };
 
     const details = await expectJson<OperationDetailsResponse>(
       request.get(`/api/operations/${created.id}`),
@@ -204,25 +235,23 @@ test.describe("operations API", () => {
       ],
     });
 
-    const balances = await expectJson<{
-      items: { productId: string; warehouseId: string; quantity: number; unitCost: number }[];
-    }>(
+    const balances = await expectJson<ProductBalancesResponse>(
       request.get(
         `/api/product-balances?productId=${product.id}&warehouseId=${warehouse.id}`
       ),
       200
     );
-    expect(balances.items).toEqual([
-      {
-        productId: product.id,
-        warehouseId: warehouse.id,
-        quantity: 17,
-        unitCost: 42,
-      },
-    ]);
+    expect(balances.items).toHaveLength(1);
+    expect(balances.items[0]).toMatchObject({
+      productId: product.id,
+      warehouseId: warehouse.id,
+      quantity: 17,
+      unitCost: 42,
+    });
 
+    const auditScope = `productId=${product.id}&warehouseId=${warehouse.id}&from=${operationDate}&to=${operationDate}`;
     const defaultList = await expectJson<OperationListResponse>(
-      request.get(`/api/operations?from=${operationDate}&to=${operationDate}`),
+      request.get(`/api/operations?${auditScope}`),
       200
     );
     expect(defaultList.items.map((item) => item.operationId)).not.toContain(
@@ -231,7 +260,7 @@ test.describe("operations API", () => {
 
     const auditList = await expectJson<OperationListResponse>(
       request.get(
-        `/api/operations?type=inventory_adjustment&from=${operationDate}&to=${operationDate}`
+        `/api/operations?type=inventory_adjustment&${auditScope}`
       ),
       200
     );
@@ -246,6 +275,80 @@ test.describe("operations API", () => {
       unitPrice: 42,
       direction: "in",
     });
+  });
+
+  test("recalculates product balance cost as weighted average on purchases", async ({
+    request,
+  }, testInfo) => {
+    const [product, warehouse, supplier] = await Promise.all([
+      createProduct(request, uniqueName("CostProduct", testInfo)),
+      createWarehouse(request, uniqueName("CostWarehouse", testInfo)),
+      createSupplier(request, uniqueName("CostSupplier", testInfo)),
+    ]);
+    const operationDate = "2099-02-02";
+
+    await postJson<{ id: string }>(request, "/api/operations", {
+      type: "purchase",
+      operationDate,
+      supplierId: supplier.id,
+      items: [
+        {
+          productId: product.id,
+          warehouseId: warehouse.id,
+          quantity: 100,
+          unitPrice: 10,
+        },
+      ],
+    });
+
+    await postJson<{ id: string }>(request, "/api/operations", {
+      type: "purchase",
+      operationDate,
+      supplierId: supplier.id,
+      items: [
+        {
+          productId: product.id,
+          warehouseId: warehouse.id,
+          quantity: 20,
+          unitPrice: 11,
+        },
+      ],
+    });
+
+    const balances = await expectJson<ProductBalancesResponse>(
+      request.get(
+        `/api/product-balances?productId=${product.id}&warehouseId=${warehouse.id}`
+      ),
+      200
+    );
+    expect(balances.items).toHaveLength(1);
+    expect(balances.items[0]).toMatchObject({
+      productId: product.id,
+      warehouseId: warehouse.id,
+      quantity: 120,
+    });
+    expect(balances.items[0].unitCost).toBeCloseTo(10.1667, 4);
+
+    const inventoryReport = await expectJson<{
+      rows: {
+        productId: string;
+        totalQuantity: number;
+        totalCost: number;
+      }[];
+    }>(
+      request.get(
+        `/api/reports/inventory-balances?search=${encodeURIComponent(product.name)}`
+      ),
+      200
+    );
+    const productRow = inventoryReport.rows.find(
+      (row) => row.productId === product.id
+    );
+    expect(productRow).toMatchObject({
+      productId: product.id,
+      totalQuantity: 120,
+    });
+    expect(productRow?.totalCost).toBeCloseTo(1220, 2);
   });
 
   test("flattens operation items into sortable, filterable, paginated rows", async ({
@@ -280,10 +383,9 @@ test.describe("operations API", () => {
       ],
     });
 
+    const listScope = `type=purchase&supplierId=${supplier.id}&from=${operationDate}&to=${operationDate}`;
     const sorted = await expectJson<OperationListResponse>(
-      request.get(
-        `/api/operations?type=purchase&from=${operationDate}&to=${operationDate}&sortBy=quantity&sortDir=asc`
-      ),
+      request.get(`/api/operations?${listScope}&sortBy=quantity&sortDir=asc`),
       200
     );
     expect(sorted.page.totalEstimate).toBe(2);
@@ -317,7 +419,7 @@ test.describe("operations API", () => {
 
     const paged = await expectJson<OperationListResponse>(
       request.get(
-        `/api/operations?type=purchase&from=${operationDate}&to=${operationDate}&sortBy=quantity&sortDir=asc&limit=1&offset=1`
+        `/api/operations?${listScope}&sortBy=quantity&sortDir=asc&limit=1&offset=1`
       ),
       200
     );
@@ -392,10 +494,7 @@ test.describe("operations API", () => {
 
 test.describe("operations UI", () => {
   test.beforeEach(() => {
-    test.skip(
-      !hasAuthCredentials(),
-      "Set E2E_EMAIL and E2E_PASSWORD to run authenticated tests"
-    );
+    test.skip(!hasAuthCredentials(), authSkipReason());
   });
 
   test("shows grouped operation choices including inventory adjustments", async ({
@@ -504,11 +603,12 @@ test.describe("operations UI", () => {
   test("persists operation table column visibility with header labels", async ({
     page,
   }) => {
-    await page.addInitScript(() => {
+    await page.goto("/operations");
+    await page.evaluate(() => {
       localStorage.removeItem("tover-columns-operations-unified");
     });
+    await page.reload();
 
-    await page.goto("/operations");
     const main = page.locator("main");
     await expect(main.getByText("Loading...")).not.toBeVisible();
     await expect(main.getByRole("table")).toBeVisible();

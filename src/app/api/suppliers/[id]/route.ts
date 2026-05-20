@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
+import { applyImportDefaultFlag } from "@/lib/master-data-import-defaults";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,7 @@ export async function GET(
       name: data.name,
       address: data.address,
       contactInfo: data.contact_info,
+      isImportDefault: data.is_import_default,
       createdAt: data.created_at,
     });
   } catch (error) {
@@ -60,21 +62,32 @@ export async function PATCH(
       updates.address = body.address?.trim() || null;
     if (body.contactInfo !== undefined)
       updates.contact_info = body.contactInfo?.trim() || null;
+    const hasImportDefaultUpdate = typeof body.isImportDefault === "boolean";
 
-    if (Object.keys(updates).length === 0) {
+    if (Object.keys(updates).length === 0 && !hasImportDefaultUpdate) {
       return NextResponse.json(
         { error: "No fields to update" },
         { status: 400 }
       );
     }
 
-    const { data, error } = await supabase
-      .from("suppliers")
-      .update(updates)
-      .eq("id", id)
-      .eq("workspace_id", workspaceId)
-      .select()
-      .single();
+    const query =
+      Object.keys(updates).length > 0
+        ? supabase
+            .from("suppliers")
+            .update(updates)
+            .eq("id", id)
+            .eq("workspace_id", workspaceId)
+            .select()
+            .single()
+        : supabase
+            .from("suppliers")
+            .select()
+            .eq("id", id)
+            .eq("workspace_id", workspaceId)
+            .single();
+
+    const { data, error } = await query;
 
     if (error) {
       if (error.code === "23505") {
@@ -90,11 +103,23 @@ export async function PATCH(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
+    if (hasImportDefaultUpdate) {
+      await applyImportDefaultFlag(
+        supabase,
+        "suppliers",
+        workspaceId,
+        id,
+        body.isImportDefault
+      );
+      data.is_import_default = body.isImportDefault;
+    }
+
     return NextResponse.json({
       id: data.id,
       name: data.name,
       address: data.address,
       contactInfo: data.contact_info,
+      isImportDefault: data.is_import_default,
       createdAt: data.created_at,
     });
   } catch (error) {

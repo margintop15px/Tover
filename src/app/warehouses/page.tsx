@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import DataTable from "@/components/DataTable";
+import ImportDefaultField from "@/components/ImportDefaultField";
 import type { Warehouse, WarehousePurpose } from "@/types/inventory";
 import { Pencil, Trash2, Plus } from "lucide-react";
 
@@ -33,6 +34,7 @@ export default function WarehousesPage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [purpose, setPurpose] = useState<WarehousePurpose | "">("");
+  const [isImportDefault, setIsImportDefault] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -56,6 +58,7 @@ export default function WarehousesPage() {
     setName("");
     setDescription("");
     setPurpose("");
+    setIsImportDefault(false);
     setError("");
     setDialogOpen(true);
   };
@@ -65,6 +68,7 @@ export default function WarehousesPage() {
     setName(item.name);
     setDescription(item.description || "");
     setPurpose(item.purpose || "");
+    setIsImportDefault(item.isImportDefault);
     setError("");
     setDialogOpen(true);
   };
@@ -84,6 +88,7 @@ export default function WarehousesPage() {
           name: name.trim(),
           description: description.trim() || undefined,
           purpose: purpose || undefined,
+          isImportDefault,
         }),
       });
       if (!res.ok) {
@@ -151,6 +156,15 @@ export default function WarehousesPage() {
               render: (item) =>
                 item.isDefaultDefect ? (
                   <Badge variant="secondary">{t.defaultDefect}</Badge>
+                ) : null,
+            },
+            {
+              key: "isImportDefault",
+              header: t.importDefault,
+              className: "w-36",
+              render: (item) =>
+                item.isImportDefault ? (
+                  <Badge variant="secondary">{t.importDefault}</Badge>
                 ) : null,
             },
             {
@@ -236,6 +250,11 @@ export default function WarehousesPage() {
                 </SelectContent>
               </Select>
             </Field>
+            <ImportDefaultField
+              checked={isImportDefault}
+              entityLabel={t.warehouseEntity}
+              onCheckedChange={setIsImportDefault}
+            />
             {error && (
               <p className="text-sm text-destructive">{error}</p>
             )}

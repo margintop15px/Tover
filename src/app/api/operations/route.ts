@@ -139,6 +139,7 @@ export async function GET(request: NextRequest) {
     const supplierId = searchParams.get("supplierId");
     const productId = searchParams.get("productId");
     const warehouseId = searchParams.get("warehouseId");
+    const importId = searchParams.get("importId");
     const from = searchParams.get("from");
     const to = searchParams.get("to");
     const requestedSortBy = searchParams.get("sortBy");
@@ -150,7 +151,7 @@ export async function GET(request: NextRequest) {
       ? requestedSortDir
       : "desc";
 
-    // If filtering by product or warehouse, first find matching operation IDs
+    // If filtering by product, warehouse, or import batch, first find matching operation IDs.
     let operationIdFilter: string[] | null = null;
     if (productId || warehouseId) {
       let itemQuery = supabase
@@ -160,6 +161,35 @@ export async function GET(request: NextRequest) {
       if (warehouseId) itemQuery = itemQuery.eq("warehouse_id", warehouseId);
       const { data: matchingItems } = await itemQuery;
       operationIdFilter = [...new Set((matchingItems || []).map((i) => i.operation_id))];
+      if (operationIdFilter.length === 0) {
+        return NextResponse.json({
+          page: { limit, offset, totalEstimate: 0 },
+          items: [],
+        });
+      }
+    }
+
+    if (importId) {
+      const { data: importLinks, error: importLinkError } = await supabase
+        .from("operation_import_committed_operations")
+        .select("operation_id")
+        .eq("workspace_id", workspaceId)
+        .eq("import_id", importId);
+
+      if (importLinkError) {
+        return NextResponse.json(
+          { error: importLinkError.message },
+          { status: 500 }
+        );
+      }
+
+      const importedOperationIds = [
+        ...new Set((importLinks || []).map((link) => link.operation_id)),
+      ];
+      operationIdFilter = operationIdFilter
+        ? operationIdFilter.filter((id) => importedOperationIds.includes(id))
+        : importedOperationIds;
+
       if (operationIdFilter.length === 0) {
         return NextResponse.json({
           page: { limit, offset, totalEstimate: 0 },

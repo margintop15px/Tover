@@ -1,8 +1,6 @@
 import { expect, test } from "@playwright/test";
-
-function hasAuthCredentials(): boolean {
-  return Boolean(process.env.E2E_EMAIL && process.env.E2E_PASSWORD);
-}
+import type { APIRequestContext } from "@playwright/test";
+import { authSkipReason, hasAuthCredentials } from "./auth-helpers";
 
 /** Unique run ID to avoid collisions across parallel/repeated runs */
 const RUN_ID = Date.now().toString(36);
@@ -11,12 +9,28 @@ function uniqueName(prefix: string): string {
   return `E2E-${prefix}-${RUN_ID}`;
 }
 
+async function postJson<T>(
+  request: APIRequestContext,
+  url: string,
+  body: Record<string, unknown>
+): Promise<T> {
+  const response = await request.post(url, { data: body });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return (await response.json()) as T;
+}
+
+async function getJson<T>(
+  request: APIRequestContext,
+  url: string
+): Promise<T> {
+  const response = await request.get(url);
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return (await response.json()) as T;
+}
+
 test.describe("inventory management", () => {
   test.beforeEach(() => {
-    test.skip(
-      !hasAuthCredentials(),
-      "Set E2E_EMAIL and E2E_PASSWORD to run authenticated tests"
-    );
+    test.skip(!hasAuthCredentials(), authSkipReason());
   });
 
   // ── Sidebar navigation ──────────────────────────────────────────────
@@ -24,44 +38,49 @@ test.describe("inventory management", () => {
   test.describe("sidebar navigation", () => {
     test("sidebar shows all navigation items", async ({ page }) => {
       await page.goto("/");
+      await expect(page).toHaveURL(/\/operations$/);
 
-      // Top-level links
-      await expect(page.getByRole("link", { name: "Dashboard" })).toBeVisible();
-      await expect(page.getByRole("link", { name: "Operations" })).toBeVisible();
-      await expect(page.getByRole("link", { name: "Team" })).toBeVisible();
+      const sidebarLinks = page.locator("aside nav a");
+      await expect(sidebarLinks.first()).toHaveText("Operations");
+      await expect(page.getByRole("link", { name: "Dashboard" })).toHaveCount(0);
+      await expect(page.getByRole("link", { name: "Settings" })).toBeVisible();
 
-      // Master Data group items (open by default)
-      await expect(page.getByRole("link", { name: "Products" })).toBeVisible();
-      await expect(page.getByRole("link", { name: "Warehouses" })).toBeVisible();
-      await expect(page.getByRole("link", { name: "Suppliers" })).toBeVisible();
-      await expect(page.getByRole("link", { name: "Categories" })).toBeVisible();
-      await expect(page.getByRole("link", { name: "Stores" })).toBeVisible();
+      // Reports group is expanded by default.
+      await expect(page.getByRole("button", { name: "Reports" })).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Inventory Balances" })
+      ).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Product Movement" })
+      ).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Supplier Debt" })
+      ).toBeVisible();
+
+      // Master Data group is collapsed by default.
+      await expect(page.getByRole("button", { name: "Master Data" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "Products" })).not.toBeVisible();
 
       // Log out button
       await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
-
-      // Reports group (collapsible nav group)
-      await expect(page.getByRole("button", { name: "Reports" })).toBeVisible();
     });
 
     test("Master Data group is collapsible", async ({ page }) => {
       await page.goto("/");
 
-      // Products link should be visible initially (group open by default)
       const productsLink = page.getByRole("link", { name: "Products" });
-      await expect(productsLink).toBeVisible();
-
-      // Click the Master Data toggle button to collapse
-      await page.getByRole("button", { name: "Master Data" }).click();
       await expect(productsLink).not.toBeVisible();
 
-      // Click again to expand
       await page.getByRole("button", { name: "Master Data" }).click();
       await expect(productsLink).toBeVisible();
+
+      await page.getByRole("button", { name: "Master Data" }).click();
+      await expect(productsLink).not.toBeVisible();
     });
 
     test("navigate to each entity page via sidebar", async ({ page }) => {
       await page.goto("/");
+      await page.getByRole("button", { name: "Master Data" }).click();
 
       // Categories
       await page.getByRole("link", { name: "Categories" }).click();
@@ -104,6 +123,108 @@ test.describe("inventory management", () => {
       await expect(
         page.getByRole("heading", { name: "Operations" })
       ).toBeVisible();
+    });
+  });
+
+  // ── Master Data Defaults ────────────────────────────────────────────
+
+  test.describe("master data import defaults", () => {
+    test("only one supported item per master data type can be the import default", async ({
+      request,
+    }) => {
+      const suffix = uniqueName("ImportDefault");
+
+      const categoryA = await postJson<{ id: string }>(request, "/api/categories", {
+        name: `${suffix}-Category-A`,
+        isImportDefault: true,
+      });
+      const categoryB = await postJson<{ id: string }>(request, "/api/categories", {
+        name: `${suffix}-Category-B`,
+        isImportDefault: true,
+      });
+      expect(
+        (await getJson<{ isImportDefault: boolean }>(
+          request,
+          `/api/categories/${categoryA.id}`
+        )).isImportDefault
+      ).toBe(false);
+      expect(
+        (await getJson<{ isImportDefault: boolean }>(
+          request,
+          `/api/categories/${categoryB.id}`
+        )).isImportDefault
+      ).toBe(true);
+
+      const storeA = await postJson<{ id: string }>(request, "/api/stores", {
+        name: `${suffix}-Store-A`,
+        isImportDefault: true,
+      });
+      const storeB = await postJson<{ id: string }>(request, "/api/stores", {
+        name: `${suffix}-Store-B`,
+        isImportDefault: true,
+      });
+      expect(
+        (await getJson<{ isImportDefault: boolean }>(
+          request,
+          `/api/stores/${storeA.id}`
+        )).isImportDefault
+      ).toBe(false);
+      expect(
+        (await getJson<{ isImportDefault: boolean }>(
+          request,
+          `/api/stores/${storeB.id}`
+        )).isImportDefault
+      ).toBe(true);
+
+      const warehouseA = await postJson<{ id: string }>(
+        request,
+        "/api/warehouses",
+        {
+          name: `${suffix}-Warehouse-A`,
+          isImportDefault: true,
+        }
+      );
+      const warehouseB = await postJson<{ id: string }>(
+        request,
+        "/api/warehouses",
+        {
+          name: `${suffix}-Warehouse-B`,
+          isImportDefault: true,
+        }
+      );
+      expect(
+        (await getJson<{ isImportDefault: boolean }>(
+          request,
+          `/api/warehouses/${warehouseA.id}`
+        )).isImportDefault
+      ).toBe(false);
+      expect(
+        (await getJson<{ isImportDefault: boolean }>(
+          request,
+          `/api/warehouses/${warehouseB.id}`
+        )).isImportDefault
+      ).toBe(true);
+
+      const supplierA = await postJson<{ id: string }>(request, "/api/suppliers", {
+        name: `${suffix}-Supplier-A`,
+        isImportDefault: true,
+      });
+      const supplierB = await postJson<{ id: string }>(request, "/api/suppliers", {
+        name: `${suffix}-Supplier-B`,
+        isImportDefault: true,
+      });
+      expect(
+        (await getJson<{ isImportDefault: boolean }>(
+          request,
+          `/api/suppliers/${supplierA.id}`
+        )).isImportDefault
+      ).toBe(false);
+      expect(
+        (await getJson<{ isImportDefault: boolean }>(
+          request,
+          `/api/suppliers/${supplierB.id}`
+        )).isImportDefault
+      ).toBe(true);
     });
   });
 
@@ -213,8 +334,9 @@ test.describe("inventory management", () => {
 
       // Verify default defect warehouse exists and its delete button is disabled
       const defectRow = page
-        .getByRole("row")
-        .filter({ hasText: "Default Defect" });
+        .locator("tbody tr")
+        .filter({ hasText: "Default Defect" })
+        .first();
       await expect(defectRow).toBeVisible();
       await expect(defectRow.getByRole("button").nth(1)).toBeDisabled();
 

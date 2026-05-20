@@ -25,6 +25,7 @@ export interface CategoryRow {
   id: string;
   workspace_id: string;
   name: string;
+  is_import_default: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -33,6 +34,7 @@ export interface StoreRow {
   id: string;
   workspace_id: string;
   name: string;
+  is_import_default: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -44,6 +46,7 @@ export interface WarehouseRow {
   description: string | null;
   purpose: WarehousePurpose | null;
   is_default_defect: boolean;
+  is_import_default: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -54,6 +57,7 @@ export interface SupplierRow {
   name: string;
   address: string | null;
   contact_info: string | null;
+  is_import_default: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -113,12 +117,14 @@ export interface OperationItemRow {
 export interface Category {
   id: string;
   name: string;
+  isImportDefault: boolean;
   createdAt: string;
 }
 
 export interface Store {
   id: string;
   name: string;
+  isImportDefault: boolean;
   createdAt: string;
 }
 
@@ -128,6 +134,7 @@ export interface Warehouse {
   description: string | null;
   purpose: WarehousePurpose | null;
   isDefaultDefect: boolean;
+  isImportDefault: boolean;
   createdAt: string;
 }
 
@@ -136,6 +143,7 @@ export interface Supplier {
   name: string;
   address: string | null;
   contactInfo: string | null;
+  isImportDefault: boolean;
   createdAt: string;
 }
 
@@ -192,22 +200,26 @@ export interface OperationItem {
 
 export interface CreateCategoryRequest {
   name: string;
+  isImportDefault?: boolean;
 }
 
 export interface CreateStoreRequest {
   name: string;
+  isImportDefault?: boolean;
 }
 
 export interface CreateWarehouseRequest {
   name: string;
   description?: string;
   purpose?: WarehousePurpose;
+  isImportDefault?: boolean;
 }
 
 export interface CreateSupplierRequest {
   name: string;
   address?: string;
   contactInfo?: string;
+  isImportDefault?: boolean;
 }
 
 export interface CreateProductRequest {

@@ -4,7 +4,6 @@ import { useCallback, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  LayoutDashboard,
   Package,
   Warehouse,
   Truck,
@@ -50,8 +49,17 @@ const iconClass = "h-4 w-4";
 
 const navGroups: NavGroup[] = [
   {
-    labelKey: "masterData",
+    labelKey: "reportsGroup",
     defaultOpen: true,
+    items: [
+      { href: "/reports/inventory", labelKey: "reportInventory", icon: <ClipboardList className={iconClass} /> },
+      { href: "/reports/movement", labelKey: "reportMovement", icon: <TrendingUp className={iconClass} /> },
+      { href: "/reports/supplier-debt", labelKey: "reportSupplierDebt", icon: <CreditCard className={iconClass} /> },
+    ],
+  },
+  {
+    labelKey: "masterData",
+    defaultOpen: false,
     items: [
       { href: "/products", labelKey: "products", icon: <Package className={iconClass} /> },
       { href: "/warehouses", labelKey: "warehouses", icon: <Warehouse className={iconClass} /> },
@@ -60,19 +68,6 @@ const navGroups: NavGroup[] = [
       { href: "/stores", labelKey: "stores", icon: <Store className={iconClass} /> },
     ],
   },
-  {
-    labelKey: "reportsGroup",
-    defaultOpen: false,
-    items: [
-      { href: "/reports/inventory", labelKey: "reportInventory", icon: <ClipboardList className={iconClass} /> },
-      { href: "/reports/movement", labelKey: "reportMovement", icon: <TrendingUp className={iconClass} /> },
-      { href: "/reports/supplier-debt", labelKey: "reportSupplierDebt", icon: <CreditCard className={iconClass} /> },
-    ],
-  },
-];
-
-const topItems: NavItem[] = [
-  { href: "/", labelKey: "dashboard", icon: <LayoutDashboard className={iconClass} /> },
 ];
 
 const operationsItem: NavItem = {
@@ -150,7 +145,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
     <div className="flex h-full flex-col">
       {/* Logo */}
       <div className="flex h-14 items-center px-4">
-        <Link href="/" className="text-lg font-bold" onClick={onNavigate}>
+        <Link href="/operations" className="text-lg font-bold" onClick={onNavigate}>
           {t.appName}
         </Link>
       </div>
@@ -160,15 +155,14 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       {/* Nav */}
       <ScrollArea className="flex-1 px-3 py-3">
         <nav className="flex flex-col gap-1">
-          {/* Top items */}
-          {topItems.map((item) => (
+          {/* Operations */}
+          <div>
             <SidebarNavLink
-              key={item.href}
-              item={item}
+              item={operationsItem}
               pathname={pathname}
               onClick={onNavigate}
             />
-          ))}
+          </div>
 
           {/* Groups */}
           {navGroups.map((group) => {
@@ -201,15 +195,6 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
               </div>
             );
           })}
-
-          {/* Operations */}
-          <div className="mt-2">
-            <SidebarNavLink
-              item={operationsItem}
-              pathname={pathname}
-              onClick={onNavigate}
-            />
-          </div>
 
           <Separator className="my-2" />
 

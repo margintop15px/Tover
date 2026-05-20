@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import DataTable from "@/components/DataTable";
+import ImportDefaultField from "@/components/ImportDefaultField";
 import type { Supplier } from "@/types/inventory";
 import { Pencil, Trash2, Plus } from "lucide-react";
 
@@ -25,6 +27,7 @@ export default function SuppliersPage() {
   const [name, setName] = useState("");
   const [address, setAddress] = useState("");
   const [contactInfo, setContactInfo] = useState("");
+  const [isImportDefault, setIsImportDefault] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -48,6 +51,7 @@ export default function SuppliersPage() {
     setName("");
     setAddress("");
     setContactInfo("");
+    setIsImportDefault(false);
     setError("");
     setDialogOpen(true);
   };
@@ -57,6 +61,7 @@ export default function SuppliersPage() {
     setName(item.name);
     setAddress(item.address || "");
     setContactInfo(item.contactInfo || "");
+    setIsImportDefault(item.isImportDefault);
     setError("");
     setDialogOpen(true);
   };
@@ -76,6 +81,7 @@ export default function SuppliersPage() {
           name: name.trim(),
           address: address.trim() || undefined,
           contactInfo: contactInfo.trim() || undefined,
+          isImportDefault,
         }),
       });
       if (!res.ok) {
@@ -117,6 +123,15 @@ export default function SuppliersPage() {
           tableId="suppliers"
           columns={[
             { key: "name", header: t.name, required: true },
+            {
+              key: "isImportDefault",
+              header: t.importDefault,
+              className: "w-36",
+              render: (item) =>
+                item.isImportDefault ? (
+                  <Badge variant="secondary">{t.importDefault}</Badge>
+                ) : null,
+            },
             {
               key: "address",
               header: t.supplierAddress,
@@ -196,6 +211,11 @@ export default function SuppliersPage() {
                 rows={2}
               />
             </Field>
+            <ImportDefaultField
+              checked={isImportDefault}
+              entityLabel={t.supplierEntity}
+              onCheckedChange={setIsImportDefault}
+            />
             {error && (
               <p className="text-sm text-destructive">{error}</p>
             )}

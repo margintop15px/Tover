@@ -5,6 +5,7 @@ import { useI18n } from "@/i18n/context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field, FieldLabel } from "@/components/ui/field";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -12,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import DataTable from "@/components/DataTable";
+import ImportDefaultField from "@/components/ImportDefaultField";
 import type { Category } from "@/types/inventory";
 import { Pencil, Trash2, Plus } from "lucide-react";
 
@@ -22,6 +24,7 @@ export default function CategoriesPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Category | null>(null);
   const [name, setName] = useState("");
+  const [isImportDefault, setIsImportDefault] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -43,6 +46,7 @@ export default function CategoriesPage() {
   const openCreate = () => {
     setEditing(null);
     setName("");
+    setIsImportDefault(false);
     setError("");
     setDialogOpen(true);
   };
@@ -50,6 +54,7 @@ export default function CategoriesPage() {
   const openEdit = (item: Category) => {
     setEditing(item);
     setName(item.name);
+    setIsImportDefault(item.isImportDefault);
     setError("");
     setDialogOpen(true);
   };
@@ -65,7 +70,7 @@ export default function CategoriesPage() {
       const res = await fetch(url, {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim() }),
+        body: JSON.stringify({ name: name.trim(), isImportDefault }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -103,6 +108,15 @@ export default function CategoriesPage() {
         <DataTable<Category & Record<string, unknown>>
           columns={[
             { key: "name", header: t.name, required: true },
+            {
+              key: "isImportDefault",
+              header: t.importDefault,
+              className: "w-36",
+              render: (item) =>
+                item.isImportDefault ? (
+                  <Badge variant="secondary">{t.importDefault}</Badge>
+                ) : null,
+            },
             {
               key: "actions",
               header: t.actions,
@@ -156,6 +170,11 @@ export default function CategoriesPage() {
                 autoFocus
               />
             </Field>
+            <ImportDefaultField
+              checked={isImportDefault}
+              entityLabel={t.categoryEntity}
+              onCheckedChange={setIsImportDefault}
+            />
             {error && (
               <p className="text-sm text-destructive">{error}</p>
             )}

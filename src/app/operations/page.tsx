@@ -41,6 +41,7 @@ import {
   Filter,
   Pencil,
   Plus,
+  Upload,
   X,
 } from "lucide-react";
 
@@ -177,6 +178,9 @@ function OperationsPageContent() {
   );
   const [filterSupplierId, setFilterSupplierId] = useState(
     () => searchParams.get("supplierId") || ""
+  );
+  const [filterImportId, setFilterImportId] = useState(
+    () => searchParams.get("importId") || ""
   );
   const [sortBy, setSortBy] = useState<SortBy | "">(() => {
     const value = searchParams.get("sortBy");
@@ -317,6 +321,7 @@ function OperationsPageContent() {
     setFilterProductId("");
     setFilterWarehouseId("");
     setFilterSupplierId("");
+    setFilterImportId("");
     setSortBy("");
     setSortDir("desc");
     setOffset(0);
@@ -330,6 +335,7 @@ function OperationsPageContent() {
     if (filterProductId) params.set("productId", filterProductId);
     if (filterWarehouseId) params.set("warehouseId", filterWarehouseId);
     if (filterSupplierId) params.set("supplierId", filterSupplierId);
+    if (filterImportId) params.set("importId", filterImportId);
     if (dateFrom) params.set("from", dateFrom);
     if (dateTo) params.set("to", dateTo);
     if (sortBy) {
@@ -344,6 +350,7 @@ function OperationsPageContent() {
     dateFrom,
     dateTo,
     filterProductId,
+    filterImportId,
     filterSupplierId,
     filterType,
     filterWarehouseId,
@@ -384,6 +391,7 @@ function OperationsPageContent() {
       if (filterProductId) params.set("productId", filterProductId);
       if (filterWarehouseId) params.set("warehouseId", filterWarehouseId);
       if (filterSupplierId) params.set("supplierId", filterSupplierId);
+      if (filterImportId) params.set("importId", filterImportId);
       if (dateFrom) params.set("from", dateFrom);
       if (dateTo) params.set("to", dateTo);
       if (sortBy) {
@@ -402,6 +410,7 @@ function OperationsPageContent() {
     offset,
     filterType,
     filterProductId,
+    filterImportId,
     filterWarehouseId,
     filterSupplierId,
     dateFrom,
@@ -504,19 +513,49 @@ function OperationsPageContent() {
     Boolean(filterProductId) ||
     Boolean(filterWarehouseId) ||
     Boolean(filterSupplierId) ||
+    Boolean(filterImportId) ||
     Boolean(sortBy);
 
   return (
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between gap-4">
         <h1 className="text-2xl font-bold">{t.operationsTitle}</h1>
-        <Link href="/operations/new">
-          <Button className="gap-2">
-            <Plus className="h-4 w-4" />
-            {t.newOperation}
-          </Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href="/operations/import">
+            <Button variant="outline" className="gap-2">
+              <Upload className="h-4 w-4" />
+              {t.importOperations}
+            </Button>
+          </Link>
+          <Link href="/operations/new">
+            <Button className="gap-2">
+              <Plus className="h-4 w-4" />
+              {t.newOperation}
+            </Button>
+          </Link>
+        </div>
       </div>
+
+      {filterImportId && (
+        <div className="mb-4 flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2 text-sm">
+          <span className="text-muted-foreground">
+            {t.showingImportedOperations}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setFilterImportId("");
+              setOffset(0);
+              router.replace("/operations");
+            }}
+          >
+            <X className="h-4 w-4" />
+            {t.clearFilters}
+          </Button>
+        </div>
+      )}
 
       {loading ? (
         <p className="text-muted-foreground">{t.loading}</p>

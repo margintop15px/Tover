@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
+import { applyImportDefaultFlag } from "@/lib/master-data-import-defaults";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,7 @@ export async function GET(
     return NextResponse.json({
       id: data.id,
       name: data.name,
+      isImportDefault: data.is_import_default,
       createdAt: data.created_at,
     });
   } catch (error) {
@@ -54,21 +56,32 @@ export async function PATCH(
       }
       updates.name = name;
     }
+    const hasImportDefaultUpdate = typeof body.isImportDefault === "boolean";
 
-    if (Object.keys(updates).length === 0) {
+    if (Object.keys(updates).length === 0 && !hasImportDefaultUpdate) {
       return NextResponse.json(
         { error: "No fields to update" },
         { status: 400 }
       );
     }
 
-    const { data, error } = await supabase
-      .from("categories")
-      .update(updates)
-      .eq("id", id)
-      .eq("workspace_id", workspaceId)
-      .select()
-      .single();
+    const query =
+      Object.keys(updates).length > 0
+        ? supabase
+            .from("categories")
+            .update(updates)
+            .eq("id", id)
+            .eq("workspace_id", workspaceId)
+            .select()
+            .single()
+        : supabase
+            .from("categories")
+            .select()
+            .eq("id", id)
+            .eq("workspace_id", workspaceId)
+            .single();
+
+    const { data, error } = await query;
 
     if (error) {
       if (error.code === "23505") {
@@ -84,9 +97,21 @@ export async function PATCH(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
+    if (hasImportDefaultUpdate) {
+      await applyImportDefaultFlag(
+        supabase,
+        "categories",
+        workspaceId,
+        id,
+        body.isImportDefault
+      );
+      data.is_import_default = body.isImportDefault;
+    }
+
     return NextResponse.json({
       id: data.id,
       name: data.name,
+      isImportDefault: data.is_import_default,
       createdAt: data.created_at,
     });
   } catch (error) {

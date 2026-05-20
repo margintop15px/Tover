@@ -51,10 +51,14 @@ NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
+# Optional E2E overrides:
+# E2E_EMAIL=playwright@tover.local
+# E2E_PASSWORD=Playwright-dev-password-1
 ```
 
 Notes:
 - `SUPABASE_SERVICE_ROLE_KEY` is required for server-side invite operations.
+- Playwright authenticated tests auto-provision `playwright@tover.local` in local dev when `E2E_EMAIL`/`E2E_PASSWORD` are omitted and the Supabase service role key is present.
 - Never expose `SUPABASE_SERVICE_ROLE_KEY` to the browser.
 
 ## Supabase Setup
@@ -102,6 +106,8 @@ Populate the database with sample inventory data (categories, warehouses, suppli
 ```bash
 npm run seed  # requires dev server running + E2E_EMAIL/E2E_PASSWORD env vars
 ```
+
+Authenticated Playwright runs use the same auth model. In local dev, they load `.env.local` and create/update a dev-only owner user automatically when explicit `E2E_EMAIL`/`E2E_PASSWORD` are not set. Set `E2E_AUTO_PROVISION=false` to disable that behavior.
 
 ## Auth + Organization Model
 

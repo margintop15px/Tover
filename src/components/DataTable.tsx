@@ -149,8 +149,10 @@ export default function DataTable<T extends Record<string, any>>({
               <DropdownMenuCheckboxItem
                 key={col.key}
                 checked={isColumnVisible(col.key)}
-                onSelect={(event) => event.preventDefault()}
-                onCheckedChange={() => toggleColumn(col.key)}
+                onSelect={(event) => {
+                  event.preventDefault();
+                  toggleColumn(col.key);
+                }}
               >
                 {col.headerLabel ?? col.header}
               </DropdownMenuCheckboxItem>

@@ -99,6 +99,16 @@ export function toRouteErrorResponse(error: unknown): NextResponse {
   }
 
   console.error("Route context error:", error);
+  if (process.env.NODE_ENV !== "production") {
+    return NextResponse.json(
+      {
+        error: "Internal server error",
+        detail: error instanceof Error ? error.message : String(error),
+      },
+      { status: 500 }
+    );
+  }
+
   return NextResponse.json(
     { error: "Internal server error" },
     { status: 500 }

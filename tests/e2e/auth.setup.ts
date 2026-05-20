@@ -1,27 +1,38 @@
 import { test } from "@playwright/test";
-
-const AUTH_STATE_PATH = "playwright/.auth/user.json";
-
-function hasAuthCredentials(): boolean {
-  return Boolean(process.env.E2E_EMAIL && process.env.E2E_PASSWORD);
-}
+import {
+  AUTH_STATE_PATH,
+  authSkipReason,
+  ensureAuthStateDir,
+  ensureDevAuthUser,
+  getAuthCredentials,
+} from "./auth-helpers";
 
 test("authenticate once and persist storage state", async ({ page }) => {
-  if (!hasAuthCredentials()) {
+  ensureAuthStateDir();
+
+  const credentials = getAuthCredentials();
+  if (!credentials) {
     await page.context().storageState({ path: AUTH_STATE_PATH });
-    test.skip(
-      true,
-      "Skipping authenticated setup because E2E_EMAIL/E2E_PASSWORD are not set"
-    );
+    test.skip(true, `Skipping authenticated setup. ${authSkipReason()}`);
     return;
   }
 
+  await ensureDevAuthUser(credentials);
+
   await page.goto("/login");
 
-  await page.getByLabel("Email").fill(process.env.E2E_EMAIL!);
-  await page.getByLabel("Password").fill(process.env.E2E_PASSWORD!);
+  await page.getByLabel("Email").fill(credentials.email);
+  await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Log in" }).click();
 
-  await page.waitForURL(/\/$/);
+  const loginError = page.locator("form p").first();
+  await Promise.race([
+    page.waitForURL(/\/$/, { timeout: 15_000 }),
+    loginError.waitFor({ state: "visible", timeout: 15_000 }).then(async () => {
+      throw new Error(
+        `Login failed: ${(await loginError.textContent()) ?? "unknown error"}`
+      );
+    }),
+  ]);
   await page.context().storageState({ path: AUTH_STATE_PATH });
 });

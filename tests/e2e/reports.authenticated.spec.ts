@@ -1,15 +1,9 @@
 import { expect, test } from "@playwright/test";
-
-function hasAuthCredentials(): boolean {
-  return Boolean(process.env.E2E_EMAIL && process.env.E2E_PASSWORD);
-}
+import { authSkipReason, hasAuthCredentials } from "./auth-helpers";
 
 test.describe("reports", () => {
   test.beforeEach(() => {
-    test.skip(
-      !hasAuthCredentials(),
-      "Set E2E_EMAIL and E2E_PASSWORD to run authenticated tests"
-    );
+    test.skip(!hasAuthCredentials(), authSkipReason());
   });
 
   // ── Sidebar navigation ──────────────────────────────────────────────

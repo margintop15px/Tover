@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
+import { applyImportDefaultFlag } from "@/lib/master-data-import-defaults";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +29,7 @@ export async function GET(
       description: data.description,
       purpose: data.purpose,
       isDefaultDefect: data.is_default_defect,
+      isImportDefault: data.is_import_default,
       createdAt: data.created_at,
     });
   } catch (error) {
@@ -60,21 +62,32 @@ export async function PATCH(
     if (body.description !== undefined)
       updates.description = body.description?.trim() || null;
     if (body.purpose !== undefined) updates.purpose = body.purpose || null;
+    const hasImportDefaultUpdate = typeof body.isImportDefault === "boolean";
 
-    if (Object.keys(updates).length === 0) {
+    if (Object.keys(updates).length === 0 && !hasImportDefaultUpdate) {
       return NextResponse.json(
         { error: "No fields to update" },
         { status: 400 }
       );
     }
 
-    const { data, error } = await supabase
-      .from("warehouses")
-      .update(updates)
-      .eq("id", id)
-      .eq("workspace_id", workspaceId)
-      .select()
-      .single();
+    const query =
+      Object.keys(updates).length > 0
+        ? supabase
+            .from("warehouses")
+            .update(updates)
+            .eq("id", id)
+            .eq("workspace_id", workspaceId)
+            .select()
+            .single()
+        : supabase
+            .from("warehouses")
+            .select()
+            .eq("id", id)
+            .eq("workspace_id", workspaceId)
+            .single();
+
+    const { data, error } = await query;
 
     if (error) {
       if (error.code === "23505") {
@@ -90,12 +103,24 @@ export async function PATCH(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
+    if (hasImportDefaultUpdate) {
+      await applyImportDefaultFlag(
+        supabase,
+        "warehouses",
+        workspaceId,
+        id,
+        body.isImportDefault
+      );
+      data.is_import_default = body.isImportDefault;
+    }
+
     return NextResponse.json({
       id: data.id,
       name: data.name,
       description: data.description,
       purpose: data.purpose,
       isDefaultDefect: data.is_default_defect,
+      isImportDefault: data.is_import_default,
       createdAt: data.created_at,
     });
   } catch (error) {

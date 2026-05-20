@@ -66,6 +66,47 @@ export interface ImportError {
   created_at: string;
 }
 
+export interface OperationImport {
+  id: string;
+  workspace_id: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  file_hash: string;
+  source_kind: string;
+  status: string;
+  summary: Record<string, unknown>;
+  findings: Record<string, unknown>;
+  extracted: Record<string, unknown>;
+  generated_code: string | null;
+  generated_code_result: Record<string, unknown>;
+  security_report: Record<string, unknown>;
+  approved_by: string | null;
+  approved_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OperationImportCandidate {
+  id: string;
+  workspace_id: string;
+  import_id: string;
+  row_index: number;
+  fingerprint: string;
+  status: string;
+  confidence: number;
+  source: Record<string, unknown>;
+  raw: Record<string, unknown>;
+  operation: Record<string, unknown>;
+  normalized_operation: Record<string, unknown>;
+  validation_errors: Record<string, unknown>[];
+  duplicate_of: string | null;
+  created_operation_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WorkspaceSettingsRow {
   id: string;
   workspace_id: string;
