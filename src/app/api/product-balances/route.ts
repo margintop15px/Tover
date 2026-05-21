@@ -39,6 +39,7 @@ export async function GET(request: NextRequest) {
         productName: (r.products as { name: string; sku_code: string | null } | null)?.name ?? "",
         warehouseId: r.warehouse_id,
         warehouseName: (r.warehouses as { name: string } | null)?.name ?? "",
+        qualityStatus: r.quality_status ?? "ordinary",
         quantity: Number(r.quantity),
         unitCost: Number(r.unit_cost),
       })),

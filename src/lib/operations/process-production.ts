@@ -1,6 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ValidatedOperation } from "./validate-operation";
-import { processProductionBalances } from "./update-balances";
 
 export async function processProduction(
   supabase: SupabaseClient,
@@ -34,6 +33,7 @@ export async function processProduction(
       unit_price: item.unitPrice || null,
       direction: "out" as const,
       store_id: item.storeId || null,
+      quality_status: item.qualityStatus || "ordinary",
     })),
     {
       operation_id: operation.id,
@@ -43,6 +43,7 @@ export async function processProduction(
       unit_price: inItem.unitPrice || null,
       direction: "in" as const,
       store_id: inItem.storeId || null,
+      quality_status: inItem.qualityStatus || "ordinary",
     },
   ];
 
@@ -52,21 +53,6 @@ export async function processProduction(
 
   if (itemError)
     throw new Error(`Failed to create operation items: ${itemError.message}`);
-
-  // Use RPC for atomic production balance update
-  const sources = outItems.map((item) => ({
-    product_id: item.productId,
-    warehouse_id: item.warehouseId,
-    quantity: item.quantity,
-  }));
-
-  const output = {
-    product_id: inItem.productId,
-    warehouse_id: inItem.warehouseId,
-    quantity: inItem.quantity,
-  };
-
-  await processProductionBalances(supabase, workspaceId, sources, output);
 
   // Optionally update output product's store_id
   if (inItem.storeId) {

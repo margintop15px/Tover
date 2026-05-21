@@ -13,6 +13,7 @@ import {
   Upload,
 } from "lucide-react";
 import { useI18n } from "@/i18n/context";
+import Pagination from "@/components/Pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,6 +50,7 @@ import type {
   OperationImportItemDraft,
   OperationImportRecord,
 } from "@/lib/operation-imports/types";
+import { operationImportDateInputValue } from "@/lib/operation-imports/date";
 import type {
   OperationType,
   Product,
@@ -74,6 +76,7 @@ const OPERATION_TYPES: OperationType[] = [
   "payment",
   "inventory_adjustment",
 ];
+const CANDIDATES_PER_PAGE = 50;
 
 function getSummaryNumber(
   summary: Record<string, unknown> | undefined,
@@ -548,32 +551,46 @@ function CandidateEditor({
   readOnly?: boolean;
 }) {
   const { t } = useI18n();
+  const [pageOffset, setPageOffset] = useState(0);
+  const lastPageOffset =
+    Math.max(0, Math.ceil(candidates.length / CANDIDATES_PER_PAGE) - 1) *
+    CANDIDATES_PER_PAGE;
+  const clampedPageOffset = Math.min(pageOffset, lastPageOffset);
+  const pageCandidates = useMemo(
+    () =>
+      candidates.slice(
+        clampedPageOffset,
+        clampedPageOffset + CANDIDATES_PER_PAGE
+      ),
+    [candidates, clampedPageOffset]
+  );
 
   return (
-    <div className="overflow-x-auto rounded-md border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead className="min-w-32">{t.operationType}</TableHead>
-            <TableHead className="min-w-36">{t.operationDate}</TableHead>
-            <TableHead className="min-w-44">{t.supplier}</TableHead>
-            <TableHead className="min-w-56">{t.product}</TableHead>
-            <TableHead className="min-w-44">{t.warehouse}</TableHead>
-            <TableHead className="w-28">{t.quantity}</TableHead>
-            <TableHead className="w-28">{t.price}</TableHead>
-            <TableHead className="min-w-48">{t.validation}</TableHead>
-            <TableHead className="w-32 text-right">{t.actions}</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {candidates.map((candidate) => {
-            const operation = getOperation(candidate);
-            const firstItem = getFirstItem(operation);
-            const errors = candidate.validation_errors || [];
-            const saving = savingCandidateId === candidate.id;
+    <div className="space-y-3">
+      <div className="overflow-x-auto rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="min-w-32">{t.operationType}</TableHead>
+              <TableHead className="min-w-36">{t.operationDate}</TableHead>
+              <TableHead className="min-w-44">{t.supplier}</TableHead>
+              <TableHead className="min-w-56">{t.product}</TableHead>
+              <TableHead className="min-w-44">{t.warehouse}</TableHead>
+              <TableHead className="min-w-36">{t.quantity}</TableHead>
+              <TableHead className="min-w-40">{t.price}</TableHead>
+              <TableHead className="min-w-48">{t.validation}</TableHead>
+              <TableHead className="w-32 text-right">{t.actions}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {pageCandidates.map((candidate) => {
+              const operation = getOperation(candidate);
+              const firstItem = getFirstItem(operation);
+              const errors = candidate.validation_errors || [];
+              const saving = savingCandidateId === candidate.id;
 
-            return (
-              <TableRow key={candidate.id}>
+              return (
+                <TableRow key={candidate.id}>
                 <TableCell>
                   <Select
                     value={operation.type || "__none"}
@@ -602,7 +619,7 @@ function CandidateEditor({
                 <TableCell>
                   <Input
                     type="date"
-                    value={operation.operationDate || ""}
+                    value={operationImportDateInputValue(operation.operationDate)}
                     disabled={readOnly}
                     onChange={(event) =>
                       onPatch(candidate, {
@@ -705,9 +722,11 @@ function CandidateEditor({
                     }
                   />
                 </TableCell>
-                <TableCell>
+                <TableCell className="min-w-36">
                   <Input
                     type="number"
+                    inputMode="decimal"
+                    step="any"
                     value={firstItem.quantity ?? ""}
                     disabled={readOnly}
                     onChange={(event) =>
@@ -720,12 +739,14 @@ function CandidateEditor({
                         })
                       )
                     }
-                    className="h-9"
+                    className="h-9 min-w-28 tabular-nums"
                   />
                 </TableCell>
-                <TableCell>
+                <TableCell className="min-w-40">
                   <Input
                     type="number"
+                    inputMode="decimal"
+                    step="any"
                     value={firstItem.unitPrice ?? ""}
                     disabled={readOnly}
                     onChange={(event) =>
@@ -738,7 +759,7 @@ function CandidateEditor({
                         })
                       )
                     }
-                    className="h-9"
+                    className="h-9 min-w-32 tabular-nums"
                   />
                 </TableCell>
                 <TableCell>
@@ -786,11 +807,20 @@ function CandidateEditor({
                     </Button>
                   </div>
                 </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+      {candidates.length > CANDIDATES_PER_PAGE && (
+        <Pagination
+          offset={clampedPageOffset}
+          limit={CANDIDATES_PER_PAGE}
+          total={candidates.length}
+          onPageChange={setPageOffset}
+        />
+      )}
     </div>
   );
 }

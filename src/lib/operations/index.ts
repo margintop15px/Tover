@@ -8,6 +8,7 @@ import { processTransfer } from "./process-transfer";
 import { processDefect } from "./process-defect";
 import { processProduction } from "./process-production";
 import { processInventoryAdjustment } from "./process-inventory-adjustment";
+import { rebuildInventoryReporting } from "./update-balances";
 
 export { validateOperation } from "./validate-operation";
 
@@ -50,6 +51,10 @@ export async function processOperation(
     case "production":
       operation = await processProduction(supabase, workspaceId, data);
       break;
+  }
+
+  if (operation) {
+    await rebuildInventoryReporting(supabase, workspaceId);
   }
 
   return { errors: null, operation };

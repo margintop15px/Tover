@@ -23,9 +23,21 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
+    let defaultWarehouseName: string | null = null;
+    if (data.default_warehouse_id) {
+      const { data: warehouse } = await supabase
+        .from("warehouses")
+        .select("name")
+        .eq("id", data.default_warehouse_id)
+        .single();
+      defaultWarehouseName = warehouse?.name ?? null;
+    }
+
     return NextResponse.json({
       id: data.id,
       name: data.name,
+      defaultWarehouseId: data.default_warehouse_id,
+      defaultWarehouseName,
       isImportDefault: data.is_import_default,
       createdAt: data.created_at,
     });
@@ -55,6 +67,9 @@ export async function PATCH(
         );
       }
       updates.name = name;
+    }
+    if (body.defaultWarehouseId !== undefined) {
+      updates.default_warehouse_id = body.defaultWarehouseId || null;
     }
     const hasImportDefaultUpdate = typeof body.isImportDefault === "boolean";
 
@@ -108,9 +123,21 @@ export async function PATCH(
       data.is_import_default = body.isImportDefault;
     }
 
+    let defaultWarehouseName: string | null = null;
+    if (data.default_warehouse_id) {
+      const { data: warehouse } = await supabase
+        .from("warehouses")
+        .select("name")
+        .eq("id", data.default_warehouse_id)
+        .single();
+      defaultWarehouseName = warehouse?.name ?? null;
+    }
+
     return NextResponse.json({
       id: data.id,
       name: data.name,
+      defaultWarehouseId: data.default_warehouse_id,
+      defaultWarehouseName,
       isImportDefault: data.is_import_default,
       createdAt: data.created_at,
     });

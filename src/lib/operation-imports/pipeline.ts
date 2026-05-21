@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import Papa from "papaparse";
 import type { OperationType } from "@/types/inventory";
 import { validateOperation } from "@/lib/operations";
+import { parseOperationImportDate } from "./date";
 import { parseXlsx } from "./xlsx";
 import type {
   BuiltCandidate,
@@ -313,32 +314,6 @@ function parseNumber(value: string | number | undefined) {
   return Number.isFinite(number) ? number : undefined;
 }
 
-function excelSerialToDate(serial: number) {
-  const epoch = Date.UTC(1899, 11, 30);
-  const date = new Date(epoch + serial * 24 * 60 * 60 * 1000);
-  return date.toISOString().slice(0, 10);
-}
-
-function parseDate(value: string | undefined) {
-  const raw = (value ?? "").trim();
-  if (!raw) return undefined;
-  const asNumber = Number(raw);
-  if (Number.isFinite(asNumber) && asNumber > 20000 && asNumber < 80000) {
-    return excelSerialToDate(asNumber);
-  }
-
-  const dmy = /^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/.exec(raw);
-  if (dmy) {
-    const [, day, month, year] = dmy;
-    const fullYear = year.length === 2 ? `20${year}` : year;
-    return `${fullYear.padStart(4, "0")}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
-  }
-
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return undefined;
-  return parsed.toISOString().slice(0, 10);
-}
-
 function inferOperationType(rawType: string, row: Record<string, string>) {
   const normalized = normalizeKey(rawType);
   if (normalized) {
@@ -467,6 +442,18 @@ export function normalizeAndValidateDraft(
       message: "Operation date is required",
       severity: "error",
     });
+  } else {
+    const parsedDate = parseOperationImportDate(normalized.operationDate);
+    if (parsedDate) {
+      normalized.operationDate = parsedDate;
+    } else {
+      normalized.operationDate = undefined;
+      errors.push({
+        field: "operationDate",
+        message: "Valid date is required",
+        severity: "error",
+      });
+    }
   }
 
   if (normalized.supplierName && !normalized.supplierId) {
@@ -687,7 +674,7 @@ function buildOperationFromRow(
   ref: RefData
 ): { operation: OperationImportDraft; confidence: number } {
   const inferred = inferOperationType(raw.type ?? "", raw);
-  const operationDate = parseDate(raw.operationDate);
+  const operationDate = parseOperationImportDate(raw.operationDate);
   const quantity = parseNumber(raw.quantity);
   const unitPrice = parseNumber(raw.unitPrice);
   const paymentAmount = parseNumber(raw.paymentAmount);

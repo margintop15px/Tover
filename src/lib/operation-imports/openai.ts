@@ -70,7 +70,11 @@ const extractionSchema = {
               null,
             ],
           },
-          operationDate: { type: ["string", "null"] },
+          operationDate: {
+            type: ["string", "null"],
+            description:
+              "Use yyyy-MM-dd when the calendar date can be determined. If the date is ambiguous or illegible, preserve the visible source text.",
+          },
           comment: { type: ["string", "null"] },
           supplierName: { type: ["string", "null"] },
           paymentAmount: { type: ["number", "string", "null"] },
@@ -206,7 +210,11 @@ const tabularPlanSchema = {
                       null,
                     ],
                   },
-                  operationDate: { type: ["string", "null"] },
+                  operationDate: {
+                    type: ["string", "null"],
+                    description:
+                      "Use yyyy-MM-dd when the calendar date can be determined. If the date is ambiguous or illegible, preserve the visible source text.",
+                  },
                   supplierName: { type: ["string", "null"] },
                   warehouseName: { type: ["string", "null"] },
                   comment: { type: ["string", "null"] },
@@ -545,7 +553,7 @@ export async function extractWithOpenAI({
     imageDataUrl: dataUrl,
     textPreview: text,
     instructions:
-      "Extract inventory operations from the user's file. Return only structured data. Do not guess IDs. Preserve uncertainty in findings. For visible text values, return the source text as-is even if it looks misspelled, incomplete, or not like a valid word. Do not return null for a name/comment/date when visible source text exists; users can correct it in review. If transformation code is useful, include it as generatedCode for audit; the application will not execute it locally.",
+      "Extract inventory operations from the user's file. Return only structured data. Do not guess IDs. Preserve uncertainty in findings. For visible names/comments, return the source text as-is even if it looks misspelled, incomplete, or not like a valid word. For dates, return yyyy-MM-dd when the calendar date is clear; otherwise return the visible source text rather than null. If transformation code is useful, include it as generatedCode for audit; the application will not execute it locally.",
     content: [
       {
         type: "input_text",

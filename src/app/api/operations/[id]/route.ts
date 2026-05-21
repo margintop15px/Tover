@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
+import { rebuildInventoryReporting } from "@/lib/operations/update-balances";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +52,7 @@ export async function GET(
         direction: item.direction,
         storeId: item.store_id,
         storeName: (item.stores as unknown as { name: string } | null)?.name ?? null,
+        qualityStatus: item.quality_status ?? "ordinary",
       })),
     });
   } catch (error) {
@@ -140,6 +142,8 @@ export async function PATCH(
     if (updateError) {
       return NextResponse.json({ error: updateError.message }, { status: 500 });
     }
+
+    await rebuildInventoryReporting(supabase, workspaceId);
 
     return NextResponse.json({ id: updated.id });
   } catch (error) {

@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ValidatedOperation } from "./validate-operation";
-import { updateProductBalance, getProductBalance } from "./update-balances";
+import { getProductBalance } from "./update-balances";
 
 export async function processTransfer(
   supabase: SupabaseClient,
@@ -15,7 +15,8 @@ export async function processTransfer(
     supabase,
     workspaceId,
     outItem.productId,
-    outItem.warehouseId
+    outItem.warehouseId,
+    outItem.qualityStatus || "ordinary"
   );
   const unitCost = sourceBalance?.unit_cost ?? 0;
 
@@ -44,6 +45,8 @@ export async function processTransfer(
         quantity: outItem.quantity,
         unit_price: unitCost,
         direction: "out",
+        store_id: outItem.storeId || null,
+        quality_status: outItem.qualityStatus || "ordinary",
       },
       {
         operation_id: operation.id,
@@ -52,28 +55,13 @@ export async function processTransfer(
         quantity: inItem.quantity,
         unit_price: unitCost,
         direction: "in",
+        store_id: inItem.storeId || outItem.storeId || null,
+        quality_status: inItem.qualityStatus || outItem.qualityStatus || "ordinary",
       },
     ]);
 
   if (itemError)
     throw new Error(`Failed to create operation items: ${itemError.message}`);
-
-  // Decrease source, increase destination (same cost)
-  await updateProductBalance(
-    supabase,
-    workspaceId,
-    outItem.productId,
-    outItem.warehouseId,
-    -outItem.quantity
-  );
-  await updateProductBalance(
-    supabase,
-    workspaceId,
-    inItem.productId,
-    inItem.warehouseId,
-    inItem.quantity,
-    unitCost
-  );
 
   return operation;
 }

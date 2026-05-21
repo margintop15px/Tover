@@ -116,6 +116,57 @@ test.describe("operation import validation", () => {
     });
   });
 
+  test("normalizes space-delimited dates from image extraction", () => {
+    const validation = normalizeAndValidateDraft(
+      {
+        type: "purchase",
+        operationDate: "23 04 2026",
+        supplierName: "Acme",
+        items: [
+          {
+            productName: "Flour",
+            warehouseName: "Main",
+            quantity: 2,
+            unitPrice: 5,
+          },
+        ],
+      },
+      ref,
+      []
+    );
+
+    expect(validation.status).toBe("ready");
+    expect(validation.normalized.operationDate).toBe("2026-04-23");
+  });
+
+  test("flags unparseable dates before approval", () => {
+    const validation = normalizeAndValidateDraft(
+      {
+        type: "purchase",
+        operationDate: "not a date",
+        supplierName: "Acme",
+        items: [
+          {
+            productName: "Flour",
+            warehouseName: "Main",
+            quantity: 2,
+            unitPrice: 5,
+          },
+        ],
+      },
+      ref,
+      []
+    );
+
+    expect(validation.status).toBe("needs_review");
+    expect(validation.normalized.operationDate).toBeUndefined();
+    expect(
+      validation.validationErrors.some(
+        (error) => error.field === "operationDate"
+      )
+    ).toBe(true);
+  });
+
   test("uses import defaults when non-product references are absent", () => {
     const defaultsRef: RefData = {
       categories: ref.categories,

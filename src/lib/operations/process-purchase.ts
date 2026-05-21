@@ -1,6 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ValidatedOperation } from "./validate-operation";
-import { processPurchaseBalance } from "./update-balances";
 
 export async function processPurchase(
   supabase: SupabaseClient,
@@ -31,6 +30,7 @@ export async function processPurchase(
     unit_price: item.unitPrice || null,
     direction: "in" as const,
     store_id: item.storeId || null,
+    quality_status: item.qualityStatus || "ordinary",
   }));
 
   const { error: itemError } = await supabase
@@ -39,19 +39,6 @@ export async function processPurchase(
 
   if (itemError)
     throw new Error(`Failed to create operation items: ${itemError.message}`);
-
-  // Cost is a per-warehouse balance value, not a product attribute.
-  // Purchases recalculate it from the current balance and purchase unit price.
-  for (const item of data.items) {
-    await processPurchaseBalance(
-      supabase,
-      workspaceId,
-      item.productId,
-      item.warehouseId,
-      item.quantity,
-      item.unitPrice!
-    );
-  }
 
   return operation;
 }

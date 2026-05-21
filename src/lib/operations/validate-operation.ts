@@ -130,9 +130,10 @@ function validatePurchase(
       comment: body.comment,
       supplierId: body.supplierId,
       items: items.map((item) => ({
-        ...item,
-        direction: "in" as const,
-      })),
+          ...item,
+          qualityStatus: item.qualityStatus || "ordinary",
+          direction: "in" as const,
+        })),
     },
   };
 }
@@ -164,9 +165,10 @@ function validateInventoryAdjustment(
       operationDate: body.operationDate,
       comment: body.comment,
       items: items.map((item) => ({
-        ...item,
-        direction: "in" as const,
-      })),
+          ...item,
+          qualityStatus: item.qualityStatus || "ordinary",
+          direction: "in" as const,
+        })),
     },
   };
 }
@@ -192,9 +194,10 @@ function validateSimpleItemOp(
       operationDate: body.operationDate,
       comment: body.comment,
       items: items.map((item) => ({
-        ...item,
-        direction: direction as "in" | "out",
-      })),
+          ...item,
+          qualityStatus: item.qualityStatus || "ordinary",
+          direction: direction as "in" | "out",
+        })),
     },
   };
 }
@@ -247,12 +250,14 @@ function validateTransfer(
           productId: body.productId!,
           warehouseId: body.sourceWarehouseId!,
           quantity: body.quantity!,
+          qualityStatus: "ordinary",
           direction: "out",
         },
         {
           productId: body.productId!,
           warehouseId: body.destinationWarehouseId!,
           quantity: body.quantity!,
+          qualityStatus: "ordinary",
           direction: "in",
         },
       ],
@@ -291,7 +296,10 @@ function validateProduction(
       type: "production",
       operationDate: body.operationDate,
       comment: body.comment,
-      items,
+      items: items.map((item) => ({
+        ...item,
+        qualityStatus: item.qualityStatus || "ordinary",
+      })),
     },
   };
 }
@@ -329,6 +337,7 @@ function validateDefect(
           productId: body.productId!,
           warehouseId: body.sourceWarehouseId!,
           quantity: body.quantity!,
+          qualityStatus: "ordinary",
           direction: "out",
         },
       ],

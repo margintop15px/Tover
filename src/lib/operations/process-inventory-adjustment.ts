@@ -1,6 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ValidatedOperation } from "./validate-operation";
-import { processPurchaseBalance } from "./update-balances";
 
 export async function processInventoryAdjustment(
   supabase: SupabaseClient,
@@ -29,6 +28,7 @@ export async function processInventoryAdjustment(
     unit_price: item.unitPrice || null,
     direction: "in" as const,
     store_id: item.storeId || null,
+    quality_status: item.qualityStatus || "ordinary",
   }));
 
   const { error: itemError } = await supabase
@@ -37,17 +37,6 @@ export async function processInventoryAdjustment(
 
   if (itemError)
     throw new Error(`Failed to create operation items: ${itemError.message}`);
-
-  for (const item of data.items) {
-    await processPurchaseBalance(
-      supabase,
-      workspaceId,
-      item.productId,
-      item.warehouseId,
-      item.quantity,
-      item.unitPrice!
-    );
-  }
 
   return operation;
 }

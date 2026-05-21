@@ -7,6 +7,13 @@ import { Input } from "@/components/ui/input";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Badge } from "@/components/ui/badge";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -24,7 +31,9 @@ export default function StoresPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Store | null>(null);
   const [name, setName] = useState("");
+  const [defaultWarehouseId, setDefaultWarehouseId] = useState("");
   const [isImportDefault, setIsImportDefault] = useState(false);
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -41,11 +50,22 @@ export default function StoresPage() {
 
   useEffect(() => {
     fetchItems();
+    fetch("/api/warehouses?limit=200")
+      .then((res) => res.json())
+      .then((data) => {
+        setWarehouses(
+          (data.items || []).map((w: { id: string; name: string }) => ({
+            id: w.id,
+            name: w.name,
+          }))
+        );
+      });
   }, [fetchItems]);
 
   const openCreate = () => {
     setEditing(null);
     setName("");
+    setDefaultWarehouseId("");
     setIsImportDefault(false);
     setError("");
     setDialogOpen(true);
@@ -54,6 +74,7 @@ export default function StoresPage() {
   const openEdit = (item: Store) => {
     setEditing(item);
     setName(item.name);
+    setDefaultWarehouseId(item.defaultWarehouseId || "");
     setIsImportDefault(item.isImportDefault);
     setError("");
     setDialogOpen(true);
@@ -68,7 +89,11 @@ export default function StoresPage() {
       const res = await fetch(url, {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), isImportDefault }),
+        body: JSON.stringify({
+          name: name.trim(),
+          defaultWarehouseId: defaultWarehouseId || null,
+          isImportDefault,
+        }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -106,6 +131,11 @@ export default function StoresPage() {
         <DataTable<Store & Record<string, unknown>>
           columns={[
             { key: "name", header: t.name, required: true },
+            {
+              key: "defaultWarehouseName",
+              header: t.warehouse,
+              render: (item) => item.defaultWarehouseName || "-",
+            },
             {
               key: "isImportDefault",
               header: t.importDefault,
@@ -171,6 +201,27 @@ export default function StoresPage() {
               entityLabel={t.storeEntity}
               onCheckedChange={setIsImportDefault}
             />
+            <Field>
+              <FieldLabel>{t.warehouse}</FieldLabel>
+              <Select
+                value={defaultWarehouseId}
+                onValueChange={(value) =>
+                  setDefaultWarehouseId(value === "none" ? "" : value)
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={t.allWarehouses} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">-</SelectItem>
+                  {warehouses.map((warehouse) => (
+                    <SelectItem key={warehouse.id} value={warehouse.id}>
+                      {warehouse.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
             {error && (
               <p className="text-sm text-destructive">{error}</p>
             )}

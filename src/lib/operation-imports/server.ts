@@ -37,7 +37,7 @@ export async function loadOperationImportRefData(
       .limit(1000),
     supabase
       .from("stores")
-      .select("id, name, is_import_default, created_at")
+      .select("id, name, default_warehouse_id, is_import_default, created_at")
       .eq("workspace_id", workspaceId)
       .order("name")
       .limit(1000),
@@ -86,6 +86,8 @@ export async function loadOperationImportRefData(
     stores: (stores.data || []).map((row) => ({
       id: row.id,
       name: row.name,
+      defaultWarehouseId: row.default_warehouse_id ?? null,
+      defaultWarehouseName: null,
       isImportDefault: row.is_import_default,
       createdAt: row.created_at,
     })),

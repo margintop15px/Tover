@@ -35,17 +35,22 @@ export default function ProductMovementPage() {
   const [groupBy, setGroupBy] = useState("product");
   const [filterProductId, setFilterProductId] = useState("");
   const [filterWarehouseId, setFilterWarehouseId] = useState("");
+  const [filterStoreId, setFilterStoreId] = useState("");
+  const [filterQualityStatus, setFilterQualityStatus] = useState("");
 
   const [products, setProducts] = useState<SelectOption[]>([]);
   const [warehouses, setWarehouses] = useState<SelectOption[]>([]);
+  const [stores, setStores] = useState<SelectOption[]>([]);
 
   useEffect(() => {
     Promise.all([
       fetch("/api/products?limit=500").then((r) => r.json()),
       fetch("/api/warehouses").then((r) => r.json()),
-    ]).then(([prodData, whData]) => {
+      fetch("/api/stores?limit=500").then((r) => r.json()),
+    ]).then(([prodData, whData, stData]) => {
       setProducts((prodData.items || []).map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
       setWarehouses((whData.items || []).map((w: { id: string; name: string }) => ({ id: w.id, name: w.name })));
+      setStores((stData.items || []).map((s: { id: string; name: string }) => ({ id: s.id, name: s.name })));
     });
   }, []);
 
@@ -60,13 +65,15 @@ export default function ProductMovementPage() {
       const params = new URLSearchParams({ from: dateFrom, to: dateTo, groupBy });
       if (filterProductId) params.set("productId", filterProductId);
       if (filterWarehouseId) params.set("warehouseId", filterWarehouseId);
+      if (filterStoreId) params.set("storeId", filterStoreId);
+      if (filterQualityStatus) params.set("qualityStatus", filterQualityStatus);
       const res = await fetch(`/api/reports/product-movement?${params}`);
       const data = await res.json();
       setReport(data);
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, groupBy, filterProductId, filterWarehouseId, t.dateRangeRequired]);
+  }, [dateFrom, dateTo, groupBy, filterProductId, filterWarehouseId, filterStoreId, filterQualityStatus, t.dateRangeRequired]);
 
   useEffect(() => {
     fetchReport();
@@ -118,12 +125,41 @@ export default function ProductMovementPage() {
             </SelectContent>
           </Select>
         </div>
+        <div className="space-y-1">
+          <FieldLabel>{t.productStore}</FieldLabel>
+          <Select value={filterStoreId} onValueChange={(v) => setFilterStoreId(v === "all" ? "" : v)}>
+            <SelectTrigger className="w-44">
+              <SelectValue placeholder={t.allStores} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t.allStores}</SelectItem>
+              {stores.map((s) => (
+                <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <FieldLabel>{t.qualityStatus}</FieldLabel>
+          <Select value={filterQualityStatus} onValueChange={(v) => setFilterQualityStatus(v === "all" ? "" : v)}>
+            <SelectTrigger className="w-44">
+              <SelectValue placeholder={t.allQualityStatuses} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t.allQualityStatuses}</SelectItem>
+              <SelectItem value="ordinary">{t.ordinary}</SelectItem>
+              <SelectItem value="defect">{t.defect}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </ReportFilterBar>
 
       <Tabs value={groupBy} onValueChange={setGroupBy} className="mb-4">
         <TabsList>
           <TabsTrigger value="product">{t.groupByProduct}</TabsTrigger>
           <TabsTrigger value="warehouse">{t.groupByWarehouse}</TabsTrigger>
+          <TabsTrigger value="store">{t.groupByStore}</TabsTrigger>
+          <TabsTrigger value="quality">{t.groupByQuality}</TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -135,7 +171,7 @@ export default function ProductMovementPage() {
         <DataTable<ProductMovementRow & Record<string, unknown>>
           tableId="product-movement"
           columns={[
-            { key: "groupName", header: groupBy === "product" ? t.product : t.warehouse },
+            { key: "groupName", header: groupBy === "product" ? t.product : groupBy === "warehouse" ? t.warehouse : groupBy === "store" ? t.productStore : t.qualityStatus },
             ...(groupBy === "product" ? [{ key: "skuCode" as const, header: t.sku, render: (item: ProductMovementRow) => item.skuCode || "-" }] : []),
             { key: "purchaseIn", header: t.purchaseIn, className: "text-right", render: (item: ProductMovementRow) => formatNum(item.purchaseIn) },
             { key: "saleOut", header: t.saleOut, className: "text-right", render: (item: ProductMovementRow) => formatNum(item.saleOut) },

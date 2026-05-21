@@ -34,6 +34,7 @@ interface OperationDisplayRow {
   quantity: number | null;
   unitPrice: number | null;
   direction: string | null;
+  qualityStatus: string | null;
   itemsSummary: {
     itemId: string;
     productId: string;
@@ -43,6 +44,7 @@ interface OperationDisplayRow {
     quantity: number;
     unitPrice: number | null;
     direction: string;
+    qualityStatus: string;
   }[];
 }
 
@@ -233,19 +235,70 @@ export async function GET(request: NextRequest) {
         quantity: number;
         unitPrice: number | null;
         direction: string;
+        qualityStatus: string;
       }[]
     >();
 
     if (operationIds.length > 0) {
       let itemsQuery = supabase
         .from("operation_items")
-        .select("id, operation_id, product_id, warehouse_id, quantity, unit_price, direction, products(name), warehouses(name)")
+        .select("id, operation_id, product_id, warehouse_id, quantity, unit_price, direction, quality_status, products(name), warehouses(name)")
         .in("operation_id", operationIds);
 
       if (productId) itemsQuery = itemsQuery.eq("product_id", productId);
       if (warehouseId) itemsQuery = itemsQuery.eq("warehouse_id", warehouseId);
 
-      const { data: items } = await itemsQuery;
+      let {
+        data: items,
+        error: itemsError,
+      }: {
+        data: {
+          id: string;
+          operation_id: string;
+          product_id: string;
+          warehouse_id: string;
+          quantity: number;
+          unit_price: number | null;
+          direction: string;
+          quality_status?: string | null;
+          products: unknown;
+          warehouses: unknown;
+        }[] | null;
+        error: { code?: string; message?: string } | null;
+      } = await itemsQuery;
+
+      if (itemsError) {
+        const canFallbackWithoutQuality =
+          itemsError.code === "42703" ||
+          itemsError.code === "PGRST204" ||
+          itemsError.message?.includes("quality_status");
+
+        if (!canFallbackWithoutQuality) {
+          return NextResponse.json(
+            { error: itemsError.message },
+            { status: 500 }
+          );
+        }
+
+        let fallbackItemsQuery = supabase
+          .from("operation_items")
+          .select("id, operation_id, product_id, warehouse_id, quantity, unit_price, direction, products(name), warehouses(name)")
+          .in("operation_id", operationIds);
+
+        if (productId) fallbackItemsQuery = fallbackItemsQuery.eq("product_id", productId);
+        if (warehouseId) fallbackItemsQuery = fallbackItemsQuery.eq("warehouse_id", warehouseId);
+
+        const fallback = await fallbackItemsQuery;
+        items = fallback.data;
+        itemsError = fallback.error;
+
+        if (itemsError) {
+          return NextResponse.json(
+            { error: itemsError.message },
+            { status: 500 }
+          );
+        }
+      }
 
       if (items) {
         for (const item of items) {
@@ -261,6 +314,7 @@ export async function GET(request: NextRequest) {
             quantity: item.quantity,
             unitPrice: item.unit_price,
             direction: item.direction,
+            qualityStatus: item.quality_status ?? "ordinary",
           });
           itemsMap.set(item.operation_id, list);
         }
@@ -295,6 +349,7 @@ export async function GET(request: NextRequest) {
           quantity: null,
           unitPrice: null,
           direction: null,
+          qualityStatus: null,
           itemsSummary: [],
         });
         continue;
@@ -319,6 +374,7 @@ export async function GET(request: NextRequest) {
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           direction: item.direction,
+          qualityStatus: item.qualityStatus,
           itemsSummary: [item],
         });
       }

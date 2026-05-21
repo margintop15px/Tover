@@ -13,6 +13,10 @@ import {
   ClipboardList,
   TrendingUp,
   CreditCard,
+  BarChart3,
+  RotateCw,
+  AlertTriangle,
+  FileText,
   Settings,
   LogOut,
   Menu,
@@ -50,11 +54,15 @@ const iconClass = "h-4 w-4";
 const navGroups: NavGroup[] = [
   {
     labelKey: "reportsGroup",
-    defaultOpen: true,
+    defaultOpen: false,
     items: [
       { href: "/reports/inventory", labelKey: "reportInventory", icon: <ClipboardList className={iconClass} /> },
       { href: "/reports/movement", labelKey: "reportMovement", icon: <TrendingUp className={iconClass} /> },
+      { href: "/reports/sales", labelKey: "reportSales", icon: <BarChart3 className={iconClass} /> },
+      { href: "/reports/turnover", labelKey: "reportTurnover", icon: <RotateCw className={iconClass} /> },
+      { href: "/reports/defects", labelKey: "reportDefects", icon: <AlertTriangle className={iconClass} /> },
       { href: "/reports/supplier-debt", labelKey: "reportSupplierDebt", icon: <CreditCard className={iconClass} /> },
+      { href: "/reports/templates", labelKey: "reportTemplates", icon: <FileText className={iconClass} /> },
     ],
   },
   {

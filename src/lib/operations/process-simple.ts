@@ -1,6 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ValidatedOperation } from "./validate-operation";
-import { updateProductBalance } from "./update-balances";
 
 /**
  * Shared processor for sale, return, and write_off operations.
@@ -36,6 +35,7 @@ export async function processSimpleItemOperation(
     unit_price: item.unitPrice || null,
     direction: item.direction!,
     store_id: item.storeId || null,
+    quality_status: item.qualityStatus || "ordinary",
   }));
 
   const { error: itemError } = await supabase
@@ -44,18 +44,6 @@ export async function processSimpleItemOperation(
 
   if (itemError)
     throw new Error(`Failed to create operation items: ${itemError.message}`);
-
-  // Update balances
-  for (const item of data.items) {
-    const delta = item.direction === "in" ? item.quantity : -item.quantity;
-    await updateProductBalance(
-      supabase,
-      workspaceId,
-      item.productId,
-      item.warehouseId,
-      delta
-    );
-  }
 
   return operation;
 }

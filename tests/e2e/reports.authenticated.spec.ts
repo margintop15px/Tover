@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 import { authSkipReason, hasAuthCredentials } from "./auth-helpers";
 
+const RUN_ID = Date.now().toString(36);
+
+function uniqueName(prefix: string): string {
+  return `E2E-${prefix}-${RUN_ID}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 test.describe("reports", () => {
   test.beforeEach(() => {
     test.skip(!hasAuthCredentials(), authSkipReason());
@@ -20,7 +26,7 @@ test.describe("reports", () => {
       // Expand the Reports group
       await reportsBtn.click();
 
-      // All 3 report links should be visible
+      // All report links should be visible
       await expect(
         page.getByRole("link", { name: "Inventory Balances" })
       ).toBeVisible();
@@ -28,7 +34,19 @@ test.describe("reports", () => {
         page.getByRole("link", { name: "Product Movement" })
       ).toBeVisible();
       await expect(
+        page.getByRole("link", { name: "Sales Volume" })
+      ).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Turnover" })
+      ).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Defects" })
+      ).toBeVisible();
+      await expect(
         page.getByRole("link", { name: "Supplier Debt" })
+      ).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Saved Reports" })
       ).toBeVisible();
       await expect(
         page.getByRole("link", { name: "Operations Log" })
@@ -69,6 +87,119 @@ test.describe("reports", () => {
       await expect(
         page.getByRole("heading", { name: "Inventory Balances" })
       ).toBeVisible();
+
+      // Sales Volume
+      await page.getByRole("link", { name: "Sales Volume" }).click();
+      await expect(page).toHaveURL(/\/reports\/sales$/);
+      await expect(page.getByRole("heading", { name: "Sales Volume" })).toBeVisible();
+
+      // Turnover
+      await page.getByRole("link", { name: "Turnover" }).click();
+      await expect(page).toHaveURL(/\/reports\/turnover$/);
+      await expect(page.getByRole("heading", { name: "Inventory Turnover" })).toBeVisible();
+
+      // Defects
+      await page.getByRole("link", { name: "Defects" }).click();
+      await expect(page).toHaveURL(/\/reports\/defects$/);
+      await expect(page.getByRole("heading", { name: "Defects" })).toBeVisible();
+    });
+  });
+
+  // ── Saved Report Constructor ────────────────────────────────────────
+
+  test.describe("saved report constructor", () => {
+    test("creates a saved report from the split-view builder", async ({ page }) => {
+      const reportName = uniqueName("Report");
+      const templatesResponse = await page.request.get("/api/report-templates");
+      const templatesPayload = await templatesResponse.json().catch(() => ({}));
+      test.skip(
+        templatesResponse.status() === 500 &&
+          /report_templates/.test(String(templatesPayload.error || "")),
+        "Local Supabase schema is missing migration 011_operation_reporting_ledger.sql"
+      );
+
+      await page.goto("/reports/templates/new");
+      await expect(
+        page.getByRole("heading", { name: "Create report" })
+      ).toBeVisible();
+      await expect(page.getByText("Live preview")).toBeVisible();
+
+      await page.locator("main input").first().fill(reportName);
+      await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
+      await page.getByRole("button", { name: "Save" }).click();
+
+      await expect(page).toHaveURL(/\/reports\/templates$/);
+      await expect(page.getByText(reportName)).toBeVisible();
+    });
+
+    test("source changes constrain measures in the builder", async ({ page }) => {
+      await page.goto("/reports/templates/new");
+      const main = page.locator("main");
+      const sourceSelect = main.getByRole("combobox").first();
+
+      await sourceSelect.click();
+      await page.getByRole("option", { name: "Sales Volume" }).click();
+      await expect(main.getByText("Units", { exact: true })).toBeVisible();
+      await expect(main.getByText("Invoice", { exact: true })).not.toBeVisible();
+
+      await sourceSelect.click();
+      await page.getByRole("option", { name: "Supplier Debt" }).click();
+      await expect(main.getByText("Total Purchased", { exact: true })).toBeVisible();
+      await expect(main.getByText("Total Paid", { exact: true })).toBeVisible();
+      await expect(main.getByText("Total Debt", { exact: true })).toBeVisible();
+    });
+
+    test("date mode and selected measures update the live preview", async ({
+      page,
+    }) => {
+      await page.goto("/reports/templates/new");
+      const main = page.locator("main");
+      const sourceSelect = main.getByRole("combobox").first();
+
+      await sourceSelect.click();
+      await page.getByRole("option", { name: "Supplier Debt" }).click();
+
+      await main.getByRole("tab", { name: "As of date" }).click();
+      await expect(main.getByText("As of date:", { exact: false })).toBeVisible();
+
+      await main.getByRole("checkbox", { name: "Total Paid" }).click();
+      await expect(
+        main.getByText("Supplier · Total Purchased, Total Debt", {
+          exact: true,
+        })
+      ).toBeVisible();
+      await expect(
+        main.getByText("Supplier · Total Purchased, Total Paid, Total Debt", {
+          exact: true,
+        })
+      ).not.toBeVisible();
+    });
+  });
+
+  // ── Predefined Report APIs ──────────────────────────────────────────
+
+  test.describe("predefined report APIs", () => {
+    test("sales volume API returns report JSON for store grouping", async ({
+      page,
+    }) => {
+      const response = await page.request.get(
+        "/api/reports/sales-volume?from=2026-04-20&to=2026-05-20&groupBy=store"
+      );
+      const payload = await response.json().catch(() => ({}));
+
+      test.skip(
+        response.status() === 500 &&
+          /inventory_movements/.test(String(payload.error || "")),
+        "Local Supabase schema is missing migration 011_operation_reporting_ledger.sql"
+      );
+
+      expect(response.status()).toBe(200);
+      expect(payload).toMatchObject({
+        from: "2026-04-20",
+        to: "2026-05-20",
+        groupBy: "store",
+      });
+      expect(Array.isArray(payload.rows)).toBe(true);
     });
   });
 
@@ -159,8 +290,8 @@ test.describe("reports", () => {
       const main = page.locator("main");
 
       // Date inputs
-      await expect(main.getByText("From")).toBeVisible();
-      await expect(main.getByText("To")).toBeVisible();
+      await expect(main.getByText("From", { exact: true })).toBeVisible();
+      await expect(main.getByText("To", { exact: true })).toBeVisible();
 
       // Group-by tabs
       await expect(
@@ -261,7 +392,7 @@ test.describe("reports", () => {
         main.getByPlaceholder("Search products...")
       ).toBeVisible();
       const comboboxes = main.getByRole("combobox");
-      await expect(comboboxes).toHaveCount(3); // category, warehouse, store
+      await expect(comboboxes).toHaveCount(4); // category, warehouse, store, quality
 
       // Checkboxes
       await expect(main.getByLabel("Hide zeros")).toBeVisible();

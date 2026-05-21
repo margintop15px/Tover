@@ -49,6 +49,7 @@ export default function InventoryBalancesPage() {
   const [categoryId, setCategoryId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
   const [storeId, setStoreId] = useState("");
+  const [qualityStatus, setQualityStatus] = useState("");
   const [hideZeros, setHideZeros] = useState(false);
   const [negativesOnly, setNegativesOnly] = useState(false);
 
@@ -77,6 +78,7 @@ export default function InventoryBalancesPage() {
       if (categoryId) params.set("categoryId", categoryId);
       if (warehouseId) params.set("warehouseId", warehouseId);
       if (storeId) params.set("storeId", storeId);
+      if (qualityStatus) params.set("qualityStatus", qualityStatus);
       if (search) params.set("search", search);
       if (hideZeros) params.set("hideZeros", "true");
       if (negativesOnly) params.set("negativesOnly", "true");
@@ -86,7 +88,7 @@ export default function InventoryBalancesPage() {
     } finally {
       setLoading(false);
     }
-  }, [mode, historicalDate, categoryId, warehouseId, storeId, search, hideZeros, negativesOnly]);
+  }, [mode, historicalDate, categoryId, warehouseId, storeId, qualityStatus, search, hideZeros, negativesOnly]);
 
   useEffect(() => {
     fetchReport();
@@ -193,6 +195,19 @@ export default function InventoryBalancesPage() {
             </SelectContent>
           </Select>
         </div>
+        <div className="space-y-1">
+          <FieldLabel>{t.qualityStatus}</FieldLabel>
+          <Select value={qualityStatus} onValueChange={(v) => setQualityStatus(v === "all" ? "" : v)}>
+            <SelectTrigger className="w-44">
+              <SelectValue placeholder={t.allQualityStatuses} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t.allQualityStatuses}</SelectItem>
+              <SelectItem value="ordinary">{t.ordinary}</SelectItem>
+              <SelectItem value="defect">{t.defect}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <label className="flex items-center gap-2 text-sm cursor-pointer pt-5">
           <input
             type="checkbox"
@@ -236,6 +251,7 @@ export default function InventoryBalancesPage() {
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="sticky left-0 bg-card z-10">{t.product}</TableHead>
                     <TableHead>{t.sku}</TableHead>
+                    <TableHead>{t.qualityStatus}</TableHead>
                     {report.warehouseColumns.map((wh) => (
                       <TableHead key={wh.id} className="text-right">{wh.name}</TableHead>
                     ))}
@@ -250,6 +266,9 @@ export default function InventoryBalancesPage() {
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {row.skuCode || "-"}
+                      </TableCell>
+                      <TableCell>
+                        {row.qualityStatus === "defect" ? t.defect : t.ordinary}
                       </TableCell>
                       {report.warehouseColumns.map((wh) => {
                         const val = getCellValue(row, wh.id);

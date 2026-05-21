@@ -17,6 +17,8 @@ export type WarehousePurpose = "storage" | "sales" | "production";
 
 export type OperationDirection = "in" | "out";
 
+export type QualityStatus = "ordinary" | "defect";
+
 // ============================================================
 // DB row interfaces (snake_case, matching Supabase)
 // ============================================================
@@ -34,6 +36,7 @@ export interface StoreRow {
   id: string;
   workspace_id: string;
   name: string;
+  default_warehouse_id: string | null;
   is_import_default: boolean;
   created_at: string;
   updated_at: string;
@@ -80,6 +83,7 @@ export interface ProductBalanceRow {
   workspace_id: string;
   product_id: string;
   warehouse_id: string;
+  quality_status: QualityStatus;
   quantity: number;
   unit_cost: number;
   created_at: string;
@@ -107,6 +111,7 @@ export interface OperationItemRow {
   unit_price: number | null;
   direction: OperationDirection;
   store_id: string | null;
+  quality_status: QualityStatus;
   created_at: string;
 }
 
@@ -124,6 +129,8 @@ export interface Category {
 export interface Store {
   id: string;
   name: string;
+  defaultWarehouseId: string | null;
+  defaultWarehouseName: string | null;
   isImportDefault: boolean;
   createdAt: string;
 }
@@ -165,6 +172,7 @@ export interface ProductBalance {
   productName: string;
   warehouseId: string;
   warehouseName: string;
+  qualityStatus: QualityStatus;
   quantity: number;
   unitCost: number;
 }
@@ -192,6 +200,7 @@ export interface OperationItem {
   direction: OperationDirection;
   storeId: string | null;
   storeName: string | null;
+  qualityStatus: QualityStatus;
 }
 
 // ============================================================
@@ -205,6 +214,7 @@ export interface CreateCategoryRequest {
 
 export interface CreateStoreRequest {
   name: string;
+  defaultWarehouseId?: string;
   isImportDefault?: boolean;
 }
 
@@ -236,6 +246,7 @@ export interface OperationItemInput {
   unitPrice?: number;
   direction?: OperationDirection;
   storeId?: string;
+  qualityStatus?: QualityStatus;
 }
 
 export interface CreateOperationRequest {
@@ -292,8 +303,10 @@ export interface PaginatedResponse<T> {
 export interface InventoryBalanceCell {
   warehouseId: string;
   warehouseName: string;
+  qualityStatus: QualityStatus;
   quantity: number;
   totalCost: number;
+  hasNegative: boolean;
 }
 
 export interface InventoryBalanceRow {
@@ -302,33 +315,48 @@ export interface InventoryBalanceRow {
   skuCode: string | null;
   categoryName: string | null;
   storeName: string | null;
+  qualityStatus: QualityStatus;
   warehouses: InventoryBalanceCell[];
   totalQuantity: number;
   totalCost: number;
+  hasNegative: boolean;
 }
 
 export interface InventoryBalancesReport {
   asOfDate: string;
   warehouseColumns: { id: string; name: string }[];
   rows: InventoryBalanceRow[];
-  totals: { totalQuantity: number; totalCost: number };
+  totals: { totalQuantity: number; totalCost: number; hasNegative: boolean };
 }
 
 export interface ProductMovementRow {
   groupId: string;
   groupName: string;
   skuCode?: string | null;
+  qualityStatus?: QualityStatus | null;
   purchaseIn: number;
+  purchaseInCost: number;
   saleOut: number;
+  saleOutCost: number;
   returnIn: number;
+  returnInCost: number;
   writeOffOut: number;
+  writeOffOutCost: number;
   transferIn: number;
+  transferInCost: number;
   transferOut: number;
+  transferOutCost: number;
   productionIn: number;
+  productionInCost: number;
   productionOut: number;
+  productionOutCost: number;
   defectOut: number;
+  defectOutCost: number;
   inventoryAdjustmentIn: number;
+  inventoryAdjustmentInCost: number;
   net: number;
+  netCost: number;
+  hasNegative: boolean;
 }
 
 export interface ProductMovementReport {
@@ -357,4 +385,86 @@ export interface SupplierDebtReport {
     totalPaid: number;
     totalDebt: number;
   };
+}
+
+export interface SalesVolumeRow {
+  groupId: string;
+  groupName: string;
+  skuCode?: string | null;
+  soldQuantity: number;
+  returnedQuantity: number;
+  netSoldQuantity: number;
+  shareOfStoreSales: number;
+}
+
+export interface SalesVolumeReport {
+  from: string;
+  to: string;
+  groupBy: string;
+  rows: SalesVolumeRow[];
+  totals: {
+    soldQuantity: number;
+    returnedQuantity: number;
+    netSoldQuantity: number;
+  };
+}
+
+export interface DefectDynamicsRow {
+  groupId: string;
+  groupName: string;
+  skuCode?: string | null;
+  defectInQuantity: number;
+  defectOutQuantity: number;
+  defectBalanceDelta: number;
+  defectCost: number;
+}
+
+export interface DefectDynamicsReport {
+  from: string;
+  to: string;
+  groupBy: string;
+  rows: DefectDynamicsRow[];
+  totals: {
+    defectInQuantity: number;
+    defectOutQuantity: number;
+    defectCost: number;
+  };
+}
+
+export interface TurnoverRow {
+  groupId: string;
+  groupName: string;
+  skuCode?: string | null;
+  outflowCost: number;
+  averageInventoryCost: number;
+  turnoverRatio: number | null;
+  turnoverDays: number | null;
+}
+
+export interface TurnoverReport {
+  from: string;
+  to: string;
+  groupBy: string;
+  rows: TurnoverRow[];
+}
+
+export type ReportTemplateSource =
+  | "inventory_balances"
+  | "product_movement"
+  | "sales_volume"
+  | "turnover"
+  | "defects"
+  | "supplier_settlements";
+
+export interface ReportTemplate {
+  id: string;
+  name: string;
+  source: ReportTemplateSource;
+  rowDimensions: string[];
+  columnDimensions: string[];
+  measures: string[];
+  filters: Record<string, unknown>;
+  dateMode: "as_of" | "period";
+  createdAt: string;
+  updatedAt: string;
 }

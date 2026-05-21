@@ -23,11 +23,26 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    const warehouseIds = [
+      ...new Set((data || []).map((row) => row.default_warehouse_id).filter(Boolean)),
+    ] as string[];
+    const { data: warehouses } =
+      warehouseIds.length > 0
+        ? await supabase.from("warehouses").select("id, name").in("id", warehouseIds)
+        : { data: [] };
+    const warehouseNames = new Map(
+      (warehouses || []).map((warehouse) => [warehouse.id, warehouse.name])
+    );
+
     return NextResponse.json({
       page: { limit, offset, totalEstimate: count },
       items: (data || []).map((r) => ({
         id: r.id,
         name: r.name,
+        defaultWarehouseId: r.default_warehouse_id,
+        defaultWarehouseName: r.default_warehouse_id
+          ? warehouseNames.get(r.default_warehouse_id) ?? null
+          : null,
         isImportDefault: r.is_import_default,
         createdAt: r.created_at,
       })),
@@ -55,7 +70,11 @@ export async function POST(request: NextRequest) {
 
     const { data, error } = await supabase
       .from("stores")
-      .insert({ workspace_id: workspaceId, name })
+      .insert({
+        workspace_id: workspaceId,
+        name,
+        default_warehouse_id: body.defaultWarehouseId || null,
+      })
       .select()
       .single();
 
@@ -79,10 +98,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    let defaultWarehouseName: string | null = null;
+    if (data.default_warehouse_id) {
+      const { data: warehouse } = await supabase
+        .from("warehouses")
+        .select("name")
+        .eq("id", data.default_warehouse_id)
+        .single();
+      defaultWarehouseName = warehouse?.name ?? null;
+    }
+
     return NextResponse.json(
       {
         id: data.id,
         name: data.name,
+        defaultWarehouseId: data.default_warehouse_id,
+        defaultWarehouseName,
         isImportDefault: body.isImportDefault === true,
         createdAt: data.created_at,
       },

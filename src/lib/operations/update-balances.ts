@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { QualityStatus } from "@/types/inventory";
 
 export async function updateProductBalance(
   supabase: SupabaseClient,
@@ -6,7 +7,8 @@ export async function updateProductBalance(
   productId: string,
   warehouseId: string,
   qtyDelta: number,
-  newUnitCost?: number
+  newUnitCost?: number,
+  qualityStatus: QualityStatus = "ordinary"
 ) {
   const { data, error } = await supabase.rpc("update_product_balance", {
     p_workspace_id: workspaceId,
@@ -14,6 +16,7 @@ export async function updateProductBalance(
     p_warehouse_id: warehouseId,
     p_qty_delta: qtyDelta,
     p_new_unit_cost: newUnitCost ?? null,
+    p_quality_status: qualityStatus,
   });
 
   if (error) throw new Error(`Balance update failed: ${error.message}`);
@@ -26,7 +29,8 @@ export async function processPurchaseBalance(
   productId: string,
   warehouseId: string,
   purchaseQty: number,
-  purchaseUnitPrice: number
+  purchaseUnitPrice: number,
+  qualityStatus: QualityStatus = "ordinary"
 ) {
   const { data, error } = await supabase.rpc("process_purchase_balance", {
     p_workspace_id: workspaceId,
@@ -34,6 +38,7 @@ export async function processPurchaseBalance(
     p_warehouse_id: warehouseId,
     p_purchase_qty: purchaseQty,
     p_purchase_unit_price: purchaseUnitPrice,
+    p_quality_status: qualityStatus,
   });
 
   if (error)
@@ -62,7 +67,8 @@ export async function getProductBalance(
   supabase: SupabaseClient,
   workspaceId: string,
   productId: string,
-  warehouseId: string
+  warehouseId: string,
+  qualityStatus: QualityStatus = "ordinary"
 ): Promise<{ quantity: number; unit_cost: number } | null> {
   const { data } = await supabase
     .from("product_balances")
@@ -70,7 +76,20 @@ export async function getProductBalance(
     .eq("workspace_id", workspaceId)
     .eq("product_id", productId)
     .eq("warehouse_id", warehouseId)
+    .eq("quality_status", qualityStatus)
     .single();
 
   return data;
+}
+
+export async function rebuildInventoryReporting(
+  supabase: SupabaseClient,
+  workspaceId: string
+) {
+  const { error } = await supabase.rpc("rebuild_inventory_reporting", {
+    p_workspace_id: workspaceId,
+  });
+
+  if (error)
+    throw new Error(`Inventory reporting rebuild failed: ${error.message}`);
 }

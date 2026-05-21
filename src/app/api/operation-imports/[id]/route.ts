@@ -31,6 +31,14 @@ function asBuiltCandidate(row: OperationImportCandidateRecord): BuiltCandidate {
   };
 }
 
+function candidateOperation(row: OperationImportCandidateRecord) {
+  return (
+    row.normalized_operation ||
+    row.operation ||
+    {}
+  ) as OperationImportDraft;
+}
+
 async function recalculateSummary(
   supabase: Awaited<ReturnType<typeof getRouteContext>>["supabase"],
   importId: string
@@ -183,7 +191,24 @@ export async function PATCH(
         return NextResponse.json({ error: "Candidate not found" }, { status: 404 });
       }
 
-      if ((candidate.validation_errors || []).length > 0) {
+      const validation = normalizeAndValidateDraft(
+        candidateOperation(candidate as OperationImportCandidateRecord),
+        ref,
+        duplicates
+      );
+
+      if (validation.validationErrors.length > 0) {
+        await supabase
+          .from("operation_import_candidates")
+          .update({
+            normalized_operation: validation.normalized,
+            fingerprint: validation.fingerprint,
+            validation_errors: validation.validationErrors,
+            status: validation.status,
+          })
+          .eq("id", body.approveCandidateId)
+          .eq("import_id", id);
+
         return NextResponse.json(
           { error: "Resolve validation errors before approval" },
           { status: 400 }
@@ -192,7 +217,12 @@ export async function PATCH(
 
       const { data: updated, error } = await supabase
         .from("operation_import_candidates")
-        .update({ status: "approved" })
+        .update({
+          normalized_operation: validation.normalized,
+          fingerprint: validation.fingerprint,
+          validation_errors: [],
+          status: "approved",
+        })
         .eq("id", body.approveCandidateId)
         .eq("import_id", id)
         .select()
@@ -209,29 +239,70 @@ export async function PATCH(
     if (body.approveAll) {
       const { data: candidates, error: fetchError } = await supabase
         .from("operation_import_candidates")
-        .select("id, validation_errors, status")
+        .select("*")
         .eq("import_id", id);
 
       if (fetchError) {
         return NextResponse.json({ error: fetchError.message }, { status: 500 });
       }
 
-      const blocked = (candidates || []).filter(
-        (candidate) => (candidate.validation_errors || []).length > 0
+      const validations = ((candidates || []) as OperationImportCandidateRecord[]).map(
+        (candidate) => ({
+          candidate,
+          validation: normalizeAndValidateDraft(
+            candidateOperation(candidate),
+            ref,
+            duplicates
+          ),
+        })
       );
+
+      const blocked = validations.filter(
+        ({ validation }) => validation.validationErrors.length > 0
+      );
+
       if (blocked.length > 0) {
+        await Promise.all(
+          blocked.map(({ candidate, validation }) =>
+            supabase
+              .from("operation_import_candidates")
+              .update({
+                normalized_operation: validation.normalized,
+                fingerprint: validation.fingerprint,
+                validation_errors: validation.validationErrors,
+                status: validation.status,
+              })
+              .eq("id", candidate.id)
+              .eq("import_id", id)
+          )
+        );
+
         return NextResponse.json(
           { error: `${blocked.length} candidates still need review` },
           { status: 400 }
         );
       }
 
-      const { error } = await supabase
-        .from("operation_import_candidates")
-        .update({ status: "approved" })
-        .eq("import_id", id)
-        .in("status", ["ready", "approved"]);
+      const approvable = validations.filter(({ candidate }) =>
+        ["ready", "approved"].includes(candidate.status)
+      );
 
+      const updates = await Promise.all(
+        approvable.map(({ candidate, validation }) =>
+          supabase
+            .from("operation_import_candidates")
+            .update({
+              normalized_operation: validation.normalized,
+              fingerprint: validation.fingerprint,
+              validation_errors: [],
+              status: "approved",
+            })
+            .eq("id", candidate.id)
+            .eq("import_id", id)
+        )
+      );
+
+      const error = updates.find((update) => update.error)?.error;
       if (error) {
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
