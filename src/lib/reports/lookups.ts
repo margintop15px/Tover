@@ -11,6 +11,7 @@ export interface ReportProductLookup {
   name: string;
   sku_code: string | null;
   is_defect_copy: boolean;
+  category_id: string | null;
   store_id: string | null;
 }
 
@@ -46,7 +47,7 @@ export async function loadReportLookups(
     productIds.length > 0
       ? supabase
           .from("products")
-          .select("id, name, sku_code, is_defect_copy, store_id")
+          .select("id, name, sku_code, is_defect_copy, category_id, store_id")
           .eq("workspace_id", workspaceId)
           .in("id", productIds)
       : Promise.resolve({ data: [], error: null });

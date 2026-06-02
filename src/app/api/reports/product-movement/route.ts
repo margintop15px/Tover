@@ -29,6 +29,7 @@ export async function GET(request: NextRequest) {
     const to = searchParams.get("to");
     const groupBy = searchParams.get("groupBy") || "product";
     const productId = searchParams.get("productId");
+    const categoryId = searchParams.get("categoryId");
     const warehouseId = searchParams.get("warehouseId");
     const storeId = searchParams.get("storeId");
     const qualityStatus = searchParams.get("qualityStatus");
@@ -60,7 +61,7 @@ export async function GET(request: NextRequest) {
       productIds.length > 0
         ? supabase
             .from("products")
-            .select("id, name, sku_code, is_defect_copy, store_id, stores(name)")
+            .select("id, name, sku_code, is_defect_copy, category_id, store_id, stores(name)")
             .in("id", productIds)
         : { data: [] },
       warehouseIds.length > 0
@@ -73,7 +74,7 @@ export async function GET(request: NextRequest) {
 
     const products = new Map<
       string,
-      { name: string; skuCode: string | null; isDefectCopy: boolean; storeId: string | null; storeName: string | null }
+      { name: string; skuCode: string | null; isDefectCopy: boolean; categoryId: string | null; storeId: string | null; storeName: string | null }
     >();
     for (const product of productsRes.data || []) {
       const store = product.stores as unknown as { name: string } | null;
@@ -81,6 +82,7 @@ export async function GET(request: NextRequest) {
         name: product.name,
         skuCode: product.sku_code,
         isDefectCopy: product.is_defect_copy,
+        categoryId: product.category_id,
         storeId: product.store_id,
         storeName: store?.name ?? null,
       });
@@ -101,6 +103,7 @@ export async function GET(request: NextRequest) {
       const effectiveStoreId = row.store_id || product.storeId;
 
       if (productId && row.product_id !== productId) continue;
+      if (categoryId && product.categoryId !== categoryId) continue;
       if (warehouseId && row.warehouse_id !== warehouseId) continue;
       if (storeId && effectiveStoreId !== storeId) continue;
       if (qualityStatus && row.quality_status !== qualityStatus) continue;

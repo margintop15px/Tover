@@ -42,11 +42,15 @@ test.describe("inventory management", () => {
 
       const sidebarLinks = page.locator("aside nav a");
       await expect(sidebarLinks.first()).toHaveText("Operations");
+      await expect(
+        page.getByRole("link", { name: "Marketplaces" })
+      ).toBeVisible();
       await expect(page.getByRole("link", { name: "Dashboard" })).toHaveCount(0);
       await expect(page.getByRole("link", { name: "Settings" })).toBeVisible();
 
-      // Reports group is expanded by default.
+      // Reports group exposes report links when expanded.
       await expect(page.getByRole("button", { name: "Reports" })).toBeVisible();
+      await page.getByRole("button", { name: "Reports" }).click();
       await expect(
         page.getByRole("link", { name: "Inventory Balances" })
       ).toBeVisible();
@@ -123,6 +127,27 @@ test.describe("inventory management", () => {
       await expect(
         page.getByRole("heading", { name: "Operations" })
       ).toBeVisible();
+
+      // Marketplaces
+      await page.getByRole("link", { name: "Marketplaces" }).click();
+      await expect(page).toHaveURL(/\/operations\/marketplaces$/);
+      await expect(
+        page.getByRole("heading", { name: "Marketplaces" })
+      ).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Marketplaces" })
+      ).toHaveClass(/(^|\s)bg-accent(\s|$)/);
+
+      // Ozon review route belongs to the Marketplaces sidebar item.
+      await page.goto(
+        "/operations/marketplace/ozon?returnTo=%2Foperations%2Fmarketplaces"
+      );
+      await expect(
+        page.getByRole("link", { name: "Marketplaces" })
+      ).toHaveClass(/(^|\s)bg-accent(\s|$)/);
+      await expect(
+        page.getByRole("link", { name: "Operations" })
+      ).not.toHaveClass(/(^|\s)bg-accent(\s|$)/);
     });
   });
 

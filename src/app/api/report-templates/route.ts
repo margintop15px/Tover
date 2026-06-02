@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
+import { validateReportTemplatePayload } from "@/lib/reports/template-validation";
 
 export const dynamic = "force-dynamic";
 
@@ -48,22 +49,23 @@ export async function POST(request: NextRequest) {
       requireManager: true,
     });
     const body = await request.json();
-    const name = typeof body.name === "string" ? body.name.trim() : "";
-    if (!name) {
-      return NextResponse.json({ error: "Name is required" }, { status: 400 });
+    const validation = validateReportTemplatePayload(body);
+    if (!validation.ok) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
     }
+    const payload = validation.payload;
 
     const { data, error } = await supabase
       .from("report_templates")
       .insert({
         workspace_id: workspaceId,
-        name,
-        source: body.source,
-        row_dimensions: body.rowDimensions || [],
-        column_dimensions: body.columnDimensions || [],
-        measures: body.measures || [],
-        filters: body.filters || {},
-        date_mode: body.dateMode || "period",
+        name: payload.name,
+        source: payload.source,
+        row_dimensions: payload.rowDimensions,
+        column_dimensions: payload.columnDimensions,
+        measures: payload.measures,
+        filters: payload.filters,
+        date_mode: payload.dateMode,
         created_by: user.id,
       })
       .select()

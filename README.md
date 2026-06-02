@@ -51,6 +51,9 @@ NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
+OZON_CREDENTIAL_ENCRYPTION_KEY=replace-with-a-long-random-secret
+# Optional local mock/test override:
+# OZON_API_BASE_URL=http://127.0.0.1:32123
 # Optional E2E overrides:
 # E2E_EMAIL=playwright@tover.local
 # E2E_PASSWORD=Playwright-dev-password-1
@@ -58,6 +61,8 @@ NEXT_PUBLIC_SITE_URL=http://localhost:3000
 
 Notes:
 - `SUPABASE_SERVICE_ROLE_KEY` is required for server-side invite operations.
+- `OZON_CREDENTIAL_ENCRYPTION_KEY` is required before saving Ozon Seller API credentials.
+- `OZON_API_BASE_URL` is optional and should only be used for local mocks/tests.
 - Playwright authenticated tests auto-provision `playwright@tover.local` in local dev when `E2E_EMAIL`/`E2E_PASSWORD` are omitted and the Supabase service role key is present.
 - Never expose `SUPABASE_SERVICE_ROLE_KEY` to the browser.
 
@@ -72,19 +77,18 @@ Files in `supabase/migrations/`:
 - `004_report_functions.sql` — report RPCs (inventory balances, product movement, supplier debt) and indexes
 - `005_workspace_settings.sql` — workspace settings table (currency, category/store requirements) with RLS
 - `006_product_name_unique.sql` — unique constraint on product names (excluding defect copies)
+- `012_ozon_marketplace_integration.sql` — Ozon marketplace connection, sync staging, and read-only operation candidates
+- `013_ozon_candidate_approval_status.sql` — approved Ozon candidate review state for manual commit workflows
 
 Option A (Supabase SQL Editor):
-- Run migrations in order: `001` through `006`.
+- Run migrations in order: `001` through the latest file in `supabase/migrations/`.
 
 Option B (psql):
 
 ```bash
-psql "$SUPABASE_DB_URL" -f supabase/migrations/001_initial_schema.sql
-psql "$SUPABASE_DB_URL" -f supabase/migrations/002_auth_orgs_rbac.sql
-psql "$SUPABASE_DB_URL" -f supabase/migrations/003_inventory_system.sql
-psql "$SUPABASE_DB_URL" -f supabase/migrations/004_report_functions.sql
-psql "$SUPABASE_DB_URL" -f supabase/migrations/005_workspace_settings.sql
-psql "$SUPABASE_DB_URL" -f supabase/migrations/006_product_name_unique.sql
+for migration in supabase/migrations/*.sql; do
+  psql "$SUPABASE_DB_URL" -f "$migration"
+done
 ```
 
 ### 2. Configure Auth URLs in Supabase

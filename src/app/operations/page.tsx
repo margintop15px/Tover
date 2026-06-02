@@ -37,6 +37,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ClipboardCheck,
   Eye,
   Filter,
   Pencil,
@@ -92,6 +93,14 @@ interface OperationDetails {
     direction: OperationDirection;
     storeName: string | null;
   }[];
+}
+
+interface OzonCandidateSummaryResponse {
+  summary?: {
+    needsMapping?: number;
+    ready?: number;
+    approved?: number;
+  };
 }
 
 type SortBy =
@@ -194,6 +203,7 @@ function OperationsPageContent() {
   const [products, setProducts] = useState<SelectOption[]>([]);
   const [warehouses, setWarehouses] = useState<SelectOption[]>([]);
   const [suppliers, setSuppliers] = useState<SelectOption[]>([]);
+  const [pendingOzonCandidates, setPendingOzonCandidates] = useState(0);
 
   useEffect(() => {
     Promise.all([
@@ -220,6 +230,31 @@ function OperationsPageContent() {
         }))
       );
     });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch("/api/integrations/ozon/candidates?limit=1", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return (await response.json()) as OzonCandidateSummaryResponse;
+      })
+      .then((data) => {
+        if (cancelled || !data?.summary) return;
+        setPendingOzonCandidates(
+          (data.summary.needsMapping || 0) +
+            (data.summary.ready || 0) +
+            (data.summary.approved || 0)
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setPendingOzonCandidates(0);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const typeLabel = useCallback(
@@ -520,7 +555,20 @@ function OperationsPageContent() {
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between gap-4">
         <h1 className="text-2xl font-bold">{t.operationsTitle}</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {pendingOzonCandidates > 0 && (
+            <Link
+              href={`/operations/marketplace/ozon?returnTo=${encodeURIComponent(
+                getReturnHref()
+              )}`}
+            >
+              <Button variant="outline" className="gap-2">
+                <ClipboardCheck className="h-4 w-4" />
+                {t.ozonReviewCandidates}
+                <Badge variant="secondary">{pendingOzonCandidates}</Badge>
+              </Button>
+            </Link>
+          )}
           <Link href="/operations/import">
             <Button variant="outline" className="gap-2">
               <Upload className="h-4 w-4" />

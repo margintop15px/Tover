@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
+import { validateReportTemplatePayload } from "@/lib/reports/template-validation";
 
 export const dynamic = "force-dynamic";
 
@@ -49,19 +50,42 @@ export async function PATCH(
     });
     const { id } = await params;
     const body = await request.json();
-    const updates: Record<string, unknown> = {};
+    const { data: existing, error: existingError } = await supabase
+      .from("report_templates")
+      .select("*")
+      .eq("id", id)
+      .eq("workspace_id", workspaceId)
+      .single();
 
-    if (body.name !== undefined) updates.name = String(body.name).trim();
-    if (body.source !== undefined) updates.source = body.source;
-    if (body.rowDimensions !== undefined) updates.row_dimensions = body.rowDimensions;
-    if (body.columnDimensions !== undefined) updates.column_dimensions = body.columnDimensions;
-    if (body.measures !== undefined) updates.measures = body.measures;
-    if (body.filters !== undefined) updates.filters = body.filters;
-    if (body.dateMode !== undefined) updates.date_mode = body.dateMode;
+    if (existingError || !existing) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    const validation = validateReportTemplatePayload({
+      name: body.name ?? existing.name,
+      source: body.source ?? existing.source,
+      rowDimensions: body.rowDimensions ?? existing.row_dimensions,
+      columnDimensions: body.columnDimensions ?? existing.column_dimensions,
+      measures: body.measures ?? existing.measures,
+      filters: body.filters ?? existing.filters,
+      dateMode: body.dateMode ?? existing.date_mode,
+    });
+    if (!validation.ok) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
+    }
+    const payload = validation.payload;
 
     const { data, error } = await supabase
       .from("report_templates")
-      .update(updates)
+      .update({
+        name: payload.name,
+        source: payload.source,
+        row_dimensions: payload.rowDimensions,
+        column_dimensions: payload.columnDimensions,
+        measures: payload.measures,
+        filters: payload.filters,
+        date_mode: payload.dateMode,
+      })
       .eq("id", id)
       .eq("workspace_id", workspaceId)
       .select()

@@ -76,6 +76,7 @@ export const en = {
   categories: "Categories",
   stores: "Stores",
   operations: "Operations",
+  marketplaces: "Marketplaces",
   reports: "Reports",
   team: "Team",
   logOut: "Log out",
@@ -95,6 +96,9 @@ export const en = {
   saving: "Saving...",
   confirmDelete: "Are you sure you want to delete this item?",
   deleteConfirm: "Delete",
+  review: "Review",
+  commit: "Commit",
+  ready: "Ready",
   duplicateError: "An item with this name already exists",
   duplicateSkuError: "A product with this SKU already exists",
   duplicateNameError: "A product with this name already exists",
@@ -243,8 +247,15 @@ export const en = {
   reportDefects: "Defects",
   reportTemplates: "Saved Reports",
   createReport: "Create report",
+  editReport: "Edit report",
+  openReport: "Open",
+  savedReport: "Saved report",
+  reportNotFound: "Report not found",
   reportPreview: "Live preview",
   sourceReport: "Source report",
+  exportCsv: "Export CSV",
+  exporting: "Exporting...",
+  exportFailed: "Export failed",
   dateMode: "Date mode",
   rowDimensions: "Group rows by",
   columnDimensions: "Column split",
@@ -331,6 +342,7 @@ export const en = {
   totalDebt: "Total Debt",
 
   allTypes: "All types",
+  allStatuses: "All statuses",
   allWarehouses: "All warehouses",
   allSuppliers: "All suppliers",
   allProducts: "All products",
@@ -426,6 +438,7 @@ export const en = {
   settings: "Settings",
   settingsGeneral: "General",
   settingsProducts: "Products",
+  settingsIntegrations: "Integrations",
   settingsTeam: "Team",
   currency: "Currency",
   currencyDisplayNote: "Changes display currency only. Stored values are not converted.",
@@ -441,6 +454,206 @@ export const en = {
     `Products without a ${field} will be assigned the selected default.`,
   categoryRequiredError: "Category is required",
   storeRequiredError: "Store is required",
+  dangerZone: "Danger zone",
+  removeAllAccountData: "Remove all account data",
+  resetAccountDataDescription:
+    "Clear operational data and master data from this workspace so it can be rebuilt from scratch.",
+  resetAccountDataOwnerOnly:
+    "Only workspace owners can remove all account data.",
+  resetAccountDataDialogTitle: "Remove all account data?",
+  resetAccountDataDialogDescription:
+    "This action clears the workspace data listed below. It cannot be undone.",
+  resetAccountDataIrreversible:
+    "This is irreversible. Existing operations, reports, products, warehouses, suppliers, balances, imports, and synced marketplace data will be deleted.",
+  resetAccountDataDeletedTitle: "Will be deleted",
+  resetAccountDataDeletedOperations: "Operations and operation items",
+  resetAccountDataDeletedReports: "Saved report templates and report ledger data",
+  resetAccountDataDeletedMasterData:
+    "Products, categories, stores, warehouses, suppliers, and balances",
+  resetAccountDataDeletedMarketplace:
+    "Ozon synced data, staged candidates, sync runs, and commit claims",
+  resetAccountDataDeletedLegacy:
+    "Legacy imports, orders, payments, and inventory snapshots",
+  resetAccountDataPreservedTitle: "Will be preserved",
+  resetAccountDataPreservedTeam: "Team members and invitations",
+  resetAccountDataPreservedSettings:
+    "Workspace settings, including currency and product requirement flags",
+  resetAccountDataPreservedIntegrations:
+    "Integration credentials and connection settings",
+  resetAccountDataPreservedOrganization: "Organization and user profile records",
+  resetAccountDataTypeReset: "Type RESET to confirm",
+  resettingAccountData: "Removing data...",
+  resetAccountDataSuccess:
+    "Account data was removed. You can rebuild from a clean state.",
+  resetAccountDataCount: (count: number) =>
+    `${count} rows are currently in reset scope.`,
+  resetAccountDataNothingToDelete:
+    "There is no operational data to remove right now.",
+  resetDataGroupOperations: "Operations",
+  resetDataGroupImports: "Imports",
+  resetDataGroupReports: "Reports",
+  resetDataGroupMasterData: "Master data",
+  resetDataGroupBalances: "Balances",
+  resetDataGroupLegacyCommerce: "Legacy commerce",
+  resetDataGroupMarketplace: "Marketplace data",
+  ozonIntegrationTitle: "Ozon",
+  ozonIntegrationDescription:
+    "Connect Ozon Seller API in read-only mode to sync products, warehouses, stock, postings, returns, finance transactions, and staged operation candidates.",
+  ozonClientId: "Client ID",
+  ozonApiKey: "API key",
+  ozonCredentialsHelp:
+    "Credentials are encrypted server-side. Tover only calls read-only allowlisted Seller API endpoints.",
+  ozonConnect: "Connect Ozon",
+  ozonUpdateCredentials: "Update credentials",
+  ozonValidate: "Validate",
+  validating: "Validating...",
+  ozonSyncNow: "Sync now",
+  syncing: "Syncing...",
+  ozonReviewCandidates: "Review candidates",
+  openMarketplaces: "Open marketplaces",
+  ozonDisconnect: "Disconnect",
+  ozonConnectedMessage: "Ozon credentials saved and validated.",
+  ozonValidatedMessage: "Ozon connection validated.",
+  ozonSyncedMessage: "Ozon sync finished.",
+  ozonSyncedWithErrorsMessage: "Ozon sync finished with errors.",
+  ozonDisconnectedMessage: "Ozon connection disabled.",
+  ozonSyncState: "Synced data",
+  ozonNoConnection: "No Ozon connection yet.",
+  ozonSetupRequired:
+    "Run the Ozon marketplace migration before connecting an account.",
+  ozonStatusConnected: "Connected",
+  ozonStatusInvalid: "Invalid",
+  ozonStatusError: "Error",
+  ozonStatusDisabled: "Disabled",
+  ozonStatusDraft: "Draft",
+  ozonProductsSynced: "Products",
+  ozonWarehousesSynced: "Warehouses",
+  ozonPostingsSynced: "Postings",
+  ozonReturnsSynced: "Returns",
+  ozonFinanceTransactionsSynced: "Finance transactions",
+  ozonLegalEntitySalesSynced: "Legal-entity sales",
+  ozonUnpaidLegalProductsSynced: "Unpaid legal products",
+  ozonFinanceReportsSynced: "Finance reports",
+  ozonRemovalsSynced: "Removals",
+  ozonSuppliesSynced: "Supplies",
+  ozonStockAnalyticsSynced: "Stock analytics",
+  ozonDiscountedProductsSynced: "Discounted products",
+  ozonReadyCandidates: "Ready candidates",
+  ozonNeedsMapping: "Need mapping",
+  ozonUnmappedProducts: "Unmapped products",
+  ozonUnmappedWarehouses: "Unmapped warehouses",
+  ozonLastValidated: "Last validated",
+  ozonLastSync: "Last sync",
+  ozonLastSyncStatus: "Last sync status",
+  ozonLastSyncError: "Last sync error",
+  ozonSyncInProgress: "Ozon sync is running. This can take a minute.",
+  ozonSyncStatusRunning: "Running",
+  ozonSyncStatusCompleted: "Completed",
+  ozonSyncStatusCompletedWithErrors: "Completed with errors",
+  ozonSyncStatusFailed: "Failed",
+  marketplacesTitle: "Marketplaces",
+  marketplacesSubtitle:
+    "Sync connected marketplaces, review marketplace data, and open staged operation candidates.",
+  ozonMarketplaceDescription:
+    "Sync read-only Ozon Seller API data and review the staged operation candidates generated from marketplace evidence.",
+  ozonConnectInSettings: "Connect in settings",
+  ozonCandidatesTitle: "Ozon candidates",
+  ozonCandidatesSubtitle:
+    "Review synced Ozon operation candidates, resolve mappings, approve valid rows, then commit them into normal operations.",
+  ozonCandidateNeedsMapping: "Needs mapping",
+  ozonCandidateApproved: "Approved",
+  ozonCandidateCommitting: "Committing",
+  ozonCandidateIgnored: "Ignored",
+  ozonCandidateCommitted: "Committed",
+  ozonMappingState: "Mapping",
+  ozonMappingAll: "All mappings",
+  ozonMappingMapped: "Mapped",
+  ozonMappingMissing: "Missing mapping",
+  ozonSourceType: "Source",
+  ozonEvidence: "Evidence",
+  ozonSupportReason: "Reason",
+  ozonSourceLabel: (source: string) => {
+    const labels: Record<string, string> = {
+      posting: "Posting",
+      return: "Return",
+      finance: "Finance",
+      legal_entity_sale: "Legal-entity sale",
+      removal: "Removal",
+      supply: "Supply",
+      stock_reconciliation: "Stock reconciliation",
+      discounted_product: "Discounted product",
+      report: "Report",
+    };
+    return labels[source] || source;
+  },
+  ozonSupportLabel: (status: string) => {
+    const labels: Record<string, string> = {
+      commit_candidate: "Commit candidate",
+      reporting_only: "Reporting only",
+      blocked: "Blocked",
+    };
+    return labels[status] || status;
+  },
+  ozonApproveReady: "Approve all ready",
+  ozonCommitApproved: "Commit approved",
+  ozonCandidatesApproved: (approved: number, blocked: number) =>
+    `Approved ${approved}; blocked ${blocked}.`,
+  ozonCandidatesCommitted: (committed: number, failed: number) =>
+    `Committed ${committed}; failed ${failed}.`,
+  ozonSourceEvent: "Ozon event",
+  ozonItems: "Items",
+  ozonNoCandidates: "No Ozon candidates found",
+  ozonReviewDetails: "Candidate details",
+  ozonCandidatePosition: (current: number, total: number) => `${current} / ${total}`,
+  ozonCreateProduct: "Create product",
+  ozonCreateWarehouse: "Create warehouse",
+  ozonIgnore: "Ignore",
+  ozonUnignore: "Restore to review",
+  ozonRawPayload: "Raw Ozon payload",
+  ozonValidationTitle: "Candidate validation",
+  ozonValidationField: (field: string) => {
+    const itemMatch = field.match(/^items\[(\d+)\]\.(.+)$/);
+    if (itemMatch) {
+      const itemNumber = Number(itemMatch[1]) + 1;
+      const itemFields: Record<string, string> = {
+        productId: `Item ${itemNumber} product`,
+        warehouseId: `Item ${itemNumber} warehouse`,
+        quantity: `Item ${itemNumber} quantity`,
+        unitPrice: `Item ${itemNumber} price`,
+      };
+      return itemFields[itemMatch[2]] || field;
+    }
+
+    const fields: Record<string, string> = {
+      type: "Operation type",
+      supportStatus: "Evidence support",
+      operationDate: "Operation date",
+      items: "Items",
+    };
+    return fields[field] || field;
+  },
+  ozonValidationMessage: (message: string) => {
+    const messages: Record<string, string> = {
+      "Only sale and return candidates can be committed":
+        "Only sale and return candidates can be committed",
+      "This Ozon evidence cannot be committed as a Tover operation":
+        "This Ozon evidence cannot be committed as a Tover operation",
+      "This Ozon evidence is not eligible for operation commit":
+        "This Ozon evidence is not eligible for operation commit",
+      "Valid operation date is required": "Valid operation date is required",
+      "At least one item is required": "At least one item is required",
+      "Product must be mapped": "Product must be mapped",
+      "Warehouse must be mapped": "Warehouse must be mapped",
+      "Quantity must be positive": "Quantity must be positive",
+      "Price cannot be negative": "Price cannot be negative",
+      "Unit cost must be positive": "Unit cost must be positive",
+      "Transfer requires one source item and one destination item":
+        "Transfer requires one source item and one destination item",
+      "Transfer source and destination products must match":
+        "Transfer source and destination products must match",
+    };
+    return messages[message] || message;
+  },
 
   // --- Validation errors ---
   required: "This field is required",

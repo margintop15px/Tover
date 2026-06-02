@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataTable from "@/components/DataTable";
 import ReportFilterBar from "@/components/ReportFilterBar";
+import ReportExportButton from "@/components/reports/ReportExportButton";
 import { FieldLabel } from "@/components/ui/field";
 import type { DefectDynamicsReport, DefectDynamicsRow } from "@/types/inventory";
 
@@ -76,6 +77,12 @@ export default function DefectsReportPage() {
           ]}
           data={(report?.rows || []) as (DefectDynamicsRow & Record<string, unknown>)[]}
           emptyMessage={t.noDefectData}
+          toolbarActions={
+            <ReportExportButton
+              title={t.defectsTitle}
+              rows={(report?.rows || []) as unknown as Record<string, unknown>[]}
+            />
+          }
         />
       )}
     </div>

@@ -314,6 +314,7 @@ export interface InventoryBalanceRow {
   productName: string;
   skuCode: string | null;
   categoryName: string | null;
+  storeId: string | null;
   storeName: string | null;
   qualityStatus: QualityStatus;
   warehouses: InventoryBalanceCell[];

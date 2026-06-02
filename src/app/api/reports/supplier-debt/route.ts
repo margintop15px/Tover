@@ -14,6 +14,7 @@ export async function GET(request: NextRequest) {
     const periodFrom = searchParams.get("periodFrom") || today;
     const periodTo = searchParams.get("periodTo") || today;
     const debtTypeFilter = searchParams.get("debtType");
+    const supplierIdFilter = searchParams.get("supplierId");
 
     const { data: rpcData, error: rpcError } = await supabase.rpc(
       "report_supplier_debt",
@@ -67,6 +68,9 @@ export async function GET(request: NextRequest) {
 
     if (debtTypeFilter) {
       rows = rows.filter((r) => r.debtType === debtTypeFilter);
+    }
+    if (supplierIdFilter) {
+      rows = rows.filter((r) => r.supplierId === supplierIdFilter);
     }
 
     rows.sort((a, b) => a.supplierName.localeCompare(b.supplierName));

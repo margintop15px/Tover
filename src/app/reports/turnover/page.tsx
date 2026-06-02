@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataTable from "@/components/DataTable";
 import ReportFilterBar from "@/components/ReportFilterBar";
+import ReportExportButton from "@/components/reports/ReportExportButton";
 import { FieldLabel } from "@/components/ui/field";
 import type { TurnoverReport, TurnoverRow } from "@/types/inventory";
 
@@ -76,6 +77,12 @@ export default function TurnoverReportPage() {
           ]}
           data={(report?.rows || []) as (TurnoverRow & Record<string, unknown>)[]}
           emptyMessage={t.noTurnoverData}
+          toolbarActions={
+            <ReportExportButton
+              title={t.turnoverTitle}
+              rows={(report?.rows || []) as unknown as Record<string, unknown>[]}
+            />
+          }
         />
       )}
     </div>

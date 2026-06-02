@@ -22,6 +22,7 @@ import DataTable from "@/components/DataTable";
 import KpiCard from "@/components/KpiCard";
 import Pagination from "@/components/Pagination";
 import ReportFilterBar from "@/components/ReportFilterBar";
+import ReportExportButton from "@/components/reports/ReportExportButton";
 import { FieldLabel } from "@/components/ui/field";
 import type { SupplierDebtReport, SupplierDebtRow, OperationType } from "@/types/inventory";
 
@@ -218,6 +219,12 @@ export default function SupplierDebtPage() {
             data={report.rows as (SupplierDebtRow & Record<string, unknown>)[]}
             onRowClick={(item) => openDrillDown(item)}
             emptyMessage={t.noDebtData}
+            toolbarActions={
+              <ReportExportButton
+                title={t.supplierDebtTitle}
+                rows={report.rows as unknown as Record<string, unknown>[]}
+              />
+            }
           />
         </>
       ) : null}

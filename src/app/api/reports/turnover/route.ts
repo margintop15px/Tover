@@ -15,6 +15,7 @@ export async function GET(request: NextRequest) {
     const to = searchParams.get("to");
     const groupBy = searchParams.get("groupBy") || "product";
     const productId = searchParams.get("productId");
+    const categoryId = searchParams.get("categoryId");
     const warehouseId = searchParams.get("warehouseId");
     const storeId = searchParams.get("storeId");
 
@@ -47,6 +48,7 @@ export async function GET(request: NextRequest) {
     for (const movement of movements) {
       const product = lookups.products.get(movement.product_id);
       if (!product || product.is_defect_copy) continue;
+      if (categoryId && product.category_id !== categoryId) continue;
 
       const movementStore = movement.store_id
         ? lookups.stores.get(movement.store_id)
@@ -105,6 +107,7 @@ export async function GET(request: NextRequest) {
       const product = lookups.products.get(balance.product_id);
       const effectiveStoreId = balance.store_id || product?.store_id || "unassigned";
       if (productId && balance.product_id !== productId) continue;
+      if (categoryId && product?.category_id !== categoryId) continue;
       if (warehouseId && balance.warehouse_id !== warehouseId) continue;
       if (storeId && effectiveStoreId !== storeId) continue;
 

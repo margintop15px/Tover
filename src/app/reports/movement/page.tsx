@@ -13,6 +13,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataTable from "@/components/DataTable";
 import ReportFilterBar from "@/components/ReportFilterBar";
+import ReportExportButton from "@/components/reports/ReportExportButton";
 import { FieldLabel } from "@/components/ui/field";
 import type { ProductMovementReport, ProductMovementRow } from "@/types/inventory";
 
@@ -195,6 +196,12 @@ export default function ProductMovementPage() {
           ]}
           data={report.rows as (ProductMovementRow & Record<string, unknown>)[]}
           emptyMessage={t.noMovementData}
+          toolbarActions={
+            <ReportExportButton
+              title={t.productMovementTitle}
+              rows={report.rows as unknown as Record<string, unknown>[]}
+            />
+          }
         />
       ) : null}
     </div>

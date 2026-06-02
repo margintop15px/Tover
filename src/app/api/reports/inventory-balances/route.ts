@@ -9,6 +9,7 @@ import type {
 export const dynamic = "force-dynamic";
 
 interface Filters {
+  productId: string | null;
   categoryId: string | null;
   warehouseId: string | null;
   storeId: string | null;
@@ -26,6 +27,7 @@ export async function GET(request: NextRequest) {
     const today = new Date().toISOString().split("T")[0];
     const asOfDate = searchParams.get("date") || today;
     const filters: Filters = {
+      productId: searchParams.get("productId"),
       categoryId: searchParams.get("categoryId"),
       warehouseId: searchParams.get("warehouseId"),
       storeId: searchParams.get("storeId"),
@@ -125,6 +127,7 @@ export async function GET(request: NextRequest) {
         ? storeInfo.get(effectiveStoreId) || product.storeName
         : product.storeName;
 
+      if (filters.productId && productId !== filters.productId) continue;
       if (filters.categoryId && product.categoryId !== filters.categoryId) continue;
       if (filters.storeId && effectiveStoreId !== filters.storeId) continue;
       if (filters.warehouseId && warehouseId !== filters.warehouseId) continue;
@@ -150,6 +153,7 @@ export async function GET(request: NextRequest) {
           productName: product.name,
           skuCode: product.skuCode,
           categoryName: product.categoryName,
+          storeId: effectiveStoreId ?? null,
           storeName: effectiveStoreName ?? null,
           qualityStatus,
           warehouses: [],

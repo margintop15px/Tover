@@ -78,6 +78,7 @@ export const ru: TranslationKeys = {
   categories: "Категории",
   stores: "Магазины",
   operations: "Операции",
+  marketplaces: "Маркетплейсы",
   reports: "Отчёты",
   team: "Команда",
   logOut: "Выйти",
@@ -97,6 +98,9 @@ export const ru: TranslationKeys = {
   saving: "Сохранение...",
   confirmDelete: "Вы уверены, что хотите удалить этот элемент?",
   deleteConfirm: "Удалить",
+  review: "Проверить",
+  commit: "Загрузить",
+  ready: "Готово",
   duplicateError: "Элемент с таким названием уже существует",
   duplicateSkuError: "Продукт с таким артикулом уже существует",
   duplicateNameError: "Продукт с таким названием уже существует",
@@ -245,8 +249,15 @@ export const ru: TranslationKeys = {
   reportDefects: "Брак",
   reportTemplates: "Сохранённые отчёты",
   createReport: "Создать отчёт",
+  editReport: "Редактировать отчёт",
+  openReport: "Открыть",
+  savedReport: "Сохранённый отчёт",
+  reportNotFound: "Отчёт не найден",
   reportPreview: "Живой предпросмотр",
   sourceReport: "Исходный отчет",
+  exportCsv: "Экспорт CSV",
+  exporting: "Экспорт...",
+  exportFailed: "Не удалось экспортировать",
   dateMode: "Режим даты",
   rowDimensions: "Группировать строки по",
   columnDimensions: "Разбивка по колонкам",
@@ -333,6 +344,7 @@ export const ru: TranslationKeys = {
   totalDebt: "Общий долг",
 
   allTypes: "Все типы",
+  allStatuses: "Все статусы",
   allWarehouses: "Все склады",
   allSuppliers: "Все поставщики",
   allProducts: "Все товары",
@@ -428,6 +440,7 @@ export const ru: TranslationKeys = {
   settings: "Настройки",
   settingsGeneral: "Общие",
   settingsProducts: "Товары",
+  settingsIntegrations: "Интеграции",
   settingsTeam: "Команда",
   currency: "Валюта",
   currencyDisplayNote: "Изменяет только валюту отображения. Сохранённые значения не конвертируются.",
@@ -443,6 +456,208 @@ export const ru: TranslationKeys = {
     `Товарам без ${field} будет назначено выбранное значение по умолчанию.`,
   categoryRequiredError: "Категория обязательна",
   storeRequiredError: "Магазин обязателен",
+  dangerZone: "Опасная зона",
+  removeAllAccountData: "Удалить все данные аккаунта",
+  resetAccountDataDescription:
+    "Очистите операции и справочники в этом рабочем пространстве, чтобы собрать данные заново с чистого состояния.",
+  resetAccountDataOwnerOnly:
+    "Удалить все данные аккаунта может только владелец рабочего пространства.",
+  resetAccountDataDialogTitle: "Удалить все данные аккаунта?",
+  resetAccountDataDialogDescription:
+    "Это действие очистит данные рабочего пространства из списка ниже. Его нельзя отменить.",
+  resetAccountDataIrreversible:
+    "Это необратимо. Будут удалены операции, отчеты, товары, склады, поставщики, остатки, импорты и синхронизированные данные маркетплейсов.",
+  resetAccountDataDeletedTitle: "Будет удалено",
+  resetAccountDataDeletedOperations: "Операции и позиции операций",
+  resetAccountDataDeletedReports:
+    "Сохраненные шаблоны отчетов и данные отчетного журнала",
+  resetAccountDataDeletedMasterData:
+    "Товары, категории, магазины, склады, поставщики и остатки",
+  resetAccountDataDeletedMarketplace:
+    "Синхронизированные данные Ozon, кандидаты, запуски синхронизации и фиксации загрузки",
+  resetAccountDataDeletedLegacy:
+    "Старые импорты, заказы, платежи и снимки остатков",
+  resetAccountDataPreservedTitle: "Будет сохранено",
+  resetAccountDataPreservedTeam: "Участники команды и приглашения",
+  resetAccountDataPreservedSettings:
+    "Настройки рабочего пространства, включая валюту и требования к товарам",
+  resetAccountDataPreservedIntegrations:
+    "Доступы интеграций и настройки подключений",
+  resetAccountDataPreservedOrganization:
+    "Организация и профили пользователей",
+  resetAccountDataTypeReset: "Введите RESET для подтверждения",
+  resettingAccountData: "Удаление данных...",
+  resetAccountDataSuccess:
+    "Данные аккаунта удалены. Можно собрать рабочее пространство с чистого состояния.",
+  resetAccountDataCount: (count: number) =>
+    `В область очистки сейчас входит строк: ${count}.`,
+  resetAccountDataNothingToDelete:
+    "Сейчас нет операционных данных для удаления.",
+  resetDataGroupOperations: "Операции",
+  resetDataGroupImports: "Импорты",
+  resetDataGroupReports: "Отчеты",
+  resetDataGroupMasterData: "Справочники",
+  resetDataGroupBalances: "Остатки",
+  resetDataGroupLegacyCommerce: "Старые продажи/платежи",
+  resetDataGroupMarketplace: "Данные маркетплейсов",
+  ozonIntegrationTitle: "Ozon",
+  ozonIntegrationDescription:
+    "Подключите Ozon Seller API в режиме только чтения, чтобы синхронизировать товары, склады, остатки, отправления, возвраты, финансовые операции и кандидаты операций.",
+  ozonClientId: "Client ID",
+  ozonApiKey: "API-ключ",
+  ozonCredentialsHelp:
+    "Данные доступа шифруются на сервере. Tover вызывает только разрешённые методы Seller API для чтения.",
+  ozonConnect: "Подключить Ozon",
+  ozonUpdateCredentials: "Обновить доступ",
+  ozonValidate: "Проверить",
+  validating: "Проверка...",
+  ozonSyncNow: "Синхронизировать",
+  syncing: "Синхронизация...",
+  ozonReviewCandidates: "Проверить кандидатов",
+  openMarketplaces: "Открыть маркетплейсы",
+  ozonDisconnect: "Отключить",
+  ozonConnectedMessage: "Доступ к Ozon сохранён и проверен.",
+  ozonValidatedMessage: "Подключение Ozon проверено.",
+  ozonSyncedMessage: "Синхронизация Ozon завершена.",
+  ozonSyncedWithErrorsMessage: "Синхронизация Ozon завершена с ошибками.",
+  ozonDisconnectedMessage: "Подключение Ozon отключено.",
+  ozonSyncState: "Синхронизированные данные",
+  ozonNoConnection: "Подключение Ozon ещё не создано.",
+  ozonSetupRequired:
+    "Перед подключением аккаунта выполните миграцию для интеграции Ozon.",
+  ozonStatusConnected: "Подключено",
+  ozonStatusInvalid: "Некорректно",
+  ozonStatusError: "Ошибка",
+  ozonStatusDisabled: "Отключено",
+  ozonStatusDraft: "Черновик",
+  ozonProductsSynced: "Товары",
+  ozonWarehousesSynced: "Склады",
+  ozonPostingsSynced: "Отправления",
+  ozonReturnsSynced: "Возвраты",
+  ozonFinanceTransactionsSynced: "Финансовые операции",
+  ozonLegalEntitySalesSynced: "Продажи юрлицам",
+  ozonUnpaidLegalProductsSynced: "Неоплаченные товары юрлиц",
+  ozonFinanceReportsSynced: "Финансовые отчеты",
+  ozonRemovalsSynced: "Вывозы/списания",
+  ozonSuppliesSynced: "Поставки",
+  ozonStockAnalyticsSynced: "Аналитика остатков",
+  ozonDiscountedProductsSynced: "Уцененные товары",
+  ozonReadyCandidates: "Готовые кандидаты",
+  ozonNeedsMapping: "Требуют сопоставления",
+  ozonUnmappedProducts: "Несопоставленные товары",
+  ozonUnmappedWarehouses: "Несопоставленные склады",
+  ozonLastValidated: "Последняя проверка",
+  ozonLastSync: "Последняя синхронизация",
+  ozonLastSyncStatus: "Статус последней синхронизации",
+  ozonLastSyncError: "Ошибка последней синхронизации",
+  ozonSyncInProgress: "Синхронизация Ozon выполняется. Это может занять минуту.",
+  ozonSyncStatusRunning: "Выполняется",
+  ozonSyncStatusCompleted: "Завершена",
+  ozonSyncStatusCompletedWithErrors: "Завершена с ошибками",
+  ozonSyncStatusFailed: "Ошибка",
+  marketplacesTitle: "Маркетплейсы",
+  marketplacesSubtitle:
+    "Синхронизируйте подключенные маркетплейсы, проверяйте данные и открывайте кандидатов операций.",
+  ozonMarketplaceDescription:
+    "Синхронизируйте данные Ozon Seller API в режиме только чтения и проверяйте кандидатов операций из маркетплейса.",
+  ozonConnectInSettings: "Подключить в настройках",
+  ozonCandidatesTitle: "Кандидаты Ozon",
+  ozonCandidatesSubtitle:
+    "Проверьте кандидатов операций из Ozon, сопоставьте товары и склады, подтвердите корректные строки и загрузите их в обычные операции.",
+  ozonCandidateNeedsMapping: "Требует сопоставления",
+  ozonCandidateApproved: "Подтверждено",
+  ozonCandidateCommitting: "Загружается",
+  ozonCandidateIgnored: "Игнорируется",
+  ozonCandidateCommitted: "Загружено",
+  ozonMappingState: "Сопоставление",
+  ozonMappingAll: "Все сопоставления",
+  ozonMappingMapped: "Сопоставлено",
+  ozonMappingMissing: "Нет сопоставления",
+  ozonSourceType: "Источник",
+  ozonEvidence: "Основание",
+  ozonSupportReason: "Причина",
+  ozonSourceLabel: (source: string) => {
+    const labels: Record<string, string> = {
+      posting: "Отправление",
+      return: "Возврат",
+      finance: "Финансы",
+      legal_entity_sale: "Продажа юрлицу",
+      removal: "Вывоз/списание",
+      supply: "Поставка",
+      stock_reconciliation: "Сверка остатков",
+      discounted_product: "Уцененный товар",
+      report: "Отчет",
+    };
+    return labels[source] || source;
+  },
+  ozonSupportLabel: (status: string) => {
+    const labels: Record<string, string> = {
+      commit_candidate: "Можно загрузить",
+      reporting_only: "Только для отчетов",
+      blocked: "Заблокировано",
+    };
+    return labels[status] || status;
+  },
+  ozonApproveReady: "Подтвердить готовые",
+  ozonCommitApproved: "Загрузить подтвержденные",
+  ozonCandidatesApproved: (approved: number, blocked: number) =>
+    `Подтверждено: ${approved}; заблокировано: ${blocked}.`,
+  ozonCandidatesCommitted: (committed: number, failed: number) =>
+    `Загружено: ${committed}; с ошибкой: ${failed}.`,
+  ozonSourceEvent: "Событие Ozon",
+  ozonItems: "Позиции",
+  ozonNoCandidates: "Кандидаты Ozon не найдены",
+  ozonReviewDetails: "Детали кандидата",
+  ozonCandidatePosition: (current: number, total: number) => `${current} / ${total}`,
+  ozonCreateProduct: "Создать товар",
+  ozonCreateWarehouse: "Создать склад",
+  ozonIgnore: "Игнорировать",
+  ozonUnignore: "Вернуть в проверку",
+  ozonRawPayload: "Исходные данные Ozon",
+  ozonValidationTitle: "Проверка кандидата",
+  ozonValidationField: (field: string) => {
+    const itemMatch = field.match(/^items\[(\d+)\]\.(.+)$/);
+    if (itemMatch) {
+      const itemNumber = Number(itemMatch[1]) + 1;
+      const itemFields: Record<string, string> = {
+        productId: `Товар в позиции ${itemNumber}`,
+        warehouseId: `Склад в позиции ${itemNumber}`,
+        quantity: `Количество в позиции ${itemNumber}`,
+        unitPrice: `Цена в позиции ${itemNumber}`,
+      };
+      return itemFields[itemMatch[2]] || field;
+    }
+
+    const fields: Record<string, string> = {
+      type: "Тип операции",
+      supportStatus: "Поддержка основания",
+      operationDate: "Дата операции",
+      items: "Позиции",
+    };
+    return fields[field] || field;
+  },
+  ozonValidationMessage: (message: string) => {
+    const messages: Record<string, string> = {
+      "Only sale and return candidates can be committed":
+        "Можно загрузить только кандидаты продаж и возвратов",
+      "This Ozon evidence cannot be committed as a Tover operation":
+        "Это основание Ozon нельзя загрузить как операцию Tover",
+      "This Ozon evidence is not eligible for operation commit":
+        "Это основание Ozon нельзя загрузить как операцию",
+      "Valid operation date is required": "Укажите корректную дату операции",
+      "At least one item is required": "Нужна хотя бы одна позиция",
+      "Product must be mapped": "Сопоставьте товар",
+      "Warehouse must be mapped": "Сопоставьте склад",
+      "Quantity must be positive": "Количество должно быть больше 0",
+      "Price cannot be negative": "Цена не может быть отрицательной",
+      "Unit cost must be positive": "Себестоимость должна быть больше 0",
+      "Transfer requires one source item and one destination item":
+        "Для перемещения нужна одна позиция списания и одна позиция поступления",
+      "Transfer source and destination products must match":
+        "Товар списания и поступления в перемещении должен совпадать",
+    };
+    return messages[message] || message;
+  },
 
   // --- Validation errors ---
   required: "Обязательное поле",

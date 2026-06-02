@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
     const to = searchParams.get("to");
     const groupBy = searchParams.get("groupBy") || "store";
     const productId = searchParams.get("productId");
+    const categoryId = searchParams.get("categoryId");
     const warehouseId = searchParams.get("warehouseId");
     const storeId = searchParams.get("storeId");
 
@@ -42,6 +43,7 @@ export async function GET(request: NextRequest) {
     for (const movement of movements) {
       const product = lookups.products.get(movement.product_id);
       if (!product || product.is_defect_copy) continue;
+      if (categoryId && product.category_id !== categoryId) continue;
 
       const movementStore = movement.store_id
         ? lookups.stores.get(movement.store_id)

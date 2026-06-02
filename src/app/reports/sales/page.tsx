@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataTable from "@/components/DataTable";
 import ReportFilterBar from "@/components/ReportFilterBar";
+import ReportExportButton from "@/components/reports/ReportExportButton";
 import { FieldLabel } from "@/components/ui/field";
 import type { SalesVolumeReport, SalesVolumeRow } from "@/types/inventory";
 
@@ -74,6 +75,12 @@ export default function SalesVolumePage() {
           ]}
           data={(report?.rows || []) as (SalesVolumeRow & Record<string, unknown>)[]}
           emptyMessage={t.noSalesData}
+          toolbarActions={
+            <ReportExportButton
+              title={t.salesVolumeTitle}
+              rows={(report?.rows || []) as unknown as Record<string, unknown>[]}
+            />
+          }
         />
       )}
     </div>

@@ -108,8 +108,9 @@ test.describe("reports", () => {
   // ── Saved Report Constructor ────────────────────────────────────────
 
   test.describe("saved report constructor", () => {
-    test("creates a saved report from the split-view builder", async ({ page }) => {
+    test("creates, opens, exports, edits, and deletes a saved report", async ({ page }) => {
       const reportName = uniqueName("Report");
+      const editedReportName = `${reportName}-Edited`;
       const templatesResponse = await page.request.get("/api/report-templates");
       const templatesPayload = await templatesResponse.json().catch(() => ({}));
       test.skip(
@@ -117,6 +118,7 @@ test.describe("reports", () => {
           /report_templates/.test(String(templatesPayload.error || "")),
         "Local Supabase schema is missing migration 011_operation_reporting_ledger.sql"
       );
+      page.on("dialog", (dialog) => dialog.accept());
 
       await page.goto("/reports/templates/new");
       await expect(
@@ -129,7 +131,33 @@ test.describe("reports", () => {
       await page.getByRole("button", { name: "Save" }).click();
 
       await expect(page).toHaveURL(/\/reports\/templates$/);
-      await expect(page.getByText(reportName)).toBeVisible();
+      let row = page.getByRole("row").filter({ hasText: reportName });
+      await expect(row).toBeVisible();
+
+      await row.getByRole("link", { name: "Open" }).click();
+      await expect(page).toHaveURL(/\/reports\/templates\/[^/]+$/);
+      await expect(page.getByRole("heading", { name: reportName })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Export CSV" })).toBeVisible();
+
+      const savedReportDownload = page.waitForEvent("download");
+      await page.getByRole("button", { name: "Export CSV" }).click();
+      expect((await savedReportDownload).suggestedFilename()).toMatch(/\.csv$/);
+
+      await page.getByRole("link", { name: "Edit" }).click();
+      await expect(
+        page.getByRole("heading", { name: "Edit report" })
+      ).toBeVisible();
+      await page.locator("main input").first().fill(editedReportName);
+      await page.getByRole("button", { name: "Save" }).click();
+
+      await expect(page).toHaveURL(/\/reports\/templates\/[^/]+$/);
+      await expect(page.getByRole("heading", { name: editedReportName })).toBeVisible();
+
+      await page.goto("/reports/templates");
+      row = page.getByRole("row").filter({ hasText: editedReportName });
+      await expect(row).toBeVisible();
+      await row.getByRole("button", { name: "Delete" }).click();
+      await expect(row).not.toBeVisible();
     });
 
     test("source changes constrain measures in the builder", async ({ page }) => {
@@ -179,6 +207,24 @@ test.describe("reports", () => {
   // ── Predefined Report APIs ──────────────────────────────────────────
 
   test.describe("predefined report APIs", () => {
+    test("invalid saved report config returns 400", async ({ page }) => {
+      const response = await page.request.post("/api/report-templates", {
+        data: {
+          name: uniqueName("Invalid Report"),
+          source: "sales_volume",
+          dateMode: "period",
+          rowDimensions: ["category"],
+          columnDimensions: [],
+          measures: ["quantity"],
+          filters: {},
+        },
+      });
+      const payload = await response.json().catch(() => ({}));
+
+      expect(response.status()).toBe(400);
+      expect(String(payload.error || "")).toContain("Row dimension");
+    });
+
     test("sales volume API returns report JSON for store grouping", async ({
       page,
     }) => {
@@ -200,6 +246,16 @@ test.describe("reports", () => {
         groupBy: "store",
       });
       expect(Array.isArray(payload.rows)).toBe(true);
+    });
+
+    test("sales volume page exports CSV", async ({ page }) => {
+      await page.goto("/reports/sales");
+      await expect(page.getByRole("heading", { name: "Sales Volume" })).toBeVisible();
+      await expect(page.getByText("Loading...")).not.toBeVisible({ timeout: 15000 });
+
+      const downloadPromise = page.waitForEvent("download");
+      await page.getByRole("button", { name: "Export CSV" }).click();
+      expect((await downloadPromise).suggestedFilename()).toMatch(/\.csv$/);
     });
   });
 

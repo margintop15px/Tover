@@ -22,6 +22,7 @@ import {
   Menu,
   ChevronDown,
   ChevronRight,
+  ShoppingBag,
 } from "lucide-react";
 import { useI18n } from "@/i18n/context";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,8 @@ interface NavItem {
   href: string;
   labelKey: keyof ReturnType<typeof useI18n>["t"];
   icon: React.ReactNode;
+  activePrefixes?: string[];
+  excludePrefixes?: string[];
 }
 
 interface NavGroup {
@@ -82,6 +85,14 @@ const operationsItem: NavItem = {
   href: "/operations",
   labelKey: "operations",
   icon: <ArrowRightLeft className={iconClass} />,
+  excludePrefixes: ["/operations/marketplace", "/operations/marketplaces"],
+};
+
+const marketplacesItem: NavItem = {
+  href: "/operations/marketplaces",
+  labelKey: "marketplaces",
+  icon: <ShoppingBag className={iconClass} />,
+  activePrefixes: ["/operations/marketplaces", "/operations/marketplace"],
 };
 
 const bottomItems: NavItem[] = [
@@ -98,10 +109,15 @@ function SidebarNavLink({
   onClick?: () => void;
 }) {
   const { t } = useI18n();
-  const isActive =
-    item.href === "/"
-      ? pathname === "/"
-      : pathname === item.href || pathname.startsWith(item.href + "/");
+  const excluded = item.excludePrefixes?.some((prefix) =>
+    pathname.startsWith(prefix)
+  );
+  const isActive = excluded
+    ? false
+    : item.activePrefixes?.some((prefix) => pathname.startsWith(prefix)) ||
+      (item.href === "/"
+        ? pathname === "/"
+        : pathname === item.href || pathname.startsWith(item.href + "/"));
 
   return (
     <Link
@@ -167,6 +183,11 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           <div>
             <SidebarNavLink
               item={operationsItem}
+              pathname={pathname}
+              onClick={onNavigate}
+            />
+            <SidebarNavLink
+              item={marketplacesItem}
               pathname={pathname}
               onClick={onNavigate}
             />

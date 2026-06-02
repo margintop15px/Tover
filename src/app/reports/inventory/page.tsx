@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/table";
 import KpiCard from "@/components/KpiCard";
 import ReportFilterBar from "@/components/ReportFilterBar";
+import ReportExportButton from "@/components/reports/ReportExportButton";
 import { FieldLabel } from "@/components/ui/field";
 import type { InventoryBalancesReport, InventoryBalanceRow } from "@/types/inventory";
 
@@ -112,9 +113,31 @@ export default function InventoryBalancesPage() {
     return display === "cost" ? row.totalCost : row.totalQuantity;
   };
 
+  const exportRows = report
+    ? report.rows.map((row) => {
+      const exportRow: Record<string, unknown> = {
+        product: row.productName,
+        sku: row.skuCode,
+        qualityStatus: row.qualityStatus,
+        total: getTotalValue(row),
+      };
+      for (const warehouse of report.warehouseColumns) {
+        exportRow[warehouse.name] = getCellValue(row, warehouse.id);
+      }
+      return exportRow;
+    })
+    : [];
+
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-6">{t.inventoryBalancesTitle}</h1>
+      <div className="mb-4 flex justify-end">
+        <ReportExportButton
+          title={t.inventoryBalancesTitle}
+          rows={exportRows}
+          disabled={loading || !report}
+        />
+      </div>
 
       {/* Mode toggle */}
       <div className="flex flex-wrap items-center gap-4 mb-4">
@@ -260,7 +283,9 @@ export default function InventoryBalancesPage() {
                 </TableHeader>
                 <TableBody>
                   {report.rows.map((row) => (
-                    <TableRow key={row.productId}>
+                    <TableRow
+                      key={`${row.productId}:${row.storeId || ""}:${row.qualityStatus}`}
+                    >
                       <TableCell className="sticky left-0 bg-card z-10 font-medium">
                         {row.productName}
                       </TableCell>

@@ -18,7 +18,7 @@ export default function Pagination({
 }: PaginationProps) {
   const { t } = useI18n();
   const currentPage = Math.floor(offset / limit) + 1;
-  const totalPages = total != null ? Math.ceil(total / limit) : null;
+  const totalPages = total != null ? Math.max(1, Math.ceil(total / limit)) : null;
   const hasPrev = offset > 0;
   const hasNext = total != null ? offset + limit < total : false;
 
