@@ -128,6 +128,7 @@ export async function PATCH(
     const body = (await request.json()) as {
       candidateId?: string;
       operation?: OperationImportDraft;
+      candidateUpdates?: { candidateId: string; operation: OperationImportDraft }[];
       approveCandidateId?: string;
       approveAll?: boolean;
     };
@@ -177,6 +178,53 @@ export async function PATCH(
 
       const summary = await recalculateSummary(supabase, id);
       return NextResponse.json({ candidate: updated, summary });
+    }
+
+    if (Array.isArray(body.candidateUpdates) && body.candidateUpdates.length > 0) {
+      if (
+        body.candidateUpdates.some(
+          (update) => !update.candidateId || !update.operation
+        )
+      ) {
+        return NextResponse.json(
+          { error: "Invalid candidate update" },
+          { status: 400 }
+        );
+      }
+
+      const updates = await Promise.all(
+        body.candidateUpdates.map((update) => {
+          const validation = normalizeAndValidateDraft(
+            update.operation,
+            ref,
+            duplicates
+          );
+          return supabase
+            .from("operation_import_candidates")
+            .update({
+              operation: update.operation,
+              normalized_operation: validation.normalized,
+              fingerprint: validation.fingerprint,
+              validation_errors: validation.validationErrors,
+              status: validation.status,
+            })
+            .eq("id", update.candidateId)
+            .eq("import_id", id)
+            .select()
+            .single();
+        })
+      );
+
+      const error = updates.find((update) => update.error)?.error;
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      const summary = await recalculateSummary(supabase, id);
+      return NextResponse.json({
+        candidates: updates.map((update) => update.data),
+        summary,
+      });
     }
 
     if (body.approveCandidateId) {

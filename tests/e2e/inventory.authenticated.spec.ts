@@ -455,6 +455,53 @@ test.describe("inventory management", () => {
   // ── Products CRUD ───────────────────────────────────────────────────
 
   test.describe("products CRUD", () => {
+    test("allows duplicate product names with different SKUs", async ({
+      request,
+    }) => {
+      const productName = uniqueName("SharedProductName");
+      const firstSku = `SKU-DUP-A-${RUN_ID}`;
+      const secondSku = `SKU-DUP-B-${RUN_ID}`;
+      const createdIds: string[] = [];
+
+      try {
+        const first = await postJson<{ id: string; skuCode: string }>(
+          request,
+          "/api/products",
+          { name: productName, skuCode: firstSku }
+        );
+        createdIds.push(first.id);
+        const secondResponse = await request.post("/api/products", {
+          data: { name: productName, skuCode: secondSku },
+        });
+        if (secondResponse.status() === 409) {
+          const body = await secondResponse.json();
+          test.skip(
+            body.field === "name",
+            "Local Supabase schema is missing migration 017_drop_product_name_unique.sql"
+          );
+        }
+        expect(secondResponse.ok(), await secondResponse.text()).toBeTruthy();
+        const second = (await secondResponse.json()) as {
+          id: string;
+          skuCode: string;
+        };
+        createdIds.push(second.id);
+
+        expect(first.skuCode).toBe(firstSku);
+        expect(second.skuCode).toBe(secondSku);
+
+        const duplicateSku = await request.post("/api/products", {
+          data: { name: `${productName}-Other`, skuCode: firstSku },
+        });
+        expect(duplicateSku.status()).toBe(409);
+        expect((await duplicateSku.json()).field).toBe("sku");
+      } finally {
+        await Promise.all(
+          createdIds.map((id) => request.delete(`/api/products/${id}`))
+        );
+      }
+    });
+
     test("create and delete a product with SKU", async ({ page }) => {
       const prodName = uniqueName("Prod");
       const skuCode = `SKU-${RUN_ID}`;

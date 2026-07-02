@@ -52,16 +52,35 @@ const FIELD_SYNONYMS: Record<string, string[]> = {
   productName: [
     "product",
     "productname",
+    "product name",
     "item",
     "itemname",
+    "item name",
     "material",
     "ingredient",
     "товар",
     "продукт",
     "материал",
     "наименование",
+    "наименование товара",
+    "название",
+    "название товара",
   ],
-  skuCode: ["sku", "skucode", "sku_code", "code", "артикул", "код"],
+  skuCode: [
+    "sku",
+    "skucode",
+    "sku_code",
+    "code",
+    "offerid",
+    "offer_id",
+    "offer id",
+    "seller sku",
+    "seller article",
+    "vendor code",
+    "артикул",
+    "код",
+    "код товара",
+  ],
   warehouseName: [
     "warehouse",
     "warehouse_name",
@@ -257,6 +276,26 @@ function scoreHeaderRow(row: string[]) {
   return score + Math.min(row.filter((value) => value.trim()).length, 6) / 10;
 }
 
+function skuHeaderPriority(header: string) {
+  const normalized = normalizeKey(header);
+  if (["sku", "skucode"].includes(normalized)) return 0;
+  if (["sellersku", "sellercode", "vendorcode"].includes(normalized)) return 1;
+  if (
+    [
+      "article",
+      "sellerarticle",
+      "offerid",
+      "code",
+      "артикул",
+      "код",
+      "кодтовара",
+    ].includes(normalized)
+  ) {
+    return 2;
+  }
+  return null;
+}
+
 function detectHeaderMapping(rows: string[][]): HeaderMapping | null {
   let bestIndex = -1;
   let bestScore = 0;
@@ -287,6 +326,22 @@ function detectHeaderMapping(rows: string[][]): HeaderMapping | null {
       }
     }
   });
+
+  const skuCandidate = headers
+    .map((header, index) => ({
+      header,
+      index,
+      priority: skuHeaderPriority(header),
+    }))
+    .filter(
+      (candidate): candidate is { header: string; index: number; priority: number } =>
+        candidate.priority !== null
+    )
+    .sort((a, b) => a.priority - b.priority || a.index - b.index)[0];
+  if (skuCandidate) {
+    columns.skuCode = skuCandidate.index;
+    labels.skuCode = skuCandidate.header;
+  }
 
   return {
     headerRowIndex: bestIndex,
@@ -370,9 +425,21 @@ function matchProduct(ref: RefData, rawName?: string, skuCode?: string) {
     const exactSku = ref.products.find(
       (product) => normalizeText(product.skuCode) === sku
     );
-    if (exactSku) return { match: exactSku, suggestions: [exactSku] };
+    return {
+      match: exactSku ?? null,
+      suggestions: exactSku ? [exactSku] : [],
+    };
   }
-  return exactOrFuzzy(ref.products, rawName);
+
+  const normalizedName = normalizeText(rawName);
+  if (!normalizedName) return { match: null, suggestions: [] };
+  const exactNameMatches = ref.products.filter(
+    (product) => normalizeText(product.name) === normalizedName
+  );
+  return {
+    match: exactNameMatches.length === 1 ? exactNameMatches[0] : null,
+    suggestions: exactNameMatches.slice(0, 5),
+  };
 }
 
 function importDefault<T extends { isImportDefault?: boolean }>(values: T[]) {
@@ -456,14 +523,23 @@ export function normalizeAndValidateDraft(
     }
   }
 
-  if (normalized.supplierName && !normalized.supplierId) {
+  if (
+    normalized.supplierName &&
+    !normalized.supplierId &&
+    normalized.createSupplier !== false
+  ) {
     const supplier = exactOrFuzzy(ref.suppliers, normalized.supplierName);
-    if (supplier.match) normalized.supplierId = supplier.match.id;
-    if (!supplier.match) normalized.createSupplier = true;
+    if (supplier.match) {
+      normalized.supplierId = supplier.match.id;
+      normalized.createSupplier = false;
+    } else {
+      normalized.createSupplier = false;
+    }
   } else if (
     (normalized.type === "purchase" || normalized.type === "payment") &&
     !normalized.supplierId &&
-    !normalizeText(normalized.supplierName)
+    !normalizeText(normalized.supplierName) &&
+    normalized.createSupplier !== false
   ) {
     const defaultSupplier = importDefault(ref.suppliers);
     if (defaultSupplier) normalized.supplierId = defaultSupplier.id;
@@ -500,12 +576,16 @@ export function normalizeAndValidateDraft(
     }
 
     items.forEach((item, index) => {
-      if ((item.productName || item.skuCode) && !item.productId) {
+      if (
+        (item.productName || item.skuCode) &&
+        !item.productId &&
+        item.createProduct !== false
+      ) {
         const product = matchProduct(ref, item.productName, item.skuCode);
         if (product.match) item.productId = product.match.id;
         if (!product.match) {
           if (!item.productName && item.skuCode) item.productName = item.skuCode;
-          item.createProduct = true;
+          item.createProduct = false;
         }
       }
 
@@ -517,11 +597,23 @@ export function normalizeAndValidateDraft(
         });
       }
 
-      if (item.warehouseName && !item.warehouseId) {
+      if (
+        item.warehouseName &&
+        !item.warehouseId &&
+        item.createWarehouse !== false
+      ) {
         const warehouse = exactOrFuzzy(ref.warehouses, item.warehouseName);
-        if (warehouse.match) item.warehouseId = warehouse.match.id;
-        if (!warehouse.match) item.createWarehouse = true;
-      } else if (!item.warehouseId && !normalizeText(item.warehouseName)) {
+        if (warehouse.match) {
+          item.warehouseId = warehouse.match.id;
+          item.createWarehouse = false;
+        } else {
+          item.createWarehouse = false;
+        }
+      } else if (
+        !item.warehouseId &&
+        !normalizeText(item.warehouseName) &&
+        item.createWarehouse !== false
+      ) {
         const defaultWarehouse = importDefault(ref.warehouses);
         if (defaultWarehouse) item.warehouseId = defaultWarehouse.id;
       }
@@ -534,11 +626,19 @@ export function normalizeAndValidateDraft(
         });
       }
 
-      if (item.storeName && !item.storeId) {
+      if (item.storeName && !item.storeId && item.createStore !== false) {
         const store = exactOrFuzzy(ref.stores, item.storeName);
-        if (store.match) item.storeId = store.match.id;
-        if (!store.match) item.createStore = true;
-      } else if (!item.storeId && !normalizeText(item.storeName)) {
+        if (store.match) {
+          item.storeId = store.match.id;
+          item.createStore = false;
+        } else {
+          item.createStore = false;
+        }
+      } else if (
+        !item.storeId &&
+        !normalizeText(item.storeName) &&
+        item.createStore !== false
+      ) {
         const defaultStore = importDefault(ref.stores);
         if (defaultStore) item.storeId = defaultStore.id;
       }

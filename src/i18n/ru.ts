@@ -227,6 +227,75 @@ export const ru: TranslationKeys = {
   sourceEvidence: "Данные источника",
   security: "Безопасность",
   noImportCandidates: "Операции не найдены",
+  workspaceCurrency: (currency: string) => `Валюта: ${currency}`,
+  applyValueToRows: "Применить значение к строкам",
+  applyToAllRows: "Применить ко всем строкам",
+  applyToAllDescription: (field: string, value: string) =>
+    `Применить ${field} "${value}" ко всем строкам этого импорта.`,
+  fillBlanks: "Заполнить пустые",
+  replaceAll: "Заменить все",
+  createFromSource: (value: string) => `Создать из "${value}"`,
+  operationImportValidationField: (field: string) => {
+    const itemMatch = field.match(/^items\[(\d+)\]\.(.+)$/);
+    if (itemMatch) {
+      const itemNumber = Number(itemMatch[1]) + 1;
+      const itemFields: Record<string, string> = {
+        productId: `Товар в позиции ${itemNumber}`,
+        warehouseId: `Склад в позиции ${itemNumber}`,
+        quantity: `Количество в позиции ${itemNumber}`,
+        unitPrice: `Цена в позиции ${itemNumber}`,
+      };
+      return itemFields[itemMatch[2]] || field;
+    }
+
+    const fields: Record<string, string> = {
+      type: "Тип операции",
+      operationDate: "Дата операции",
+      supplierId: "Поставщик",
+      paymentAmount: "Сумма оплаты",
+      productId: "Товар",
+      sourceWarehouseId: "Склад-источник",
+      destinationWarehouseId: "Склад-получатель",
+      items: "Позиции",
+      duplicate: "Дубликат",
+    };
+    return fields[field] || field;
+  },
+  operationImportValidationMessage: (message: string) => {
+    const duplicateMatch = message.match(/^Likely duplicate of operation (.+)$/);
+    if (duplicateMatch) {
+      return `Вероятный дубликат операции ${duplicateMatch[1]}`;
+    }
+
+    const messages: Record<string, string> = {
+      "Operation type must be selected": "Выберите тип операции",
+      "Operation date is required": "Укажите дату операции",
+      "Valid date is required": "Укажите корректную дату",
+      "Supplier is required": "Укажите поставщика",
+      "Payment amount must be positive": "Сумма оплаты должна быть больше 0",
+      "At least one item is required": "Нужна хотя бы одна позиция",
+      "Product is required": "Укажите товар",
+      "Warehouse is required": "Укажите склад",
+      "Quantity must be positive": "Количество должно быть больше 0",
+      "Unit price must be positive": "Цена должна быть больше 0",
+      "Unit cost must be positive": "Себестоимость должна быть больше 0",
+      "Transfer requires one source and one destination row":
+        "Для перемещения нужна одна строка источника и одна строка получателя",
+      "Source and destination warehouses must differ":
+        "Склады источника и получателя должны различаться",
+      "Source and destination must differ":
+        "Источник и получатель должны различаться",
+      "Production requires source items and exactly one output item":
+        "Для производства нужны исходные позиции и ровно одна выходная позиция",
+      "Source warehouse is required": "Укажите склад-источник",
+      "Destination warehouse is required": "Укажите склад-получатель",
+      "At least one source (out) item is required":
+        "Нужна хотя бы одна исходная позиция",
+      "Exactly one output (in) item is required":
+        "Нужна ровно одна выходная позиция",
+    };
+    return messages[message] || message;
+  },
 
   // --- Operation types ---
   opPurchase: "Закупка",

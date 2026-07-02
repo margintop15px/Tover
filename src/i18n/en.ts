@@ -225,6 +225,74 @@ export const en = {
   sourceEvidence: "Source evidence",
   security: "Security",
   noImportCandidates: "No candidate operations found",
+  workspaceCurrency: (currency: string) => `Currency: ${currency}`,
+  applyValueToRows: "Apply value to rows",
+  applyToAllRows: "Apply to all rows",
+  applyToAllDescription: (field: string, value: string) =>
+    `Apply ${field} "${value}" to all rows in this import.`,
+  fillBlanks: "Fill blanks",
+  replaceAll: "Replace all",
+  createFromSource: (value: string) => `Create from "${value}"`,
+  operationImportValidationField: (field: string) => {
+    const itemMatch = field.match(/^items\[(\d+)\]\.(.+)$/);
+    if (itemMatch) {
+      const itemNumber = Number(itemMatch[1]) + 1;
+      const itemFields: Record<string, string> = {
+        productId: `Item ${itemNumber} product`,
+        warehouseId: `Item ${itemNumber} warehouse`,
+        quantity: `Item ${itemNumber} quantity`,
+        unitPrice: `Item ${itemNumber} price`,
+      };
+      return itemFields[itemMatch[2]] || field;
+    }
+
+    const fields: Record<string, string> = {
+      type: "Operation type",
+      operationDate: "Operation date",
+      supplierId: "Supplier",
+      paymentAmount: "Payment amount",
+      productId: "Product",
+      sourceWarehouseId: "Source warehouse",
+      destinationWarehouseId: "Destination warehouse",
+      items: "Items",
+      duplicate: "Duplicate",
+    };
+    return fields[field] || field;
+  },
+  operationImportValidationMessage: (message: string) => {
+    const duplicateMatch = message.match(/^Likely duplicate of operation (.+)$/);
+    if (duplicateMatch) {
+      return `Likely duplicate of operation ${duplicateMatch[1]}`;
+    }
+
+    const messages: Record<string, string> = {
+      "Operation type must be selected": "Operation type must be selected",
+      "Operation date is required": "Operation date is required",
+      "Valid date is required": "Valid date is required",
+      "Supplier is required": "Supplier is required",
+      "Payment amount must be positive": "Payment amount must be positive",
+      "At least one item is required": "At least one item is required",
+      "Product is required": "Product is required",
+      "Warehouse is required": "Warehouse is required",
+      "Quantity must be positive": "Quantity must be positive",
+      "Unit price must be positive": "Unit price must be positive",
+      "Unit cost must be positive": "Unit cost must be positive",
+      "Transfer requires one source and one destination row":
+        "Transfer requires one source and one destination row",
+      "Source and destination warehouses must differ":
+        "Source and destination warehouses must differ",
+      "Source and destination must differ": "Source and destination must differ",
+      "Production requires source items and exactly one output item":
+        "Production requires source items and exactly one output item",
+      "Source warehouse is required": "Source warehouse is required",
+      "Destination warehouse is required": "Destination warehouse is required",
+      "At least one source (out) item is required":
+        "At least one source (out) item is required",
+      "Exactly one output (in) item is required":
+        "Exactly one output (in) item is required",
+    };
+    return messages[message] || message;
+  },
 
   // --- Operation types ---
   opPurchase: "Purchase",

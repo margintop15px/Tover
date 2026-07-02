@@ -16,6 +16,23 @@ import type {
 
 export const dynamic = "force-dynamic";
 
+type CreatedEntityReprocessRequest = {
+  createdEntity?: {
+    kind?: "product" | "supplier" | "warehouse";
+    id?: string;
+    name?: string;
+    skuCode?: string | null;
+  };
+};
+
+async function readJsonBody(request: NextRequest) {
+  try {
+    return (await request.json()) as CreatedEntityReprocessRequest;
+  } catch {
+    return {};
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -25,6 +42,7 @@ export async function POST(
     const { supabase, workspaceId } = await getRouteContext(request, {
       requireManager: true,
     });
+    const body = await readJsonBody(request);
 
     const { data: importRecord, error: importError } = await supabase
       .from("operation_imports")
@@ -42,6 +60,34 @@ export async function POST(
         { error: "Committed imports cannot be reprocessed" },
         { status: 409 }
       );
+    }
+
+    if (body.createdEntity) {
+      const { kind, id: entityId, name, skuCode } = body.createdEntity;
+      if (!kind || !entityId || !["product", "supplier", "warehouse"].includes(kind)) {
+        return NextResponse.json(
+          { error: "Invalid created entity" },
+          { status: 400 }
+        );
+      }
+
+      const { data, error } = await supabase.rpc(
+        "apply_operation_import_created_entity",
+        {
+          p_workspace_id: workspaceId,
+          p_import_id: id,
+          p_entity_kind: kind,
+          p_entity_id: entityId,
+          p_entity_name: name ?? null,
+          p_sku_code: skuCode ?? null,
+        }
+      );
+
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      return NextResponse.json(data);
     }
 
     const [{ data: rows, error: rowError }, ref, duplicates] = await Promise.all([
@@ -102,7 +148,15 @@ export async function POST(
       })
       .eq("id", id);
 
-    return NextResponse.json({ summary });
+    const { data: candidates, error: candidateFetchError } = await supabase
+      .from("operation_import_candidates")
+      .select("*")
+      .eq("import_id", id)
+      .order("row_index", { ascending: true });
+
+    if (candidateFetchError) throw new Error(candidateFetchError.message);
+
+    return NextResponse.json({ summary, candidates: candidates || [] });
   } catch (error) {
     return toRouteErrorResponse(error);
   }

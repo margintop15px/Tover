@@ -75,7 +75,11 @@ const extractionSchema = {
             description:
               "Use yyyy-MM-dd when the calendar date can be determined. If the date is ambiguous or illegible, preserve the visible source text.",
           },
-          comment: { type: ["string", "null"] },
+          comment: {
+            type: ["string", "null"],
+            description:
+              "Only literal visible note/comment text from the document, copied as data. Do not summarize the receipt, describe handwriting, mention uncertainty, or include phrases like appears, difficult to read, illegible, blank, or not visible. Use null when there is no readable note/comment.",
+          },
           supplierName: { type: ["string", "null"] },
           paymentAmount: { type: ["number", "string", "null"] },
           items: {
@@ -287,6 +291,21 @@ function coerceString(value: unknown) {
   return undefined;
 }
 
+export function sanitizeExtractedComment(value: unknown) {
+  const comment = coerceString(value)?.trim();
+  if (!comment) return undefined;
+
+  const lower = comment.toLowerCase();
+  const isModelDiscourse =
+    /\b(appears?|seems?|difficult to read|hard to read|illegible|unreadable|not visible|blank|handwritten)\b/.test(
+      lower
+    ) || /\[(blank|illegible|unreadable)\]/.test(lower);
+  if (!isModelDiscourse) return comment;
+
+  const quoted = /["“](.+?)["”]/.exec(comment)?.[1]?.trim();
+  return quoted || undefined;
+}
+
 function coerceNumber(value: unknown) {
   if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
   if (typeof value !== "string") return undefined;
@@ -309,7 +328,7 @@ function coerceDraft(value: Record<string, unknown>): OperationImportDraft {
   return {
     type,
     operationDate: coerceString(value.operationDate),
-    comment: coerceString(value.comment),
+    comment: sanitizeExtractedComment(value.comment),
     supplierName: coerceString(value.supplierName),
     paymentAmount: coerceNumber(value.paymentAmount),
     rawPaymentAmount: coerceString(value.paymentAmount),
@@ -553,7 +572,7 @@ export async function extractWithOpenAI({
     imageDataUrl: dataUrl,
     textPreview: text,
     instructions:
-      "Extract inventory operations from the user's file. Return only structured data. Do not guess IDs. Preserve uncertainty in findings. For visible names/comments, return the source text as-is even if it looks misspelled, incomplete, or not like a valid word. For dates, return yyyy-MM-dd when the calendar date is clear; otherwise return the visible source text rather than null. If transformation code is useful, include it as generatedCode for audit; the application will not execute it locally.",
+      "Extract inventory operations from the user's file. Return only structured data, not prose. Do not guess IDs. Preserve uncertainty in findings, not operation fields. For visible names, return the source text as-is even if it looks misspelled, incomplete, or not like a valid word. For comment, return only literal visible note/comment text; never describe handwriting, uncertainty, blanks, unreadable text, or what appears in the image. If no readable comment/note exists, use null. For dates, return yyyy-MM-dd when the calendar date is clear; otherwise return the visible source text rather than null. If transformation code is useful, include it as generatedCode for audit; the application will not execute it locally.",
     content: [
       {
         type: "input_text",
@@ -619,7 +638,7 @@ export async function inferTabularImportPlan({
     model,
     reasoning: { effort: "medium" },
     instructions:
-      "Infer a deterministic import plan for messy CSV/XLSX inventory operation imports. The application will execute this plan locally against the full parsed file. Return column indexes as zero-based integers. Do not return candidate operations. Use null only when a column is absent. Preserve visible source text by mapping columns/defaults instead of discarding uncertain values.",
+      "Infer a deterministic import plan for messy CSV/XLSX inventory operation imports. The application will execute this plan locally against the full parsed file. Return column indexes as zero-based integers. Do not return candidate operations. Use null only when a column is absent. Preserve visible source text by mapping columns/defaults instead of discarding uncertain values. Product identity is SKU-based: map the stable product identifier column to skuCode. If both SKU and Артикул/seller article/offer ID are present, prefer the SKU column; if only article/offer ID is present, map that column to skuCode.",
     input: [
       {
         role: "user",
@@ -627,7 +646,7 @@ export async function inferTabularImportPlan({
           {
             type: "input_text",
             text:
-              "Infer sheet/header/data row and column mappings for these parsed workbook/table rows. Supported fields: operationDate, type, productName, skuCode, warehouseName, storeName, sourceWarehouseName, destinationWarehouseName, quantity, unitPrice, supplierName, paymentAmount, comment, direction. Supported default operation types: purchase, sale, return, write_off, transfer, production, defect, payment, inventory_adjustment.",
+              "Infer sheet/header/data row and column mappings for these parsed workbook/table rows. Supported fields: operationDate, type, productName, skuCode, warehouseName, storeName, sourceWarehouseName, destinationWarehouseName, quantity, unitPrice, supplierName, paymentAmount, comment, direction. Map visible product names/titles to productName. Map SKU, seller SKU, article, offer ID, or product code to skuCode using the SKU preference rule from the system instructions. Supported default operation types: purchase, sale, return, write_off, transfer, production, defect, payment, inventory_adjustment.",
           },
           {
             type: "input_text",
