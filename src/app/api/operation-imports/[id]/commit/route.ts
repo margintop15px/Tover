@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
+import { recalculateOperationImportSummary } from "@/lib/operation-imports/server";
 
 export const dynamic = "force-dynamic";
 
@@ -44,19 +45,19 @@ export async function POST(
     }
 
     const rows = candidates || [];
-    const blocked = rows.filter(
+    const approvedValid = rows.filter(
       (candidate) =>
-        candidate.status !== "approved" ||
-        (candidate.validation_errors || []).length > 0
+        candidate.status === "approved" &&
+        (candidate.validation_errors || []).length === 0
     );
 
-    if (rows.length === 0 || blocked.length > 0) {
+    if (rows.length === 0 || approvedValid.length === 0) {
       return NextResponse.json(
         {
           error:
             rows.length === 0
               ? "No candidates to commit"
-              : `${blocked.length} candidates are not approved or still invalid`,
+              : "No approved candidates to commit",
         },
         { status: 400 }
       );
@@ -72,11 +73,10 @@ export async function POST(
       await supabase
         .from("operation_imports")
         .update({
-          status: "failed",
           findings: { commitError: error.message },
-          completed_at: new Date().toISOString(),
         })
         .eq("id", id);
+      await recalculateOperationImportSummary(supabase, workspaceId, id);
 
       return NextResponse.json({ error: error.message }, { status: 400 });
     }

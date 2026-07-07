@@ -3,13 +3,12 @@ import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 import {
   loadOperationImportDuplicates,
   loadOperationImportRefData,
+  recalculateOperationImportSummary,
 } from "@/lib/operation-imports/server";
 import {
-  candidateSummary,
   normalizeAndValidateDraft,
 } from "@/lib/operation-imports/pipeline";
 import type {
-  BuiltCandidate,
   OperationImportCandidateRecord,
   OperationImportDraft,
 } from "@/lib/operation-imports/types";
@@ -87,7 +86,13 @@ export async function POST(
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
-      return NextResponse.json(data);
+      const { summary } = await recalculateOperationImportSummary(
+        supabase,
+        workspaceId,
+        id
+      );
+
+      return NextResponse.json({ ...data, summary });
     }
 
     const [{ data: rows, error: rowError }, ref, duplicates] = await Promise.all([
@@ -95,6 +100,7 @@ export async function POST(
         .from("operation_import_candidates")
         .select("*")
         .eq("import_id", id)
+        .neq("status", "committed")
         .order("row_index", { ascending: true }),
       loadOperationImportRefData(supabase, workspaceId),
       loadOperationImportDuplicates(supabase, workspaceId),
@@ -104,23 +110,9 @@ export async function POST(
       return NextResponse.json({ error: rowError.message }, { status: 500 });
     }
 
-    const updatedCandidates: BuiltCandidate[] = [];
-
     for (const row of (rows || []) as OperationImportCandidateRecord[]) {
       const operation = row.operation as OperationImportDraft;
       const validation = normalizeAndValidateDraft(operation, ref, duplicates);
-      updatedCandidates.push({
-        rowIndex: row.row_index,
-        fingerprint: validation.fingerprint,
-        status: validation.status,
-        confidence: row.confidence,
-        source: row.source,
-        raw: row.raw,
-        operation,
-        normalizedOperation: validation.normalized,
-        validationErrors: validation.validationErrors,
-        duplicateOf: row.duplicate_of,
-      });
 
       const { error } = await supabase
         .from("operation_import_candidates")
@@ -135,15 +127,17 @@ export async function POST(
       if (error) throw new Error(error.message);
     }
 
-    const summary = candidateSummary(updatedCandidates);
+    const { summary } = await recalculateOperationImportSummary(
+      supabase,
+      workspaceId,
+      id
+    );
     await supabase
       .from("operation_imports")
       .update({
-        status: "needs_review",
-        summary,
         findings: {
           reprocessedAt: new Date().toISOString(),
-          candidateCount: updatedCandidates.length,
+          candidateCount: (rows || []).length,
         },
       })
       .eq("id", id);

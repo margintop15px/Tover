@@ -5,6 +5,15 @@ import type {
   RefData,
 } from "./types";
 
+type SummaryCandidateRow = {
+  status: string;
+  validation_errors?: unknown;
+};
+
+function candidateErrorCount(row: SummaryCandidateRow) {
+  return Array.isArray(row.validation_errors) ? row.validation_errors.length : 0;
+}
+
 export async function loadOperationImportRefData(
   supabase: SupabaseClient,
   workspaceId: string
@@ -139,4 +148,64 @@ export async function insertOperationImportCandidates(
   );
 
   if (error) throw new Error(error.message);
+}
+
+export async function recalculateOperationImportSummary(
+  supabase: SupabaseClient,
+  workspaceId: string,
+  importId: string
+) {
+  const [{ data: candidates, error: candidateError }, { data: links, error: linkError }] =
+    await Promise.all([
+      supabase
+        .from("operation_import_candidates")
+        .select("status, validation_errors")
+        .eq("workspace_id", workspaceId)
+        .eq("import_id", importId),
+      supabase
+        .from("operation_import_committed_operations")
+        .select("operation_id, created_at")
+        .eq("workspace_id", workspaceId)
+        .eq("import_id", importId)
+        .order("created_at", { ascending: true }),
+    ]);
+
+  if (candidateError) throw new Error(candidateError.message);
+  if (linkError) throw new Error(linkError.message);
+
+  const rows = (candidates || []) as SummaryCandidateRow[];
+  const total = rows.length;
+  const ready = rows.filter((row) => row.status === "ready").length;
+  const approved = rows.filter((row) => row.status === "approved").length;
+  const committed = rows.filter((row) => row.status === "committed").length;
+  const needsReview = rows.filter(candidateErrorCount).length;
+  const operationIds = (links || []).map((link) => link.operation_id);
+  const status =
+    total > 0 && committed === total
+      ? "completed"
+      : approved > 0
+        ? "ready"
+        : "needs_review";
+  const summary = {
+    total,
+    ready,
+    needsReview,
+    approved,
+    committed,
+    operationIds,
+  };
+
+  const { error: updateError } = await supabase
+    .from("operation_imports")
+    .update({
+      summary,
+      status,
+      completed_at: status === "completed" ? new Date().toISOString() : null,
+    })
+    .eq("workspace_id", workspaceId)
+    .eq("id", importId);
+
+  if (updateError) throw new Error(updateError.message);
+
+  return { summary, status };
 }

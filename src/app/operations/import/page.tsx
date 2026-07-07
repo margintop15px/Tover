@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -74,6 +74,16 @@ type Step = "upload" | "approve";
 interface ImportJobResponse {
   import: OperationImportRecord;
   candidates: OperationImportCandidateRecord[];
+  resumed?: boolean;
+}
+
+interface ImportListResponse {
+  page: {
+    limit: number;
+    offset: number;
+    total: number;
+  };
+  items: OperationImportRecord[];
 }
 
 const OPERATION_TYPES: OperationType[] = [
@@ -88,6 +98,7 @@ const OPERATION_TYPES: OperationType[] = [
   "inventory_adjustment",
 ];
 const CANDIDATES_PER_PAGE = 50;
+const DOCUMENTS_PER_PAGE = 10;
 const BULK_SAVING_ID = "__bulk";
 
 type CandidateUpdate = {
@@ -125,6 +136,10 @@ function getOperation(candidate: OperationImportCandidateRecord) {
     candidate.operation ||
     {}
   ) as OperationImportDraft;
+}
+
+function formatImportDate(value: string) {
+  return new Date(value).toLocaleString();
 }
 
 function getFirstItem(operation: OperationImportDraft): OperationImportItemDraft {
@@ -243,10 +258,18 @@ export default function OperationImportPage() {
   const [approving, setApproving] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [job, setJob] = useState<OperationImportRecord | null>(null);
   const [candidates, setCandidates] = useState<OperationImportCandidateRecord[]>(
     []
   );
+  const [documents, setDocuments] = useState<OperationImportRecord[]>([]);
+  const [documentsPage, setDocumentsPage] = useState({
+    limit: DOCUMENTS_PER_PAGE,
+    offset: 0,
+    total: 0,
+  });
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -256,6 +279,7 @@ export default function OperationImportPage() {
     useState<CreateEntityRequest | null>(null);
   const [evidenceCandidate, setEvidenceCandidate] =
     useState<OperationImportCandidateRecord | null>(null);
+  const jobIdRef = useRef<string | null>(null);
 
   const typeLabel = useCallback(
     (type: OperationType): string => {
@@ -291,18 +315,90 @@ export default function OperationImportPage() {
     });
   }, []);
 
+  const refreshDocuments = useCallback(
+    async (offset: number) => {
+      setLoadingDocuments(true);
+      try {
+        const res = await fetch(
+          `/api/operation-imports?limit=${DOCUMENTS_PER_PAGE}&offset=${offset}`
+        );
+        const data = (await res.json()) as ImportListResponse & {
+          error?: string;
+        };
+        if (!res.ok) throw new Error(data.error || t.unexpectedError);
+        setDocuments(data.items || []);
+        setDocumentsPage(data.page);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t.unexpectedError);
+      } finally {
+        setLoadingDocuments(false);
+      }
+    },
+    [t.unexpectedError]
+  );
+
+  useEffect(() => {
+    void refreshDocuments(documentsPage.offset);
+  }, [documentsPage.offset, refreshDocuments]);
+
   const refreshJob = useCallback(async (id: string) => {
     const res = await fetch(`/api/operation-imports/${id}`);
     const data = (await res.json()) as ImportJobResponse;
     if (!res.ok) throw new Error((data as unknown as { error?: string }).error);
     setJob(data.import);
+    jobIdRef.current = data.import.id;
     setCandidates(data.candidates || []);
   }, []);
+
+  useEffect(() => {
+    const syncFromLocation = () => {
+      const id = new URLSearchParams(window.location.search).get("id");
+
+      if (!id) {
+        setStep("upload");
+        setJob(null);
+        jobIdRef.current = null;
+        setCandidates([]);
+        return;
+      }
+
+      if (jobIdRef.current === id) {
+        setStep("approve");
+        return;
+      }
+
+      refreshJob(id)
+        .then(() => setStep("approve"))
+        .catch((err) =>
+          setError(err instanceof Error ? err.message : t.unexpectedError)
+        );
+    };
+
+    syncFromLocation();
+    window.addEventListener("popstate", syncFromLocation);
+    return () => window.removeEventListener("popstate", syncFromLocation);
+  }, [refreshJob, t.unexpectedError]);
+
+  const openDocument = useCallback(
+    async (id: string) => {
+      setError(null);
+      setNotice(null);
+      try {
+        await refreshJob(id);
+        setStep("approve");
+        router.push(`/operations/import?id=${id}`, { scroll: false });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t.unexpectedError);
+      }
+    },
+    [refreshJob, router, t.unexpectedError]
+  );
 
   const uploadFile = async () => {
     if (!file) return;
     setUploading(true);
     setError(null);
+    setNotice(null);
     const formData = new FormData();
     formData.append("file", file);
 
@@ -323,13 +419,32 @@ export default function OperationImportPage() {
         );
       }
       setJob(data.import);
+      jobIdRef.current = data.import.id;
       setCandidates(data.candidates || []);
       setStep("approve");
+      if (data.resumed) setNotice(t.importDocumentResumed);
+      router.push(`/operations/import?id=${data.import.id}`, { scroll: false });
+      setDocumentsPage((current) => ({ ...current, offset: 0 }));
+      void refreshDocuments(0);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.uploadFailed);
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleStepChange = (value: string) => {
+    if (value === "upload") {
+      setStep("upload");
+      setJob(null);
+      jobIdRef.current = null;
+      setCandidates([]);
+      setNotice(null);
+      router.push("/operations/import", { scroll: false });
+      return;
+    }
+
+    if (job) setStep("approve");
   };
 
   const patchCandidate = async (
@@ -485,6 +600,7 @@ export default function OperationImportPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t.unexpectedError);
       await refreshJob(job.id);
+      await refreshDocuments(documentsPage.offset);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.unexpectedError);
     } finally {
@@ -505,6 +621,7 @@ export default function OperationImportPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t.unexpectedError);
       await refreshJob(job.id);
+      await refreshDocuments(documentsPage.offset);
       setStep("approve");
     } catch (err) {
       setError(err instanceof Error ? err.message : t.unexpectedError);
@@ -524,6 +641,7 @@ export default function OperationImportPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t.unexpectedError);
       await refreshJob(job.id);
+      await refreshDocuments(documentsPage.offset);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.unexpectedError);
     } finally {
@@ -589,7 +707,14 @@ export default function OperationImportPage() {
   const ready = getSummaryNumber(summary, "ready");
   const approved = getSummaryNumber(summary, "approved");
   const committed = getSummaryNumber(summary, "committed");
-  const allApproved = candidates.length > 0 && approved === candidates.length;
+  const canLoadApproved = approved > 0 && job?.status !== "completed";
+  const primaryActionLoading = canLoadApproved ? committing : approving;
+  const primaryActionDisabled = canLoadApproved
+    ? committing
+    : approving || ready === 0;
+  const runPrimaryImportAction = canLoadApproved ? commitImport : approveAll;
+  const hasCommitted = committed > 0;
+  const remaining = Math.max(total - committed, 0);
   const committedIds = useMemo(() => {
     const ids = summary.operationIds;
     return Array.isArray(ids) ? ids.length : committed;
@@ -597,12 +722,20 @@ export default function OperationImportPage() {
 
   const statusBadge = (candidate: OperationImportCandidateRecord) => {
     if (candidate.status === "approved" || candidate.status === "committed") {
-      return <Badge className="bg-emerald-600">{candidate.status}</Badge>;
+      return (
+        <Badge className="bg-emerald-600">
+          {t.operationImportCandidateStatus(candidate.status)}
+        </Badge>
+      );
     }
     if ((candidate.validation_errors || []).length > 0) {
       return <Badge variant="destructive">{t.clarify}</Badge>;
     }
-    return <Badge variant="secondary">{candidate.status}</Badge>;
+    return (
+      <Badge variant="secondary">
+        {t.operationImportCandidateStatus(candidate.status)}
+      </Badge>
+    );
   };
 
   return (
@@ -614,12 +747,24 @@ export default function OperationImportPage() {
             <p className="mt-1 text-sm text-muted-foreground">{job.file_name}</p>
           )}
         </div>
-        <Link href="/operations">
-          <Button variant="outline">{t.back}</Button>
-        </Link>
+        {step === "approve" ? (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              handleStepChange("upload");
+            }}
+          >
+            {t.back}
+          </Button>
+        ) : (
+          <Link href="/operations">
+            <Button variant="outline">{t.back}</Button>
+          </Link>
+        )}
       </div>
 
-      <Tabs value={step} onValueChange={(value) => setStep(value as Step)}>
+      <Tabs value={step} onValueChange={handleStepChange}>
         <TabsList className="mb-6 flex h-auto flex-wrap gap-1">
           <TabsTrigger value="upload">{t.uploadFile}</TabsTrigger>
           <TabsTrigger value="approve" disabled={!job}>
@@ -635,48 +780,66 @@ export default function OperationImportPage() {
         </div>
       )}
 
+      {notice && (
+        <div className="mb-4 flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          <Check className="h-4 w-4" />
+          {notice}
+        </div>
+      )}
+
       {step === "upload" && (
-        <div className="max-w-2xl">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <FileUp className="h-5 w-5" />
-                {t.uploadOperationsFile}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                {t.operationImportFileHelp}
-              </p>
-              <Field>
-                <FieldLabel>{t.chooseFile}</FieldLabel>
-                <Input
-                  type="file"
-                  accept=".csv,.xlsx,.xlsm,.txt,.md,image/png,image/jpeg,image/webp"
-                  onChange={(event) => setFile(event.target.files?.[0] || null)}
-                />
-              </Field>
-              <Button
-                type="button"
-                disabled={!file || uploading}
-                onClick={uploadFile}
-                className="gap-2"
-              >
-                {uploading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Upload className="h-4 w-4" />
-                )}
-                {uploading ? t.extracting : t.uploadAndImport}
-              </Button>
-            </CardContent>
-          </Card>
+        <div className="max-w-5xl space-y-6">
+          <div className="max-w-2xl">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <FileUp className="h-5 w-5" />
+                  {t.uploadOperationsFile}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  {t.operationImportFileHelp}
+                </p>
+                <Field>
+                  <FieldLabel>{t.chooseFile}</FieldLabel>
+                  <Input
+                    type="file"
+                    accept=".csv,.xlsx,.xlsm,.txt,.md,image/png,image/jpeg,image/webp"
+                    onChange={(event) => setFile(event.target.files?.[0] || null)}
+                  />
+                </Field>
+                <Button
+                  type="button"
+                  disabled={!file || uploading}
+                  onClick={uploadFile}
+                  className="gap-2"
+                >
+                  {uploading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Upload className="h-4 w-4" />
+                  )}
+                  {uploading ? t.extracting : t.uploadAndImport}
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+          <ImportDocumentsTable
+            documents={documents}
+            page={documentsPage}
+            loading={loadingDocuments}
+            onOpen={openDocument}
+            onPageChange={(offset) =>
+              setDocumentsPage((current) => ({ ...current, offset }))
+            }
+          />
         </div>
       )}
 
       {job && step !== "upload" && (
         <div className="space-y-6">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <Card>
               <CardContent className="p-4">
                 <div className="text-2xl font-semibold">{total}</div>
@@ -706,6 +869,14 @@ export default function OperationImportPage() {
                 <div className="text-2xl font-semibold">{approved}</div>
                 <div className="text-sm text-muted-foreground">
                   {t.approvedCount(approved)}
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <div className="text-2xl font-semibold">{committed}</div>
+                <div className="text-sm text-muted-foreground">
+                  {t.loadedCount(committed)}
                 </div>
               </CardContent>
             </Card>
@@ -749,26 +920,39 @@ export default function OperationImportPage() {
                       </Button>
                     </div>
                   ) : (
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={approving || ready === 0}
-                        onClick={approveAll}
-                        className="gap-2"
-                      >
-                        {approving && <Loader2 className="h-4 w-4 animate-spin" />}
-                        {t.approveReadyRows}
-                      </Button>
-                      <Button
-                        type="button"
-                        disabled={!allApproved || committing}
-                        onClick={commitImport}
-                        className="gap-2"
-                      >
-                        {committing && <Loader2 className="h-4 w-4 animate-spin" />}
-                        {committing ? t.committing : t.commitImport}
-                      </Button>
+                    <div className="flex flex-col gap-3">
+                      {hasCommitted && (
+                        <div className="flex items-center gap-2 text-sm text-emerald-700">
+                          <Check className="h-4 w-4" />
+                          {t.importPartiallyLoaded(committed, remaining)}
+                        </div>
+                      )}
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                        <Button
+                          type="button"
+                          disabled={primaryActionDisabled}
+                          onClick={runPrimaryImportAction}
+                          className="gap-2"
+                        >
+                          {primaryActionLoading && (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          )}
+                          {canLoadApproved
+                            ? primaryActionLoading
+                              ? t.loadingApprovedRows
+                              : t.loadApprovedRows
+                            : t.approveReadyRows}
+                        </Button>
+                        {hasCommitted && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => router.push(`/operations?importId=${job.id}`)}
+                          >
+                            {t.viewImportedOperations}
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </CardContent>
@@ -825,6 +1009,118 @@ export default function OperationImportPage() {
   );
 }
 
+function ImportDocumentsTable({
+  documents,
+  page,
+  loading,
+  onOpen,
+  onPageChange,
+}: {
+  documents: OperationImportRecord[];
+  page: { limit: number; offset: number; total: number };
+  loading: boolean;
+  onOpen: (id: string) => Promise<void>;
+  onPageChange: (offset: number) => void;
+}) {
+  const { t } = useI18n();
+
+  const statusBadge = (document: OperationImportRecord) => {
+    const summary = document.summary ?? {};
+    const total = getSummaryNumber(summary, "total");
+    const approved = getSummaryNumber(summary, "approved");
+    const committed = getSummaryNumber(summary, "committed");
+
+    if (document.status === "failed") {
+      return <Badge variant="destructive">{t.importDocumentStatusFailed}</Badge>;
+    }
+    if (["uploaded", "extracting", "committing"].includes(document.status)) {
+      return <Badge variant="secondary">{t.importDocumentStatusProcessing}</Badge>;
+    }
+    if (total > 0 && committed === total) {
+      return <Badge className="bg-emerald-600">{t.importDocumentStatusCompleted}</Badge>;
+    }
+    if (committed > 0) {
+      return <Badge className="bg-blue-600">{t.importDocumentStatusPartial}</Badge>;
+    }
+    if (approved > 0) {
+      return <Badge className="bg-emerald-600">{t.importDocumentStatusReady}</Badge>;
+    }
+    return <Badge variant="secondary">{t.importDocumentStatusNeedsReview}</Badge>;
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">{t.importDocumentsTitle}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="overflow-x-auto rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t.file}</TableHead>
+                <TableHead>{t.status}</TableHead>
+                <TableHead>{t.rows}</TableHead>
+                <TableHead>{t.updated}</TableHead>
+                <TableHead className="text-right">{t.actions}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {documents.map((document) => {
+                const summary = document.summary ?? {};
+                const total = getSummaryNumber(summary, "total");
+                const approved = getSummaryNumber(summary, "approved");
+                const committed = getSummaryNumber(summary, "committed");
+
+                return (
+                  <TableRow key={document.id}>
+                    <TableCell className="font-medium">{document.file_name}</TableCell>
+                    <TableCell>{statusBadge(document)}</TableCell>
+                    <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                      {t.importDocumentCounts(total, approved, committed)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                      {formatImportDate(document.updated_at)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void onOpen(document.id)}
+                      >
+                        {t.open}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+              {documents.length === 0 && (
+                <TableRow>
+                  <TableCell
+                    colSpan={5}
+                    className="h-24 text-center text-sm text-muted-foreground"
+                  >
+                    {loading ? t.loading : t.noImportDocuments}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+        {page.total > page.limit && (
+          <Pagination
+            offset={page.offset}
+            limit={page.limit}
+            total={page.total}
+            onPageChange={onPageChange}
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function CandidateEditor({
   candidates,
   products,
@@ -877,7 +1173,10 @@ function CandidateEditor({
   const bulkCandidates = bulkAction
     ? candidates.filter((candidate) => {
         const operation = getOperation(candidate);
-        return bulkAction.shouldInclude ? bulkAction.shouldInclude(operation) : true;
+        return (
+          candidate.status !== "committed" &&
+          (bulkAction.shouldInclude ? bulkAction.shouldInclude(operation) : true)
+        );
       })
     : [];
   const blankBulkCandidates = bulkAction
@@ -926,7 +1225,7 @@ function CandidateEditor({
               const saving =
                 savingCandidateId === candidate.id ||
                 savingCandidateId === BULK_SAVING_ID;
-              const rowDisabled = readOnly || saving;
+              const rowDisabled = readOnly || candidate.status === "committed" || saving;
 
               return (
                 <TableRow key={candidate.id}>

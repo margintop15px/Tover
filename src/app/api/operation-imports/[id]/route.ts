@@ -3,33 +3,17 @@ import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 import {
   loadOperationImportDuplicates,
   loadOperationImportRefData,
+  recalculateOperationImportSummary,
 } from "@/lib/operation-imports/server";
 import {
-  candidateSummary,
   normalizeAndValidateDraft,
 } from "@/lib/operation-imports/pipeline";
 import type {
-  BuiltCandidate,
   OperationImportCandidateRecord,
   OperationImportDraft,
 } from "@/lib/operation-imports/types";
 
 export const dynamic = "force-dynamic";
-
-function asBuiltCandidate(row: OperationImportCandidateRecord): BuiltCandidate {
-  return {
-    rowIndex: row.row_index,
-    fingerprint: row.fingerprint,
-    status: row.status,
-    confidence: row.confidence,
-    source: row.source,
-    raw: row.raw,
-    operation: row.operation,
-    normalizedOperation: row.normalized_operation,
-    validationErrors: row.validation_errors,
-    duplicateOf: row.duplicate_of,
-  };
-}
 
 function candidateOperation(row: OperationImportCandidateRecord) {
   return (
@@ -37,42 +21,6 @@ function candidateOperation(row: OperationImportCandidateRecord) {
     row.operation ||
     {}
   ) as OperationImportDraft;
-}
-
-async function recalculateSummary(
-  supabase: Awaited<ReturnType<typeof getRouteContext>>["supabase"],
-  importId: string
-) {
-  const { data } = await supabase
-    .from("operation_import_candidates")
-    .select("*")
-    .eq("import_id", importId)
-    .order("row_index", { ascending: true });
-
-  const candidates = ((data || []) as OperationImportCandidateRecord[]).map(
-    asBuiltCandidate
-  );
-  const summary = {
-    ...candidateSummary(candidates),
-    approved: candidates.filter((candidate) => candidate.status === "approved")
-      .length,
-    committed: candidates.filter((candidate) => candidate.status === "committed")
-      .length,
-  };
-
-  await supabase
-    .from("operation_imports")
-    .update({
-      summary,
-      status:
-        candidates.length > 0 &&
-        candidates.every((candidate) => candidate.status === "approved")
-          ? "ready"
-          : "needs_review",
-    })
-    .eq("id", importId);
-
-  return summary;
 }
 
 export async function GET(
@@ -157,6 +105,23 @@ export async function PATCH(
     ]);
 
     if (body.operation && body.candidateId) {
+      const { data: currentCandidate, error: currentError } = await supabase
+        .from("operation_import_candidates")
+        .select("status")
+        .eq("id", body.candidateId)
+        .eq("import_id", id)
+        .single();
+
+      if (currentError || !currentCandidate) {
+        return NextResponse.json({ error: "Candidate not found" }, { status: 404 });
+      }
+      if (currentCandidate.status === "committed") {
+        return NextResponse.json(
+          { error: "Committed rows cannot be edited" },
+          { status: 409 }
+        );
+      }
+
       const validation = normalizeAndValidateDraft(body.operation, ref, duplicates);
       const { data: updated, error } = await supabase
         .from("operation_import_candidates")
@@ -176,7 +141,11 @@ export async function PATCH(
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
-      const summary = await recalculateSummary(supabase, id);
+      const { summary } = await recalculateOperationImportSummary(
+        supabase,
+        workspaceId,
+        id
+      );
       return NextResponse.json({ candidate: updated, summary });
     }
 
@@ -189,6 +158,29 @@ export async function PATCH(
         return NextResponse.json(
           { error: "Invalid candidate update" },
           { status: 400 }
+        );
+      }
+
+      const candidateIds = body.candidateUpdates.map((update) => update.candidateId);
+      const { data: currentCandidates, error: currentError } = await supabase
+        .from("operation_import_candidates")
+        .select("id, status")
+        .eq("import_id", id)
+        .in("id", candidateIds);
+
+      if (currentError) {
+        return NextResponse.json({ error: currentError.message }, { status: 500 });
+      }
+
+      const committedIds = new Set(
+        (currentCandidates || [])
+          .filter((candidate) => candidate.status === "committed")
+          .map((candidate) => candidate.id)
+      );
+      if (committedIds.size > 0) {
+        return NextResponse.json(
+          { error: "Committed rows cannot be edited" },
+          { status: 409 }
         );
       }
 
@@ -220,7 +212,11 @@ export async function PATCH(
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
-      const summary = await recalculateSummary(supabase, id);
+      const { summary } = await recalculateOperationImportSummary(
+        supabase,
+        workspaceId,
+        id
+      );
       return NextResponse.json({
         candidates: updates.map((update) => update.data),
         summary,
@@ -237,6 +233,12 @@ export async function PATCH(
 
       if (fetchError || !candidate) {
         return NextResponse.json({ error: "Candidate not found" }, { status: 404 });
+      }
+      if (candidate.status === "committed") {
+        return NextResponse.json(
+          { error: "Committed rows cannot be edited" },
+          { status: 409 }
+        );
       }
 
       const validation = normalizeAndValidateDraft(
@@ -280,7 +282,11 @@ export async function PATCH(
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
-      const summary = await recalculateSummary(supabase, id);
+      const { summary } = await recalculateOperationImportSummary(
+        supabase,
+        workspaceId,
+        id
+      );
       return NextResponse.json({ candidate: updated, summary });
     }
 
@@ -294,16 +300,16 @@ export async function PATCH(
         return NextResponse.json({ error: fetchError.message }, { status: 500 });
       }
 
-      const validations = ((candidates || []) as OperationImportCandidateRecord[]).map(
-        (candidate) => ({
+      const validations = ((candidates || []) as OperationImportCandidateRecord[])
+        .filter((candidate) => candidate.status !== "committed")
+        .map((candidate) => ({
           candidate,
           validation: normalizeAndValidateDraft(
             candidateOperation(candidate),
             ref,
             duplicates
           ),
-        })
-      );
+        }));
 
       const blocked = validations.filter(
         ({ validation }) => validation.validationErrors.length > 0
@@ -355,7 +361,11 @@ export async function PATCH(
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
-      const summary = await recalculateSummary(supabase, id);
+      const { summary } = await recalculateOperationImportSummary(
+        supabase,
+        workspaceId,
+        id
+      );
       return NextResponse.json({ summary });
     }
 

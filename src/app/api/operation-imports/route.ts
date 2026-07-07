@@ -46,6 +46,45 @@ export async function POST(request: NextRequest) {
       .order("created_at", { ascending: false })
       .limit(5);
 
+    const resumableImport = (duplicateFiles || []).find(
+      (item) => !["completed", "failed"].includes(item.status)
+    );
+    if (resumableImport) {
+      const [
+        { data: existingImport, error: existingImportError },
+        { data: existingCandidates, error: existingCandidateError },
+      ] = await Promise.all([
+        supabase
+          .from("operation_imports")
+          .select("*")
+          .eq("workspace_id", workspaceId)
+          .eq("id", resumableImport.id)
+          .single(),
+        supabase
+          .from("operation_import_candidates")
+          .select("*")
+          .eq("workspace_id", workspaceId)
+          .eq("import_id", resumableImport.id)
+          .order("row_index", { ascending: true }),
+      ]);
+
+      if (existingImportError || existingCandidateError || !existingImport) {
+        return NextResponse.json(
+          {
+            error: "Failed to resume import job",
+            detail: existingImportError?.message || existingCandidateError?.message,
+          },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        import: existingImport,
+        candidates: existingCandidates || [],
+        resumed: true,
+      });
+    }
+
     const { data: importRecord, error: importError } = await supabase
       .from("operation_imports")
       .insert({
