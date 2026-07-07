@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 import {
   loadOperationImportDuplicates,
+  loadOperationImportLoadPreview,
   loadOperationImportRefData,
+  loadOperationImportReviewPage,
+  normalizeOperationImportCandidatePage,
   recalculateOperationImportSummary,
 } from "@/lib/operation-imports/server";
-import {
-  normalizeAndValidateDraft,
-} from "@/lib/operation-imports/pipeline";
+import { normalizeAndValidateDraft } from "@/lib/operation-imports/pipeline";
 import type {
   OperationImportCandidateRecord,
   OperationImportDraft,
@@ -21,6 +22,18 @@ function candidateOperation(row: OperationImportCandidateRecord) {
     row.operation ||
     {}
   ) as OperationImportDraft;
+}
+
+async function mutationMetadata(
+  supabase: Awaited<ReturnType<typeof getRouteContext>>["supabase"],
+  workspaceId: string,
+  importId: string
+) {
+  const [{ summary, status }, loadPreview] = await Promise.all([
+    recalculateOperationImportSummary(supabase, workspaceId, importId),
+    loadOperationImportLoadPreview(supabase, workspaceId, importId),
+  ]);
+  return { summary, status, loadPreview };
 }
 
 export async function GET(
@@ -42,22 +55,20 @@ export async function GET(
       return NextResponse.json({ error: "Import not found" }, { status: 404 });
     }
 
-    const { data: candidates, error: candidateError } = await supabase
-      .from("operation_import_candidates")
-      .select("*")
-      .eq("import_id", id)
-      .order("row_index", { ascending: true });
-
-    if (candidateError) {
-      return NextResponse.json(
-        { error: candidateError.message },
-        { status: 500 }
-      );
-    }
+    const page = normalizeOperationImportCandidatePage(
+      request.nextUrl.searchParams.get("limit"),
+      request.nextUrl.searchParams.get("offset")
+    );
+    const reviewPage = await loadOperationImportReviewPage(
+      supabase,
+      workspaceId,
+      id,
+      page
+    );
 
     return NextResponse.json({
       import: importRecord,
-      candidates: candidates || [],
+      ...reviewPage,
     });
   } catch (error) {
     return toRouteErrorResponse(error);
@@ -141,12 +152,8 @@ export async function PATCH(
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
-      const { summary } = await recalculateOperationImportSummary(
-        supabase,
-        workspaceId,
-        id
-      );
-      return NextResponse.json({ candidate: updated, summary });
+      const metadata = await mutationMetadata(supabase, workspaceId, id);
+      return NextResponse.json({ candidate: updated, ...metadata });
     }
 
     if (Array.isArray(body.candidateUpdates) && body.candidateUpdates.length > 0) {
@@ -212,14 +219,10 @@ export async function PATCH(
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
-      const { summary } = await recalculateOperationImportSummary(
-        supabase,
-        workspaceId,
-        id
-      );
+      const metadata = await mutationMetadata(supabase, workspaceId, id);
       return NextResponse.json({
         candidates: updates.map((update) => update.data),
-        summary,
+        ...metadata,
       });
     }
 
@@ -282,12 +285,8 @@ export async function PATCH(
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
-      const { summary } = await recalculateOperationImportSummary(
-        supabase,
-        workspaceId,
-        id
-      );
-      return NextResponse.json({ candidate: updated, summary });
+      const metadata = await mutationMetadata(supabase, workspaceId, id);
+      return NextResponse.json({ candidate: updated, ...metadata });
     }
 
     if (body.approveAll) {
@@ -311,45 +310,35 @@ export async function PATCH(
           ),
         }));
 
-      const blocked = validations.filter(
+      const unresolved = validations.filter(
         ({ validation }) => validation.validationErrors.length > 0
       );
-
-      if (blocked.length > 0) {
-        await Promise.all(
-          blocked.map(({ candidate, validation }) =>
-            supabase
-              .from("operation_import_candidates")
-              .update({
-                normalized_operation: validation.normalized,
-                fingerprint: validation.fingerprint,
-                validation_errors: validation.validationErrors,
-                status: validation.status,
-              })
-              .eq("id", candidate.id)
-              .eq("import_id", id)
-          )
-        );
-
-        return NextResponse.json(
-          { error: `${blocked.length} candidates still need review` },
-          { status: 400 }
-        );
-      }
-
-      const approvable = validations.filter(({ candidate }) =>
-        ["ready", "approved"].includes(candidate.status)
+      const approvable = validations.filter(
+        ({ validation }) => validation.validationErrors.length === 0
       );
 
       const updates = await Promise.all(
-        approvable.map(({ candidate, validation }) =>
+        [
+          ...unresolved.map(({ candidate, validation }) => ({
+            candidate,
+            validation,
+            status: validation.status,
+            validationErrors: validation.validationErrors,
+          })),
+          ...approvable.map(({ candidate, validation }) => ({
+            candidate,
+            validation,
+            status: "approved",
+            validationErrors: [],
+          })),
+        ].map(({ candidate, validation, status, validationErrors }) =>
           supabase
             .from("operation_import_candidates")
             .update({
               normalized_operation: validation.normalized,
               fingerprint: validation.fingerprint,
-              validation_errors: [],
-              status: "approved",
+              validation_errors: validationErrors,
+              status,
             })
             .eq("id", candidate.id)
             .eq("import_id", id)
@@ -361,12 +350,8 @@ export async function PATCH(
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
-      const { summary } = await recalculateOperationImportSummary(
-        supabase,
-        workspaceId,
-        id
-      );
-      return NextResponse.json({ summary });
+      const metadata = await mutationMetadata(supabase, workspaceId, id);
+      return NextResponse.json(metadata);
     }
 
     return NextResponse.json({ error: "No update provided" }, { status: 400 });

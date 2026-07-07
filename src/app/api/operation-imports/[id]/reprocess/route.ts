@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 import {
   loadOperationImportDuplicates,
+  loadOperationImportLoadPreview,
   loadOperationImportRefData,
+  loadOperationImportReviewPage,
+  normalizeOperationImportCandidatePage,
   recalculateOperationImportSummary,
 } from "@/lib/operation-imports/server";
-import {
-  normalizeAndValidateDraft,
-} from "@/lib/operation-imports/pipeline";
+import { normalizeAndValidateDraft } from "@/lib/operation-imports/pipeline";
 import type {
   OperationImportCandidateRecord,
   OperationImportDraft,
@@ -22,6 +23,8 @@ type CreatedEntityReprocessRequest = {
     name?: string;
     skuCode?: string | null;
   };
+  limit?: number;
+  offset?: number;
 };
 
 async function readJsonBody(request: NextRequest) {
@@ -30,6 +33,33 @@ async function readJsonBody(request: NextRequest) {
   } catch {
     return {};
   }
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function validationChanged(
+  row: OperationImportCandidateRecord,
+  validation: ReturnType<typeof normalizeAndValidateDraft>
+) {
+  return (
+    row.fingerprint !== validation.fingerprint ||
+    row.status !== validation.status ||
+    stableStringify(row.normalized_operation) !==
+      stableStringify(validation.normalized) ||
+    stableStringify(row.validation_errors || []) !==
+      stableStringify(validation.validationErrors)
+  );
 }
 
 export async function POST(
@@ -42,10 +72,14 @@ export async function POST(
       requireManager: true,
     });
     const body = await readJsonBody(request);
+    const paged = body.limit !== undefined || body.offset !== undefined;
+    const page = paged
+      ? normalizeOperationImportCandidatePage(body.limit, body.offset)
+      : null;
 
     const { data: importRecord, error: importError } = await supabase
       .from("operation_imports")
-      .select("id, status")
+      .select("*")
       .eq("id", id)
       .eq("workspace_id", workspaceId)
       .single();
@@ -55,6 +89,28 @@ export async function POST(
     }
 
     if (importRecord.status === "completed" || importRecord.status === "committing") {
+      if (body.createdEntity) {
+        return NextResponse.json(
+          { error: "Committed imports cannot be reprocessed" },
+          { status: 409 }
+        );
+      }
+
+      if (page) {
+        const reviewPage = await loadOperationImportReviewPage(
+          supabase,
+          workspaceId,
+          id,
+          page
+        );
+        return NextResponse.json({
+          import: importRecord,
+          summary: importRecord.summary,
+          status: importRecord.status,
+          ...reviewPage,
+        });
+      }
+
       return NextResponse.json(
         { error: "Committed imports cannot be reprocessed" },
         { status: 409 }
@@ -86,22 +142,27 @@ export async function POST(
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
-      const { summary } = await recalculateOperationImportSummary(
-        supabase,
-        workspaceId,
-        id
-      );
+      const [{ summary, status }, loadPreview] = await Promise.all([
+        recalculateOperationImportSummary(supabase, workspaceId, id),
+        loadOperationImportLoadPreview(supabase, workspaceId, id),
+      ]);
 
-      return NextResponse.json({ ...data, summary });
+      return NextResponse.json({ ...data, summary, status, loadPreview });
     }
 
+    const rowQuery = supabase
+      .from("operation_import_candidates")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .eq("import_id", id)
+      .neq("status", "committed")
+      .neq("status", "approved")
+      .order("row_index", { ascending: true });
+
     const [{ data: rows, error: rowError }, ref, duplicates] = await Promise.all([
-      supabase
-        .from("operation_import_candidates")
-        .select("*")
-        .eq("import_id", id)
-        .neq("status", "committed")
-        .order("row_index", { ascending: true }),
+      page
+        ? rowQuery.gte("row_index", page.offset).lt("row_index", page.offset + page.limit)
+        : rowQuery,
       loadOperationImportRefData(supabase, workspaceId),
       loadOperationImportDuplicates(supabase, workspaceId),
     ]);
@@ -110,24 +171,35 @@ export async function POST(
       return NextResponse.json({ error: rowError.message }, { status: 500 });
     }
 
-    for (const row of (rows || []) as OperationImportCandidateRecord[]) {
-      const operation = row.operation as OperationImportDraft;
-      const validation = normalizeAndValidateDraft(operation, ref, duplicates);
+    const changed = ((rows || []) as OperationImportCandidateRecord[])
+      .map((row) => ({
+        row,
+        validation: normalizeAndValidateDraft(
+          row.operation as OperationImportDraft,
+          ref,
+          duplicates
+        ),
+      }))
+      .filter(({ row, validation }) => validationChanged(row, validation));
 
-      const { error } = await supabase
-        .from("operation_import_candidates")
-        .update({
-          fingerprint: validation.fingerprint,
-          normalized_operation: validation.normalized,
-          validation_errors: validation.validationErrors,
-          status: validation.status,
-        })
-        .eq("id", row.id);
+    const updates = await Promise.all(
+      changed.map(({ row, validation }) =>
+        supabase
+          .from("operation_import_candidates")
+          .update({
+            fingerprint: validation.fingerprint,
+            normalized_operation: validation.normalized,
+            validation_errors: validation.validationErrors,
+            status: validation.status,
+          })
+          .eq("id", row.id)
+      )
+    );
 
-      if (error) throw new Error(error.message);
-    }
+    const updateError = updates.find((update) => update.error)?.error;
+    if (updateError) throw new Error(updateError.message);
 
-    const { summary } = await recalculateOperationImportSummary(
+    const { summary, status } = await recalculateOperationImportSummary(
       supabase,
       workspaceId,
       id
@@ -138,9 +210,29 @@ export async function POST(
         findings: {
           reprocessedAt: new Date().toISOString(),
           candidateCount: (rows || []).length,
+          changedCandidateCount: changed.length,
         },
       })
       .eq("id", id);
+
+    if (page) {
+      const reviewPage = await loadOperationImportReviewPage(
+        supabase,
+        workspaceId,
+        id,
+        page
+      );
+      return NextResponse.json({
+        import: {
+          ...importRecord,
+          status,
+          summary,
+        },
+        summary,
+        status,
+        ...reviewPage,
+      });
+    }
 
     const { data: candidates, error: candidateFetchError } = await supabase
       .from("operation_import_candidates")
@@ -150,7 +242,18 @@ export async function POST(
 
     if (candidateFetchError) throw new Error(candidateFetchError.message);
 
-    return NextResponse.json({ summary, candidates: candidates || [] });
+    const loadPreview = await loadOperationImportLoadPreview(
+      supabase,
+      workspaceId,
+      id
+    );
+
+    return NextResponse.json({
+      summary,
+      status,
+      candidates: candidates || [],
+      loadPreview,
+    });
   } catch (error) {
     return toRouteErrorResponse(error);
   }

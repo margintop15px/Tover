@@ -348,6 +348,432 @@ test.describe("operation import targeted reprocess", () => {
     }
   });
 
+  test("returns a paginated candidate page with whole-document load preview", async ({
+    request,
+  }) => {
+    const admin = getAdminClient();
+    test.skip(!admin, adminSkipReason());
+
+    const workspaceId = await getManagerWorkspaceId(request);
+    const createdIds = { importId: "" };
+
+    try {
+      const importId = await createImport(admin!, workspaceId);
+      createdIds.importId = importId;
+      const operation = {
+        type: "purchase",
+        operationDate: "2099-02-01",
+        supplierId: "00000000-0000-0000-0000-000000000001",
+        items: [
+          {
+            productId: "00000000-0000-0000-0000-000000000002",
+            warehouseId: "00000000-0000-0000-0000-000000000003",
+            quantity: 1,
+            unitPrice: 2,
+          },
+        ],
+      };
+      await insertCandidates(
+        admin!,
+        Array.from({ length: 55 }, (_, index) =>
+          baseCandidate(
+            workspaceId,
+            importId,
+            index,
+            operation,
+            index === 3 ? [] : [{ field: "items[0].productId", message: "Product is required", severity: "error" }],
+            index === 3 ? "approved" : "needs_review"
+          )
+        )
+      );
+      await updateImportSummary(admin!, importId, {
+        total: 55,
+        ready: 0,
+        needsReview: 54,
+        approved: 1,
+        committed: 0,
+      });
+
+      const response = await request.get(
+        `/api/operation-imports/${importId}?workspaceId=${workspaceId}&limit=10&offset=20`
+      );
+      const text = await response.text();
+      expect(response.ok(), text).toBeTruthy();
+      const body = JSON.parse(text);
+
+      expect(body.import.id).toBe(importId);
+      expect(body.candidates).toHaveLength(10);
+      expect(body.candidates[0].row_index).toBe(20);
+      expect(body.candidatePage).toEqual({ limit: 10, offset: 20, total: 55 });
+      expect(body.loadPreview).toMatchObject({
+        rows: 1,
+        amount: 2,
+        missingAmountRows: 0,
+      });
+    } finally {
+      await cleanup(admin!, createdIds);
+    }
+  });
+
+  test("paginated reprocess updates only visible unfinished rows", async ({
+    request,
+  }) => {
+    const admin = getAdminClient();
+    test.skip(!admin, adminSkipReason());
+
+    const workspaceId = await getManagerWorkspaceId(request);
+    const createdIds = {
+      importId: "",
+      productId: "",
+      supplierId: "",
+      warehouseId: "",
+    };
+
+    try {
+      const productName = uniqueName("PagedProduct");
+      const supplierName = uniqueName("PagedSupplier");
+      const warehouseSuffix = uniqueName("PagedWarehouse").toLowerCase();
+      const sourceWarehouseName = `СПБ_КОЛПИНО_РФЦ_${warehouseSuffix}`;
+      const storedWarehouseName = `спб колпино рфц ${warehouseSuffix}`;
+
+      const { data: product, error: productError } = await admin!
+        .from("products")
+        .insert({
+          workspace_id: workspaceId,
+          name: productName,
+          sku_code: uniqueName("PagedSKU"),
+        })
+        .select("id")
+        .single();
+      expect(productError).toBeNull();
+      createdIds.productId = product!.id as string;
+
+      const { data: supplier, error: supplierError } = await admin!
+        .from("suppliers")
+        .insert({ workspace_id: workspaceId, name: supplierName })
+        .select("id")
+        .single();
+      expect(supplierError).toBeNull();
+      createdIds.supplierId = supplier!.id as string;
+
+      const importId = await createImport(admin!, workspaceId);
+      createdIds.importId = importId;
+      const unresolvedOperation = {
+        type: "purchase",
+        operationDate: "2099-02-01",
+        supplierId: createdIds.supplierId,
+        items: [
+          {
+            productId: createdIds.productId,
+            warehouseName: sourceWarehouseName,
+            quantity: 1,
+            unitPrice: 2,
+          },
+        ],
+      };
+      const validationError = {
+        field: "items[0].warehouseId",
+        message: "Warehouse is required",
+        severity: "error",
+      };
+      const rows = await insertCandidates(
+        admin!,
+        Array.from({ length: 51 }, (_, index) =>
+          baseCandidate(
+            workspaceId,
+            importId,
+            index,
+            unresolvedOperation,
+            [validationError],
+            index === 1 ? "approved" : index === 2 ? "committed" : "needs_review"
+          )
+        )
+      );
+
+      const { data: warehouse, error: warehouseError } = await admin!
+        .from("warehouses")
+        .insert({ workspace_id: workspaceId, name: storedWarehouseName })
+        .select("id")
+        .single();
+      expect(warehouseError).toBeNull();
+      createdIds.warehouseId = warehouse!.id as string;
+
+      const response = await request.post(
+        `/api/operation-imports/${importId}/reprocess?workspaceId=${workspaceId}`,
+        { data: { limit: 50, offset: 0 } }
+      );
+      const text = await response.text();
+      expect(response.ok(), text).toBeTruthy();
+      const body = JSON.parse(text);
+      expect(body.candidates).toHaveLength(50);
+      expect(body.candidatePage).toEqual({ limit: 50, offset: 0, total: 51 });
+
+      const candidates = await getCandidates(admin!, [
+        rows[0].id,
+        rows[1].id,
+        rows[2].id,
+        rows[50].id,
+      ]);
+      expect(candidates.get(rows[0].id)?.status).toBe("ready");
+      expect(candidates.get(rows[0].id)?.normalizedOperation.items[0]).toMatchObject({
+        warehouseId: createdIds.warehouseId,
+      });
+      expect(candidates.get(rows[1].id)?.status).toBe("approved");
+      expect(
+        candidates.get(rows[1].id)?.normalizedOperation.items[0].warehouseId
+      ).toBeUndefined();
+      expect(candidates.get(rows[2].id)?.status).toBe("committed");
+      expect(
+        candidates.get(rows[2].id)?.normalizedOperation.items[0].warehouseId
+      ).toBeUndefined();
+      expect(candidates.get(rows[50].id)?.status).toBe("needs_review");
+      expect(
+        candidates.get(rows[50].id)?.normalizedOperation.items[0].warehouseId
+      ).toBeUndefined();
+    } finally {
+      await cleanup(admin!, createdIds);
+    }
+  });
+
+  test("shows confirmation summary for rows that will load now", async ({
+    page,
+    request,
+  }) => {
+    const admin = getAdminClient();
+    test.skip(!admin, adminSkipReason());
+
+    const workspaceId = await getManagerWorkspaceId(request);
+    const createdIds = {
+      importId: "",
+      productId: "",
+      supplierId: "",
+      warehouseId: "",
+    };
+
+    try {
+      const productName = uniqueName("SummaryProduct");
+      const supplierName = uniqueName("SummarySupplier");
+      const warehouseName = uniqueName("SummaryWarehouse");
+
+      const { data: product, error: productError } = await admin!
+        .from("products")
+        .insert({
+          workspace_id: workspaceId,
+          name: productName,
+          sku_code: uniqueName("SummarySKU"),
+        })
+        .select("id")
+        .single();
+      expect(productError).toBeNull();
+      createdIds.productId = product!.id as string;
+
+      const { data: supplier, error: supplierError } = await admin!
+        .from("suppliers")
+        .insert({ workspace_id: workspaceId, name: supplierName })
+        .select("id")
+        .single();
+      expect(supplierError).toBeNull();
+      createdIds.supplierId = supplier!.id as string;
+
+      const { data: warehouse, error: warehouseError } = await admin!
+        .from("warehouses")
+        .insert({ workspace_id: workspaceId, name: warehouseName })
+        .select("id")
+        .single();
+      expect(warehouseError).toBeNull();
+      createdIds.warehouseId = warehouse!.id as string;
+
+      const importId = await createImport(admin!, workspaceId);
+      createdIds.importId = importId;
+
+      const approvedOperation = validPurchaseOperation(createdIds);
+      const unresolvedOperation = {
+        ...approvedOperation,
+        items: [
+          {
+            warehouseId: createdIds.warehouseId,
+            quantity: 3,
+            unitPrice: 5,
+          },
+        ],
+      };
+      await insertCandidates(admin!, [
+        baseCandidate(workspaceId, importId, 0, approvedOperation, [], "approved"),
+        baseCandidate(
+          workspaceId,
+          importId,
+          1,
+          unresolvedOperation,
+          [
+            {
+              field: "items[0].productId",
+              message: "Product is required",
+              severity: "error",
+            },
+          ],
+          "needs_review"
+        ),
+      ]);
+      await updateImportSummary(admin!, importId, {
+        total: 2,
+        ready: 0,
+        needsReview: 1,
+        approved: 1,
+        committed: 0,
+      });
+
+      await page.addInitScript(() => {
+        window.localStorage.setItem("tover-locale", "en");
+      });
+      await page.goto(`/operations/import?id=${importId}`);
+
+      const summary = page.getByTestId("operation-import-load-summary");
+      await expect(summary).toContainText("Will load");
+      await expect(summary).toContainText("Rows");
+      await expect(summary).toContainText("1");
+      await expect(summary).toContainText("Estimated total");
+      await expect(summary).toContainText("€2.00");
+      await expect(summary).toContainText("Purchase");
+
+      await page.getByRole("button", { name: "Load approved rows" }).click();
+
+      await expect(summary).toContainText("0");
+      await expect(summary).toContainText("€0.00");
+      await expect(summary).toContainText(
+        "No approved rows selected for loading."
+      );
+      await expect(summary).not.toContainText("Purchase");
+    } finally {
+      await cleanup(admin!, createdIds);
+    }
+  });
+
+  test("reprocesses unresolved rows when reopening an import document", async ({
+    page,
+    request,
+  }) => {
+    const admin = getAdminClient();
+    test.skip(!admin, adminSkipReason());
+
+    const workspaceId = await getManagerWorkspaceId(request);
+    const createdIds = {
+      importId: "",
+      productId: "",
+      supplierId: "",
+      warehouseId: "",
+    };
+
+    try {
+      const productName = uniqueName("ReopenProduct");
+      const supplierName = uniqueName("ReopenSupplier");
+      const warehouseSuffix = uniqueName("ReopenWarehouse").toLowerCase();
+      const sourceWarehouseName = `СПБ_КОЛПИНО_РФЦ_${warehouseSuffix}`;
+      const storedWarehouseName = `спб колпино рфц ${warehouseSuffix}`;
+
+      const { data: product, error: productError } = await admin!
+        .from("products")
+        .insert({
+          workspace_id: workspaceId,
+          name: productName,
+          sku_code: uniqueName("ReopenSKU"),
+        })
+        .select("id")
+        .single();
+      expect(productError).toBeNull();
+      createdIds.productId = product!.id as string;
+
+      const { data: supplier, error: supplierError } = await admin!
+        .from("suppliers")
+        .insert({ workspace_id: workspaceId, name: supplierName })
+        .select("id")
+        .single();
+      expect(supplierError).toBeNull();
+      createdIds.supplierId = supplier!.id as string;
+
+      const importId = await createImport(admin!, workspaceId);
+      createdIds.importId = importId;
+
+      const operation = {
+        type: "purchase",
+        operationDate: "2099-02-01",
+        supplierId: createdIds.supplierId,
+        items: [
+          {
+            productId: createdIds.productId,
+            warehouseName: sourceWarehouseName,
+            quantity: 1,
+            unitPrice: 2,
+          },
+        ],
+      };
+      const [candidate] = await insertCandidates(admin!, [
+        baseCandidate(
+          workspaceId,
+          importId,
+          0,
+          operation,
+          [
+            {
+              field: "items[0].warehouseId",
+              message: "Warehouse is required",
+              severity: "error",
+            },
+          ],
+          "needs_review"
+        ),
+      ]);
+      await updateImportSummary(admin!, importId, {
+        total: 1,
+        ready: 0,
+        needsReview: 1,
+        approved: 0,
+        committed: 0,
+      });
+
+      const { data: warehouse, error: warehouseError } = await admin!
+        .from("warehouses")
+        .insert({ workspace_id: workspaceId, name: storedWarehouseName })
+        .select("id")
+        .single();
+      expect(warehouseError).toBeNull();
+      createdIds.warehouseId = warehouse!.id as string;
+
+      await page.addInitScript(() => {
+        window.localStorage.setItem("tover-locale", "en");
+      });
+      await page.route(
+        `**/api/operation-imports/${importId}/reprocess`,
+        async (route) => {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          await route.continue();
+        }
+      );
+      const navigation = page.goto(`/operations/import?id=${importId}`);
+      await expect(page.getByText("Opening import document")).toBeVisible();
+      await expect(
+        page.getByText("Checking current products, warehouses, and suppliers...")
+      ).toBeVisible();
+      await navigation;
+
+      await expect
+        .poll(async () => {
+          const rows = await getCandidates(admin!, [candidate.id]);
+          const row = rows.get(candidate.id);
+          return {
+            status: row?.status,
+            warehouseId: row?.normalizedOperation.items[0]?.warehouseId,
+          };
+        })
+        .toEqual({
+          status: "ready",
+          warehouseId: createdIds.warehouseId,
+        });
+      await expect(page.getByText(storedWarehouseName).first()).toBeVisible();
+    } finally {
+      await cleanup(admin!, createdIds);
+    }
+  });
+
   test("resumes the newest unfinished import when uploading the same file hash", async ({
     request,
   }) => {
@@ -463,6 +889,18 @@ async function insertCandidates(
     .select("id");
   expect(error).toBeNull();
   return data as { id: string }[];
+}
+
+async function updateImportSummary(
+  admin: SupabaseClient,
+  importId: string,
+  summary: Record<string, unknown>
+) {
+  const { error } = await admin
+    .from("operation_imports")
+    .update({ summary })
+    .eq("id", importId);
+  expect(error).toBeNull();
 }
 
 function productCandidate(
@@ -620,7 +1058,7 @@ async function getImport(admin: SupabaseClient, importId: string) {
 async function getCandidates(admin: SupabaseClient, ids: string[]) {
   const { data, error } = await admin
     .from("operation_import_candidates")
-    .select("id, operation, status, created_operation_id")
+    .select("id, operation, normalized_operation, status, created_operation_id")
     .in("id", ids);
   expect(error).toBeNull();
   return new Map(
@@ -631,6 +1069,9 @@ async function getCandidates(admin: SupabaseClient, ids: string[]) {
           supplierId?: string;
           supplierName?: string;
           createSupplier?: boolean;
+          items: Record<string, unknown>[];
+        },
+        normalizedOperation: row.normalized_operation as {
           items: Record<string, unknown>[];
         },
         status: row.status as string,

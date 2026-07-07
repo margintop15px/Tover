@@ -178,7 +178,11 @@ function normalizeKey(value: string) {
 }
 
 function normalizeText(value: string | null | undefined) {
-  return (value ?? "").trim().toLowerCase().replace(/ё/g, "е");
+  return (value ?? "").normalize("NFKC").trim().toLowerCase().replace(/ё/g, "е");
+}
+
+function normalizeEntityName(value: string | null | undefined) {
+  return normalizeText(value).replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
 function compact<T extends Record<string, unknown>>(value: T): T {
@@ -396,21 +400,23 @@ function exactOrFuzzy<T extends { id: string; name: string }>(
   values: T[],
   rawName: string | undefined
 ) {
-  const normalized = normalizeText(rawName);
+  const normalized = normalizeEntityName(rawName);
   if (!normalized) return { match: null, suggestions: [] as T[] };
 
-  const exact = values.find((value) => normalizeText(value.name) === normalized);
+  const exact = values.find((value) => normalizeEntityName(value.name) === normalized);
   if (exact) return { match: exact, suggestions: [exact] };
 
   const suggestions = values
-    .map((value) => ({
-      value,
-      score:
-        normalizeText(value.name).includes(normalized) ||
-        normalized.includes(normalizeText(value.name))
-          ? 2
-          : sharedPrefixLength(normalizeText(value.name), normalized),
-    }))
+    .map((value) => {
+      const candidate = normalizeEntityName(value.name);
+      return {
+        value,
+        score:
+          candidate.includes(normalized) || normalized.includes(candidate)
+            ? 2
+            : sharedPrefixLength(candidate, normalized),
+      };
+    })
     .filter((entry) => entry.score > 2)
     .sort((a, b) => b.score - a.score)
     .slice(0, 5)
@@ -433,8 +439,9 @@ function matchProduct(ref: RefData, rawName?: string, skuCode?: string) {
 
   const normalizedName = normalizeText(rawName);
   if (!normalizedName) return { match: null, suggestions: [] };
+  const normalizedEntityName = normalizeEntityName(rawName);
   const exactNameMatches = ref.products.filter(
-    (product) => normalizeText(product.name) === normalizedName
+    (product) => normalizeEntityName(product.name) === normalizedEntityName
   );
   return {
     match: exactNameMatches.length === 1 ? exactNameMatches[0] : null,

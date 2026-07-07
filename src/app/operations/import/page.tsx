@@ -52,6 +52,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import ImportDefaultField from "@/components/ImportDefaultField";
+import { formatCurrency } from "@/lib/format-currency";
 import type {
   OperationImportCandidateRecord,
   OperationImportDraft,
@@ -74,6 +75,8 @@ type Step = "upload" | "approve";
 interface ImportJobResponse {
   import: OperationImportRecord;
   candidates: OperationImportCandidateRecord[];
+  candidatePage?: CandidatePage;
+  loadPreview?: LoadPreview;
   resumed?: boolean;
 }
 
@@ -85,6 +88,19 @@ interface ImportListResponse {
   };
   items: OperationImportRecord[];
 }
+
+type CandidatePage = {
+  limit: number;
+  offset: number;
+  total: number;
+};
+
+type LoadPreview = {
+  rows: number;
+  amount: number;
+  missingAmountRows: number;
+  typeCounts: { type: OperationType; count: number }[];
+};
 
 const OPERATION_TYPES: OperationType[] = [
   "purchase",
@@ -100,6 +116,12 @@ const OPERATION_TYPES: OperationType[] = [
 const CANDIDATES_PER_PAGE = 50;
 const DOCUMENTS_PER_PAGE = 10;
 const BULK_SAVING_ID = "__bulk";
+const EMPTY_LOAD_PREVIEW: LoadPreview = {
+  rows: 0,
+  amount: 0,
+  missingAmountRows: 0,
+  typeCounts: [],
+};
 
 type CandidateUpdate = {
   candidateId: string;
@@ -248,7 +270,7 @@ function patchCandidateForCreatedEntity(
 }
 
 export default function OperationImportPage() {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { settings } = useWorkspaceSettings();
   const router = useRouter();
   const [step, setStep] = useState<Step>("upload");
@@ -263,6 +285,13 @@ export default function OperationImportPage() {
   const [candidates, setCandidates] = useState<OperationImportCandidateRecord[]>(
     []
   );
+  const [candidatePage, setCandidatePage] = useState<CandidatePage>({
+    limit: CANDIDATES_PER_PAGE,
+    offset: 0,
+    total: 0,
+  });
+  const [loadPreview, setLoadPreview] =
+    useState<LoadPreview>(EMPTY_LOAD_PREVIEW);
   const [documents, setDocuments] = useState<OperationImportRecord[]>([]);
   const [documentsPage, setDocumentsPage] = useState({
     limit: DOCUMENTS_PER_PAGE,
@@ -270,6 +299,8 @@ export default function OperationImportPage() {
     total: 0,
   });
   const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [openingImportId, setOpeningImportId] = useState<string | null>(null);
+  const [loadingCandidatePage, setLoadingCandidatePage] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -341,14 +372,46 @@ export default function OperationImportPage() {
     void refreshDocuments(documentsPage.offset);
   }, [documentsPage.offset, refreshDocuments]);
 
-  const refreshJob = useCallback(async (id: string) => {
-    const res = await fetch(`/api/operation-imports/${id}`);
-    const data = (await res.json()) as ImportJobResponse;
-    if (!res.ok) throw new Error((data as unknown as { error?: string }).error);
+  const applyImportResponse = useCallback((data: ImportJobResponse) => {
     setJob(data.import);
     jobIdRef.current = data.import.id;
     setCandidates(data.candidates || []);
+    setCandidatePage(
+      data.candidatePage ?? {
+        limit: CANDIDATES_PER_PAGE,
+        offset: 0,
+        total: data.candidates?.length ?? 0,
+      }
+    );
+    setLoadPreview(data.loadPreview ?? EMPTY_LOAD_PREVIEW);
   }, []);
+
+  const refreshJob = useCallback(
+    async (
+      id: string,
+      options: { reprocess?: boolean; offset?: number } = {}
+    ) => {
+      const offset = options.offset ?? candidatePage.offset;
+      const page = { limit: CANDIDATES_PER_PAGE, offset };
+      const params = new URLSearchParams({
+        limit: String(page.limit),
+        offset: String(page.offset),
+      });
+      const res = options.reprocess
+        ? await fetch(`/api/operation-imports/${id}/reprocess`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(page),
+          })
+        : await fetch(`/api/operation-imports/${id}?${params.toString()}`);
+      const data = (await res.json()) as ImportJobResponse & {
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error || t.unexpectedError);
+      applyImportResponse(data);
+    },
+    [applyImportResponse, candidatePage.offset, t.unexpectedError]
+  );
 
   useEffect(() => {
     const syncFromLocation = () => {
@@ -359,19 +422,29 @@ export default function OperationImportPage() {
         setJob(null);
         jobIdRef.current = null;
         setCandidates([]);
+        setCandidatePage({ limit: CANDIDATES_PER_PAGE, offset: 0, total: 0 });
+        setLoadPreview(EMPTY_LOAD_PREVIEW);
+        setOpeningImportId(null);
         return;
       }
 
       if (jobIdRef.current === id) {
         setStep("approve");
+        setOpeningImportId(null);
         return;
       }
 
-      refreshJob(id)
-        .then(() => setStep("approve"))
+      setStep("approve");
+      setJob(null);
+      setCandidates([]);
+      setCandidatePage({ limit: CANDIDATES_PER_PAGE, offset: 0, total: 0 });
+      setLoadPreview(EMPTY_LOAD_PREVIEW);
+      setOpeningImportId(id);
+      refreshJob(id, { reprocess: true, offset: 0 })
         .catch((err) =>
           setError(err instanceof Error ? err.message : t.unexpectedError)
-        );
+        )
+        .finally(() => setOpeningImportId(null));
     };
 
     syncFromLocation();
@@ -383,12 +456,19 @@ export default function OperationImportPage() {
     async (id: string) => {
       setError(null);
       setNotice(null);
+      setStep("approve");
+      setJob(null);
+      setCandidates([]);
+      setCandidatePage({ limit: CANDIDATES_PER_PAGE, offset: 0, total: 0 });
+      setLoadPreview(EMPTY_LOAD_PREVIEW);
+      setOpeningImportId(id);
+      router.push(`/operations/import?id=${id}`, { scroll: false });
       try {
-        await refreshJob(id);
-        setStep("approve");
-        router.push(`/operations/import?id=${id}`, { scroll: false });
+        await refreshJob(id, { reprocess: true, offset: 0 });
       } catch (err) {
         setError(err instanceof Error ? err.message : t.unexpectedError);
+      } finally {
+        setOpeningImportId(null);
       }
     },
     [refreshJob, router, t.unexpectedError]
@@ -418,12 +498,13 @@ export default function OperationImportPage() {
             : data.error || t.uploadFailed
         );
       }
-      setJob(data.import);
-      jobIdRef.current = data.import.id;
-      setCandidates(data.candidates || []);
+      applyImportResponse(data);
       setStep("approve");
       if (data.resumed) setNotice(t.importDocumentResumed);
       router.push(`/operations/import?id=${data.import.id}`, { scroll: false });
+      if (data.resumed) {
+        void refreshJob(data.import.id, { reprocess: true, offset: 0 });
+      }
       setDocumentsPage((current) => ({ ...current, offset: 0 }));
       void refreshDocuments(0);
     } catch (err) {
@@ -439,6 +520,8 @@ export default function OperationImportPage() {
       setJob(null);
       jobIdRef.current = null;
       setCandidates([]);
+      setCandidatePage({ limit: CANDIDATES_PER_PAGE, offset: 0, total: 0 });
+      setLoadPreview(EMPTY_LOAD_PREVIEW);
       setNotice(null);
       router.push("/operations/import", { scroll: false });
       return;
@@ -471,6 +554,8 @@ export default function OperationImportPage() {
       const data = (await res.json()) as {
         candidate?: OperationImportCandidateRecord;
         summary?: Record<string, unknown>;
+        status?: OperationImportRecord["status"];
+        loadPreview?: LoadPreview;
         error?: string;
       };
       if (!res.ok) throw new Error(data.error || t.unexpectedError);
@@ -481,9 +566,12 @@ export default function OperationImportPage() {
       const updatedSummary = data.summary;
       if (updatedSummary) {
         setJob((current) =>
-          current ? { ...current, summary: updatedSummary } : current
+          current
+            ? { ...current, summary: updatedSummary, status: data.status ?? current.status }
+            : current
         );
       }
+      if (data.loadPreview) setLoadPreview(data.loadPreview);
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : t.unexpectedError);
@@ -517,6 +605,8 @@ export default function OperationImportPage() {
       const data = (await res.json()) as {
         updatedCandidateIds?: string[];
         summary?: Record<string, unknown>;
+        status?: OperationImportRecord["status"];
+        loadPreview?: LoadPreview;
         error?: string;
       };
       if (!res.ok) throw new Error(data.error || t.unexpectedError);
@@ -532,9 +622,16 @@ export default function OperationImportPage() {
       }
       if (data.summary) {
         setJob((current) =>
-          current ? { ...current, summary: data.summary! } : current
+          current
+            ? {
+                ...current,
+                summary: data.summary!,
+                status: data.status ?? current.status,
+              }
+            : current
         );
       }
+      if (data.loadPreview) setLoadPreview(data.loadPreview);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.unexpectedError);
     } finally {
@@ -567,6 +664,8 @@ export default function OperationImportPage() {
       const data = (await res.json()) as {
         candidates?: OperationImportCandidateRecord[];
         summary?: Record<string, unknown>;
+        status?: OperationImportRecord["status"];
+        loadPreview?: LoadPreview;
         error?: string;
       };
       if (!res.ok) throw new Error(data.error || t.unexpectedError);
@@ -577,9 +676,12 @@ export default function OperationImportPage() {
       const updatedSummary = data.summary;
       if (updatedSummary) {
         setJob((current) =>
-          current ? { ...current, summary: updatedSummary } : current
+          current
+            ? { ...current, summary: updatedSummary, status: data.status ?? current.status }
+            : current
         );
       }
+      if (data.loadPreview) setLoadPreview(data.loadPreview);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.unexpectedError);
     } finally {
@@ -599,7 +701,7 @@ export default function OperationImportPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t.unexpectedError);
-      await refreshJob(job.id);
+      await refreshJob(job.id, { offset: candidatePage.offset });
       await refreshDocuments(documentsPage.offset);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.unexpectedError);
@@ -620,7 +722,7 @@ export default function OperationImportPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t.unexpectedError);
-      await refreshJob(job.id);
+      await refreshJob(job.id, { offset: candidatePage.offset });
       await refreshDocuments(documentsPage.offset);
       setStep("approve");
     } catch (err) {
@@ -640,7 +742,7 @@ export default function OperationImportPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t.unexpectedError);
-      await refreshJob(job.id);
+      await refreshJob(job.id, { offset: candidatePage.offset });
       await refreshDocuments(documentsPage.offset);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.unexpectedError);
@@ -648,6 +750,22 @@ export default function OperationImportPage() {
       setCommitting(false);
     }
   };
+
+  const loadCandidatePage = useCallback(
+    async (offset: number) => {
+      if (!job) return;
+      setLoadingCandidatePage(true);
+      setError(null);
+      try {
+        await refreshJob(job.id, { reprocess: true, offset });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t.unexpectedError);
+      } finally {
+        setLoadingCandidatePage(false);
+      }
+    },
+    [job, refreshJob, t.unexpectedError]
+  );
 
   const handleCreatedEntity = async (
     item: Product | Supplier | Warehouse
@@ -767,7 +885,7 @@ export default function OperationImportPage() {
       <Tabs value={step} onValueChange={handleStepChange}>
         <TabsList className="mb-6 flex h-auto flex-wrap gap-1">
           <TabsTrigger value="upload">{t.uploadFile}</TabsTrigger>
-          <TabsTrigger value="approve" disabled={!job}>
+          <TabsTrigger value="approve" disabled={!job && !openingImportId}>
             {t.approve}
           </TabsTrigger>
         </TabsList>
@@ -829,12 +947,27 @@ export default function OperationImportPage() {
             documents={documents}
             page={documentsPage}
             loading={loadingDocuments}
+            openingDocumentId={openingImportId}
             onOpen={openDocument}
             onPageChange={(offset) =>
               setDocumentsPage((current) => ({ ...current, offset }))
             }
           />
         </div>
+      )}
+
+      {!job && step === "approve" && openingImportId && (
+        <Card>
+          <CardContent className="flex min-h-40 flex-col items-center justify-center gap-3 p-6 text-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <div>
+              <div className="font-medium">{t.openingImportDocument}</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                {t.rematchingImportDocument}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {job && step !== "upload" && (
@@ -886,6 +1019,8 @@ export default function OperationImportPage() {
             <>
               <CandidateEditor
                 candidates={candidates}
+                candidatePage={candidatePage}
+                loadingPage={loadingCandidatePage}
                 products={products}
                 warehouses={warehouses}
                 suppliers={suppliers}
@@ -897,20 +1032,21 @@ export default function OperationImportPage() {
                 onApprove={approveCandidate}
                 onEvidence={setEvidenceCandidate}
                 onCreateEntity={setCreateRequest}
+                onPageChange={loadCandidatePage}
                 statusBadge={statusBadge}
                 readOnly={job.status === "completed"}
               />
 
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">{t.approve}</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
+              <Card className="py-0">
+                <CardContent className="p-4">
                   {job.status === "completed" ? (
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex items-center gap-2 text-sm text-emerald-700">
-                        <Check className="h-4 w-4" />
-                        {t.importCommitted}: {committedIds}
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="flex flex-col gap-3">
+                        <CardTitle className="text-base">{t.approve}</CardTitle>
+                        <div className="flex items-center gap-2 text-sm text-emerald-700">
+                          <Check className="h-4 w-4" />
+                          {t.importCommitted}: {committedIds}
+                        </div>
                       </div>
                       <Button
                         type="button"
@@ -920,37 +1056,95 @@ export default function OperationImportPage() {
                       </Button>
                     </div>
                   ) : (
-                    <div className="flex flex-col gap-3">
-                      {hasCommitted && (
-                        <div className="flex items-center gap-2 text-sm text-emerald-700">
-                          <Check className="h-4 w-4" />
-                          {t.importPartiallyLoaded(committed, remaining)}
-                        </div>
-                      )}
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                        <Button
-                          type="button"
-                          disabled={primaryActionDisabled}
-                          onClick={runPrimaryImportAction}
-                          className="gap-2"
-                        >
-                          {primaryActionLoading && (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          )}
-                          {canLoadApproved
-                            ? primaryActionLoading
-                              ? t.loadingApprovedRows
-                              : t.loadApprovedRows
-                            : t.approveReadyRows}
-                        </Button>
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] lg:items-start">
+                      <div className="flex flex-col gap-3">
+                        <CardTitle className="text-base">{t.approve}</CardTitle>
                         {hasCommitted && (
+                          <div className="flex items-center gap-2 text-sm text-emerald-700">
+                            <Check className="h-4 w-4" />
+                            {t.importPartiallyLoaded(committed, remaining)}
+                          </div>
+                        )}
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                           <Button
                             type="button"
-                            variant="outline"
-                            onClick={() => router.push(`/operations?importId=${job.id}`)}
+                            disabled={primaryActionDisabled}
+                            onClick={runPrimaryImportAction}
+                            className="gap-2"
                           >
-                            {t.viewImportedOperations}
+                            {primaryActionLoading && (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            )}
+                            {canLoadApproved
+                              ? primaryActionLoading
+                                ? t.loadingApprovedRows
+                                : t.loadApprovedRows
+                              : t.approveReadyRows}
                           </Button>
+                          {hasCommitted && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => router.push(`/operations?importId=${job.id}`)}
+                            >
+                              {t.viewImportedOperations}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                      <div
+                        data-testid="operation-import-load-summary"
+                        className="rounded-md border bg-muted/30 p-4 text-sm"
+                      >
+                        <div className="font-medium">{t.importLoadSummaryTitle}</div>
+                        <dl className="mt-3 space-y-2">
+                          <div className="flex items-center justify-between gap-4">
+                            <dt className="text-muted-foreground">
+                              {t.importLoadSummaryRows}
+                            </dt>
+                            <dd className="font-medium">{loadPreview.rows}</dd>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <dt className="text-muted-foreground">
+                              {t.importLoadSummaryTotal}
+                            </dt>
+                            <dd className="font-medium">
+                              {formatCurrency(
+                                loadPreview.amount,
+                                locale,
+                                settings.currency
+                              )}
+                            </dd>
+                          </div>
+                        </dl>
+                        {loadPreview.typeCounts.length > 0 ? (
+                          <div className="mt-3 border-t pt-3">
+                            <div className="text-xs font-medium uppercase text-muted-foreground">
+                              {t.importLoadSummaryBreakdown}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {loadPreview.typeCounts.map((item) => (
+                                <div
+                                  key={item.type}
+                                  className="flex items-center justify-between gap-4"
+                                >
+                                  <span>{typeLabel(item.type)}</span>
+                                  <span className="font-medium">{item.count}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 text-muted-foreground">
+                            {t.importLoadSummaryNoRows}
+                          </div>
+                        )}
+                        {loadPreview.missingAmountRows > 0 && (
+                          <div className="mt-3 text-xs text-muted-foreground">
+                            {t.importLoadSummaryMissingAmount(
+                              loadPreview.missingAmountRows
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -1013,12 +1207,14 @@ function ImportDocumentsTable({
   documents,
   page,
   loading,
+  openingDocumentId,
   onOpen,
   onPageChange,
 }: {
   documents: OperationImportRecord[];
   page: { limit: number; offset: number; total: number };
   loading: boolean;
+  openingDocumentId?: string | null;
   onOpen: (id: string) => Promise<void>;
   onPageChange: (offset: number) => void;
 }) {
@@ -1071,6 +1267,7 @@ function ImportDocumentsTable({
                 const total = getSummaryNumber(summary, "total");
                 const approved = getSummaryNumber(summary, "approved");
                 const committed = getSummaryNumber(summary, "committed");
+                const opening = openingDocumentId === document.id;
 
                 return (
                   <TableRow key={document.id}>
@@ -1087,8 +1284,11 @@ function ImportDocumentsTable({
                         type="button"
                         size="sm"
                         variant="outline"
+                        disabled={Boolean(openingDocumentId)}
                         onClick={() => void onOpen(document.id)}
+                        className="gap-2"
                       >
+                        {opening && <Loader2 className="h-4 w-4 animate-spin" />}
                         {t.open}
                       </Button>
                     </TableCell>
@@ -1123,6 +1323,8 @@ function ImportDocumentsTable({
 
 function CandidateEditor({
   candidates,
+  candidatePage,
+  loadingPage,
   products,
   warehouses,
   suppliers,
@@ -1134,10 +1336,13 @@ function CandidateEditor({
   onApprove,
   onEvidence,
   onCreateEntity,
+  onPageChange,
   statusBadge,
   readOnly,
 }: {
   candidates: OperationImportCandidateRecord[];
+  candidatePage: CandidatePage;
+  loadingPage?: boolean;
   products: Product[];
   warehouses: Warehouse[];
   suppliers: Supplier[];
@@ -1152,24 +1357,12 @@ function CandidateEditor({
   onApprove: (candidate: OperationImportCandidateRecord) => void;
   onEvidence: (candidate: OperationImportCandidateRecord) => void;
   onCreateEntity: (request: CreateEntityRequest) => void;
+  onPageChange: (offset: number) => void;
   statusBadge: (candidate: OperationImportCandidateRecord) => ReactNode;
   readOnly?: boolean;
 }) {
   const { t } = useI18n();
-  const [pageOffset, setPageOffset] = useState(0);
   const [bulkAction, setBulkAction] = useState<BulkAction | null>(null);
-  const lastPageOffset =
-    Math.max(0, Math.ceil(candidates.length / CANDIDATES_PER_PAGE) - 1) *
-    CANDIDATES_PER_PAGE;
-  const clampedPageOffset = Math.min(pageOffset, lastPageOffset);
-  const pageCandidates = useMemo(
-    () =>
-      candidates.slice(
-        clampedPageOffset,
-        clampedPageOffset + CANDIDATES_PER_PAGE
-      ),
-    [candidates, clampedPageOffset]
-  );
   const bulkCandidates = bulkAction
     ? candidates.filter((candidate) => {
         const operation = getOperation(candidate);
@@ -1199,8 +1392,14 @@ function CandidateEditor({
 
   return (
     <div className="space-y-3">
-      <div className="text-xs text-muted-foreground">
-        {t.workspaceCurrency(currency)}
+      <div className="flex flex-col gap-1 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+        <span>{t.workspaceCurrency(currency)}</span>
+        {loadingPage && (
+          <span className="flex items-center gap-1">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {t.loading}
+          </span>
+        )}
       </div>
       <div className="overflow-x-auto rounded-md border">
         <Table>
@@ -1218,14 +1417,15 @@ function CandidateEditor({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {pageCandidates.map((candidate) => {
+            {candidates.map((candidate) => {
               const operation = getOperation(candidate);
               const firstItem = getFirstItem(operation);
               const errors = candidate.validation_errors || [];
               const saving =
                 savingCandidateId === candidate.id ||
                 savingCandidateId === BULK_SAVING_ID;
-              const rowDisabled = readOnly || candidate.status === "committed" || saving;
+              const rowDisabled =
+                readOnly || loadingPage || candidate.status === "committed" || saving;
 
               return (
                 <TableRow key={candidate.id}>
@@ -1552,8 +1752,7 @@ function CandidateEditor({
                       variant="outline"
                       size="sm"
                       disabled={
-                        readOnly ||
-                        saving ||
+                        rowDisabled ||
                         errors.length > 0 ||
                         candidate.status === "approved" ||
                         candidate.status === "committed"
@@ -1574,12 +1773,12 @@ function CandidateEditor({
           </TableBody>
         </Table>
       </div>
-      {candidates.length > CANDIDATES_PER_PAGE && (
+      {candidatePage.total > candidatePage.limit && (
         <Pagination
-          offset={clampedPageOffset}
-          limit={CANDIDATES_PER_PAGE}
-          total={candidates.length}
-          onPageChange={setPageOffset}
+          offset={candidatePage.offset}
+          limit={candidatePage.limit}
+          total={candidatePage.total}
+          onPageChange={onPageChange}
         />
       )}
       <Dialog

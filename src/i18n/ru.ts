@@ -231,6 +231,15 @@ export const ru: TranslationKeys = {
   importPartiallyLoaded: (loaded: number, remaining: number) =>
     `Загружено строк: ${loaded}, осталось: ${remaining}`,
   viewImportedOperations: "Открыть импортированные операции",
+  importLoadSummaryTitle: "Будет загружено",
+  importLoadSummaryRows: "Строки",
+  importLoadSummaryTotal: "Оценочная сумма",
+  importLoadSummaryBreakdown: "По типам",
+  importLoadSummaryNoRows: "Нет подтверждённых строк для загрузки.",
+  importLoadSummaryMissingAmount: (count: number) =>
+    `У ${count} строк нет цены или суммы платежа.`,
+  openingImportDocument: "Открываем документ импорта",
+  rematchingImportDocument: "Проверяем актуальные товары, склады и поставщиков...",
   importDocumentsTitle: "Последние документы импорта",
   importDocumentStatusCompleted: "Завершён",
   importDocumentStatusPartial: "Частично загружен",
@@ -259,9 +268,9 @@ export const ru: TranslationKeys = {
   noImportCandidates: "Операции не найдены",
   workspaceCurrency: (currency: string) => `Валюта: ${currency}`,
   applyValueToRows: "Применить значение к строкам",
-  applyToAllRows: "Применить ко всем строкам",
+  applyToAllRows: "Применить на текущей странице",
   applyToAllDescription: (field: string, value: string) =>
-    `Применить ${field} "${value}" ко всем строкам этого импорта.`,
+    `Применить ${field} "${value}" к видимым строкам на этой странице.`,
   fillBlanks: "Заполнить пустые",
   replaceAll: "Заменить все",
   createFromSource: (value: string) => `Создать из "${value}"`,

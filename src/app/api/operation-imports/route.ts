@@ -16,6 +16,8 @@ import {
   insertOperationImportCandidates,
   loadOperationImportDuplicates,
   loadOperationImportRefData,
+  loadOperationImportReviewPage,
+  normalizeOperationImportCandidatePage,
 } from "@/lib/operation-imports/server";
 import type { ExtractionResult } from "@/lib/operation-imports/types";
 
@@ -50,37 +52,33 @@ export async function POST(request: NextRequest) {
       (item) => !["completed", "failed"].includes(item.status)
     );
     if (resumableImport) {
-      const [
-        { data: existingImport, error: existingImportError },
-        { data: existingCandidates, error: existingCandidateError },
-      ] = await Promise.all([
-        supabase
-          .from("operation_imports")
-          .select("*")
-          .eq("workspace_id", workspaceId)
-          .eq("id", resumableImport.id)
-          .single(),
-        supabase
-          .from("operation_import_candidates")
-          .select("*")
-          .eq("workspace_id", workspaceId)
-          .eq("import_id", resumableImport.id)
-          .order("row_index", { ascending: true }),
-      ]);
+      const { data: existingImport, error: existingImportError } = await supabase
+        .from("operation_imports")
+        .select("*")
+        .eq("workspace_id", workspaceId)
+        .eq("id", resumableImport.id)
+        .single();
 
-      if (existingImportError || existingCandidateError || !existingImport) {
+      if (existingImportError || !existingImport) {
         return NextResponse.json(
           {
             error: "Failed to resume import job",
-            detail: existingImportError?.message || existingCandidateError?.message,
+            detail: existingImportError?.message,
           },
           { status: 500 }
         );
       }
 
+      const reviewPage = await loadOperationImportReviewPage(
+        supabase,
+        workspaceId,
+        resumableImport.id,
+        normalizeOperationImportCandidatePage(null, null)
+      );
+
       return NextResponse.json({
         import: existingImport,
-        candidates: existingCandidates || [],
+        ...reviewPage,
         resumed: true,
       });
     }
@@ -229,15 +227,6 @@ export async function POST(request: NextRequest) {
         extraction.candidates
       );
 
-      const { data: insertedCandidates, error: candidateFetchError } =
-        await supabase
-          .from("operation_import_candidates")
-          .select("*")
-          .eq("import_id", importId)
-          .order("row_index", { ascending: true });
-
-      if (candidateFetchError) throw new Error(candidateFetchError.message);
-
       const summary = {
         ...candidateSummary(extraction.candidates),
         duplicateFiles: duplicateFiles || [],
@@ -265,10 +254,16 @@ export async function POST(request: NextRequest) {
         .single();
 
       if (updateError) throw new Error(updateError.message);
+      const reviewPage = await loadOperationImportReviewPage(
+        supabase,
+        workspaceId,
+        importId,
+        normalizeOperationImportCandidatePage(null, null)
+      );
 
       return NextResponse.json({
         import: updated,
-        candidates: insertedCandidates || [],
+        ...reviewPage,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Extraction failed";

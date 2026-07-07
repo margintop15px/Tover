@@ -143,6 +143,41 @@ test.describe("operation import validation", () => {
     });
   });
 
+  test("matches warehouse names across separators and casing", () => {
+    const refWithWarehouseAlias: RefData = {
+      ...ref,
+      warehouses: [
+        {
+          ...ref.warehouses[0],
+          name: "спб колпино рфц",
+        },
+      ],
+    };
+    const validation = normalizeAndValidateDraft(
+      {
+        type: "purchase",
+        operationDate: "2026-02-01",
+        supplierName: "Acme",
+        items: [
+          {
+            productName: "Flour",
+            skuCode: "FLR",
+            warehouseName: "СПБ_КОЛПИНО_РФЦ",
+            quantity: 2,
+            unitPrice: 5,
+          },
+        ],
+      },
+      refWithWarehouseAlias,
+      []
+    );
+
+    expect(validation.status).toBe("ready");
+    expect(validation.normalized.items?.[0].warehouseId).toBe(
+      ref.warehouses[0].id
+    );
+  });
+
   test("matches products by exact SKU when duplicate names exist", () => {
     const validation = normalizeAndValidateDraft(
       {

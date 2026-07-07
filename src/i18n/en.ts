@@ -229,6 +229,15 @@ export const en = {
   importPartiallyLoaded: (loaded: number, remaining: number) =>
     `${loaded} rows loaded, ${remaining} left`,
   viewImportedOperations: "View imported operations",
+  importLoadSummaryTitle: "Will load",
+  importLoadSummaryRows: "Rows",
+  importLoadSummaryTotal: "Estimated total",
+  importLoadSummaryBreakdown: "By type",
+  importLoadSummaryNoRows: "No approved rows selected for loading.",
+  importLoadSummaryMissingAmount: (count: number) =>
+    `${count} rows have no price or payment amount.`,
+  openingImportDocument: "Opening import document",
+  rematchingImportDocument: "Checking current products, warehouses, and suppliers...",
   importDocumentsTitle: "Recent import documents",
   importDocumentStatusCompleted: "Completed",
   importDocumentStatusPartial: "Partially loaded",
@@ -257,9 +266,9 @@ export const en = {
   noImportCandidates: "No candidate operations found",
   workspaceCurrency: (currency: string) => `Currency: ${currency}`,
   applyValueToRows: "Apply value to rows",
-  applyToAllRows: "Apply to all rows",
+  applyToAllRows: "Apply to current page",
   applyToAllDescription: (field: string, value: string) =>
-    `Apply ${field} "${value}" to all rows in this import.`,
+    `Apply ${field} "${value}" to visible rows on this page.`,
   fillBlanks: "Fill blanks",
   replaceAll: "Replace all",
   createFromSource: (value: string) => `Create from "${value}"`,
