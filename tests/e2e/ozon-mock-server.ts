@@ -42,9 +42,24 @@ export interface OzonMockRequest {
   clientId: string | undefined;
 }
 
+export interface OzonMockResponse {
+  status: number;
+  headers?: Record<string, string>;
+  body: unknown;
+}
+
+export interface OzonMockServerOptions {
+  failPaths?: string[];
+  responseSequences?: Record<string, OzonMockResponse[]>;
+  validApiKey?: string;
+  validClientId?: string;
+}
+
 export interface OzonMockServer {
   url: string;
   requests: OzonMockRequest[];
+  requestCounts: Record<string, number>;
+  requestBodies: Record<string, Record<string, unknown>[]>;
   close: () => Promise<void>;
 }
 
@@ -110,17 +125,21 @@ export function buildOzonFixture(runId: string): OzonMockFixture {
 
 export async function startOzonMockServer(
   fixture: OzonMockFixture,
-  options: {
-    failPaths?: string[];
-    validApiKey?: string;
-    validClientId?: string;
-  } = {}
+  options: OzonMockServerOptions = {}
 ): Promise<OzonMockServer> {
   const validApiKey = options.validApiKey || "ozon-api-key";
   const validClientId = options.validClientId || "ozon-client";
   const failPaths = new Set(options.failPaths || []);
+  const responseSequences = new Map(
+    Object.entries(options.responseSequences || {}).map(([path, responses]) => [
+      path,
+      [...responses],
+    ])
+  );
   const url = new URL(ozonMockBaseUrl());
   const requests: OzonMockRequest[] = [];
+  const requestCounts: Record<string, number> = {};
+  const requestBodies: Record<string, Record<string, unknown>[]> = {};
 
   const server = http.createServer(async (request, response) => {
     const path = new URL(request.url || "/", url).pathname;
@@ -128,6 +147,8 @@ export async function startOzonMockServer(
     const apiKey = request.headers["api-key"]?.toString();
     const clientId = request.headers["client-id"]?.toString();
     requests.push({ path, body, apiKey, clientId });
+    requestCounts[path] = (requestCounts[path] || 0) + 1;
+    (requestBodies[path] ||= []).push(body);
 
     if (request.method !== "POST") {
       writeJson(response, 405, { error: "method not allowed" });
@@ -136,6 +157,18 @@ export async function startOzonMockServer(
 
     if (apiKey !== validApiKey || clientId !== validClientId) {
       writeJson(response, 403, { error: { message: "invalid credentials" } });
+      return;
+    }
+
+    const sequence = responseSequences.get(path);
+    const sequenceResponse = sequence?.shift();
+    if (sequenceResponse) {
+      writeJson(
+        response,
+        sequenceResponse.status,
+        sequenceResponse.body,
+        sequenceResponse.headers
+      );
       return;
     }
 
@@ -158,6 +191,8 @@ export async function startOzonMockServer(
   return {
     url: url.toString().replace(/\/+$/, ""),
     requests,
+    requestCounts,
+    requestBodies,
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -397,17 +432,8 @@ function responseFor(
     case "/v3/supply-order/list":
       return {
         result: {
-          orders: [
-            {
-              order_id: fixture.supplyOrderId,
-              order_number: fixture.supplyOrderId,
-              status: "completed",
-              created_at: "2099-05-04T09:00:00.000Z",
-              warehouse_id: fixture.autoWarehouse.id,
-              warehouse_name: fixture.autoWarehouse.name,
-              bundle_ids: [fixture.supplyBundleId],
-            },
-          ],
+          order_ids: [fixture.supplyOrderId],
+          last_id: "",
         },
       };
     case "/v3/supply-order/get":
@@ -626,7 +652,12 @@ async function readJsonBody(request: IncomingMessage) {
   }
 }
 
-function writeJson(response: ServerResponse, status: number, value: unknown) {
-  response.writeHead(status, { "Content-Type": "application/json" });
+function writeJson(
+  response: ServerResponse,
+  status: number,
+  value: unknown,
+  headers: Record<string, string> = {}
+) {
+  response.writeHead(status, { "Content-Type": "application/json", ...headers });
   response.end(JSON.stringify(value));
 }

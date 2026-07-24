@@ -175,7 +175,10 @@ async function connectOzon(
 }
 
 async function syncOzon(request: APIRequestContext, fixture: OzonMockFixture) {
-  return postJson<{ status: string; summary: { errors: string[] } }>(
+  return postJson<{
+    status: string;
+    summary: { errors: string[]; reports?: { fetched: number; skipped?: number } };
+  }>(
     request,
     "/api/integrations/ozon/sync",
     {
@@ -289,6 +292,62 @@ test.describe("Ozon marketplace integration", () => {
     }
   });
 
+  test("skips only a missing current-month mutual settlement report and completes the remaining reports", async ({
+    request,
+  }, testInfo) => {
+    const adminWorkspace = await getAdminWorkspace();
+    test.skip(!adminWorkspace, adminSkipReason());
+    requireOzonSchema(
+      await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
+      "Local Supabase schema is missing Ozon marketplace migrations through 015_ozon_commit_hardening.sql"
+    );
+
+    const fixture = buildOzonFixture(uniqueName("MissingMutual", testInfo));
+    let mock: OzonMockServer | null = null;
+
+    try {
+      await resetOzonState(adminWorkspace!, false);
+      mock = await startOzonMockServer(fixture, {
+        responseSequences: {
+          "/v1/finance/mutual-settlement": [
+            {
+              status: 404,
+              body: {
+                error: {
+                  code: "FINANCE_DOCUMENT_NOT_FOUND",
+                  message: "finance document not found",
+                },
+              },
+            },
+          ],
+        },
+        validClientId: VALID_CLIENT_ID,
+        validApiKey: VALID_API_KEY,
+      });
+
+      await connectOzon(request);
+      const syncResult = await syncOzon(request, fixture);
+
+      expect(syncResult.status).toBe("completed");
+      expect(syncResult.summary.errors).toEqual([]);
+      expect(syncResult.summary.reports).toMatchObject({ skipped: 1 });
+      expect(mock.requestCounts["/v1/finance/mutual-settlement"]).toBe(1);
+      expect(mock.requestCounts["/v1/finance/compensation"]).toBe(1);
+      expect(mock.requestCounts["/v1/finance/decompensation"]).toBe(1);
+      expect(mock.requestCounts["/v1/finance/cash-flow-statement/list"]).toBe(1);
+      expect(mock.requestCounts["/v1/finance/products/buyout"]).toBe(1);
+
+      const summary = await expectJson<OzonSummaryResponse>(
+        request.get("/api/integrations/ozon"),
+        200
+      );
+      expect(summary.counts.financeReports).toBe(4);
+    } finally {
+      await mock?.close();
+      await resetOzonState(adminWorkspace!, false);
+    }
+  });
+
   test("syncs, reviews, maps, approves, commits, and preserves decisions", async ({
     page,
     request,
@@ -391,6 +450,18 @@ test.describe("Ozon marketplace integration", () => {
         candidatesReady: 3,
         candidatesNeedsMapping: 3,
       });
+      expect(mock.requestBodies["/v3/supply-order/list"]).toEqual([
+        {
+          filter: {},
+          last_id: "",
+          limit: 100,
+          sort_by: "ORDER_CREATION",
+          sort_dir: "DESC",
+        },
+      ]);
+      expect(mock.requestBodies["/v3/supply-order/get"]).toEqual([
+        { order_ids: [fixture.supplyOrderId] },
+      ]);
 
       let candidates = await listCandidates(request);
       expect(candidates.summary).toMatchObject({

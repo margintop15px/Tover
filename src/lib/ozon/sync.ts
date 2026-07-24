@@ -1612,41 +1612,43 @@ async function syncFinanceReports(
 ): Promise<OzonSyncStepSummary> {
   const rows: JsonRecord[] = [];
   const months = monthsInRange(dateFrom, dateTo);
+  let skipped = 0;
 
   for (const month of months) {
-    rows.push(
-      ...(await requestReportCode(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        "mutual_settlement",
-        "/v1/finance/mutual-settlement",
-        { date: month, language: "DEFAULT" }
-      ))
-    );
-    rows.push(
-      ...(await requestReportCode(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        "compensation",
-        "/v1/finance/compensation",
-        { date: month, language: "RU" }
-      ))
-    );
-    rows.push(
-      ...(await requestReportCode(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        "decompensation",
-        "/v1/finance/decompensation",
-        { date: month, language: "RU" }
-      ))
-    );
+    for (const report of [
+      {
+        type: "mutual_settlement",
+        endpoint: "/v1/finance/mutual-settlement" as const,
+        payload: { date: month, language: "DEFAULT" },
+      },
+      {
+        type: "compensation",
+        endpoint: "/v1/finance/compensation" as const,
+        payload: { date: month, language: "RU" },
+      },
+      {
+        type: "decompensation",
+        endpoint: "/v1/finance/decompensation" as const,
+        payload: { date: month, language: "RU" },
+      },
+    ]) {
+      try {
+        rows.push(
+          ...(await requestReportCode(
+            supabase,
+            client,
+            workspaceId,
+            connectionId,
+            report.type,
+            report.endpoint,
+            report.payload
+          ))
+        );
+      } catch (error) {
+        if (!isMissingFinanceDocumentError(error)) throw error;
+        skipped += 1;
+      }
+    }
   }
 
   rows.push(
@@ -1663,7 +1665,28 @@ async function syncFinanceReports(
     "connection_id,external_id"
   );
 
-  return { fetched: rows.length };
+  return { fetched: rows.length, skipped };
+}
+
+export function isMissingFinanceDocumentError(error: unknown) {
+  if (!(error instanceof OzonApiError) || error.status !== 404) return false;
+
+  return [error.code, error.apiMessage]
+    .filter((value): value is string | number => value !== null)
+    .some((value) => isExactMissingFinanceDocumentIdentity(String(value)));
+}
+
+function isExactMissingFinanceDocumentIdentity(value: string) {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+  if (normalized === "finance document not found") return true;
+
+  return /\bdesc\s*=\s*finance[ _-]+document[ _-]+not[ _-]+found\s*$/i.test(
+    value
+  );
 }
 
 async function requestReportCode(
@@ -1978,10 +2001,7 @@ async function syncSupplies(
   connectionId: string,
   mapping: MappingContext
 ): Promise<OzonSyncStepSummary> {
-  const response = await client.request<JsonRecord>("/v3/supply-order/list", {
-    limit: 100,
-  });
-  const orders = extractItems(response, ["orders", "items", "supplies"]);
+  const orders = await fetchSupplyOrders(client);
   let createdCandidates = 0;
 
   for (const order of orders) {
@@ -1989,13 +2009,8 @@ async function syncSupplies(
       toRecord(order).order_id ?? toRecord(order).id ?? toRecord(order).supply_order_id
     );
     if (!orderId) continue;
-    const detail = await client
-      .request<JsonRecord>("/v3/supply-order/get", { order_ids: [orderId] })
-      .catch(() => order as JsonRecord);
-    const detailOrder =
-      extractItems(detail, ["orders", "items"])[0] ?? unwrapResult(detail) ?? order;
     const orderRow = toSupplyOrderRow(
-      detailOrder,
+      order,
       workspaceId,
       connectionId,
       mapping
@@ -2038,6 +2053,97 @@ async function syncSupplies(
   }
 
   return { fetched: orders.length, createdCandidates };
+}
+
+type OzonRequestClient = Pick<OzonClient, "request">;
+
+export async function fetchSupplyOrders(client: OzonRequestClient): Promise<JsonRecord[]> {
+  const orderIds = new Set<string>();
+  const legacyFallbacksById = new Map<string, JsonRecord>();
+  let lastId = "";
+  const seenLastIds = new Set<string>();
+
+  for (let page = 0; page < 100; page += 1) {
+    const response = await client.request<JsonRecord>("/v3/supply-order/list", {
+      filter: {},
+      last_id: lastId,
+      limit: 100,
+      sort_by: "ORDER_CREATION",
+      sort_dir: "DESC",
+    });
+    const root = unwrapResult(response);
+    const pageOrderIds = new Set<string>();
+
+    for (const value of asArray(root.order_ids)) {
+      const orderId = toStringValue(value);
+      if (orderId) pageOrderIds.add(orderId);
+    }
+
+    for (const order of extractItems(root, ["orders", "items", "supplies"])) {
+      const record = toRecord(order);
+      const orderId = toStringValue(
+        record.order_id ?? record.id ?? record.supply_order_id
+      );
+      if (!orderId) continue;
+      pageOrderIds.add(orderId);
+      if (isUsableSupplyOrderRecord(record) && !legacyFallbacksById.has(orderId)) {
+        legacyFallbacksById.set(orderId, record);
+      }
+    }
+
+    for (const orderId of pageOrderIds) orderIds.add(orderId);
+
+    const nextLastId = toStringValue(root.last_id ?? response.last_id);
+    if (!nextLastId || pageOrderIds.size === 0 || seenLastIds.has(nextLastId)) break;
+    seenLastIds.add(nextLastId);
+    lastId = nextLastId;
+  }
+
+  const detailedOrders: JsonRecord[] = [];
+  for (const batchOrderIds of chunkArray([...orderIds], 50)) {
+    try {
+      const response = await client.request<JsonRecord>("/v3/supply-order/get", {
+        order_ids: batchOrderIds,
+      });
+      const details = extractItems(unwrapResult(response), ["orders", "items"])
+        .map(toRecord);
+      const detailsById = new Map(
+        details.flatMap((detail) => {
+          const orderId = toStringValue(
+            detail.order_id ?? detail.id ?? detail.supply_order_id
+          );
+          return orderId && isUsableSupplyOrderRecord(detail)
+            ? [[orderId, detail] as const]
+            : [];
+        })
+      );
+      detailedOrders.push(
+        ...batchOrderIds.flatMap((id) => {
+          const order = detailsById.get(id) ?? legacyFallbacksById.get(id);
+          return order ? [order] : [];
+        })
+      );
+    } catch {
+      detailedOrders.push(
+        ...batchOrderIds.flatMap((id) => {
+          const fallback = legacyFallbacksById.get(id);
+          return fallback ? [fallback] : [];
+        })
+      );
+    }
+  }
+
+  return detailedOrders;
+}
+
+function isUsableSupplyOrderRecord(order: JsonRecord) {
+  return Object.entries(order).some(
+    ([key, value]) =>
+      !["order_id", "id", "supply_order_id"].includes(key) &&
+      value !== null &&
+      value !== undefined &&
+      value !== ""
+  );
 }
 
 function toSupplyOrderRow(
