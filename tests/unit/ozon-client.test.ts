@@ -189,6 +189,14 @@ test("redacts common token and PII shapes from legacy Ozon error messages", () =
   }
 });
 
+test("redacts the full Basic authorization value from legacy Ozon error messages", () => {
+  const error = new OzonApiError("/v2/warehouse/list", 400, {
+    message: "Authorization: Basic YTpi",
+  });
+
+  assert.equal(error.apiMessage?.includes("YTpi"), false);
+});
+
 function jsonResponse(body: unknown, status = 200, headers?: HeadersInit) {
   return new Response(JSON.stringify(body), { status, headers });
 }

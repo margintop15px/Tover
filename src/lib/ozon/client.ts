@@ -311,6 +311,7 @@ function sanitizeApiMessage(message: string, sensitiveValues: string[]) {
   }
 
   safeMessage = safeMessage
+    .replace(/\bauthorization\b\s*(?:=|:)\s*(?:basic|bearer)\s+[^\s,;]+/gi, "authorization=[REDACTED]")
     .replace(
       /\b(authorization|api[-_ ]?key|client[-_ ]?id|token|jwt)\b\s*(?:=|:)\s*(?:bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
       "$1=[REDACTED]"
