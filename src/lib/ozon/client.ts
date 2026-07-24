@@ -7,6 +7,7 @@ const MAX_ATTEMPTS = 4;
 const RETRY_DELAY_CAP_MS = 30_000;
 const RETRY_DELAY_BASE_MS = 500;
 const RETRY_DELAY_JITTER_MS = 250;
+const MAX_SAFE_API_MESSAGE_LENGTH = 500;
 
 export const OZON_READ_ONLY_ENDPOINTS = [
   "/v2/warehouse/list",
@@ -79,10 +80,11 @@ export class OzonApiError extends Error {
     status: number,
     responseBody: unknown,
     responseMetadata: OzonApiResponseMetadata = emptyResponseMetadata(),
-    retryDelayMs = 0
+    retryDelayMs = 0,
+    sensitiveValues: string[] = []
   ) {
     super(`Ozon API ${endpoint} failed with status ${status}`);
-    const { code, apiMessage } = extractOzonErrorDetails(responseBody);
+    const { code, apiMessage } = extractOzonErrorDetails(responseBody, sensitiveValues);
     this.status = status;
     this.endpoint = endpoint;
     this.code = code;
@@ -160,7 +162,8 @@ export class OzonClient {
         response.status,
         responseBody,
         responseMetadata,
-        retryDelayMs
+        retryDelayMs,
+        [this.credentials.clientId, this.credentials.apiKey]
       );
 
       if (!isRetryableStatus(response.status) || attempt === MAX_ATTEMPTS - 1) {
@@ -259,7 +262,7 @@ function emptyResponseMetadata(): OzonApiResponseMetadata {
   return { requestId: null, retryAfterMs: null, itemRetryAfterMs: null };
 }
 
-function extractOzonErrorDetails(responseBody: unknown) {
+function extractOzonErrorDetails(responseBody: unknown, sensitiveValues: string[]) {
   const topLevel = recordOrNull(responseBody);
   const nestedError = recordOrNull(topLevel?.error);
   const nestedDetails = recordOrNull(topLevel?.details);
@@ -268,7 +271,7 @@ function extractOzonErrorDetails(responseBody: unknown) {
 
   return {
     code: firstSafeCode(candidates),
-    apiMessage: firstSafeMessage(candidates),
+    apiMessage: firstSafeMessage(candidates, sensitiveValues),
   };
 }
 
@@ -286,10 +289,38 @@ function firstSafeCode(candidates: Array<Record<string, unknown> | null>) {
   return null;
 }
 
-function firstSafeMessage(candidates: Array<Record<string, unknown> | null>) {
+function firstSafeMessage(
+  candidates: Array<Record<string, unknown> | null>,
+  sensitiveValues: string[]
+) {
   for (const candidate of candidates) {
     const message = candidate?.message;
-    if (typeof message === "string") return message;
+    if (typeof message === "string") return sanitizeApiMessage(message, sensitiveValues);
   }
   return null;
+}
+
+function sanitizeApiMessage(message: string, sensitiveValues: string[]) {
+  let safeMessage = message
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  for (const value of [...sensitiveValues].sort((left, right) => right.length - left.length)) {
+    if (value) safeMessage = safeMessage.split(value).join("[REDACTED]");
+  }
+
+  safeMessage = safeMessage
+    .replace(
+      /\b(authorization|api[-_ ]?key|client[-_ ]?id|token|jwt)\b\s*(?:=|:)\s*(?:bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1=[REDACTED]"
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9\-._~+/=]{8,}\b/gi, "Bearer [REDACTED]")
+    .replace(/\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED]")
+    .replace(/(^|[^\w])\+?\d[\d(). -]{7,}\d/g, "$1[REDACTED]")
+    .replace(/([?&][^=&\s]+)=([^&#\s]*)/g, "$1=[REDACTED]")
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[REDACTED]");
+
+  return safeMessage.slice(0, MAX_SAFE_API_MESSAGE_LENGTH);
 }

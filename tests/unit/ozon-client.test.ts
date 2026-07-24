@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { OzonApiError, OzonClient } from "../../src/lib/ozon/client";
 
-const credentials = { clientId: "client", apiKey: "api-key" };
+const credentials = { clientId: "seller-client-987", apiKey: "seller-api-key-123" };
 
 interface RuntimeFixture {
   fetch: typeof fetch;
@@ -117,7 +117,7 @@ test("attaches only safe response metadata, code, message, and retry delay to a 
       {
         error: {
           code: "RATE_LIMITED",
-          message: "Try again later",
+          message: "finance document not found for client seller-client-987 api-key=seller-api-key-123",
           authorization: "must-not-be-retained",
         },
         customer: { email: "sensitive@example.com" },
@@ -130,9 +130,9 @@ test("attaches only safe response metadata, code, message, and retry delay to a 
         Authorization: "must-not-be-exposed",
       }
     ),
-    jsonResponse({ error: { code: "RATE_LIMITED", message: "Try again later" } }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
-    jsonResponse({ error: { code: "RATE_LIMITED", message: "Try again later" } }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
-    jsonResponse({ error: { code: "RATE_LIMITED", message: "Try again later" } }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
+    jsonResponse({ error: { code: "RATE_LIMITED", message: "finance document not found for client seller-client-987 api-key=seller-api-key-123" } }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
+    jsonResponse({ error: { code: "RATE_LIMITED", message: "finance document not found for client seller-client-987 api-key=seller-api-key-123" } }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
+    jsonResponse({ error: { code: "RATE_LIMITED", message: "finance document not found for client seller-client-987 api-key=seller-api-key-123" } }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
   ]);
 
   await assert.rejects(testClient(fixture.runtime).request("/v2/warehouse/list"), (error: unknown) => {
@@ -144,7 +144,10 @@ test("attaches only safe response metadata, code, message, and retry delay to a 
     });
     assert.equal(error.retryDelayMs, 30_000);
     assert.equal(error.code, "RATE_LIMITED");
-    assert.equal(error.apiMessage, "Try again later");
+    assert.equal(error.apiMessage, "finance document not found for client [REDACTED] api-key=[REDACTED]");
+    assert.equal(error.apiMessage.includes("finance document not found"), true);
+    assert.equal(error.apiMessage.includes(credentials.clientId), false);
+    assert.equal(error.apiMessage.includes(credentials.apiKey), false);
     assert.equal("responseBody" in error, false);
     assert.equal(JSON.stringify(error).includes("sensitive@example.com"), false);
     assert.equal(JSON.stringify(error).includes("must-not-be-retained"), false);
@@ -163,6 +166,27 @@ test("sanitizes the legacy OzonApiError response-body constructor argument", () 
   assert.equal(error.apiMessage, "Invalid input");
   assert.equal("responseBody" in error, false);
   assert.equal(JSON.stringify(error).includes("must-not-be-retained"), false);
+});
+
+test("redacts common token and PII shapes from legacy Ozon error messages", () => {
+  const secrets = [
+    "authorization-secret",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature-value",
+    "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "person@example.com",
+    "+1 415-555-0123",
+    "query-secret-value",
+  ];
+  const error = new OzonApiError("/v2/warehouse/list", 400, {
+    message: `\u0000finance document not found\nAuthorization: Bearer ${secrets[0]}; jwt=${secrets[1]}; token=${secrets[2]}; email=${secrets[3]}; phone=${secrets[4]}; https://example.test/path?api_key=${secrets[5]} ${"x".repeat(600)}`,
+  });
+
+  assert.ok(error.apiMessage?.includes("finance document not found"));
+  assert.ok(error.apiMessage && error.apiMessage.length <= 500);
+  assert.equal(/[\u0000-\u001F\u007F-\u009F]/.test(error.apiMessage || ""), false);
+  for (const secret of secrets) {
+    assert.equal(error.apiMessage?.includes(secret), false);
+  }
 });
 
 function jsonResponse(body: unknown, status = 200, headers?: HeadersInit) {
