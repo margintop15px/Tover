@@ -2990,7 +2990,11 @@ function chunkArray<T>(items: T[], size: number) {
 
 function formatError(error: unknown) {
   if (error instanceof OzonApiError) {
-    return `${error.endpoint}: ${error.status} ${JSON.stringify(error.responseBody).slice(0, 500)}`;
+    const details = [
+      error.code === null ? null : `code=${error.code}`,
+      error.apiMessage,
+    ].filter((detail): detail is string => Boolean(detail));
+    return `${error.endpoint}: ${error.status}${details.length ? ` ${details.join(" ")}` : ""}`;
   }
   return error instanceof Error ? error.message : String(error);
 }

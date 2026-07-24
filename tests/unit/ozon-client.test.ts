@@ -65,7 +65,7 @@ test("paces request starts by 25 milliseconds and gives each request a 30 second
   assert.deepEqual(fixture.timeoutCalls, [30_000, 30_000]);
 });
 
-test("retries transport errors four times total with exponential backoff and jitter", async () => {
+test("retries transport errors four times total with approved exponential backoff and jitter", async () => {
   const fixture = createRuntime(
     [new TypeError("network down"), new TypeError("network down"), new TypeError("network down"), jsonResponse({ ok: true })],
     { random: () => 0.5 }
@@ -74,7 +74,7 @@ test("retries transport errors four times total with exponential backoff and jit
 
   assert.deepEqual(await client.request("/v2/warehouse/list"), { ok: true });
   assert.equal(fixture.attempts(), 4);
-  assert.deepEqual(fixture.sleeps, [1_250, 2_250, 4_250]);
+  assert.deepEqual(fixture.sleeps, [625, 1_125, 2_125]);
 });
 
 for (const status of [408, 425, 429, 500]) {
@@ -101,20 +101,27 @@ test("uses Retry-After dates and caps retry delay at 30 seconds", async () => {
   assert.deepEqual(fixture.sleeps, [30_000]);
 });
 
-test("uses Item-Retry-After seconds for retry delay", async () => {
+test("uses Item-Retry-After minutes for retry delay", async () => {
   const fixture = createRuntime([
-    jsonResponse({ error: "busy" }, 503, { "Item-Retry-After": "7" }),
+    jsonResponse({ error: "busy" }, 503, { "Item-Retry-After": "0.25" }),
     jsonResponse({ ok: true }),
   ]);
 
   assert.deepEqual(await testClient(fixture.runtime).request("/v2/warehouse/list"), { ok: true });
-  assert.deepEqual(fixture.sleeps, [7_000]);
+  assert.deepEqual(fixture.sleeps, [15_000]);
 });
 
-test("attaches safe response metadata and retry delay to a final retryable error", async () => {
+test("attaches only safe response metadata, code, message, and retry delay to a final retryable error", async () => {
   const fixture = createRuntime([
     jsonResponse(
-      { error: "busy" },
+      {
+        error: {
+          code: "RATE_LIMITED",
+          message: "Try again later",
+          authorization: "must-not-be-retained",
+        },
+        customer: { email: "sensitive@example.com" },
+      },
       429,
       {
         "Retry-After": "60",
@@ -123,9 +130,9 @@ test("attaches safe response metadata and retry delay to a final retryable error
         Authorization: "must-not-be-exposed",
       }
     ),
-    jsonResponse({ error: "busy" }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
-    jsonResponse({ error: "busy" }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
-    jsonResponse({ error: "busy" }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
+    jsonResponse({ error: { code: "RATE_LIMITED", message: "Try again later" } }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
+    jsonResponse({ error: { code: "RATE_LIMITED", message: "Try again later" } }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
+    jsonResponse({ error: { code: "RATE_LIMITED", message: "Try again later" } }, 429, { "Retry-After": "60", "Item-Retry-After": "5", "X-Request-Id": "request-123" }),
   ]);
 
   await assert.rejects(testClient(fixture.runtime).request("/v2/warehouse/list"), (error: unknown) => {
@@ -133,11 +140,29 @@ test("attaches safe response metadata and retry delay to a final retryable error
     assert.deepEqual(error.responseMetadata, {
       requestId: "request-123",
       retryAfterMs: 30_000,
-      itemRetryAfterMs: 5_000,
+      itemRetryAfterMs: 30_000,
     });
     assert.equal(error.retryDelayMs, 30_000);
+    assert.equal(error.code, "RATE_LIMITED");
+    assert.equal(error.apiMessage, "Try again later");
+    assert.equal("responseBody" in error, false);
+    assert.equal(JSON.stringify(error).includes("sensitive@example.com"), false);
+    assert.equal(JSON.stringify(error).includes("must-not-be-retained"), false);
     return true;
   });
+});
+
+test("sanitizes the legacy OzonApiError response-body constructor argument", () => {
+  const error = new OzonApiError("/v2/warehouse/list", 400, {
+    code: "INVALID_REQUEST",
+    message: "Invalid input",
+    apiKey: "must-not-be-retained",
+  });
+
+  assert.equal(error.code, "INVALID_REQUEST");
+  assert.equal(error.apiMessage, "Invalid input");
+  assert.equal("responseBody" in error, false);
+  assert.equal(JSON.stringify(error).includes("must-not-be-retained"), false);
 });
 
 function jsonResponse(body: unknown, status = 200, headers?: HeadersInit) {

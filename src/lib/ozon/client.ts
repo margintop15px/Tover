@@ -5,8 +5,8 @@ const REQUEST_START_PACING_MS = 25;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_ATTEMPTS = 4;
 const RETRY_DELAY_CAP_MS = 30_000;
-const RETRY_DELAY_BASE_MS = 1_000;
-const RETRY_DELAY_JITTER_MS = 500;
+const RETRY_DELAY_BASE_MS = 500;
+const RETRY_DELAY_JITTER_MS = 250;
 
 export const OZON_READ_ONLY_ENDPOINTS = [
   "/v2/warehouse/list",
@@ -69,7 +69,8 @@ export interface OzonApiResponseMetadata {
 export class OzonApiError extends Error {
   status: number;
   endpoint: string;
-  responseBody: unknown;
+  code: string | number | null;
+  apiMessage: string | null;
   responseMetadata: OzonApiResponseMetadata;
   retryDelayMs: number;
 
@@ -77,13 +78,15 @@ export class OzonApiError extends Error {
     endpoint: string,
     status: number,
     responseBody: unknown,
-    responseMetadata: OzonApiResponseMetadata,
-    retryDelayMs: number
+    responseMetadata: OzonApiResponseMetadata = emptyResponseMetadata(),
+    retryDelayMs = 0
   ) {
     super(`Ozon API ${endpoint} failed with status ${status}`);
+    const { code, apiMessage } = extractOzonErrorDetails(responseBody);
     this.status = status;
     this.endpoint = endpoint;
-    this.responseBody = responseBody;
+    this.code = code;
+    this.apiMessage = apiMessage;
     this.responseMetadata = responseMetadata;
     this.retryDelayMs = retryDelayMs;
   }
@@ -110,6 +113,7 @@ export class OzonClient {
   private runtime: OzonClientRuntime;
   private nextRequestStartAt = 0;
 
+  constructor(credentials: OzonCredentials);
   constructor(credentials: OzonCredentials, runtime: OzonClientRuntime = DEFAULT_RUNTIME) {
     this.credentials = credentials;
     this.runtime = runtime;
@@ -226,7 +230,7 @@ function responseMetadataFor(response: Response, now: number): OzonApiResponseMe
   return {
     requestId: response.headers.get("x-request-id") || response.headers.get("request-id"),
     retryAfterMs: parseRetryAfter(response.headers.get("retry-after"), now),
-    itemRetryAfterMs: parseRetryAfter(response.headers.get("item-retry-after"), now),
+    itemRetryAfterMs: parseItemRetryAfter(response.headers.get("item-retry-after")),
   };
 }
 
@@ -241,4 +245,51 @@ function parseRetryAfter(value: string | null, now: number) {
   const date = Date.parse(value);
   if (Number.isNaN(date)) return null;
   return Math.min(RETRY_DELAY_CAP_MS, Math.max(0, date - now));
+}
+
+function parseItemRetryAfter(value: string | null) {
+  if (!value) return null;
+
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes) || minutes < 0) return null;
+  return Math.min(RETRY_DELAY_CAP_MS, Math.round(minutes * 60_000));
+}
+
+function emptyResponseMetadata(): OzonApiResponseMetadata {
+  return { requestId: null, retryAfterMs: null, itemRetryAfterMs: null };
+}
+
+function extractOzonErrorDetails(responseBody: unknown) {
+  const topLevel = recordOrNull(responseBody);
+  const nestedError = recordOrNull(topLevel?.error);
+  const nestedDetails = recordOrNull(topLevel?.details);
+  const nestedErrorDetails = recordOrNull(nestedError?.details);
+  const candidates = [topLevel, nestedError, nestedDetails, nestedErrorDetails];
+
+  return {
+    code: firstSafeCode(candidates),
+    apiMessage: firstSafeMessage(candidates),
+  };
+}
+
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function firstSafeCode(candidates: Array<Record<string, unknown> | null>) {
+  for (const candidate of candidates) {
+    const code = candidate?.code;
+    if (typeof code === "string" || typeof code === "number") return code;
+  }
+  return null;
+}
+
+function firstSafeMessage(candidates: Array<Record<string, unknown> | null>) {
+  for (const candidate of candidates) {
+    const message = candidate?.message;
+    if (typeof message === "string") return message;
+  }
+  return null;
 }
