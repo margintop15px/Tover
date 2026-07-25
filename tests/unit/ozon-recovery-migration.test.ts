@@ -77,6 +77,11 @@ test("migration creates the exact ordered durable step registry", () => {
     /state <> 'retry_scheduled' or next_attempt_at is not null/i,
     "scheduled retries must always be due at a concrete time"
   );
+  assert.match(
+    sql,
+    /create unique index[\s\S]*?on public\.marketplace_sync_run_steps\s*\(connection_id\)[\s\S]*?where state = 'running'/i,
+    "the table must enforce one running step per connection"
+  );
   assert.match(sql, /last_error jsonb/i);
   assert.match(sql, /summary jsonb not null default '\{\}'::jsonb/i);
   assert.match(sql, /attempt_count integer not null default 0 check \(attempt_count >= 0\)/i);
@@ -201,25 +206,34 @@ test("begin/resume serializes per connection and inserts all steps exactly once"
 test("claims are serialized, SKIP LOCKED, and protected by a ten-minute UUID lease", () => {
   const definition = functionDefinition(migrationSql(), "claim_ozon_sync_run_step");
   const advisoryLockAt = definition.search(/pg_advisory_xact_lock/i);
+  const wallClockAt = definition.search(/v_now := clock_timestamp\(\)/i);
   const rowLockAt = definition.search(/for update skip locked/i);
 
   assert.match(definition, /p_run_id uuid default null/i);
   assert.match(definition, /for update skip locked/i);
   assert.match(definition, /pg_advisory_xact_lock/i);
   assert.ok(
-    advisoryLockAt >= 0 && rowLockAt > advisoryLockAt,
-    "claim must take the per-connection advisory lock before its row lock"
+    advisoryLockAt >= 0 &&
+      wallClockAt > advisoryLockAt &&
+      rowLockAt > wallClockAt,
+    "claim must capture wall time after its advisory lock and before its row lock"
   );
   assert.match(definition, /state = 'pending'/i);
-  assert.match(definition, /state = 'retry_scheduled'[\s\S]*?next_attempt_at <= now\(\)/i);
-  assert.match(definition, /state = 'running'[\s\S]*?lease_expires_at <= now\(\)/i);
-  assert.match(definition, /not exists[\s\S]*?lease_expires_at > now\(\)/i);
+  assert.match(definition, /state = 'retry_scheduled'[\s\S]*?next_attempt_at <= v_now/i);
+  assert.match(definition, /state = 'running'[\s\S]*?lease_expires_at <= v_now/i);
+  assert.match(definition, /not exists[\s\S]*?lease_expires_at > v_now/i);
   assert.match(definition, /attempt_count = attempt_count \+ 1/i);
   assert.match(definition, /lease_token = gen_random_uuid\(\)/i);
-  assert.match(definition, /lease_expires_at = now\(\) \+ interval '10 minutes'/i);
+  assert.match(definition, /lease_expires_at = v_now \+ interval '10 minutes'/i);
+  assert.match(definition, /started_at = v_now/i);
   assert.match(
     definition,
-    /if exists[\s\S]*?state = 'running'[\s\S]*?lease_expires_at > now\(\)[\s\S]*?return/i,
+    /order by[\s\S]*?case when steps\.state = 'running' then 0 else 1 end/i,
+    "an expired running row must be reclaimed before another row can run"
+  );
+  assert.match(
+    definition,
+    /if exists[\s\S]*?state = 'running'[\s\S]*?lease_expires_at > v_now[\s\S]*?return/i,
     "claim must recheck live work after taking the per-connection lock"
   );
   assert.match(
@@ -232,16 +246,20 @@ test("claims are serialized, SKIP LOCKED, and protected by a ten-minute UUID lea
 test("finish enforces the live lease and derives run and connection state atomically", () => {
   const definition = functionDefinition(migrationSql(), "finish_ozon_sync_run_step");
   const advisoryLockAt = definition.search(/pg_advisory_xact_lock/i);
+  const wallClockAt = definition.search(/v_now := clock_timestamp\(\)/i);
   const stepUpdateAt = definition.search(
     /update public\.marketplace_sync_run_steps/i
   );
 
   assert.ok(
-    advisoryLockAt >= 0 && stepUpdateAt > advisoryLockAt,
-    "finish must take the per-connection advisory lock before mutating its step"
+    advisoryLockAt >= 0 &&
+      wallClockAt > advisoryLockAt &&
+      stepUpdateAt > wallClockAt,
+    "finish must capture wall time after its advisory lock before mutating its step"
   );
   assert.match(definition, /lease_token = p_lease_token/i);
-  assert.match(definition, /lease_expires_at > now\(\)/i);
+  assert.match(definition, /lease_expires_at > v_now/i);
+  assert.match(definition, /then v_now[\s\S]*?else null[\s\S]*?end/i);
   assert.match(definition, /state = 'running'/i);
   assert.match(
     definition,
@@ -261,6 +279,98 @@ test("finish enforces the live lease and derives run and connection state atomic
   assert.match(definition, /else 'completed'/i);
   assert.match(definition, /coalesce\(health, '\{\}'::jsonb\) \|\|/i);
   assert.match(definition, /case when status = 'disabled' then status/i);
+});
+
+test("table trigger reserves protected step transitions for invariant-preserving RPCs", () => {
+  const sql = compact(migrationSql());
+  const definition = functionDefinition(
+    migrationSql(),
+    "protect_marketplace_sync_run_step_state"
+  );
+
+  assert.match(
+    sql,
+    /create trigger protect_marketplace_sync_run_step_state[\s\S]*?before insert or update or delete on public\.marketplace_sync_run_steps/i
+  );
+  assert.match(
+    definition,
+    /tg_op = 'delete'[\s\S]*?pg_trigger_depth\(\) = 1[\s\S]*?raise exception[\s\S]*?return old/i,
+    "direct step deletes must be blocked without breaking nested cascade deletes"
+  );
+  assert.match(definition, /tg_op = 'insert'/i);
+  assert.match(
+    definition,
+    /new\.state <> 'pending'[\s\S]*?new\.attempt_count <> 0[\s\S]*?new\.lease_token is not null[\s\S]*?new\.summary <> '\{\}'::jsonb[\s\S]*?new\.last_error is not null/i
+  );
+  for (const field of [
+    "id",
+    "run_id",
+    "workspace_id",
+    "connection_id",
+    "provider",
+    "step_key",
+    "step_order",
+    "state",
+    "attempt_count",
+    "next_attempt_at",
+    "lease_token",
+    "lease_expires_at",
+    "summary",
+    "last_error",
+    "started_at",
+    "completed_at",
+    "created_at",
+    "updated_at",
+  ]) {
+    assert.match(
+      definition,
+      new RegExp(`new\\.${field} is distinct from old\\.${field}`, "i"),
+      `${field} must be protected from direct admin updates`
+    );
+  }
+  assert.match(definition, /current_user[\s\S]*?relowner[\s\S]*?raise exception/i);
+  assert.match(
+    definition,
+    /new\.last_error := public\._sanitize_ozon_sync_step_error\(new\.last_error\)/i
+  );
+});
+
+test("error sanitizer discards API keys, Authorization/Basic/Bearer, raw nested payloads, non-object values, and oversized fields", () => {
+  const definition = functionDefinition(
+    migrationSql(),
+    "_sanitize_ozon_sync_step_error"
+  );
+  const accessedKeys = [
+    ...definition.matchAll(/p_error\s*->\s*'([^']+)'/gi),
+  ].map((match) => match[1]);
+
+  assert.deepEqual(
+    [...new Set(accessedKeys)].sort(),
+    ["kind", "retryAfterMs", "retryable", "status"].sort(),
+    "only the fixed scalar allowlist may be read from caller input"
+  );
+  assert.match(definition, /jsonb_typeof\(p_error\) <> 'object'/i);
+  assert.match(definition, /jsonb_build_object\('message', 'Ozon sync step failed'\)/i);
+  assert.match(
+    definition,
+    /p_error ->> 'kind' in \(\s*'transport', 'timeout', 'rate_limit', 'server', 'client', 'unknown'\s*\)/i
+  );
+  assert.match(
+    definition,
+    /v_status between 100 and 599/i
+  );
+  assert.match(
+    definition,
+    /v_retry_after_ms between 0 and 86400000/i
+  );
+  assert.match(
+    definition,
+    /jsonb_typeof\(p_error -> 'retryable'\) = 'boolean'/i
+  );
+  assert.doesNotMatch(
+    definition,
+    /api.?key|authorization|basic|bearer|raw|payload|p_error\s*->\s*'message'/i
+  );
 });
 
 test("manual retry reactivates only failed steps in a terminal run", () => {

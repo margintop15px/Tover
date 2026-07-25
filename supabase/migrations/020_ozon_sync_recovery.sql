@@ -127,6 +127,7 @@ CREATE TABLE public.marketplace_sync_run_steps (
     )
   ),
   CHECK (state <> 'retry_scheduled' OR next_attempt_at IS NOT NULL),
+  CHECK (state IN ('retry_scheduled', 'failed') OR last_error IS NULL),
   FOREIGN KEY (run_id, workspace_id, connection_id, provider)
     REFERENCES public.marketplace_sync_runs(id, workspace_id, connection_id, provider)
     ON DELETE CASCADE,
@@ -143,6 +144,164 @@ CREATE INDEX marketplace_sync_run_steps_run_order
 
 CREATE INDEX marketplace_sync_run_steps_connection_state
   ON public.marketplace_sync_run_steps(connection_id, state, lease_expires_at);
+
+CREATE UNIQUE INDEX marketplace_sync_run_steps_one_running_per_connection
+  ON public.marketplace_sync_run_steps(connection_id)
+  WHERE state = 'running';
+
+CREATE OR REPLACE FUNCTION public._sanitize_ozon_sync_step_error(
+  p_error JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = ''
+AS $function$
+DECLARE
+  v_result JSONB := jsonb_build_object('message', 'Ozon sync step failed');
+  v_status INTEGER;
+  v_retry_after_ms BIGINT;
+BEGIN
+  IF p_error IS NULL OR jsonb_typeof(p_error) <> 'object' THEN
+    RETURN v_result;
+  END IF;
+
+  IF jsonb_typeof(p_error -> 'kind') = 'string'
+    AND p_error ->> 'kind' IN (
+      'transport',
+      'timeout',
+      'rate_limit',
+      'server',
+      'client',
+      'unknown'
+    )
+  THEN
+    v_result := v_result || jsonb_build_object('kind', p_error ->> 'kind');
+  END IF;
+
+  IF jsonb_typeof(p_error -> 'status') = 'number'
+    AND p_error ->> 'status' ~ '^[0-9]{3}$'
+  THEN
+    v_status := (p_error ->> 'status')::integer;
+    IF v_status BETWEEN 100 AND 599 THEN
+      v_result := v_result || jsonb_build_object('status', v_status);
+    END IF;
+  END IF;
+
+  IF jsonb_typeof(p_error -> 'retryAfterMs') = 'number'
+    AND p_error ->> 'retryAfterMs' ~ '^(0|[1-9][0-9]{0,7})$'
+  THEN
+    v_retry_after_ms := (p_error ->> 'retryAfterMs')::bigint;
+    IF v_retry_after_ms BETWEEN 0 AND 86400000 THEN
+      v_result := v_result || jsonb_build_object(
+        'retryAfterMs',
+        v_retry_after_ms
+      );
+    END IF;
+  END IF;
+
+  IF jsonb_typeof(p_error -> 'retryable') = 'boolean' THEN
+    v_result := v_result || jsonb_build_object(
+      'retryable',
+      (p_error ->> 'retryable')::boolean
+    );
+  END IF;
+
+  RETURN v_result;
+END;
+$function$;
+
+REVOKE EXECUTE ON FUNCTION public._sanitize_ozon_sync_step_error(jsonb)
+  FROM PUBLIC, anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.protect_marketplace_sync_run_step_state()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = ''
+AS $function$
+DECLARE
+  v_protected_change BOOLEAN;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF pg_catalog.pg_trigger_depth() = 1
+      AND current_user <> (
+        SELECT pg_catalog.pg_get_userbyid(relowner)
+        FROM pg_catalog.pg_class
+        WHERE oid = 'public.marketplace_sync_run_steps'::regclass
+      )
+    THEN
+      RAISE EXCEPTION 'Ozon sync steps may only be deleted by cascade cleanup'
+        USING ERRCODE = '42501';
+    END IF;
+
+    RETURN OLD;
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.state <> 'pending'
+      OR NEW.attempt_count <> 0
+      OR NEW.lease_token IS NOT NULL
+      OR NEW.lease_expires_at IS NOT NULL
+      OR NEW.summary <> '{}'::jsonb
+      OR NEW.last_error IS NOT NULL
+      OR NEW.started_at IS NOT NULL
+      OR NEW.completed_at IS NOT NULL
+    THEN
+      RAISE EXCEPTION 'Ozon sync steps must be inserted in their initial state'
+        USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+  END IF;
+
+  v_protected_change :=
+    NEW.id IS DISTINCT FROM OLD.id
+    OR NEW.run_id IS DISTINCT FROM OLD.run_id
+    OR NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
+    OR NEW.connection_id IS DISTINCT FROM OLD.connection_id
+    OR NEW.provider IS DISTINCT FROM OLD.provider
+    OR NEW.step_key IS DISTINCT FROM OLD.step_key
+    OR NEW.step_order IS DISTINCT FROM OLD.step_order
+    OR NEW.state IS DISTINCT FROM OLD.state
+    OR NEW.attempt_count IS DISTINCT FROM OLD.attempt_count
+    OR NEW.next_attempt_at IS DISTINCT FROM OLD.next_attempt_at
+    OR NEW.lease_token IS DISTINCT FROM OLD.lease_token
+    OR NEW.lease_expires_at IS DISTINCT FROM OLD.lease_expires_at
+    OR NEW.summary IS DISTINCT FROM OLD.summary
+    OR NEW.last_error IS DISTINCT FROM OLD.last_error
+    OR NEW.started_at IS DISTINCT FROM OLD.started_at
+    OR NEW.completed_at IS DISTINCT FROM OLD.completed_at
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at
+    OR NEW.updated_at IS DISTINCT FROM OLD.updated_at;
+
+  IF v_protected_change
+    AND current_user <> (
+      SELECT pg_catalog.pg_get_userbyid(relowner)
+      FROM pg_catalog.pg_class
+      WHERE oid = 'public.marketplace_sync_run_steps'::regclass
+    )
+  THEN
+    RAISE EXCEPTION 'Ozon sync step state may only change through worker RPCs'
+      USING ERRCODE = '42501';
+  END IF;
+
+  IF NEW.state IN ('retry_scheduled', 'failed') THEN
+    NEW.last_error := public._sanitize_ozon_sync_step_error(NEW.last_error);
+  ELSE
+    NEW.last_error := NULL;
+  END IF;
+
+  RETURN NEW;
+END;
+$function$;
+
+REVOKE EXECUTE ON FUNCTION public.protect_marketplace_sync_run_step_state()
+  FROM PUBLIC, anon, authenticated;
+
+CREATE TRIGGER protect_marketplace_sync_run_step_state
+BEFORE INSERT OR UPDATE OR DELETE ON public.marketplace_sync_run_steps
+FOR EACH ROW EXECUTE FUNCTION public.protect_marketplace_sync_run_step_state();
 
 CREATE TRIGGER set_marketplace_sync_run_steps_updated_at
 BEFORE UPDATE ON public.marketplace_sync_run_steps
@@ -311,6 +470,7 @@ SET search_path = ''
 AS $function$
 DECLARE
   v_connection_id UUID;
+  v_now TIMESTAMPTZ;
   v_step public.marketplace_sync_run_steps%ROWTYPE;
 BEGIN
   SELECT steps.connection_id
@@ -327,11 +487,11 @@ BEGIN
       steps.state = 'pending'
       OR (
         steps.state = 'retry_scheduled'
-        AND steps.next_attempt_at <= now()
+        AND steps.next_attempt_at <= clock_timestamp()
       )
       OR (
         steps.state = 'running'
-        AND steps.lease_expires_at <= now()
+        AND steps.lease_expires_at <= clock_timestamp()
       )
     )
     AND NOT EXISTS (
@@ -339,9 +499,10 @@ BEGIN
       FROM public.marketplace_sync_run_steps AS live_step
       WHERE live_step.connection_id = steps.connection_id
         AND live_step.state = 'running'
-        AND live_step.lease_expires_at > now()
+        AND live_step.lease_expires_at > clock_timestamp()
     )
   ORDER BY
+    CASE WHEN steps.state = 'running' THEN 0 ELSE 1 END,
     COALESCE(steps.next_attempt_at, steps.lease_expires_at, steps.created_at),
     steps.step_order
   LIMIT 1;
@@ -353,6 +514,8 @@ BEGIN
   PERFORM pg_catalog.pg_advisory_xact_lock(
     pg_catalog.hashtextextended(v_connection_id::text, 0)
   );
+
+  v_now := clock_timestamp();
 
   SELECT steps.*
   INTO v_step
@@ -369,11 +532,11 @@ BEGIN
       steps.state = 'pending'
       OR (
         steps.state = 'retry_scheduled'
-        AND steps.next_attempt_at <= now()
+        AND steps.next_attempt_at <= v_now
       )
       OR (
         steps.state = 'running'
-        AND steps.lease_expires_at <= now()
+        AND steps.lease_expires_at <= v_now
       )
     )
     AND NOT EXISTS (
@@ -381,9 +544,10 @@ BEGIN
       FROM public.marketplace_sync_run_steps AS live_step
       WHERE live_step.connection_id = steps.connection_id
         AND live_step.state = 'running'
-        AND live_step.lease_expires_at > now()
+        AND live_step.lease_expires_at > v_now
     )
   ORDER BY
+    CASE WHEN steps.state = 'running' THEN 0 ELSE 1 END,
     COALESCE(steps.next_attempt_at, steps.lease_expires_at, steps.created_at),
     steps.step_order
   FOR UPDATE SKIP LOCKED
@@ -399,7 +563,7 @@ BEGIN
     WHERE connection_id = v_step.connection_id
       AND id <> v_step.id
       AND state = 'running'
-      AND lease_expires_at > now()
+      AND lease_expires_at > v_now
   ) THEN
     RETURN;
   END IF;
@@ -411,8 +575,8 @@ BEGIN
     attempt_count = attempt_count + 1,
     next_attempt_at = NULL,
     lease_token = gen_random_uuid(),
-    lease_expires_at = now() + interval '10 minutes',
-    started_at = now(),
+    lease_expires_at = v_now + interval '10 minutes',
+    started_at = v_now,
     completed_at = NULL
   WHERE id = v_step.id
   RETURNING *;
@@ -434,6 +598,7 @@ SET search_path = ''
 AS $function$
 DECLARE
   v_connection_id UUID;
+  v_now TIMESTAMPTZ;
   v_step public.marketplace_sync_run_steps%ROWTYPE;
   v_run_status TEXT;
   v_run_summary JSONB;
@@ -462,6 +627,8 @@ BEGIN
     pg_catalog.hashtextextended(v_connection_id::text, 0)
   );
 
+  v_now := clock_timestamp();
+
   UPDATE public.marketplace_sync_run_steps
   SET
     state = p_state,
@@ -477,13 +644,13 @@ BEGIN
     lease_token = NULL,
     lease_expires_at = NULL,
     completed_at = CASE
-      WHEN p_state IN ('completed', 'skipped', 'failed') THEN now()
+      WHEN p_state IN ('completed', 'skipped', 'failed') THEN v_now
       ELSE NULL
     END
   WHERE id = p_step_id
     AND state = 'running'
     AND lease_token = p_lease_token
-    AND lease_expires_at > now()
+    AND lease_expires_at > v_now
   RETURNING * INTO v_step;
 
   IF NOT FOUND THEN
@@ -535,7 +702,7 @@ BEGIN
     summary = v_run_summary,
     completed_at = CASE
       WHEN v_run_status IN ('completed', 'completed_with_errors', 'failed')
-        THEN now()
+        THEN v_now
       ELSE NULL
     END,
     error = CASE
@@ -556,7 +723,7 @@ BEGIN
     last_sync_status = v_run_status,
     last_sync_at = CASE
       WHEN v_run_status IN ('completed', 'completed_with_errors', 'failed')
-        THEN now()
+        THEN v_now
       ELSE last_sync_at
     END,
     last_sync_error = CASE
@@ -571,7 +738,7 @@ BEGIN
         'runId', v_step.run_id,
         'status', v_run_status,
         'summary', v_run_summary - 'steps',
-        'updatedAt', now()
+        'updatedAt', v_now
       )
     )
   WHERE id = v_step.connection_id;
