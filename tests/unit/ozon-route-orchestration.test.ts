@@ -101,6 +101,19 @@ test("retry handler parses runId, authorizes scoped run and connection reads bef
   ]);
 });
 
+test("retry handler returns exact terminal 200 response with the coordinator body unchanged", async () => {
+  const terminalResult = syncResult("run-1", "completed_with_errors");
+  const operations = retryOperations([], { result: terminalResult });
+  const handler = createOzonRetryPostHandler(operations);
+
+  const response = await handler(
+    request("/api/integrations/ozon/sync/retry", { runId: "run-1" })
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), terminalResult);
+});
+
 test("retry handler rejects missing input and mismatched scope before service construction", async () => {
   const missingCalls: string[] = [];
   const missingHandler = createOzonRetryPostHandler(
@@ -248,6 +261,7 @@ function retryOperations(
       provider: string;
       status: string;
     };
+    result?: OzonSyncResult;
   } = {}
 ): OzonRetryPostOperations {
   return {
@@ -288,7 +302,7 @@ function retryOperations(
       return {
         retryFailed: async (input) => {
           calls.push(`retry:${input.runId}:${input.budgetMs}`);
-          return syncResult(input.runId, "running");
+          return overrides.result ?? syncResult(input.runId, "running");
         },
       };
     },
