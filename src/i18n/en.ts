@@ -617,6 +617,8 @@ export const en = {
   ozonSyncNow: "Sync now",
   ozonRetryNow: "Retry now",
   ozonRetryFailedSteps: "Retry failed steps",
+  ozonSyncActionFailed: "Could not retry Ozon sync.",
+  ozonSummaryLoadFailed: "Failed to load Ozon integration.",
   syncing: "Syncing...",
   ozonReviewCandidates: "Review candidates",
   openMarketplaces: "Open marketplaces",

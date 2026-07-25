@@ -31,9 +31,21 @@ async function requestOzonSummary(signal?: AbortSignal) {
     cache: "no-store",
     signal,
   });
-  const data = await response.json();
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error();
+  }
   if (!response.ok) {
-    throw new Error(data.error || "Failed to load Ozon integration");
+    const message =
+      data &&
+      typeof data === "object" &&
+      "error" in data &&
+      typeof data.error === "string"
+        ? data.error
+        : "";
+    throw new Error(message);
   }
   return data as OzonIntegrationSummary;
 }
@@ -47,19 +59,26 @@ export default function MarketplacesPage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  const fetchOzonSummary = useCallback(async (showLoading = true) => {
-    if (showLoading) setLoading(true);
-    try {
-      const data = await requestOzonSummary();
-      setOzonSummary(data);
-    } catch (fetchError) {
-      setError(
-        fetchError instanceof Error ? fetchError.message : t.unexpectedError
-      );
-    } finally {
-      if (showLoading) setLoading(false);
-    }
-  }, [t.unexpectedError]);
+  const fetchOzonSummary = useCallback(
+    async (showLoading = true, showError = true) => {
+      if (showLoading) setLoading(true);
+      try {
+        const data = await requestOzonSummary();
+        setOzonSummary(data);
+      } catch (fetchError) {
+        if (showError) {
+          setError(
+            fetchError instanceof Error && fetchError.message
+              ? fetchError.message
+              : t.ozonSummaryLoadFailed
+          );
+        }
+      } finally {
+        if (showLoading) setLoading(false);
+      }
+    },
+    [t.ozonSummaryLoadFailed]
+  );
 
   useEffect(() => {
     fetchOzonSummary();
@@ -84,22 +103,6 @@ export default function MarketplacesPage() {
     setSyncing(true);
     setError("");
     setSuccess("");
-    setOzonSummary((current) =>
-      current?.connection
-        ? {
-            ...current,
-            connection: {
-              ...current.connection,
-              lastSyncStatus: "running",
-              lastSyncError: null,
-            },
-            recovery:
-              action === "retry_failed" && current.recovery
-                ? { ...current.recovery, status: "running" }
-                : current.recovery,
-          }
-        : current
-    );
 
     try {
       const res = await fetch(request.endpoint, {
@@ -107,14 +110,20 @@ export default function MarketplacesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request.body),
       });
-      const data = await res.json();
+      let data: { status?: string };
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error();
+      }
       if (!res.ok) {
-        setError(data.error || t.unexpectedError);
-        await fetchOzonSummary(false);
-        return;
+        throw new Error();
       }
       setSuccess(data.status === "completed" ? t.ozonSyncedMessage : "");
       await fetchOzonSummary(false);
+    } catch {
+      setError(t.ozonSyncActionFailed);
+      await fetchOzonSummary(false, false);
     } finally {
       setSyncing(false);
     }
@@ -193,7 +202,7 @@ export default function MarketplacesPage() {
           )}
         </div>
 
-        {syncing && !recoveryActive && (
+        {syncing && (
           <div
             role="status"
             className="mt-4 flex items-center gap-2 rounded-md border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm text-blue-700"
@@ -202,7 +211,7 @@ export default function MarketplacesPage() {
             {t.ozonSyncInProgress}
           </div>
         )}
-        {recoveryActive && recovery && (
+        {recoveryActive && recovery && !syncing && (
           <div
             role="status"
             className="mt-4 flex items-start gap-2 rounded-md border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm text-blue-700"
@@ -285,12 +294,7 @@ export default function MarketplacesPage() {
                 </dt>
                 <dd>
                   {syncing
-                    ? ozonSyncStatusLabel(
-                        recoveryActive && recovery
-                          ? recovery.status
-                          : "running",
-                        t
-                      )
+                    ? ozonSyncStatusLabel("running", t)
                     : ozonSyncStatusLabel(
                         recovery?.status ?? connection.lastSyncStatus,
                         t

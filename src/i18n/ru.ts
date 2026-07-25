@@ -622,6 +622,8 @@ export const ru: TranslationKeys = {
   ozonSyncNow: "Синхронизировать",
   ozonRetryNow: "Повторить сейчас",
   ozonRetryFailedSteps: "Повторить неудачные шаги",
+  ozonSyncActionFailed: "Не удалось повторить синхронизацию Ozon.",
+  ozonSummaryLoadFailed: "Не удалось загрузить интеграцию Ozon.",
   syncing: "Синхронизация...",
   ozonReviewCandidates: "Проверить кандидатов",
   openMarketplaces: "Открыть маркетплейсы",

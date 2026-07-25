@@ -182,3 +182,97 @@ test("routes retry-now and retry-failed actions to the same run", async ({
     },
   ]);
 });
+
+test("shows manual running state without stale automatic retry timing", async ({
+  page,
+}) => {
+  await useLocale(page, "en");
+  let releasePost!: () => void;
+  const postReleased = new Promise<void>((resolve) => {
+    releasePost = resolve;
+  });
+  let markPostStarted!: () => void;
+  const postStarted = new Promise<void>((resolve) => {
+    markPostStarted = resolve;
+  });
+
+  await page.route("**/api/integrations/ozon**", async (route) => {
+    if (route.request().method() === "GET") {
+      await fulfillJson(route, ozonSummary("retrying"));
+      return;
+    }
+    markPostStarted();
+    await postReleased;
+    await fulfillJson(route, {
+      runId: "run-1",
+      status: "retrying",
+      summary: { errors: [] },
+      recovery: {
+        pendingStepCount: 0,
+        scheduledRetryCount: 1,
+        failedStepCount: 0,
+        nextRetryAt: "2026-07-26T10:01:00.000Z",
+      },
+    });
+  });
+
+  await page.goto("/operations/marketplaces");
+  await page.getByRole("button", { name: "Retry now" }).click();
+  await postStarted;
+
+  const banner = page.getByRole("status");
+  await expect(banner).toContainText("Ozon sync is running");
+  await expect(
+    page.getByText("Retrying automatically", { exact: true })
+  ).toHaveCount(0);
+  await expect(page.getByText(/Next retry/)).toHaveCount(0);
+
+  releasePost();
+  await expect(
+    page.getByRole("button", { name: "Retry now" })
+  ).toBeEnabled();
+});
+
+test("restores terminal recovery after a rejected failed-step retry", async ({
+  page,
+}) => {
+  await useLocale(page, "ru");
+  await page.route("**/api/integrations/ozon**", async (route) => {
+    if (route.request().method() === "GET") {
+      await fulfillJson(route, ozonSummary("completed_with_errors", 1));
+      return;
+    }
+    await route.fulfill({
+      status: 500,
+      contentType: "text/plain",
+      body: "not-json",
+    });
+  });
+
+  await page.goto("/operations/marketplaces");
+  await page
+    .getByRole("button", { name: "Повторить неудачные шаги" })
+    .click();
+
+  await expect(
+    page.getByText("Не удалось повторить синхронизацию Ozon.")
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Повторить неудачные шаги" })
+  ).toBeVisible();
+  await expect(
+    page.getByText("Завершена с ошибками", { exact: true })
+  ).toBeVisible();
+});
+
+test("uses a localized summary-load fallback in Russian", async ({ page }) => {
+  await useLocale(page, "ru");
+  await page.route("**/api/integrations/ozon?*", (route) =>
+    fulfillJson(route, {}, 500)
+  );
+
+  await page.goto("/operations/marketplaces");
+  await expect(
+    page.getByText("Не удалось загрузить интеграцию Ozon.")
+  ).toBeVisible();
+});

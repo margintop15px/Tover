@@ -69,6 +69,13 @@ test("retrying status and recovery controls are localized in English and Russian
   assert.equal(ru.ozonRetryNow, "Повторить сейчас");
   assert.equal(en.ozonRetryFailedSteps, "Retry failed steps");
   assert.equal(ru.ozonRetryFailedSteps, "Повторить неудачные шаги");
+  assert.equal(en.ozonSyncActionFailed, "Could not retry Ozon sync.");
+  assert.equal(ru.ozonSyncActionFailed, "Не удалось повторить синхронизацию Ozon.");
+  assert.equal(en.ozonSummaryLoadFailed, "Failed to load Ozon integration.");
+  assert.equal(
+    ru.ozonSummaryLoadFailed,
+    "Не удалось загрузить интеграцию Ozon."
+  );
 });
 
 test("active recovery resumes through the normal sync route", () => {
