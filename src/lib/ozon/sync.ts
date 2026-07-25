@@ -94,6 +94,217 @@ const SAFE_LEGAL_IDENTIFIER_KEYS = new Set([
 
 type OzonSyncRunStatus = "completed" | "completed_with_errors" | "failed";
 
+export interface OzonSyncDomainExecutionContext {
+  supabase: SupabaseClient;
+  client: OzonClient;
+  workspaceId: string;
+  connectionId: string;
+  dateFrom: string;
+  dateTo: string;
+}
+
+interface OzonSyncDomainDefinition {
+  key: string;
+  execute: (
+    context: OzonSyncDomainExecutionContext
+  ) => Promise<OzonSyncStepSummary>;
+}
+
+export const OZON_SYNC_DOMAIN_REGISTRY = [
+  {
+    key: "warehouses",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncWarehouses(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+  {
+    key: "products",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncProducts(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+  {
+    key: "stocks",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncStocks(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+  {
+    key: "postings",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncPostings(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "returns",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncReturns(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "finance",
+    execute: (context) =>
+      executeWithCurrentMapping(context, () =>
+        syncFinance(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "legalEntities",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncLegalEntities(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "reports",
+    execute: (context) =>
+      executeWithCurrentMapping(context, () =>
+        syncFinanceReports(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "removals",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncRemovals(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "supplies",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncSupplies(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+  {
+    key: "analytics",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncStockAnalytics(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+  {
+    key: "discountedProducts",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncDiscountedProducts(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+] as const satisfies readonly OzonSyncDomainDefinition[];
+
+export type OzonSyncDomainKey =
+  (typeof OZON_SYNC_DOMAIN_REGISTRY)[number]["key"];
+
+export async function executeOzonSyncDomainStep(
+  key: OzonSyncDomainKey,
+  context: OzonSyncDomainExecutionContext
+) {
+  const domain = OZON_SYNC_DOMAIN_REGISTRY.find(
+    (entry) => entry.key === key
+  );
+  if (!domain) throw new Error("Unknown Ozon sync domain");
+  return domain.execute(context);
+}
+
+async function executeWithCurrentMapping(
+  context: OzonSyncDomainExecutionContext,
+  execute: (mapping: MappingContext) => Promise<OzonSyncStepSummary>
+) {
+  const mapping = await loadMappingContext(
+    context.supabase,
+    context.workspaceId,
+    context.connectionId
+  );
+  return execute(mapping);
+}
+
 export async function syncOzonConnection(
   supabase: SupabaseClient,
   workspaceId: string,
