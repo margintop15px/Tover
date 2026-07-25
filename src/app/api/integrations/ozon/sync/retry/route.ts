@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 import { createServiceRoleClient } from "@/lib/supabase-server";
 import {
@@ -6,88 +7,171 @@ import {
   createServiceRoleOzonSyncCoordinator,
   durableSyncHttpStatus,
   OZON_MANUAL_SYNC_BUDGET_MS,
+  type OzonSyncResult,
 } from "@/lib/ozon/durable-sync";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-export async function POST(request: NextRequest) {
-  try {
+interface RetryManagerContext {
+  workspaceId: string;
+  userClient: unknown;
+}
+
+export interface OzonRetryPostOperations {
+  getManagerContext: (request: NextRequest) => Promise<RetryManagerContext>;
+  findRun: (
+    userClient: unknown,
+    workspaceId: string,
+    runId: string
+  ) => Promise<{ run: unknown; errorMessage: string | null }>;
+  findConnection: (
+    userClient: unknown,
+    workspaceId: string,
+    connectionId: string
+  ) => Promise<{ connection: unknown; errorMessage: string | null }>;
+  createCoordinator: (scope: {
+    workspaceId: string;
+    connectionId: string;
+  }) => {
+    retryFailed: (input: {
+      runId: string;
+      budgetMs: number;
+    }) => Promise<OzonSyncResult>;
+  };
+  routeError: (error: unknown) => NextResponse;
+}
+
+const productionOperations: OzonRetryPostOperations = {
+  getManagerContext: async (request) => {
     const { supabase, workspaceId } = await getRouteContext(request, {
       requireManager: true,
     });
-    const body = await request.json().catch(() => ({}));
-    const runId =
-      typeof body.runId === "string" ? body.runId.trim() : "";
-    if (!runId) {
-      return NextResponse.json(
-        { error: "Ozon sync run ID is required" },
-        { status: 400 }
-      );
-    }
-
-    const { data: run, error: runError } = await supabase
+    return { workspaceId, userClient: supabase };
+  },
+  findRun: async (userClient, workspaceId, runId) => {
+    const { data, error } = await (userClient as SupabaseClient)
       .from("marketplace_sync_runs")
       .select("id, workspace_id, connection_id, provider, status")
       .eq("id", runId)
       .eq("workspace_id", workspaceId)
       .eq("provider", "ozon")
       .maybeSingle();
-
-    if (runError) {
-      return NextResponse.json({ error: runError.message }, { status: 500 });
-    }
-    if (!run) {
-      return NextResponse.json(
-        { error: "Ozon sync run not found" },
-        { status: 404 }
-      );
-    }
-
-    const { data: connection, error: connectionError } = await supabase
+    return { run: data, errorMessage: error?.message ?? null };
+  },
+  findConnection: async (userClient, workspaceId, connectionId) => {
+    const { data, error } = await (userClient as SupabaseClient)
       .from("marketplace_connections")
       .select("id, workspace_id, provider, status")
-      .eq("id", run.connection_id)
+      .eq("id", connectionId)
       .eq("workspace_id", workspaceId)
       .eq("provider", "ozon")
       .maybeSingle();
+    return { connection: data, errorMessage: error?.message ?? null };
+  },
+  createCoordinator: (scope) =>
+    createServiceRoleOzonSyncCoordinator(createServiceRoleClient(), scope),
+  routeError: toRouteErrorResponse,
+};
 
-    if (connectionError) {
-      return NextResponse.json(
-        { error: connectionError.message },
-        { status: 500 }
-      );
-    }
-    const scope = authorizeOzonRetryTarget(
-      { workspaceId, runId },
-      run,
-      connection
-    );
-    if (!scope) {
-      return NextResponse.json(
-        { error: "Ozon sync run not found" },
-        { status: 404 }
-      );
-    }
-    if (connection?.status === "disabled") {
-      return NextResponse.json(
-        { error: "Ozon connection is disabled" },
-        { status: 400 }
-      );
-    }
+export function createOzonRetryPostHandler(
+  operations: OzonRetryPostOperations = productionOperations
+) {
+  return async function ozonRetryPost(request: NextRequest) {
+    try {
+      const { workspaceId, userClient } =
+        await operations.getManagerContext(request);
+      const body = await request.json().catch(() => ({}));
+      const runId =
+        typeof body.runId === "string" ? body.runId.trim() : "";
+      if (!runId) {
+        return NextResponse.json(
+          { error: "Ozon sync run ID is required" },
+          { status: 400 }
+        );
+      }
 
-    const coordinator = createServiceRoleOzonSyncCoordinator(
-      createServiceRoleClient(),
-      scope
-    );
-    const result = await coordinator.retryFailed({
-      runId,
-      budgetMs: OZON_MANUAL_SYNC_BUDGET_MS,
-    });
-    return NextResponse.json(result, {
-      status: durableSyncHttpStatus(result.status),
-    });
-  } catch (error) {
-    return toRouteErrorResponse(error);
-  }
+      const { run, errorMessage: runErrorMessage } =
+        await operations.findRun(userClient, workspaceId, runId);
+      if (runErrorMessage) {
+        return NextResponse.json(
+          { error: runErrorMessage },
+          { status: 500 }
+        );
+      }
+      if (!isRunWithConnectionId(run)) {
+        return NextResponse.json(
+          { error: "Ozon sync run not found" },
+          { status: 404 }
+        );
+      }
+
+      const { connection, errorMessage: connectionErrorMessage } =
+        await operations.findConnection(
+          userClient,
+          workspaceId,
+          run.connection_id
+        );
+      if (connectionErrorMessage) {
+        return NextResponse.json(
+          { error: connectionErrorMessage },
+          { status: 500 }
+        );
+      }
+      const scope = authorizeOzonRetryTarget(
+        { workspaceId, runId },
+        run,
+        connection
+      );
+      if (!scope) {
+        return NextResponse.json(
+          { error: "Ozon sync run not found" },
+          { status: 404 }
+        );
+      }
+      if (isDisabledConnection(connection)) {
+        return NextResponse.json(
+          { error: "Ozon connection is disabled" },
+          { status: 400 }
+        );
+      }
+
+      const coordinator = operations.createCoordinator(scope);
+      const result = await coordinator.retryFailed({
+        runId,
+        budgetMs: OZON_MANUAL_SYNC_BUDGET_MS,
+      });
+      return NextResponse.json(result, {
+        status: durableSyncHttpStatus(result.status),
+      });
+    } catch (error) {
+      return operations.routeError(error);
+    }
+  };
+}
+
+const productionPost = createOzonRetryPostHandler();
+
+export async function POST(request: NextRequest) {
+  return productionPost(request);
+}
+
+function isRunWithConnectionId(
+  value: unknown
+): value is { connection_id: string } {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "connection_id" in value &&
+    typeof value.connection_id === "string"
+  );
+}
+
+function isDisabledConnection(value: unknown) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "status" in value &&
+    value.status === "disabled"
+  );
 }

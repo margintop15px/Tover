@@ -10,6 +10,7 @@ import {
   deriveOzonSyncResult,
   durableSyncHttpStatus,
   parseOzonSyncRunComposite,
+  parseOzonSyncWindow,
   resolveOzonSyncWindow,
   type OzonSyncRunRow,
   type OzonSyncRunStepRow,
@@ -362,6 +363,72 @@ test("sync window preserves explicit dates and otherwise uses the preceding thir
     {
       dateFrom: "2026-07-01T00:00:00.000Z",
       dateTo: "2026-07-05T00:00:00.000Z",
+    }
+  );
+});
+
+test("sync window parser rejects malformed, impossible, and reversed instants", () => {
+  for (const options of [
+    { dateFrom: "not-a-date" },
+    { dateFrom: "" },
+    { dateTo: "2026-02-30T00:00:00.000Z" },
+    {
+      dateFrom: "2026-07-27T00:00:00.000Z",
+      dateTo: "2026-07-26T00:00:00.000Z",
+    },
+  ]) {
+    assert.deepEqual(
+      parseOzonSyncWindow(options, Date.parse("2026-07-26T12:00:00.000Z")),
+      {
+        ok: false,
+        error: "Invalid Ozon sync date window",
+      }
+    );
+  }
+  assert.deepEqual(parseOzonSyncWindow({}, Number.POSITIVE_INFINITY), {
+    ok: false,
+    error: "Invalid Ozon sync date window",
+  });
+});
+
+test("sync window parser accepts equal boundaries, date-only inputs, and the default boundary", () => {
+  assert.deepEqual(
+    parseOzonSyncWindow(
+      {
+        dateFrom: "2026-07-26T12:00:00.000Z",
+        dateTo: "2026-07-26T12:00:00.000Z",
+      },
+      0
+    ),
+    {
+      ok: true,
+      value: {
+        dateFrom: "2026-07-26T12:00:00.000Z",
+        dateTo: "2026-07-26T12:00:00.000Z",
+      },
+    }
+  );
+  assert.deepEqual(
+    parseOzonSyncWindow(
+      { dateFrom: "2026-07-01", dateTo: "2026-07-31" },
+      0
+    ),
+    {
+      ok: true,
+      value: {
+        dateFrom: "2026-07-01T00:00:00.000Z",
+        dateTo: "2026-07-31T00:00:00.000Z",
+      },
+    }
+  );
+  assert.deepEqual(
+    parseOzonSyncWindow({}, Date.parse("2026-07-26T12:00:00.000Z")),
+    {
+      ok: true,
+      value: {
+        dateFrom: "2026-06-26T12:00:00.000Z",
+        dateTo: "2026-07-26T12:00:00.000Z",
+      },
     }
   );
 });

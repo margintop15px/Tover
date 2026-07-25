@@ -302,14 +302,51 @@ export function resolveOzonSyncWindow(
   options: OzonSyncOptions,
   nowMs = Date.now()
 ) {
-  const dateTo = options.dateTo ? new Date(options.dateTo) : new Date(nowMs);
-  const dateFrom = options.dateFrom
-    ? new Date(options.dateFrom)
-    : new Date(dateTo.getTime() - DEFAULT_SYNC_DAYS * 24 * 60 * 60 * 1000);
+  const parsed = parseOzonSyncWindow(options, nowMs);
+  if (!parsed.ok) throw new RangeError(parsed.error);
+  return parsed.value;
+}
+
+export function parseOzonSyncWindow(
+  options: OzonSyncOptions,
+  nowMs = Date.now()
+):
+  | {
+      ok: true;
+      value: { dateFrom: string; dateTo: string };
+    }
+  | {
+      ok: false;
+      error: "Invalid Ozon sync date window";
+    } {
+  const dateToMs = options.dateTo !== undefined
+    ? parseIsoInstant(options.dateTo)
+    : Number.isFinite(nowMs)
+      ? nowMs
+      : null;
+  const dateFromMs = options.dateFrom !== undefined
+    ? parseIsoInstant(options.dateFrom)
+    : dateToMs === null
+      ? null
+      : dateToMs - DEFAULT_SYNC_DAYS * 24 * 60 * 60 * 1000;
+
+  if (
+    dateFromMs === null ||
+    dateToMs === null ||
+    dateFromMs > dateToMs
+  ) {
+    return {
+      ok: false,
+      error: "Invalid Ozon sync date window",
+    };
+  }
 
   return {
-    dateFrom: dateFrom.toISOString(),
-    dateTo: dateTo.toISOString(),
+    ok: true,
+    value: {
+      dateFrom: new Date(dateFromMs).toISOString(),
+      dateTo: new Date(dateToMs).toISOString(),
+    },
   };
 }
 
@@ -439,6 +476,28 @@ function isOzonSyncRunStatus(value: string): value is OzonSyncRunStatus {
 
 function isSafeCount(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function parseIsoInstant(value: string): number | null {
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))?$/
+  );
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const calendarDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendarDate.getUTCFullYear() !== year ||
+    calendarDate.getUTCMonth() !== month - 1 ||
+    calendarDate.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
