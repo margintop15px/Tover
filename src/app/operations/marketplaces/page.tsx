@@ -19,6 +19,24 @@ import {
   ozonSyncStatusLabel,
   type OzonIntegrationSummary,
 } from "@/components/ozon/OzonSummaryShared";
+import {
+  getOzonRecoveryAction,
+  getOzonRecoveryRequest,
+  isOzonRecoveryActive,
+  startOzonSummaryPolling,
+} from "@/components/ozon/OzonRecoveryUi";
+
+async function requestOzonSummary(signal?: AbortSignal) {
+  const response = await fetch(`/api/integrations/ozon?t=${Date.now()}`, {
+    cache: "no-store",
+    signal,
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || "Failed to load Ozon integration");
+  }
+  return data as OzonIntegrationSummary;
+}
 
 export default function MarketplacesPage() {
   const { t } = useI18n();
@@ -32,15 +50,12 @@ export default function MarketplacesPage() {
   const fetchOzonSummary = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     try {
-      const res = await fetch(`/api/integrations/ozon?t=${Date.now()}`, {
-        cache: "no-store",
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || t.unexpectedError);
-        return;
-      }
+      const data = await requestOzonSummary();
       setOzonSummary(data);
+    } catch (fetchError) {
+      setError(
+        fetchError instanceof Error ? fetchError.message : t.unexpectedError
+      );
     } finally {
       if (showLoading) setLoading(false);
     }
@@ -50,7 +65,22 @@ export default function MarketplacesPage() {
     fetchOzonSummary();
   }, [fetchOzonSummary]);
 
+  const recoveryActive = isOzonRecoveryActive(ozonSummary);
+
+  useEffect(() => {
+    if (!recoveryActive || syncing) return;
+    return startOzonSummaryPolling({
+      loadSummary: requestOzonSummary,
+      onSummary: setOzonSummary,
+    });
+  }, [recoveryActive, syncing]);
+
   const syncOzonConnection = async () => {
+    const action = getOzonRecoveryAction(ozonSummary);
+    const request = getOzonRecoveryRequest(
+      action,
+      ozonSummary?.recovery?.runId ?? null
+    );
     setSyncing(true);
     setError("");
     setSuccess("");
@@ -63,15 +93,19 @@ export default function MarketplacesPage() {
               lastSyncStatus: "running",
               lastSyncError: null,
             },
+            recovery:
+              action === "retry_failed" && current.recovery
+                ? { ...current.recovery, status: "running" }
+                : current.recovery,
           }
         : current
     );
 
     try {
-      const res = await fetch("/api/integrations/ozon/sync", {
+      const res = await fetch(request.endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify(request.body),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -79,9 +113,7 @@ export default function MarketplacesPage() {
         await fetchOzonSummary(false);
         return;
       }
-      setSuccess(
-        data.status === "completed_with_errors" ? "" : t.ozonSyncedMessage
-      );
+      setSuccess(data.status === "completed" ? t.ozonSyncedMessage : "");
       await fetchOzonSummary(false);
     } finally {
       setSyncing(false);
@@ -89,8 +121,19 @@ export default function MarketplacesPage() {
   };
 
   const connection = ozonSummary?.connection;
+  const recovery = ozonSummary?.recovery;
+  const recoveryAction = getOzonRecoveryAction(ozonSummary);
+  const persistedSyncStatus =
+    recovery?.status ?? connection?.lastSyncStatus ?? null;
   const hasPartialSync =
-    connection?.lastSyncStatus === "completed_with_errors" && !syncing;
+    persistedSyncStatus === "completed_with_errors" && !syncing;
+  const hasFailedSync = persistedSyncStatus === "failed" && !syncing;
+  const syncActionLabel =
+    recoveryAction === "resume"
+      ? t.ozonRetryNow
+      : recoveryAction === "retry_failed"
+        ? t.ozonRetryFailedSteps
+        : t.ozonSyncNow;
 
   return (
     <div className="p-6">
@@ -138,7 +181,7 @@ export default function MarketplacesPage() {
                 <RefreshCw
                   className={syncing ? "h-4 w-4 animate-spin" : "h-4 w-4"}
                 />
-                {syncing ? t.syncing : t.ozonSyncNow}
+                {syncing ? t.syncing : syncActionLabel}
               </Button>
               <Button variant="outline" asChild>
                 <Link href="/operations/marketplace/ozon?returnTo=%2Foperations%2Fmarketplaces">
@@ -150,13 +193,36 @@ export default function MarketplacesPage() {
           )}
         </div>
 
-        {syncing && (
+        {syncing && !recoveryActive && (
           <div
             role="status"
             className="mt-4 flex items-center gap-2 rounded-md border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm text-blue-700"
           >
             <RefreshCw className="h-4 w-4 animate-spin" />
             {t.ozonSyncInProgress}
+          </div>
+        )}
+        {recoveryActive && recovery && (
+          <div
+            role="status"
+            className="mt-4 flex items-start gap-2 rounded-md border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm text-blue-700"
+          >
+            <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+            <div>
+              <div className="font-medium">
+                {ozonSyncStatusLabel(recovery.status, t)}
+              </div>
+              <div>{t.ozonRecoveryInProgress}</div>
+              {recovery.nextRetryAt && (
+                <div className="mt-1 text-xs">
+                  {t.ozonRecoveryNextRetry}:{" "}
+                  {formatOzonDateTime(recovery.nextRetryAt)}
+                </div>
+              )}
+              {recovery.lastError && (
+                <div className="mt-1 text-xs">{recovery.lastError}</div>
+              )}
+            </div>
           </div>
         )}
         {error && (
@@ -176,8 +242,23 @@ export default function MarketplacesPage() {
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <div>
               <div>{t.ozonSyncedWithErrorsMessage}</div>
-              {connection.lastSyncError && (
-                <div className="mt-1 text-xs">{connection.lastSyncError}</div>
+              {(recovery?.lastError || connection?.lastSyncError) && (
+                <div className="mt-1 text-xs">
+                  {recovery?.lastError || connection?.lastSyncError}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        {hasFailedSync && (
+          <div className="mt-4 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <div>{t.ozonSyncStatusFailed}</div>
+              {(recovery?.lastError || connection?.lastSyncError) && (
+                <div className="mt-1 text-xs">
+                  {recovery?.lastError || connection?.lastSyncError}
+                </div>
               )}
             </div>
           </div>
@@ -204,16 +285,25 @@ export default function MarketplacesPage() {
                 </dt>
                 <dd>
                   {syncing
-                    ? t.ozonSyncStatusRunning
-                    : ozonSyncStatusLabel(connection.lastSyncStatus, t)}
+                    ? ozonSyncStatusLabel(
+                        recoveryActive && recovery
+                          ? recovery.status
+                          : "running",
+                        t
+                      )
+                    : ozonSyncStatusLabel(
+                        recovery?.status ?? connection.lastSyncStatus,
+                        t
+                      )}
                 </dd>
               </div>
-              {connection.lastSyncError && (
+              {connection.lastSyncError &&
+                (hasPartialSync || hasFailedSync) && (
                 <div className="sm:col-span-2 lg:col-span-3">
                   <dt className="text-muted-foreground">{t.ozonLastSyncError}</dt>
                   <dd className="text-destructive">{connection.lastSyncError}</dd>
                 </div>
-              )}
+                )}
             </dl>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
