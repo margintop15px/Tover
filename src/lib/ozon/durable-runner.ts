@@ -1,6 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceRoleClient } from "../supabase-server";
-import { OzonApiError, OzonClient } from "./client";
+import {
+  OzonApiError,
+  OzonClient,
+  OzonInvariantError,
+} from "./client";
 import { decryptOzonCredentials } from "./credentials";
 import type { OzonCredentials, OzonSyncStepSummary } from "./types";
 import {
@@ -129,8 +133,12 @@ export function classifyOzonSyncError(
     return classification("client", false);
   }
 
+  if (error instanceof OzonInvariantError) {
+    return classification("client", false);
+  }
+
   if (error instanceof OzonApiError) {
-    const retryable = ![400, 401, 403, 404].includes(error.status);
+    const retryable = isTransientOzonStatus(error.status);
     const kind = ozonErrorKind(error.status);
     const retryAfterMs = safeRetryAfterMs(
       error.responseMetadata.retryAfterMs,
@@ -179,6 +187,15 @@ function ozonErrorKind(status: number): PersistedOzonSyncErrorKind {
   if (status === 429) return "rate_limit";
   if (status >= 500) return "server";
   return "client";
+}
+
+function isTransientOzonStatus(status: number) {
+  return (
+    status === 408 ||
+    status === 425 ||
+    status === 429 ||
+    (status >= 500 && status <= 599)
+  );
 }
 
 function safeRetryAfterMs(...values: Array<number | null>) {

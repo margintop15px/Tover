@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { OzonApiError } from "../../src/lib/ozon/client";
+import {
+  OzonApiError,
+  OzonClient,
+  OzonInvariantError,
+} from "../../src/lib/ozon/client";
 import {
   PermanentOzonSyncError,
   classifyOzonSyncError,
@@ -60,7 +64,7 @@ test("durable retry schedule uses the claimed attempt count exactly", () => {
   );
 });
 
-test("error classifier marks transport, timeout, retryable Ozon statuses, and runtime failures transient", () => {
+test("error classifier marks transport, timeout, exact retryable Ozon statuses, and runtime failures transient", () => {
   const cases: Array<{
     error: unknown;
     kind: string;
@@ -82,8 +86,21 @@ test("error classifier marks transport, timeout, retryable Ozon statuses, and ru
       status: 429,
       retryAfterMs: 12_000,
     },
-    { error: new OzonApiError("/v2/warehouse/list", 503, {}), kind: "server", status: 503 },
-    { error: new OzonApiError("/v2/warehouse/list", 422, {}), kind: "client", status: 422 },
+    {
+      error: new OzonApiError("/v2/warehouse/list", 500, {}),
+      kind: "server",
+      status: 500,
+    },
+    {
+      error: new OzonApiError("/v2/warehouse/list", 503, {}),
+      kind: "server",
+      status: 503,
+    },
+    {
+      error: new OzonApiError("/v2/warehouse/list", 599, {}),
+      kind: "server",
+      status: 599,
+    },
     { error: new Error("database unavailable"), kind: "unknown" },
   ];
 
@@ -103,13 +120,16 @@ test("error classifier marks transport, timeout, retryable Ozon statuses, and ru
   }
 });
 
-test("error classifier marks explicit config errors and Ozon 400, 401, 403, and unknown 404 permanent", () => {
+test("error classifier marks explicit config errors and every other Ozon HTTP status permanent", () => {
   const cases: unknown[] = [
     new PermanentOzonSyncError("connection disabled"),
     new OzonApiError("/v2/warehouse/list", 400, { response: "ignored" }),
     new OzonApiError("/v2/warehouse/list", 401, { response: "ignored" }),
     new OzonApiError("/v2/warehouse/list", 403, { response: "ignored" }),
     new OzonApiError("/v2/warehouse/list", 404, { response: "ignored" }),
+    new OzonApiError("/v2/warehouse/list", 409, { response: "ignored" }),
+    new OzonApiError("/v2/warehouse/list", 422, { response: "ignored" }),
+    new OzonApiError("/v2/warehouse/list", 499, { response: "ignored" }),
   ];
 
   assert.deepEqual(
@@ -120,8 +140,33 @@ test("error classifier marks explicit config errors and Ozon 400, 401, 403, and 
       permanentClassification(401),
       permanentClassification(403),
       permanentClassification(404),
+      permanentClassification(409),
+      permanentClassification(422),
+      permanentClassification(499),
     ]
   );
+});
+
+test("typed Ozon client allowlist invariant is classified permanently without matching its message", async () => {
+  const client = new OzonClient({ clientId: "client", apiKey: "key" });
+  let thrown: unknown;
+
+  try {
+    await (
+      client.request as unknown as (
+        endpoint: string
+      ) => Promise<Record<string, unknown>>
+    )("/not-allowlisted");
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert.ok(thrown instanceof OzonInvariantError);
+  assert.equal(
+    (thrown as Error).message,
+    "Ozon endpoint is not allowlisted: /not-allowlisted"
+  );
+  assert.deepEqual(classifyOzonSyncError(thrown), permanentClassification());
 });
 
 test("error classifier never persists raw messages, credentials, response bodies, or Error objects", () => {

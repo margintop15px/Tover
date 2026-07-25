@@ -67,6 +67,13 @@ export interface OzonApiResponseMetadata {
   itemRetryAfterMs: number | null;
 }
 
+export class OzonInvariantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OzonInvariantError";
+  }
+}
+
 export class OzonApiError extends Error {
   status: number;
   endpoint: string;
@@ -126,7 +133,9 @@ export class OzonClient {
     body: Record<string, unknown> = {}
   ): Promise<T> {
     if (!READ_ONLY_ENDPOINT_SET.has(endpoint)) {
-      throw new Error(`Ozon endpoint is not allowlisted: ${endpoint}`);
+      throw new OzonInvariantError(
+        `Ozon endpoint is not allowlisted: ${endpoint}`
+      );
     }
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
