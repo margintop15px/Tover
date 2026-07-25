@@ -92,7 +92,10 @@ const SAFE_LEGAL_IDENTIFIER_KEYS = new Set([
   "organization_name",
 ]);
 
-type OzonSyncRunStatus = "completed" | "completed_with_errors" | "failed";
+type TerminalOzonSyncRunStatus =
+  | "completed"
+  | "completed_with_errors"
+  | "failed";
 
 export interface OzonSyncDomainExecutionContext {
   supabase: SupabaseClient;
@@ -516,7 +519,7 @@ async function runStep(
 function resolveSyncStatus(
   successfulSteps: number,
   summary: OzonSyncSummary
-): OzonSyncRunStatus {
+): TerminalOzonSyncRunStatus {
   if (successfulSteps === 0) return "failed";
   return summary.errors.length > 0 ? "completed_with_errors" : "completed";
 }

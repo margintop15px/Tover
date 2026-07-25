@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
-import { syncOzonConnection } from "@/lib/ozon/sync";
+import { createServiceRoleClient } from "@/lib/supabase-server";
+import {
+  createServiceRoleOzonSyncCoordinator,
+  durableSyncHttpStatus,
+  OZON_MANUAL_SYNC_BUDGET_MS,
+  resolveOzonSyncWindow,
+} from "@/lib/ozon/durable-sync";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
   try {
@@ -34,23 +41,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await syncOzonConnection(
-      supabase,
-      workspaceId,
-      connection.id as string,
-      {
-        dateFrom:
-          typeof body.dateFrom === "string" && body.dateFrom
-            ? body.dateFrom
-            : undefined,
-        dateTo:
-          typeof body.dateTo === "string" && body.dateTo
-            ? body.dateTo
-            : undefined,
-      }
+    const window = resolveOzonSyncWindow({
+      dateFrom:
+        typeof body.dateFrom === "string" && body.dateFrom
+          ? body.dateFrom
+          : undefined,
+      dateTo:
+        typeof body.dateTo === "string" && body.dateTo
+          ? body.dateTo
+          : undefined,
+    });
+    const connectionId = String(connection.id);
+    const coordinator = createServiceRoleOzonSyncCoordinator(
+      createServiceRoleClient(),
+      { workspaceId, connectionId }
     );
+    const result = await coordinator.beginOrResume({
+      connectionId,
+      ...window,
+      budgetMs: OZON_MANUAL_SYNC_BUDGET_MS,
+    });
 
-    return NextResponse.json(result);
+    return NextResponse.json(result, {
+      status: durableSyncHttpStatus(result.status),
+    });
   } catch (error) {
     return toRouteErrorResponse(error);
   }

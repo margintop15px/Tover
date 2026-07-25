@@ -15,7 +15,13 @@ export interface OzonConnectionRecord {
   health: Record<string, unknown>;
   last_validated_at: string | null;
   last_sync_at: string | null;
-  last_sync_status: "running" | "completed" | "completed_with_errors" | "failed" | null;
+  last_sync_status:
+    | "running"
+    | "retrying"
+    | "completed"
+    | "completed_with_errors"
+    | "failed"
+    | null;
   last_sync_error: string | null;
   created_at: string;
   updated_at: string;
