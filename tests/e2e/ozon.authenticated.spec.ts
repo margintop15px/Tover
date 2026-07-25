@@ -382,7 +382,7 @@ test.describe("Ozon marketplace integration", () => {
     }
   });
 
-  test("service-role recovery RPCs serialize ownership and preserve terminal step decisions", async () => {
+  test("service-role recovery RPCs serialize ownership and persist caller-supplied terminal results", async () => {
     const adminWorkspace = await getAdminWorkspace();
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
@@ -482,20 +482,25 @@ test.describe("Ozon marketplace integration", () => {
         expect(currentClaim.attempt_count).toBe(attempt + 1);
       }
 
-      const terminalFailure = await admin.rpc("finish_ozon_sync_run_step", {
-        p_step_id: currentClaim.id,
-        p_lease_token: currentClaim.lease_token,
-        p_state: "failed",
-        p_summary: { fetched: 0 },
-        p_last_error: {
-          kind: "server",
-          status: 500,
-          retryable: false,
-        },
-        p_next_attempt_at: null,
-      });
-      expect(terminalFailure.error).toBeNull();
-      const failedStep = firstRpcRow<OzonSyncStepRow>(terminalFailure.data);
+      const persistedAttemptEightFailure = await admin.rpc(
+        "finish_ozon_sync_run_step",
+        {
+          p_step_id: currentClaim.id,
+          p_lease_token: currentClaim.lease_token,
+          p_state: "failed",
+          p_summary: { fetched: 0 },
+          p_last_error: {
+            kind: "server",
+            status: 500,
+            retryable: false,
+          },
+          p_next_attempt_at: null,
+        }
+      );
+      expect(persistedAttemptEightFailure.error).toBeNull();
+      const failedStep = firstRpcRow<OzonSyncStepRow>(
+        persistedAttemptEightFailure.data
+      );
       expect(failedStep.state).toBe("failed");
       expect(failedStep.attempt_count).toBe(8);
 
@@ -561,7 +566,7 @@ test.describe("Ozon marketplace integration", () => {
       expect(permanentRunResult.error).toBeNull();
       const permanentRun = firstRpcRow<OzonSyncRunRow>(permanentRunResult.data);
       const permanentClaim = await claimRecoveryStep(admin, permanentRun.id);
-      const permanent400 = await admin.rpc("finish_ozon_sync_run_step", {
+      const persisted400Failure = await admin.rpc("finish_ozon_sync_run_step", {
         p_step_id: permanentClaim.id,
         p_lease_token: permanentClaim.lease_token,
         p_state: "failed",
@@ -573,8 +578,10 @@ test.describe("Ozon marketplace integration", () => {
         },
         p_next_attempt_at: null,
       });
-      expect(permanent400.error).toBeNull();
-      expect(firstRpcRow<OzonSyncStepRow>(permanent400.data)).toMatchObject({
+      expect(persisted400Failure.error).toBeNull();
+      expect(
+        firstRpcRow<OzonSyncStepRow>(persisted400Failure.data)
+      ).toMatchObject({
         state: "failed",
         attempt_count: 1,
       });
@@ -595,12 +602,17 @@ test.describe("Ozon marketplace integration", () => {
       });
     } finally {
       if (connectionId) {
-        await admin
+        const { error: cleanupError } = await admin
           .from("marketplace_connections")
           .delete()
           .eq("id", connectionId);
+        if (cleanupError) {
+          throw new Error(
+            `Failed to delete Ozon recovery test connection: ${cleanupError.message}`
+          );
+        }
       }
-      await resetOzonState(adminWorkspace!, false);
+      await resetWorkspaceSettings(adminWorkspace!, false);
     }
   });
 
@@ -1564,11 +1576,14 @@ async function resetOzonState(
   { admin, workspaceId }: AdminWorkspace,
   categoryRequired: boolean
 ) {
-  await admin
+  const { error } = await admin
     .from("marketplace_connections")
     .delete()
     .eq("workspace_id", workspaceId)
     .eq("provider", "ozon");
+  if (error) {
+    throw new Error(`Failed to reset Ozon connections: ${error.message}`);
+  }
   await resetWorkspaceSettings({ admin, workspaceId }, categoryRequired);
 }
 

@@ -72,6 +72,25 @@ Notes:
 
 ## Supabase Setup
 
+### 0. Enable required extensions
+
+Fresh projects must enable the extensions used by migration 020 before running
+the migrations:
+
+```sql
+create extension if not exists pg_net with schema extensions;
+create extension if not exists pg_cron;
+create extension if not exists supabase_vault with schema vault;
+```
+
+Run this as the project owner in the Supabase SQL Editor, or enable the same
+extensions under Database > Extensions in the hosted Dashboard. `pg_net`
+exposes its request API in the `net` schema, `pg_cron` creates the `cron`
+schema, and `supabase_vault` creates/uses the `vault` schema referenced by the
+recovery migration. `IF NOT EXISTS` makes the SQL safe when a hosted project
+already enabled an extension. A permission error means the project owner or
+database administrator must perform this step.
+
 ### 1. Run migrations (in order)
 
 Files in `supabase/migrations/`:

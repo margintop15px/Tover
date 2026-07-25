@@ -461,6 +461,23 @@ discounts remain mirror-only.
 
 ## Recovery Worker Operations
 
+On a fresh Supabase project, enable the three dependencies before applying
+migration 020:
+
+```sql
+create extension if not exists pg_net with schema extensions;
+create extension if not exists pg_cron;
+create extension if not exists supabase_vault with schema vault;
+```
+
+Run these statements as the project owner in the SQL Editor, or enable the same
+extensions from Database > Extensions in the hosted Dashboard. `pg_net`
+exposes `net.http_post` and its response table in the `net` schema; `pg_cron`
+creates the `cron` schema; and `supabase_vault` creates/uses `vault`. The
+`IF NOT EXISTS` form is safe for hosted projects where an extension is already
+enabled. If extension creation is denied, a project owner/database
+administrator must enable it before migration 020 and before scheduling.
+
 The Next.js deployment must set:
 
 ```bash
@@ -526,7 +543,7 @@ select cron.unschedule('tover-ozon-sync-recovery');
 select public.schedule_ozon_sync_recovery();
 ```
 
-Inspect the definition and recent requests:
+Inspect the definition and recent scheduler executions:
 
 ```sql
 select *
@@ -542,6 +559,34 @@ where jobid in (
 )
 order by start_time desc;
 ```
+
+`cron.job_run_details` proves that pg_cron ran the SQL command. It does not
+prove that the recovery endpoint succeeded: `net.http_post` only enqueues the
+HTTP request and returns its request ID asynchronously. Inspect recent
+responses with a bounded, header-free projection:
+
+```sql
+select
+  id,
+  status_code,
+  timed_out,
+  error_msg,
+  content,
+  created
+from net._http_response
+where created >= now() - interval '6 hours'
+order by created desc
+limit 100;
+```
+
+By default pg_net retains responses in `net._http_response` for six hours.
+HTTP `401` means the Vault secret does not match the deployed
+`OZON_SYNC_RECOVERY_SECRET`; `503` means the app variable is missing; HTTP
+`500` returns the route's minimal recovery failure; and transport failures show
+through `timed_out` or `error_msg`. The response `content` is safe here because
+the recovery route returns only minimal JSON and no credentials. The query
+intentionally omits headers and limits output to the recent diagnostic fields;
+never select Vault decrypted secrets into logs.
 
 Inspect recent runs and their ordered steps:
 
@@ -750,9 +795,12 @@ available:
   completed steps are not repeated;
 - permanent failures become `completed_with_errors` or `failed`, and manual
   retry resets only failed steps;
+- runner unit tests cover HTTP error classification, the exact durable retry
+  schedule, and conversion of a transient attempt eight into a terminal result;
 - migration-020 service-role RPC tests cover active-run serialization, single
-  lease ownership, stale-token rejection, attempt-eight terminal behavior,
-  selective reset, and run-to-step cascade cleanup;
+  lease ownership, stale-token rejection, persistence/aggregation of
+  caller-supplied failed results, selective reset, and run-to-step cascade
+  cleanup;
 - an exact missing mutual-settlement document is skipped while remaining report
   types continue;
 - sale, return, write-off, transfer, and defect operations become normal Tover
