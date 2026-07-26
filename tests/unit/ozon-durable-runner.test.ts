@@ -375,6 +375,56 @@ test("claimed execution is aborted before the finish margin and scheduled for re
   ]);
 });
 
+test("a domain cannot swallow the shared deadline abort and finish completed", async () => {
+  let scheduledAbort: (() => void) | null = null;
+  const harness = runnerHarness({
+    claims: [claimedStep({ attempt_count: 1 })],
+    now: () => 1_000,
+    execute: async (_step, context) =>
+      new Promise((resolve) => {
+        context.signal.addEventListener(
+          "abort",
+          () => {
+            try {
+              context.signal.throwIfAborted();
+            } catch {
+              // Simulate a domain fallback that catches cancellation.
+            }
+            resolve({ fetched: 99 });
+          },
+          { once: true }
+        );
+        scheduledAbort?.();
+      }),
+    setTimer: (callback) => {
+      scheduledAbort = callback;
+      return "deadline-timer";
+    },
+  });
+
+  const processed = await durableOzonRunnerTestSeam.runManual(
+    "run-1",
+    10_000,
+    harness.dependencies
+  );
+
+  assert.equal(processed, 1);
+  assert.deepEqual(harness.finished, [
+    {
+      p_step_id: "step-1",
+      p_lease_token: "lease-1",
+      p_state: "retry_scheduled",
+      p_summary: {},
+      p_last_error: {
+        message: "Ozon sync step failed",
+        kind: "timeout",
+        retryable: true,
+      },
+      p_next_attempt_at: "1970-01-01T00:01:01.000Z",
+    },
+  ]);
+});
+
 test("manual runner stops after claim exhaustion and never executes a claimed step twice", async () => {
   const harness = runnerHarness({
     claims: [claimedStep(), null],

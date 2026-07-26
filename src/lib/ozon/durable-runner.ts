@@ -322,10 +322,12 @@ async function executeClaimedStepUntilDeadline(
 
   try {
     throwIfStepDeadlineExceeded(controller.signal);
-    return await dependencies.executeStep(step, {
+    const summary = await dependencies.executeStep(step, {
       deadlineMs,
       signal: controller.signal,
     });
+    throwIfStepDeadlineExceeded(controller.signal);
+    return summary;
   } finally {
     if (timer !== null) clearTimer(timer);
   }
