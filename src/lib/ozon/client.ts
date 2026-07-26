@@ -74,6 +74,13 @@ export class OzonInvariantError extends Error {
   }
 }
 
+export class OzonIncompleteResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OzonIncompleteResponseError";
+  }
+}
+
 export class OzonApiError extends Error {
   status: number;
   endpoint: string;
@@ -104,7 +111,7 @@ export class OzonApiError extends Error {
 interface OzonClientRuntime {
   fetch: typeof fetch;
   now: () => number;
-  sleep: (milliseconds: number) => Promise<void>;
+  sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   random: () => number;
   timeoutSignal: (milliseconds: number) => AbortSignal;
 }
@@ -112,20 +119,39 @@ interface OzonClientRuntime {
 const DEFAULT_RUNTIME: OzonClientRuntime = {
   fetch,
   now: Date.now,
-  sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  sleep: abortableSleep,
   random: Math.random,
   timeoutSignal: (milliseconds) => AbortSignal.timeout(milliseconds),
 };
 
+interface OzonClientExecutionOptions {
+  maxAttempts?: number;
+  signal?: AbortSignal;
+}
+
 export class OzonClient {
   private credentials: OzonCredentials;
   private runtime: OzonClientRuntime;
+  private maxAttempts: number;
+  private executionSignal: AbortSignal | undefined;
   private nextRequestStartAt = 0;
 
   constructor(credentials: OzonCredentials);
-  constructor(credentials: OzonCredentials, runtime: OzonClientRuntime = DEFAULT_RUNTIME) {
+  constructor(credentials: OzonCredentials, runtime: OzonClientRuntime);
+  constructor(
+    credentials: OzonCredentials,
+    runtime: OzonClientRuntime,
+    options: OzonClientExecutionOptions
+  );
+  constructor(
+    credentials: OzonCredentials,
+    runtime: OzonClientRuntime = DEFAULT_RUNTIME,
+    options: OzonClientExecutionOptions = {}
+  ) {
     this.credentials = credentials;
     this.runtime = runtime;
+    this.maxAttempts = normalizeMaxAttempts(options.maxAttempts);
+    this.executionSignal = options.signal;
   }
 
   async request<T>(
@@ -138,10 +164,17 @@ export class OzonClient {
       );
     }
 
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    throwIfAborted(this.executionSignal);
+
+    for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
       await this.waitForRequestStart();
 
       let response: Response;
+      let responseBody: unknown;
+      const requestSignal = combineAbortSignals(
+        this.runtime.timeoutSignal(REQUEST_TIMEOUT_MS),
+        this.executionSignal
+      );
       try {
         response = await this.runtime.fetch(`${ozonApiBaseUrl()}${endpoint}`, {
           method: "POST",
@@ -152,15 +185,20 @@ export class OzonClient {
           },
           body: JSON.stringify(body),
           cache: "no-store",
-          signal: this.runtime.timeoutSignal(REQUEST_TIMEOUT_MS),
+          signal: requestSignal.signal,
         });
+        responseBody = await readResponseBody(response);
       } catch (error) {
-        if (attempt === MAX_ATTEMPTS - 1) throw error;
-        await this.runtime.sleep(this.retryDelayFor(attempt, null));
+        if (this.executionSignal?.aborted) {
+          throw abortReason(this.executionSignal);
+        }
+        if (attempt === this.maxAttempts - 1) throw error;
+        await this.sleep(this.retryDelayFor(attempt, null));
         continue;
+      } finally {
+        requestSignal.cleanup();
       }
 
-      const responseBody = await readResponseBody(response);
       const responseMetadata = responseMetadataFor(response, this.runtime.now());
       const retryDelayMs = this.retryDelayFor(attempt, responseMetadata);
 
@@ -175,11 +213,11 @@ export class OzonClient {
         [this.credentials.clientId, this.credentials.apiKey]
       );
 
-      if (!isRetryableStatus(response.status) || attempt === MAX_ATTEMPTS - 1) {
+      if (!isRetryableStatus(response.status) || attempt === this.maxAttempts - 1) {
         throw error;
       }
 
-      await this.runtime.sleep(retryDelayMs);
+      await this.sleep(retryDelayMs);
     }
 
     throw new Error("Ozon request retry loop exited unexpectedly");
@@ -191,8 +229,14 @@ export class OzonClient {
     this.nextRequestStartAt = requestStartAt + REQUEST_START_PACING_MS;
 
     if (requestStartAt > now) {
-      await this.runtime.sleep(requestStartAt - now);
+      await this.sleep(requestStartAt - now);
     }
+  }
+
+  private async sleep(milliseconds: number) {
+    throwIfAborted(this.executionSignal);
+    await this.runtime.sleep(milliseconds, this.executionSignal);
+    throwIfAborted(this.executionSignal);
   }
 
   private retryDelayFor(attempt: number, responseMetadata: OzonApiResponseMetadata | null) {
@@ -210,6 +254,82 @@ export class OzonClient {
       )
     );
   }
+}
+
+export function createDurableOzonClient(
+  credentials: OzonCredentials,
+  signal: AbortSignal
+) {
+  return new OzonClient(credentials, DEFAULT_RUNTIME, {
+    maxAttempts: 1,
+    signal,
+  });
+}
+
+function normalizeMaxAttempts(value: number | undefined) {
+  return Number.isInteger(value) && value !== undefined && value >= 1
+    ? Math.min(value, MAX_ATTEMPTS)
+    : MAX_ATTEMPTS;
+}
+
+function abortableSleep(milliseconds: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortReason(signal));
+      return;
+    }
+
+    const timer = setTimeout(done, milliseconds);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal ? abortReason(signal) : new DOMException("Aborted", "AbortError"));
+    };
+
+    function done() {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function combineAbortSignals(
+  timeoutSignal: AbortSignal,
+  executionSignal?: AbortSignal
+) {
+  if (!executionSignal) {
+    return { signal: timeoutSignal, cleanup: () => {} };
+  }
+
+  const controller = new AbortController();
+  const signals = [timeoutSignal, executionSignal];
+  const listeners = signals.map((source) => {
+    const listener = () => controller.abort(abortReason(source));
+    if (source.aborted && !controller.signal.aborted) listener();
+    else source.addEventListener("abort", listener, { once: true });
+    return { source, listener };
+  });
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      for (const { source, listener } of listeners) {
+        source.removeEventListener("abort", listener);
+      }
+    },
+  };
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+function abortReason(signal: AbortSignal) {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Aborted", "AbortError");
 }
 
 function ozonApiBaseUrl() {

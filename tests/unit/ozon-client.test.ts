@@ -8,7 +8,7 @@ const credentials = { clientId: "seller-client-987", apiKey: "seller-api-key-123
 interface RuntimeFixture {
   fetch: typeof fetch;
   now: () => number;
-  sleep: (milliseconds: number) => Promise<void>;
+  sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   random: () => number;
   timeoutSignal: (milliseconds: number) => AbortSignal;
 }
@@ -53,6 +53,14 @@ function testClient(runtime: RuntimeFixture) {
   ) => OzonClient)(credentials, runtime);
 }
 
+function durableTestClient(runtime: RuntimeFixture, signal: AbortSignal) {
+  return new (OzonClient as unknown as new (
+    credentials: typeof credentials,
+    runtime: RuntimeFixture,
+    options: { maxAttempts: number; signal: AbortSignal }
+  ) => OzonClient)(credentials, runtime, { maxAttempts: 1, signal });
+}
+
 test("paces request starts by 25 milliseconds and gives each request a 30 second timeout", async () => {
   const fixture = createRuntime([jsonResponse({ first: true }), jsonResponse({ second: true })]);
   const client = testClient(fixture.runtime);
@@ -75,6 +83,50 @@ test("retries transport errors four times total with approved exponential backof
   assert.deepEqual(await client.request("/v2/warehouse/list"), { ok: true });
   assert.equal(fixture.attempts(), 4);
   assert.deepEqual(fixture.sleeps, [625, 1_125, 2_125]);
+});
+
+test("durable client performs one HTTP attempt and leaves retry ownership to the step runner", async () => {
+  const fixture = createRuntime([
+    jsonResponse({ error: "retry later" }, 503),
+    jsonResponse({ ok: true }),
+  ]);
+  const client = durableTestClient(
+    fixture.runtime,
+    new AbortController().signal
+  );
+
+  await assert.rejects(
+    client.request("/v2/warehouse/list"),
+    (error: unknown) => error instanceof OzonApiError && error.status === 503
+  );
+  assert.equal(fixture.attempts(), 1);
+  assert.deepEqual(fixture.sleeps, []);
+});
+
+test("durable client shares one cancellation signal across requests and pacing waits", async () => {
+  const controller = new AbortController();
+  const pacingWaits: number[] = [];
+  const fixture = createRuntime([
+    jsonResponse({ first: true }),
+    jsonResponse({ second: true }),
+  ], {
+    sleep: async (milliseconds, signal) => {
+      pacingWaits.push(milliseconds);
+      controller.abort(new DOMException("step deadline", "TimeoutError"));
+      signal?.throwIfAborted();
+    },
+  });
+  const client = durableTestClient(fixture.runtime, controller.signal);
+
+  await client.request("/v2/warehouse/list");
+
+  await assert.rejects(
+    client.request("/v2/warehouse/list"),
+    (error: unknown) =>
+      error instanceof DOMException && error.name === "TimeoutError"
+  );
+  assert.equal(fixture.attempts(), 1);
+  assert.deepEqual(pacingWaits, [25]);
 });
 
 for (const status of [408, 425, 429, 500]) {

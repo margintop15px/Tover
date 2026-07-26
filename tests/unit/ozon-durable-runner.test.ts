@@ -17,6 +17,12 @@ import {
 } from "../../src/lib/ozon/durable-runner";
 import * as sync from "../../src/lib/ozon/sync";
 
+const TEST_DEADLINE_MS = Date.parse("2026-07-26T10:01:40.000Z");
+const executionDeadline = () => ({
+  deadlineMs: TEST_DEADLINE_MS,
+  signal: new AbortController().signal,
+});
+
 test("durable domain registry follows the persisted step order", () => {
   const registry = (sync as unknown as {
     OZON_SYNC_DOMAIN_REGISTRY?: ReadonlyArray<{ key: string }>;
@@ -196,7 +202,10 @@ test("a successful claimed domain is finished with its live lease", async () => 
     execute: async () => ({ fetched: 7, inserted: 3 }),
   });
 
-  await durableOzonRunnerTestSeam.recoverOne(harness.dependencies);
+  await durableOzonRunnerTestSeam.recoverOne(
+    TEST_DEADLINE_MS,
+    harness.dependencies
+  );
 
   assert.deepEqual(harness.finished, [
     {
@@ -224,7 +233,7 @@ test("a finish RPC failure is propagated without a second finish attempt", async
   };
 
   await assert.rejects(
-    durableOzonRunnerTestSeam.recoverOne(dependencies),
+    durableOzonRunnerTestSeam.recoverOne(TEST_DEADLINE_MS, dependencies),
     /stale lease/
   );
   assert.equal(finishCalls, 1);
@@ -240,7 +249,10 @@ test("a transient failure schedules the exact next attempt through the live leas
     },
   });
 
-  await durableOzonRunnerTestSeam.recoverOne(harness.dependencies);
+  await durableOzonRunnerTestSeam.recoverOne(
+    TEST_DEADLINE_MS,
+    harness.dependencies
+  );
 
   assert.deepEqual(harness.finished, [
     {
@@ -267,7 +279,10 @@ test("attempt eight turns an otherwise transient failure into terminal failure",
     },
   });
 
-  await durableOzonRunnerTestSeam.recoverOne(harness.dependencies);
+  await durableOzonRunnerTestSeam.recoverOne(
+    TEST_DEADLINE_MS,
+    harness.dependencies
+  );
 
   assert.deepEqual(harness.finished, [
     {
@@ -301,13 +316,63 @@ test("manual runner stops claiming when its deadline is reached", async () => {
 
   const processed = await durableOzonRunnerTestSeam.runManual(
     "run-1",
-    200,
+    2_200,
     harness.dependencies
   );
 
   assert.equal(processed, 1);
   assert.deepEqual(harness.claimedRunIds, ["run-1"]);
   assert.deepEqual(harness.executedStepIds, ["step-1"]);
+});
+
+test("claimed execution is aborted before the finish margin and scheduled for retry", async () => {
+  let scheduledAbort: (() => void) | null = null;
+  let clearedTimer: unknown = null;
+  const step = claimedStep({ attempt_count: 1 });
+  const harness = runnerHarness({
+    claims: [step],
+    now: () => 1_000,
+    execute: async (_step, context) =>
+      new Promise((_resolve, reject) => {
+        context.signal.addEventListener(
+          "abort",
+          () => reject(context.signal.reason),
+          { once: true }
+        );
+        scheduledAbort?.();
+      }),
+    setTimer: (callback, milliseconds) => {
+      assert.equal(milliseconds, 7_000);
+      scheduledAbort = callback;
+      return "deadline-timer";
+    },
+    clearTimer: (timer) => {
+      clearedTimer = timer;
+    },
+  });
+
+  const processed = await durableOzonRunnerTestSeam.runManual(
+    "run-1",
+    10_000,
+    harness.dependencies
+  );
+
+  assert.equal(processed, 1);
+  assert.equal(clearedTimer, "deadline-timer");
+  assert.deepEqual(harness.finished, [
+    {
+      p_step_id: "step-1",
+      p_lease_token: "lease-1",
+      p_state: "retry_scheduled",
+      p_summary: {},
+      p_last_error: {
+        message: "Ozon sync step failed",
+        kind: "timeout",
+        retryable: true,
+      },
+      p_next_attempt_at: "1970-01-01T00:01:01.000Z",
+    },
+  ]);
 });
 
 test("manual runner stops after claim exhaustion and never executes a claimed step twice", async () => {
@@ -318,7 +383,7 @@ test("manual runner stops after claim exhaustion and never executes a claimed st
 
   const processed = await durableOzonRunnerTestSeam.runManual(
     "run-1",
-    200,
+    2_200,
     harness.dependencies
   );
 
@@ -337,7 +402,10 @@ test("recovery runner claims and processes exactly one due step", async () => {
   });
 
   assert.equal(
-    await durableOzonRunnerTestSeam.recoverOne(harness.dependencies),
+    await durableOzonRunnerTestSeam.recoverOne(
+      TEST_DEADLINE_MS,
+      harness.dependencies
+    ),
     true
   );
   assert.deepEqual(harness.claimedRunIds, [null]);
@@ -347,6 +415,7 @@ test("recovery runner claims and processes exactly one due step", async () => {
 test("claim executor reloads context, creates a fresh client, and dispatches only the claimed key with original dates", async () => {
   const loads: string[] = [];
   const clients: object[] = [];
+  const clientSignals: AbortSignal[] = [];
   const executions: Array<Record<string, unknown>> = [];
   const execute = durableOzonRunnerTestSeam.createClaimExecutor({
     loadExecutionContext: async (step) => {
@@ -364,9 +433,10 @@ test("claim executor reloads context, creates a fresh client, and dispatches onl
       clientId: String(ciphertext.encrypted),
       apiKey: "safe-test-key",
     }),
-    createClient: () => {
+    createClient: (_credentials, signal) => {
       const client = {};
       clients.push(client);
+      clientSignals.push(signal);
       return client as never;
     },
     executeDomainStep: async (key, input) => {
@@ -375,12 +445,20 @@ test("claim executor reloads context, creates a fresh client, and dispatches onl
     },
   });
 
-  await execute(claimedStep({ id: "step-1", step_key: "warehouses" }));
-  await execute(claimedStep({ id: "step-2", step_key: "products" }));
+  await execute(
+    claimedStep({ id: "step-1", step_key: "warehouses" }),
+    executionDeadline()
+  );
+  await execute(
+    claimedStep({ id: "step-2", step_key: "products" }),
+    executionDeadline()
+  );
 
   assert.deepEqual(loads, ["step-1", "step-2"]);
   assert.equal(clients.length, 2);
   assert.notEqual(clients[0], clients[1]);
+  assert.equal(clientSignals.length, 2);
+  assert.equal(clientSignals.every((signal) => !signal.aborted), true);
   assert.deepEqual(
     executions.map(({ key, workspaceId, connectionId, dateFrom, dateTo }) => ({
       key,
@@ -470,7 +548,10 @@ test("claim executor turns missing, disabled, invalid, and unknown connection co
       index === cases.length - 1
         ? claimedStep({ step_key: "not-a-domain" })
         : claimedStep();
-    await assert.rejects(execute(step), PermanentOzonSyncError);
+    await assert.rejects(
+      execute(step, executionDeadline()),
+      PermanentOzonSyncError
+    );
   }
 });
 
@@ -555,9 +636,12 @@ function claimedStep(
 function runnerHarness(options: {
   claims: Array<ClaimedOzonSyncStep | null>;
   execute?: (
-    step: ClaimedOzonSyncStep
+    step: ClaimedOzonSyncStep,
+    context: { deadlineMs: number; signal: AbortSignal }
   ) => Promise<Record<string, number>>;
   now?: () => number;
+  setTimer?: (callback: () => void, milliseconds: number) => unknown;
+  clearTimer?: (timer: unknown) => void;
 }) {
   const claims = [...options.claims];
   const claimedRunIds: Array<string | null> = [];
@@ -569,14 +653,16 @@ function runnerHarness(options: {
       claimedRunIds.push(runId);
       return claims.shift() ?? null;
     },
-    executeStep: async (step) => {
+    executeStep: async (step, context) => {
       executedStepIds.push(step.id);
-      return options.execute?.(step) ?? { fetched: 1 };
+      return options.execute?.(step, context) ?? { fetched: 1 };
     },
     finishStep: async (input) => {
       finished.push(input);
     },
     now: options.now ?? (() => Date.parse("2026-07-26T10:00:00.000Z")),
+    setTimer: options.setTimer,
+    clearTimer: options.clearTimer,
   };
 
   return {

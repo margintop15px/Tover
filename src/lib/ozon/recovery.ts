@@ -3,7 +3,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 interface RecoveryRequestInput {
   configuredSecret: string | undefined;
   providedSecret: string | undefined;
-  recoverOne: () => Promise<boolean>;
+  deadlineMs: number;
+  recoverOne: (deadlineMs: number) => Promise<boolean>;
 }
 
 type RecoveryResponse =
@@ -11,6 +12,7 @@ type RecoveryResponse =
   | { status: 401 | 500 | 503; body: { error: string } };
 
 export const OZON_RECOVERY_MAX_DURATION_SECONDS = 110;
+export const OZON_RECOVERY_STEP_BUDGET_MS = 100_000;
 
 export function recoverySecretsMatch(
   providedSecret: string | undefined,
@@ -41,7 +43,7 @@ export async function handleOzonRecoveryRequest(
   try {
     return {
       status: 200,
-      body: { processed: await input.recoverOne() },
+      body: { processed: await input.recoverOne(input.deadlineMs) },
     };
   } catch {
     return {

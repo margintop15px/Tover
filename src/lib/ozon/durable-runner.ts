@@ -1,8 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceRoleClient } from "../supabase-server";
 import {
+  createDurableOzonClient,
   OzonApiError,
   OzonClient,
+  OzonIncompleteResponseError,
   OzonInvariantError,
 } from "./client";
 import { decryptOzonCredentials } from "./credentials";
@@ -60,10 +62,18 @@ export interface ClassifiedOzonSyncError {
 export interface DurableOzonRunnerDependencies {
   claimStep: (runId: string | null) => Promise<ClaimedOzonSyncStep | null>;
   executeStep: (
-    step: ClaimedOzonSyncStep
+    step: ClaimedOzonSyncStep,
+    context: ClaimedOzonStepExecutionDeadline
   ) => Promise<OzonSyncStepSummary>;
   finishStep: (input: FinishOzonSyncStepInput) => Promise<void>;
   now: () => number;
+  setTimer?: (callback: () => void, milliseconds: number) => unknown;
+  clearTimer?: (timer: unknown) => void;
+}
+
+export interface ClaimedOzonStepExecutionDeadline {
+  deadlineMs: number;
+  signal: AbortSignal;
 }
 
 export interface ClaimedStepExecutionContext {
@@ -82,7 +92,10 @@ export interface ClaimedStepExecutorServices {
   decryptCredentials: (
     ciphertext: Record<string, unknown>
   ) => OzonCredentials;
-  createClient: (credentials: OzonCredentials) => OzonClient;
+  createClient: (
+    credentials: OzonCredentials,
+    signal: AbortSignal
+  ) => OzonClient;
   executeDomainStep: (
     key: OzonSyncDomainKey,
     input: {
@@ -122,6 +135,8 @@ const DURABLE_RETRY_DELAYS_MS = [
   12 * 60 * 60_000,
 ] as const;
 
+export const OZON_STEP_FINISH_MARGIN_MS = 2_000;
+
 export function durableRetryDelayMs(attemptCount: number): number | null {
   return DURABLE_RETRY_DELAYS_MS[attemptCount - 1] ?? null;
 }
@@ -135,6 +150,10 @@ export function classifyOzonSyncError(
 
   if (error instanceof OzonInvariantError) {
     return classification("client", false);
+  }
+
+  if (error instanceof OzonIncompleteResponseError) {
+    return classification("unknown", true);
   }
 
   if (error instanceof OzonApiError) {
@@ -235,11 +254,16 @@ function isTransportError(error: unknown) {
 
 async function processClaimedStep(
   step: ClaimedOzonSyncStep,
-  dependencies: DurableOzonRunnerDependencies
+  dependencies: DurableOzonRunnerDependencies,
+  executionDeadlineMs: number
 ) {
   let summary: OzonSyncStepSummary;
   try {
-    summary = await dependencies.executeStep(step);
+    summary = await executeClaimedStepUntilDeadline(
+      step,
+      executionDeadlineMs,
+      dependencies
+    );
   } catch (error) {
     const classified = classifyOzonSyncError(error);
     const retryDelayMs = classified.retryable
@@ -270,6 +294,55 @@ async function processClaimedStep(
   });
 }
 
+async function executeClaimedStepUntilDeadline(
+  step: ClaimedOzonSyncStep,
+  deadlineMs: number,
+  dependencies: DurableOzonRunnerDependencies
+) {
+  const controller = new AbortController();
+  const delayMs = deadlineMs - dependencies.now();
+  const setTimer =
+    dependencies.setTimer ??
+    ((callback: () => void, milliseconds: number) =>
+      setTimeout(callback, milliseconds));
+  const clearTimer =
+    dependencies.clearTimer ??
+    ((timer: unknown) =>
+      clearTimeout(timer as ReturnType<typeof setTimeout>));
+  let timer: unknown = null;
+
+  if (delayMs <= 0) {
+    controller.abort(stepDeadlineError());
+  } else {
+    timer = setTimer(
+      () => controller.abort(stepDeadlineError()),
+      delayMs
+    );
+  }
+
+  try {
+    throwIfStepDeadlineExceeded(controller.signal);
+    return await dependencies.executeStep(step, {
+      deadlineMs,
+      signal: controller.signal,
+    });
+  } finally {
+    if (timer !== null) clearTimer(timer);
+  }
+}
+
+function stepDeadlineError() {
+  return new DOMException(
+    "Ozon sync step deadline exceeded",
+    "TimeoutError"
+  );
+}
+
+function throwIfStepDeadlineExceeded(signal: AbortSignal) {
+  if (!signal.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : stepDeadlineError();
+}
+
 export const durableOzonRunnerTestSeam = {
   createRpcOperations(client: OzonWorkerRpcClient) {
     return {
@@ -297,8 +370,13 @@ export const durableOzonRunnerTestSeam = {
     };
   },
   createClaimExecutor(services: ClaimedStepExecutorServices) {
-    return async (step: ClaimedOzonSyncStep) => {
+    return async (
+      step: ClaimedOzonSyncStep,
+      deadline: ClaimedOzonStepExecutionDeadline
+    ) => {
+      throwIfStepDeadlineExceeded(deadline.signal);
       const context = await services.loadExecutionContext(step);
+      throwIfStepDeadlineExceeded(deadline.signal);
       if (!context.connection) {
         throw new PermanentOzonSyncError("Ozon connection not found");
       }
@@ -332,7 +410,8 @@ export const durableOzonRunnerTestSeam = {
         );
       }
 
-      const client = services.createClient(credentials);
+      throwIfStepDeadlineExceeded(deadline.signal);
+      const client = services.createClient(credentials, deadline.signal);
       return services.executeDomainStep(step.step_key, {
         client,
         workspaceId: step.workspace_id,
@@ -348,20 +427,28 @@ export const durableOzonRunnerTestSeam = {
     dependencies: DurableOzonRunnerDependencies
   ) {
     let processed = 0;
+    const executionDeadlineMs = deadlineMs - OZON_STEP_FINISH_MARGIN_MS;
 
-    while (dependencies.now() < deadlineMs) {
+    while (dependencies.now() < executionDeadlineMs) {
       const step = await dependencies.claimStep(runId);
       if (!step) break;
-      await processClaimedStep(step, dependencies);
+      await processClaimedStep(step, dependencies, executionDeadlineMs);
       processed += 1;
     }
 
     return processed;
   },
-  async recoverOne(dependencies: DurableOzonRunnerDependencies) {
+  async recoverOne(
+    deadlineMs: number,
+    dependencies: DurableOzonRunnerDependencies
+  ) {
     const step = await dependencies.claimStep(null);
     if (!step) return false;
-    await processClaimedStep(step, dependencies);
+    await processClaimedStep(
+      step,
+      dependencies,
+      deadlineMs - OZON_STEP_FINISH_MARGIN_MS
+    );
     return true;
   },
 };
@@ -387,8 +474,9 @@ export async function runOzonSyncRunUntilDeadline(
   );
 }
 
-export async function recoverOneOzonSyncStep() {
+export async function recoverOneOzonSyncStep(deadlineMs: number) {
   return durableOzonRunnerTestSeam.recoverOne(
+    deadlineMs,
     createProductionDependencies()
   );
 }
@@ -402,7 +490,7 @@ function createProductionDependencies(): DurableOzonRunnerDependencies {
     loadExecutionContext: (step) =>
       loadClaimedStepExecutionContext(supabase, step),
     decryptCredentials: decryptOzonCredentials,
-    createClient: (credentials) => new OzonClient(credentials),
+    createClient: createDurableOzonClient,
     executeDomainStep: (key, input) =>
       executeOzonSyncDomainStep(key, {
         supabase,

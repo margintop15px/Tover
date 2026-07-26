@@ -15,6 +15,8 @@ import {
 } from "../../src/app/api/internal/integrations/ozon/recover/route";
 import type { OzonSyncResult } from "../../src/lib/ozon/durable-sync";
 
+const RUN_ID = "11111111-1111-4111-8111-111111111111";
+
 test("sync handler authorizes and scopes user reads before service construction, parses dates, and returns 202", async () => {
   const calls: string[] = [];
   const operations = syncOperations(calls, {
@@ -87,27 +89,27 @@ test("retry handler parses runId, authorizes scoped run and connection reads bef
   const handler = createOzonRetryPostHandler(retryOperations(calls));
 
   const response = await handler(
-    request("/api/integrations/ozon/sync/retry", { runId: " run-1 " })
+    request("/api/integrations/ozon/sync/retry", { runId: ` ${RUN_ID} ` })
   );
 
   assert.equal(response.status, 202);
-  assert.deepEqual(await response.json(), syncResult("run-1", "running"));
+  assert.deepEqual(await response.json(), syncResult(RUN_ID, "running"));
   assert.deepEqual(calls, [
     "manager",
-    "read-run:workspace-1:run-1:ozon",
+    `read-run:workspace-1:${RUN_ID}:ozon`,
     "read-connection:workspace-1:connection-1:ozon",
     "create-service:workspace-1:connection-1",
-    "retry:run-1:25000",
+    `retry:${RUN_ID}:25000`,
   ]);
 });
 
 test("retry handler returns exact terminal 200 response with the coordinator body unchanged", async () => {
-  const terminalResult = syncResult("run-1", "completed_with_errors");
+  const terminalResult = syncResult(RUN_ID, "completed_with_errors");
   const operations = retryOperations([], { result: terminalResult });
   const handler = createOzonRetryPostHandler(operations);
 
   const response = await handler(
-    request("/api/integrations/ozon/sync/retry", { runId: "run-1" })
+    request("/api/integrations/ozon/sync/retry", { runId: RUN_ID })
   );
 
   assert.equal(response.status, 200);
@@ -128,6 +130,19 @@ test("retry handler rejects missing input and mismatched scope before service co
   });
   assert.deepEqual(missingCalls, ["manager"]);
 
+  const invalidCalls: string[] = [];
+  const invalidHandler = createOzonRetryPostHandler(
+    retryOperations(invalidCalls)
+  );
+  const invalid = await invalidHandler(
+    request("/api/integrations/ozon/sync/retry", { runId: "not-a-uuid" })
+  );
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(await invalid.json(), {
+    error: "Ozon sync run ID must be a UUID",
+  });
+  assert.deepEqual(invalidCalls, ["manager"]);
+
   const mismatchCalls: string[] = [];
   const mismatchHandler = createOzonRetryPostHandler(
     retryOperations(mismatchCalls, {
@@ -140,7 +155,7 @@ test("retry handler rejects missing input and mismatched scope before service co
     })
   );
   const mismatch = await mismatchHandler(
-    request("/api/integrations/ozon/sync/retry", { runId: "run-1" })
+    request("/api/integrations/ozon/sync/retry", { runId: RUN_ID })
   );
   assert.equal(mismatch.status, 404);
   assert.deepEqual(await mismatch.json(), {
@@ -148,9 +163,69 @@ test("retry handler rejects missing input and mismatched scope before service co
   });
   assert.deepEqual(mismatchCalls, [
     "manager",
-    "read-run:workspace-1:run-1:ozon",
+    `read-run:workspace-1:${RUN_ID}:ozon`,
     "read-connection:workspace-1:connection-1:ozon",
   ]);
+});
+
+test("sync and retry lookup failures log raw database diagnostics but return fixed safe errors", async () => {
+  const rawMessage = "PostgREST apiKey=secret relation detail";
+  const syncLogs: unknown[][] = [];
+  const syncOps = syncOperations([]);
+  syncOps.findConnection = async () => ({
+    connection: null,
+    errorMessage: rawMessage,
+  });
+  syncOps.logError = (...args) => syncLogs.push(args);
+
+  const syncResponse = await createOzonSyncPostHandler(syncOps)(
+    request("/api/integrations/ozon/sync", {})
+  );
+  assert.equal(syncResponse.status, 500);
+  const syncBody = await syncResponse.json();
+  assert.deepEqual(syncBody, {
+    error: "Failed to load Ozon connection",
+  });
+  assert.equal(JSON.stringify(syncBody).includes("secret"), false);
+  assert.deepEqual(syncLogs, [
+    ["Failed to load Ozon connection", rawMessage],
+  ]);
+
+  for (const target of ["run", "connection"] as const) {
+    const retryLogs: unknown[][] = [];
+    const retryOps = retryOperations([]);
+    if (target === "run") {
+      retryOps.findRun = async () => ({
+        run: null,
+        errorMessage: rawMessage,
+      });
+    } else {
+      retryOps.findConnection = async () => ({
+        connection: null,
+        errorMessage: rawMessage,
+      });
+    }
+    retryOps.logError = (...args) => retryLogs.push(args);
+
+    const response = await createOzonRetryPostHandler(retryOps)(
+      request("/api/integrations/ozon/sync/retry", { runId: RUN_ID })
+    );
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {
+      error:
+        target === "run"
+          ? "Failed to load Ozon sync run"
+          : "Failed to load Ozon connection",
+    });
+    assert.deepEqual(retryLogs, [
+      [
+        target === "run"
+          ? "Failed to load Ozon sync run"
+          : "Failed to load Ozon connection",
+        rawMessage,
+      ],
+    ]);
+  }
 });
 
 test("internal recovery handler forwards configuration and exact header, invokes one recovery, and returns minimal output", async () => {
@@ -160,10 +235,11 @@ test("internal recovery handler forwards configuration and exact header, invokes
       calls.push("env");
       return "configured-secret";
     },
-    recoverOne: async () => {
-      calls.push("recover");
+    recoverOne: async (deadlineMs) => {
+      calls.push(`recover:${deadlineMs}`);
       return true;
     },
+    now: () => 1_000,
   });
 
   const response = await handler(
@@ -175,7 +251,7 @@ test("internal recovery handler forwards configuration and exact header, invokes
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { processed: true });
-  assert.deepEqual(calls, ["env", "recover"]);
+  assert.deepEqual(calls, ["env", "recover:101000"]);
 });
 
 test("internal recovery handler returns fixed 503/401 without recovery for missing config or bad header", async () => {
@@ -200,6 +276,7 @@ test("internal recovery handler returns fixed 503/401 without recovery for missi
         recoverCalls += 1;
         return true;
       },
+      now: () => 1_000,
     });
     const response = await handler(
       new NextRequest(
@@ -249,6 +326,7 @@ function syncOperations(
     now: () => Date.parse("2026-07-26T12:00:00.000Z"),
     routeError: () =>
       NextResponse.json({ error: "Internal server error" }, { status: 500 }),
+    logError: () => {},
   };
 }
 
@@ -273,7 +351,7 @@ function retryOperations(
       calls.push(`read-run:${workspaceId}:${runId}:ozon`);
       return {
         run: {
-          id: "run-1",
+          id: RUN_ID,
           workspace_id: "workspace-1",
           connection_id: "connection-1",
           provider: "ozon",
@@ -308,6 +386,7 @@ function retryOperations(
     },
     routeError: () =>
       NextResponse.json({ error: "Internal server error" }, { status: 500 }),
+    logError: () => {},
   };
 }
 

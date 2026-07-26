@@ -40,6 +40,7 @@ export interface OzonRetryPostOperations {
     }) => Promise<OzonSyncResult>;
   };
   routeError: (error: unknown) => NextResponse;
+  logError: (message: string, error: unknown) => void;
 }
 
 const productionOperations: OzonRetryPostOperations = {
@@ -72,7 +73,11 @@ const productionOperations: OzonRetryPostOperations = {
   createCoordinator: (scope) =>
     createServiceRoleOzonSyncCoordinator(createServiceRoleClient(), scope),
   routeError: toRouteErrorResponse,
+  logError: (message, error) => console.error(message, error),
 };
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function createOzonRetryPostHandler(
   operations: OzonRetryPostOperations = productionOperations
@@ -90,12 +95,22 @@ export function createOzonRetryPostHandler(
           { status: 400 }
         );
       }
+      if (!UUID_PATTERN.test(runId)) {
+        return NextResponse.json(
+          { error: "Ozon sync run ID must be a UUID" },
+          { status: 400 }
+        );
+      }
 
       const { run, errorMessage: runErrorMessage } =
         await operations.findRun(userClient, workspaceId, runId);
       if (runErrorMessage) {
+        operations.logError(
+          "Failed to load Ozon sync run",
+          runErrorMessage
+        );
         return NextResponse.json(
-          { error: runErrorMessage },
+          { error: "Failed to load Ozon sync run" },
           { status: 500 }
         );
       }
@@ -113,8 +128,12 @@ export function createOzonRetryPostHandler(
           run.connection_id
         );
       if (connectionErrorMessage) {
+        operations.logError(
+          "Failed to load Ozon connection",
+          connectionErrorMessage
+        );
         return NextResponse.json(
-          { error: connectionErrorMessage },
+          { error: "Failed to load Ozon connection" },
           { status: 500 }
         );
       }

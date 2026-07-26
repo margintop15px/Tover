@@ -45,6 +45,7 @@ export interface OzonSyncPostOperations {
   };
   now: () => number;
   routeError: (error: unknown) => NextResponse;
+  logError: (message: string, error: unknown) => void;
 }
 
 const productionOperations: OzonSyncPostOperations = {
@@ -72,6 +73,7 @@ const productionOperations: OzonSyncPostOperations = {
     createServiceRoleOzonSyncCoordinator(createServiceRoleClient(), scope),
   now: Date.now,
   routeError: toRouteErrorResponse,
+  logError: (message, error) => console.error(message, error),
 };
 
 export function createOzonSyncPostHandler(
@@ -88,7 +90,11 @@ export function createOzonSyncPostHandler(
       );
 
       if (errorMessage) {
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        operations.logError("Failed to load Ozon connection", errorMessage);
+        return NextResponse.json(
+          { error: "Failed to load Ozon connection" },
+          { status: 500 }
+        );
       }
       if (!connection) {
         return NextResponse.json(

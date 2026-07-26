@@ -7,7 +7,12 @@ import {
   validateOzonCandidateOperation,
   type MarketplaceCandidateStatus,
 } from "@/lib/ozon/candidates";
-import { OzonApiError, OzonClient, type OzonReadOnlyEndpoint } from "./client";
+import {
+  OzonApiError,
+  OzonClient,
+  OzonIncompleteResponseError,
+  type OzonReadOnlyEndpoint,
+} from "./client";
 import { decryptOzonCredentials } from "./credentials";
 import type {
   LocalProductRef,
@@ -2315,36 +2320,30 @@ export async function fetchSupplyOrders(client: OzonRequestClient): Promise<Json
 
   const detailedOrders: JsonRecord[] = [];
   for (const batchOrderIds of chunkArray([...orderIds], 50)) {
-    try {
-      const response = await client.request<JsonRecord>("/v3/supply-order/get", {
-        order_ids: batchOrderIds,
-      });
-      const details = extractItems(unwrapResult(response), ["orders", "items"])
-        .map(toRecord);
-      const detailsById = new Map(
-        details.flatMap((detail) => {
-          const orderId = toStringValue(
-            detail.order_id ?? detail.id ?? detail.supply_order_id
-          );
-          return orderId && isUsableSupplyOrderRecord(detail)
-            ? [[orderId, detail] as const]
-            : [];
-        })
-      );
-      detailedOrders.push(
-        ...batchOrderIds.flatMap((id) => {
-          const order = detailsById.get(id) ?? legacyFallbacksById.get(id);
-          return order ? [order] : [];
-        })
-      );
-    } catch {
-      detailedOrders.push(
-        ...batchOrderIds.flatMap((id) => {
-          const fallback = legacyFallbacksById.get(id);
-          return fallback ? [fallback] : [];
-        })
+    const response = await client.request<JsonRecord>("/v3/supply-order/get", {
+      order_ids: batchOrderIds,
+    });
+    const details = extractItems(unwrapResult(response), ["orders", "items"])
+      .map(toRecord);
+    const detailsById = new Map(
+      details.flatMap((detail) => {
+        const orderId = toStringValue(
+          detail.order_id ?? detail.id ?? detail.supply_order_id
+        );
+        return orderId && isUsableSupplyOrderRecord(detail)
+          ? [[orderId, detail] as const]
+          : [];
+      })
+    );
+    const resolvedOrders = batchOrderIds.map(
+      (id) => detailsById.get(id) ?? legacyFallbacksById.get(id)
+    );
+    if (resolvedOrders.some((order) => !order)) {
+      throw new OzonIncompleteResponseError(
+        "Ozon supply-order details were incomplete"
       );
     }
+    detailedOrders.push(...(resolvedOrders as JsonRecord[]));
   }
 
   return detailedOrders;

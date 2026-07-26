@@ -70,7 +70,11 @@ test("fetchSupplyOrders stops before requesting a repeated cursor", async () => 
       if (endpoint === "/v3/supply-order/list") {
         return { result: { order_ids: ["one"], last_id: "again" } } as T;
       }
-      return { result: { orders: [{ order_id: "one" }] } } as T;
+      return {
+        result: {
+          orders: [{ order_id: "one", order_number: "detail-one" }],
+        },
+      } as T;
     },
   };
 
@@ -112,7 +116,10 @@ test("fetchSupplyOrders splits more than 50 order IDs into requests of at most 5
       }
       return {
         result: {
-          orders: (body.order_ids as string[]).map((order_id) => ({ order_id })),
+          orders: (body.order_ids as string[]).map((order_id) => ({
+            order_id,
+            order_number: `detail-${order_id}`,
+          })),
         },
       } as T;
     },
@@ -126,7 +133,7 @@ test("fetchSupplyOrders splits more than 50 order IDs into requests of at most 5
   assert.deepEqual(batches[1].body.order_ids, ["51"]);
 });
 
-test("fetchSupplyOrders skips IDs omitted from a partial detail batch", async () => {
+test("fetchSupplyOrders fails when a partial detail batch leaves an ID unresolved", async () => {
   const client = {
     request: async <T>(endpoint: string) => {
       if (endpoint === "/v3/supply-order/list") {
@@ -143,22 +150,27 @@ test("fetchSupplyOrders skips IDs omitted from a partial detail batch", async ()
     },
   };
 
-  assert.deepEqual(await fetchSupplyOrders(client), [
-    { order_id: "one", order_number: "detail-one" },
-  ]);
+  await assert.rejects(
+    fetchSupplyOrders(client),
+    /Ozon supply-order details were incomplete/
+  );
 });
 
-test("fetchSupplyOrders skips an entire failed detail batch", async () => {
+test("fetchSupplyOrders propagates an entire failed detail batch", async () => {
+  const failure = new TypeError("detail request failed");
   const client = {
     request: async <T>(endpoint: string) => {
       if (endpoint === "/v3/supply-order/list") {
         return { result: { order_ids: ["one"], last_id: "" } } as T;
       }
-      throw new Error("detail request failed");
+      throw failure;
     },
   };
 
-  assert.deepEqual(await fetchSupplyOrders(client), []);
+  await assert.rejects(
+    fetchSupplyOrders(client),
+    (error: unknown) => error === failure
+  );
 });
 
 test("fetchSupplyOrders uses a genuinely detailed legacy list record when its detail is missing", async () => {

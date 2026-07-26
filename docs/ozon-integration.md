@@ -57,7 +57,10 @@ most 40 starts per second below Ozon's 50-request limit. Every HTTP attempt has
 a 30-second timeout. Safe read requests get at most four total attempts for
 transport/timeouts, HTTP `408`, `425`, `429`, and `500`-`599`. The delays before
 attempts two through four are approximately 500 ms, 1 second, and 2 seconds,
-plus up to 250 ms of jitter.
+plus up to 250 ms of jitter. This four-attempt policy is the default for
+validation and other non-durable callers. A durable claimed step uses one HTTP
+attempt per request because the persisted step schedule owns subsequent
+attempts.
 
 `Retry-After` is accepted as either seconds or an HTTP date.
 `Item-Retry-After` is interpreted as minutes. A server-provided delay overrides
@@ -280,6 +283,13 @@ reclaimable; only the current token can finish it, so a stale worker cannot
 overwrite the reclaimed result. A partial unique index permits only one
 `running` or `retrying` run per connection.
 
+Each claimed execution receives one absolute deadline and one shared abort
+signal for all Ozon requests, including request pacing. Manual work derives
+that deadline from its 25-second request budget; Cron recovery uses a
+100-second worker budget inside the route limit. The runner reserves the final
+2 seconds for the lease-aware finish RPC, waits for the domain to unwind after
+cancellation, and then records the timeout as a transient durable failure.
+
 ### 1. Warehouses
 
 Endpoint: `POST /v2/warehouse/list`.
@@ -490,7 +500,8 @@ value in `x-tover-recovery-secret`, uses the service-role Supabase client, and
 claims at most one due step per invocation. It returns only whether a step was
 processed. Missing server configuration returns `503`; a bad secret returns
 `401`. The app route has a 110-second execution budget, inside the migration's
-120-second `pg_net` timeout.
+120-second `pg_net` timeout. Claimed work receives a 100-second absolute
+deadline, with an additional finish margin inside that worker budget.
 
 After migration 020 is applied and the route is reachable, create the two
 required Vault values with placeholders replaced at deployment time:
