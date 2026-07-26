@@ -337,7 +337,7 @@ test.describe("operations API", () => {
       }[];
     }>(
       request.get(
-        `/api/reports/inventory-balances?search=${encodeURIComponent(product.name)}`
+        `/api/reports/inventory-balances?date=${operationDate}&search=${encodeURIComponent(product.name)}`
       ),
       200
     );

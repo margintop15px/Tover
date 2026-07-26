@@ -15,6 +15,7 @@ export interface OzonIntegrationSummary {
     lastSyncAt: string | null;
     lastSyncStatus:
       | "running"
+      | "retrying"
       | "completed"
       | "completed_with_errors"
       | "failed"
@@ -39,6 +40,20 @@ export interface OzonIntegrationSummary {
     candidatesReady: number;
     candidatesNeedsMapping: number;
   };
+  recovery: {
+    runId: string;
+    status:
+      | "running"
+      | "retrying"
+      | "completed"
+      | "completed_with_errors"
+      | "failed";
+    pendingStepCount: number;
+    scheduledRetryCount: number;
+    failedStepCount: number;
+    nextRetryAt: string | null;
+    lastError: string | null;
+  } | null;
 }
 
 export function OzonMetric({ label, value }: { label: string; value: number }) {
@@ -75,6 +90,8 @@ export function ozonSyncStatusLabel(
   switch (status) {
     case "running":
       return t.ozonSyncStatusRunning;
+    case "retrying":
+      return t.ozonSyncStatusRetrying;
     case "completed":
       return t.ozonSyncStatusCompleted;
     case "completed_with_errors":

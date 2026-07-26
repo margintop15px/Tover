@@ -7,7 +7,12 @@ import {
   validateOzonCandidateOperation,
   type MarketplaceCandidateStatus,
 } from "@/lib/ozon/candidates";
-import { OzonApiError, OzonClient, type OzonReadOnlyEndpoint } from "./client";
+import {
+  OzonApiError,
+  OzonClient,
+  OzonIncompleteResponseError,
+  type OzonReadOnlyEndpoint,
+} from "./client";
 import { decryptOzonCredentials } from "./credentials";
 import type {
   LocalProductRef,
@@ -92,7 +97,221 @@ const SAFE_LEGAL_IDENTIFIER_KEYS = new Set([
   "organization_name",
 ]);
 
-type OzonSyncRunStatus = "completed" | "completed_with_errors" | "failed";
+type TerminalOzonSyncRunStatus =
+  | "completed"
+  | "completed_with_errors"
+  | "failed";
+
+export interface OzonSyncDomainExecutionContext {
+  supabase: SupabaseClient;
+  client: OzonClient;
+  workspaceId: string;
+  connectionId: string;
+  dateFrom: string;
+  dateTo: string;
+}
+
+interface OzonSyncDomainDefinition {
+  key: string;
+  execute: (
+    context: OzonSyncDomainExecutionContext
+  ) => Promise<OzonSyncStepSummary>;
+}
+
+export const OZON_SYNC_DOMAIN_REGISTRY = [
+  {
+    key: "warehouses",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncWarehouses(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+  {
+    key: "products",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncProducts(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+  {
+    key: "stocks",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncStocks(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+  {
+    key: "postings",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncPostings(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "returns",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncReturns(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "finance",
+    execute: (context) =>
+      executeWithCurrentMapping(context, () =>
+        syncFinance(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "legalEntities",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncLegalEntities(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "reports",
+    execute: (context) =>
+      executeWithCurrentMapping(context, () =>
+        syncFinanceReports(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "removals",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncRemovals(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping,
+          context.dateFrom,
+          context.dateTo
+        )
+      ),
+  },
+  {
+    key: "supplies",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncSupplies(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+  {
+    key: "analytics",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncStockAnalytics(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+  {
+    key: "discountedProducts",
+    execute: (context) =>
+      executeWithCurrentMapping(context, (mapping) =>
+        syncDiscountedProducts(
+          context.supabase,
+          context.client,
+          context.workspaceId,
+          context.connectionId,
+          mapping
+        )
+      ),
+  },
+] as const satisfies readonly OzonSyncDomainDefinition[];
+
+export type OzonSyncDomainKey =
+  (typeof OZON_SYNC_DOMAIN_REGISTRY)[number]["key"];
+
+export async function executeOzonSyncDomainStep(
+  key: OzonSyncDomainKey,
+  context: OzonSyncDomainExecutionContext
+) {
+  const domain = OZON_SYNC_DOMAIN_REGISTRY.find(
+    (entry) => entry.key === key
+  );
+  if (!domain) throw new Error("Unknown Ozon sync domain");
+  return domain.execute(context);
+}
+
+async function executeWithCurrentMapping(
+  context: OzonSyncDomainExecutionContext,
+  execute: (mapping: MappingContext) => Promise<OzonSyncStepSummary>
+) {
+  const mapping = await loadMappingContext(
+    context.supabase,
+    context.workspaceId,
+    context.connectionId
+  );
+  return execute(mapping);
+}
 
 export async function syncOzonConnection(
   supabase: SupabaseClient,
@@ -305,7 +524,7 @@ async function runStep(
 function resolveSyncStatus(
   successfulSteps: number,
   summary: OzonSyncSummary
-): OzonSyncRunStatus {
+): TerminalOzonSyncRunStatus {
   if (successfulSteps === 0) return "failed";
   return summary.errors.length > 0 ? "completed_with_errors" : "completed";
 }
@@ -1612,41 +1831,43 @@ async function syncFinanceReports(
 ): Promise<OzonSyncStepSummary> {
   const rows: JsonRecord[] = [];
   const months = monthsInRange(dateFrom, dateTo);
+  let skipped = 0;
 
   for (const month of months) {
-    rows.push(
-      ...(await requestReportCode(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        "mutual_settlement",
-        "/v1/finance/mutual-settlement",
-        { date: month, language: "DEFAULT" }
-      ))
-    );
-    rows.push(
-      ...(await requestReportCode(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        "compensation",
-        "/v1/finance/compensation",
-        { date: month, language: "RU" }
-      ))
-    );
-    rows.push(
-      ...(await requestReportCode(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        "decompensation",
-        "/v1/finance/decompensation",
-        { date: month, language: "RU" }
-      ))
-    );
+    for (const report of [
+      {
+        type: "mutual_settlement",
+        endpoint: "/v1/finance/mutual-settlement" as const,
+        payload: { date: month, language: "DEFAULT" },
+      },
+      {
+        type: "compensation",
+        endpoint: "/v1/finance/compensation" as const,
+        payload: { date: month, language: "RU" },
+      },
+      {
+        type: "decompensation",
+        endpoint: "/v1/finance/decompensation" as const,
+        payload: { date: month, language: "RU" },
+      },
+    ]) {
+      try {
+        rows.push(
+          ...(await requestReportCode(
+            supabase,
+            client,
+            workspaceId,
+            connectionId,
+            report.type,
+            report.endpoint,
+            report.payload
+          ))
+        );
+      } catch (error) {
+        if (!isMissingFinanceDocumentError(error)) throw error;
+        skipped += 1;
+      }
+    }
   }
 
   rows.push(
@@ -1663,7 +1884,28 @@ async function syncFinanceReports(
     "connection_id,external_id"
   );
 
-  return { fetched: rows.length };
+  return { fetched: rows.length, skipped };
+}
+
+export function isMissingFinanceDocumentError(error: unknown) {
+  if (!(error instanceof OzonApiError) || error.status !== 404) return false;
+
+  return [error.code, error.apiMessage]
+    .filter((value): value is string | number => value !== null)
+    .some((value) => isExactMissingFinanceDocumentIdentity(String(value)));
+}
+
+function isExactMissingFinanceDocumentIdentity(value: string) {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+  if (normalized === "finance document not found") return true;
+
+  return /\bdesc\s*=\s*finance[ _-]+document[ _-]+not[ _-]+found\s*$/i.test(
+    value
+  );
 }
 
 async function requestReportCode(
@@ -1978,10 +2220,7 @@ async function syncSupplies(
   connectionId: string,
   mapping: MappingContext
 ): Promise<OzonSyncStepSummary> {
-  const response = await client.request<JsonRecord>("/v3/supply-order/list", {
-    limit: 100,
-  });
-  const orders = extractItems(response, ["orders", "items", "supplies"]);
+  const orders = await fetchSupplyOrders(client);
   let createdCandidates = 0;
 
   for (const order of orders) {
@@ -1989,13 +2228,8 @@ async function syncSupplies(
       toRecord(order).order_id ?? toRecord(order).id ?? toRecord(order).supply_order_id
     );
     if (!orderId) continue;
-    const detail = await client
-      .request<JsonRecord>("/v3/supply-order/get", { order_ids: [orderId] })
-      .catch(() => order as JsonRecord);
-    const detailOrder =
-      extractItems(detail, ["orders", "items"])[0] ?? unwrapResult(detail) ?? order;
     const orderRow = toSupplyOrderRow(
-      detailOrder,
+      order,
       workspaceId,
       connectionId,
       mapping
@@ -2038,6 +2272,91 @@ async function syncSupplies(
   }
 
   return { fetched: orders.length, createdCandidates };
+}
+
+type OzonRequestClient = Pick<OzonClient, "request">;
+
+export async function fetchSupplyOrders(client: OzonRequestClient): Promise<JsonRecord[]> {
+  const orderIds = new Set<string>();
+  const legacyFallbacksById = new Map<string, JsonRecord>();
+  let lastId = "";
+  const seenLastIds = new Set<string>();
+
+  for (let page = 0; page < 100; page += 1) {
+    const response = await client.request<JsonRecord>("/v3/supply-order/list", {
+      filter: {},
+      last_id: lastId,
+      limit: 100,
+      sort_by: "ORDER_CREATION",
+      sort_dir: "DESC",
+    });
+    const root = unwrapResult(response);
+    const pageOrderIds = new Set<string>();
+
+    for (const value of asArray(root.order_ids)) {
+      const orderId = toStringValue(value);
+      if (orderId) pageOrderIds.add(orderId);
+    }
+
+    for (const order of extractItems(root, ["orders", "items", "supplies"])) {
+      const record = toRecord(order);
+      const orderId = toStringValue(
+        record.order_id ?? record.id ?? record.supply_order_id
+      );
+      if (!orderId) continue;
+      pageOrderIds.add(orderId);
+      if (isUsableSupplyOrderRecord(record) && !legacyFallbacksById.has(orderId)) {
+        legacyFallbacksById.set(orderId, record);
+      }
+    }
+
+    for (const orderId of pageOrderIds) orderIds.add(orderId);
+
+    const nextLastId = toStringValue(root.last_id ?? response.last_id);
+    if (!nextLastId || pageOrderIds.size === 0 || seenLastIds.has(nextLastId)) break;
+    seenLastIds.add(nextLastId);
+    lastId = nextLastId;
+  }
+
+  const detailedOrders: JsonRecord[] = [];
+  for (const batchOrderIds of chunkArray([...orderIds], 50)) {
+    const response = await client.request<JsonRecord>("/v3/supply-order/get", {
+      order_ids: batchOrderIds,
+    });
+    const details = extractItems(unwrapResult(response), ["orders", "items"])
+      .map(toRecord);
+    const detailsById = new Map(
+      details.flatMap((detail) => {
+        const orderId = toStringValue(
+          detail.order_id ?? detail.id ?? detail.supply_order_id
+        );
+        return orderId && isUsableSupplyOrderRecord(detail)
+          ? [[orderId, detail] as const]
+          : [];
+      })
+    );
+    const resolvedOrders = batchOrderIds.map(
+      (id) => detailsById.get(id) ?? legacyFallbacksById.get(id)
+    );
+    if (resolvedOrders.some((order) => !order)) {
+      throw new OzonIncompleteResponseError(
+        "Ozon supply-order details were incomplete"
+      );
+    }
+    detailedOrders.push(...(resolvedOrders as JsonRecord[]));
+  }
+
+  return detailedOrders;
+}
+
+function isUsableSupplyOrderRecord(order: JsonRecord) {
+  return Object.entries(order).some(
+    ([key, value]) =>
+      !["order_id", "id", "supply_order_id"].includes(key) &&
+      value !== null &&
+      value !== undefined &&
+      value !== ""
+  );
 }
 
 function toSupplyOrderRow(
@@ -2990,7 +3309,11 @@ function chunkArray<T>(items: T[], size: number) {
 
 function formatError(error: unknown) {
   if (error instanceof OzonApiError) {
-    return `${error.endpoint}: ${error.status} ${JSON.stringify(error.responseBody).slice(0, 500)}`;
+    const details = [
+      error.code === null ? null : `code=${error.code}`,
+      error.apiMessage,
+    ].filter((detail): detail is string => Boolean(detail));
+    return `${error.endpoint}: ${error.status}${details.length ? ` ${details.join(" ")}` : ""}`;
   }
   return error instanceof Error ? error.message : String(error);
 }

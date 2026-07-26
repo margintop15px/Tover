@@ -52,6 +52,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 OZON_CREDENTIAL_ENCRYPTION_KEY=replace-with-a-long-random-secret
+OZON_SYNC_RECOVERY_SECRET=replace-with-a-separate-long-random-secret
 # Optional local mock/test override:
 # OZON_API_BASE_URL=http://127.0.0.1:32123
 # Optional E2E overrides:
@@ -62,11 +63,33 @@ OZON_CREDENTIAL_ENCRYPTION_KEY=replace-with-a-long-random-secret
 Notes:
 - `SUPABASE_SERVICE_ROLE_KEY` is required for server-side invite operations.
 - `OZON_CREDENTIAL_ENCRYPTION_KEY` is required before saving Ozon Seller API credentials.
+- `OZON_SYNC_RECOVERY_SECRET` authenticates Supabase Cron calls to the internal
+  Ozon recovery route. Use a separate high-entropy value and never expose it to
+  the browser.
 - `OZON_API_BASE_URL` is optional and should only be used for local mocks/tests.
 - Playwright authenticated tests auto-provision `playwright@tover.local` in local dev when `E2E_EMAIL`/`E2E_PASSWORD` are omitted and the Supabase service role key is present.
 - Never expose `SUPABASE_SERVICE_ROLE_KEY` to the browser.
 
 ## Supabase Setup
+
+### 0. Enable required extensions
+
+Fresh projects must enable the extensions used by migration 020 before running
+the migrations:
+
+```sql
+create extension if not exists pg_net with schema extensions;
+create extension if not exists pg_cron;
+create extension if not exists supabase_vault with schema vault;
+```
+
+Run this as the project owner in the Supabase SQL Editor, or enable the same
+extensions under Database > Extensions in the hosted Dashboard. `pg_net`
+exposes its request API in the `net` schema, `pg_cron` creates the `cron`
+schema, and `supabase_vault` creates/uses the `vault` schema referenced by the
+recovery migration. `IF NOT EXISTS` makes the SQL safe when a hosted project
+already enabled an extension. A permission error means the project owner or
+database administrator must perform this step.
 
 ### 1. Run migrations (in order)
 
@@ -79,6 +102,8 @@ Files in `supabase/migrations/`:
 - `006_product_name_unique.sql` — unique constraint on product names (excluding defect copies)
 - `012_ozon_marketplace_integration.sql` — Ozon marketplace connection, sync staging, and read-only operation candidates
 - `013_ozon_candidate_approval_status.sql` — approved Ozon candidate review state for manual commit workflows
+- `020_ozon_sync_recovery.sql` — durable Ozon step state, leases, recovery RPCs,
+  and the Supabase Cron scheduling helper
 
 Option A (Supabase SQL Editor):
 - Run migrations in order: `001` through the latest file in `supabase/migrations/`.
@@ -112,6 +137,33 @@ npm run seed  # requires dev server running + E2E_EMAIL/E2E_PASSWORD env vars
 ```
 
 Authenticated Playwright runs use the same auth model. In local dev, they load `.env.local` and create/update a dev-only owner user automatically when explicit `E2E_EMAIL`/`E2E_PASSWORD` are not set. Set `E2E_AUTO_PROVISION=false` to disable that behavior.
+
+### 5. Enable durable Ozon recovery
+
+Apply migration `020_ozon_sync_recovery.sql` before enabling the worker, deploy
+the app with `OZON_SYNC_RECOVERY_SECRET`, and then create these Supabase Vault
+secrets. The secret value must match the app environment variable; the URL must
+be the deployed internal route:
+
+```sql
+select vault.create_secret(
+  'https://your-app.example.com/api/internal/integrations/ozon/recover',
+  'tover_ozon_recovery_url'
+);
+
+select vault.create_secret(
+  'replace-with-the-app-recovery-secret',
+  'tover_ozon_recovery_secret'
+);
+
+select public.schedule_ozon_sync_recovery();
+```
+
+The helper idempotently replaces `tover-ozon-sync-recovery` and runs it every
+minute. It reads both Vault values at execution time and calls the protected
+route with a 120-second `pg_net` timeout. Do not place a real deployment URL or
+secret in a migration. See [docs/ozon-integration.md](docs/ozon-integration.md)
+for pause/resume, monitoring, retry semantics, and failure recovery.
 
 ## Auth + Organization Model
 

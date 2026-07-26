@@ -10,6 +10,12 @@ import {
   publicOzonHealth,
   successfulValidationHealth,
 } from "@/lib/ozon/health";
+import {
+  deriveOzonIntegrationRecovery,
+  derivePublicOzonSyncSummary,
+  type OzonSyncRunStatus,
+  type OzonSyncRunStepRow,
+} from "@/lib/ozon/durable-sync";
 import type { OzonConnectionRecord, OzonCredentials } from "@/lib/ozon/types";
 
 export const dynamic = "force-dynamic";
@@ -162,6 +168,7 @@ async function loadOzonSummary(
         connection: null,
         counts: emptyCounts(),
         recentRuns: [],
+        recovery: null,
         setupError: "Ozon integration migration has not been applied.",
       };
     }
@@ -174,6 +181,7 @@ async function loadOzonSummary(
       connection: null,
       counts: emptyCounts(),
       recentRuns: [],
+      recovery: null,
     };
   }
 
@@ -231,6 +239,30 @@ async function loadOzonSummary(
   ]);
 
   if (syncRuns.error) throw new Error(syncRuns.error.message);
+  const recentRunRows = syncRuns.data || [];
+  const stepsByRun = await loadRecentRunSteps(
+    supabase,
+    workspaceId,
+    connectionId,
+    recentRunRows.map((run) => String(run.id))
+  );
+  const recentRuns = recentRunRows.map((run) => ({
+    ...run,
+    summary: derivePublicOzonSyncSummary(
+      run.summary,
+      stepsByRun.get(String(run.id)) ?? []
+    ),
+  }));
+  const latestRun = recentRunRows[0];
+  const recovery = latestRun
+    ? deriveOzonIntegrationRecovery(
+        {
+          id: String(latestRun.id),
+          status: latestRun.status as OzonSyncRunStatus,
+        },
+        stepsByRun.get(String(latestRun.id)) ?? []
+      )
+    : null;
 
   return {
     connected: connection.status === "connected",
@@ -253,8 +285,42 @@ async function loadOzonSummary(
       candidatesReady,
       candidatesNeedsMapping,
     },
-    recentRuns: syncRuns.data || [],
+    recentRuns,
+    recovery,
   };
+}
+
+async function loadRecentRunSteps(
+  supabase: Awaited<ReturnType<typeof getRouteContext>>["supabase"],
+  workspaceId: string,
+  connectionId: string,
+  runIds: string[]
+) {
+  const stepsByRun = new Map<string, OzonSyncRunStepRow[]>();
+  if (runIds.length === 0) return stepsByRun;
+
+  const { data, error } = await supabase
+    .from("marketplace_sync_run_steps")
+    .select(
+      "run_id, step_key, step_order, state, summary, last_error, next_attempt_at, updated_at"
+    )
+    .in("run_id", runIds)
+    .eq("workspace_id", workspaceId)
+    .eq("connection_id", connectionId)
+    .eq("provider", "ozon")
+    .order("step_order", { ascending: true });
+
+  if (error) {
+    if (isMissingIntegrationSchemaError(error)) return stepsByRun;
+    throw new Error(error.message);
+  }
+
+  for (const step of (data ?? []) as OzonSyncRunStepRow[]) {
+    const runSteps = stepsByRun.get(step.run_id) ?? [];
+    runSteps.push(step);
+    stepsByRun.set(step.run_id, runSteps);
+  }
+  return stepsByRun;
 }
 
 async function countRows(

@@ -52,6 +52,25 @@ Ozon uses `POST` for many read endpoints. Read-only safety is therefore enforced
 by `src/lib/ozon/client.ts` with a strict server-side endpoint allowlist, not by
 HTTP method.
 
+Each `OzonClient` spaces request starts by at least 25 ms, limiting it to at
+most 40 starts per second below Ozon's 50-request limit. Every HTTP attempt has
+a 30-second timeout. Safe read requests get at most four total attempts for
+transport/timeouts, HTTP `408`, `425`, `429`, and `500`-`599`. The delays before
+attempts two through four are approximately 500 ms, 1 second, and 2 seconds,
+plus up to 250 ms of jitter. This four-attempt policy is the default for
+validation and other non-durable callers. A durable claimed step uses one HTTP
+attempt per request because the persisted step schedule owns subsequent
+attempts.
+
+`Retry-After` is accepted as either seconds or an HTTP date.
+`Item-Retry-After` is interpreted as minutes. A server-provided delay overrides
+a shorter local delay, and every delay is capped at 30 seconds. HTTP `400`,
+`401`, `403`, and ordinary `404` responses are not retried. The typed client
+error exposes only a sanitized endpoint, status, code, message, and calculated
+retry delay to server code. Durable step persistence reduces that further to a
+fixed message plus safe kind/status/retry metadata; credentials and raw Ozon
+payloads are never stored in step errors.
+
 Credentials are encrypted with `OZON_CREDENTIAL_ENCRYPTION_KEY`. The
 implementation derives an AES-256-GCM key from this secret with SHA-256 and uses
 a random 12-byte IV for every encryption. Public API responses only expose masked
@@ -65,8 +84,12 @@ with a local mock server.
 - `src/lib/ozon/client.ts`: Ozon client, base URL override, read-only endpoint
   allowlist, credential validation.
 - `src/lib/ozon/credentials.ts`: credential encryption/decryption and hints.
-- `src/lib/ozon/sync.ts`: sync orchestration, pagination, mirror upserts,
-  candidate generation, raw payload sanitization.
+- `src/lib/ozon/sync.ts`: ordered domain registry, pagination, mirror upserts,
+  candidate generation, and raw payload sanitization.
+- `src/lib/ozon/durable-runner.ts`: step claiming, execution, error
+  classification, durable retry scheduling, and lease-aware finish calls.
+- `src/lib/ozon/durable-sync.ts`: begin/resume and retry-failed coordination,
+  public run summaries, and recovery counts.
 - `src/lib/ozon/candidates.ts`: candidate normalization, validation, mapping,
   local product/warehouse creation, and `processOperation` request building.
 - `src/app/api/integrations/ozon/*`: connection, validate, sync, candidate
@@ -86,6 +109,9 @@ with a local mock server.
 - `supabase/migrations/015_ozon_commit_hardening.sql`: transient `committing`
   status, `completed_with_errors` sync status, and Ozon commit claim/source
   guards.
+- `supabase/migrations/020_ozon_sync_recovery.sql`: durable sync steps, active
+  run constraints, leases, service-role worker RPCs, and Supabase Cron
+  scheduling.
 
 ## Data Model
 
@@ -95,6 +121,8 @@ Core tables:
   credentials, health, last sync status, and last sync metadata.
 - `marketplace_sync_runs`: every sync run, date window, status, summary, and
   error.
+- `marketplace_sync_run_steps`: the twelve ordered domain steps, attempt count,
+  durable state, next attempt, ten-minute lease, safe error, and step summary.
 - `ozon_products`: Ozon product mirror and local product mapping.
 - `ozon_warehouses`: Ozon warehouse mirror and local warehouse mapping.
 - `ozon_stock_snapshots`: raw stock snapshots from Ozon product stock APIs.
@@ -206,12 +234,61 @@ Intentionally not allowlisted:
 
 ## Sync Flow
 
-`POST /api/integrations/ozon/sync` creates a `marketplace_sync_runs` row and runs
-independent steps. A failed step records an error but does not necessarily abort
-the whole sync. The connection health stores the last sync summary.
+`POST /api/integrations/ozon/sync` begins a run or resumes the one active run for
+the connection. A new run gets these twelve ordered step rows. Manual execution
+runs sequentially within a bounded request budget; unfinished work remains in
+Supabase instead of being lost with the request. Calling the route while a run
+is active returns the same run and makes scheduled retries immediately
+eligible.
+
+The route returns HTTP `202` while the run is `running` or `retrying`, and HTTP
+`200` for terminal states. The response includes `runId`, the accumulated
+successful step summaries, and safe recovery counts. Completed or validly
+skipped steps are never claimed again, so resuming a run does not repeat their
+Ozon requests.
 
 The default date window is the last 30 days. The caller can pass `dateFrom` and
-`dateTo` for backfills.
+`dateTo` for backfills. The selected window is stored on the run and reused by
+automatic and manual recovery.
+
+Step states are:
+
+- `pending`: not yet claimed;
+- `running`: owned by a live lease;
+- `retry_scheduled`: transient failure waiting for its next attempt;
+- `completed`: successful;
+- `skipped`: valid empty result;
+- `failed`: terminal failure.
+
+Run status is derived after every step transition:
+
+- `retrying` when any step has a scheduled retry;
+- `running` while work remains without a scheduled retry;
+- `completed` when every step completed or was validly skipped;
+- `completed_with_errors` when terminal failures coexist with successful or
+  skipped steps;
+- `failed` when no step succeeds.
+
+Transport/timeouts, Ozon `408`, `425`, `429`, and `500`-`599`, plus database or
+runtime errors not explicitly marked permanent, use durable retries. HTTP `400`,
+`401`, `403`, unknown `404`, and explicit configuration/invariant errors are
+permanent. Failed attempts 1 through 7 are scheduled after exactly 1 minute,
+5 minutes, 15 minutes, 1 hour, 3 hours, 6 hours, and 12 hours. Attempt 8 becomes
+terminal.
+
+Workers claim one step atomically. A claim increments the attempt count and
+creates a unique ten-minute lease token. Another worker cannot claim work for
+that connection while its lease is live. An expired `running` lease is
+reclaimable; only the current token can finish it, so a stale worker cannot
+overwrite the reclaimed result. A partial unique index permits only one
+`running` or `retrying` run per connection.
+
+Each claimed execution receives one absolute deadline and one shared abort
+signal for all Ozon requests, including request pacing. Manual work derives
+that deadline from its 25-second request budget; Cron recovery uses a
+100-second worker budget inside the route limit. The runner reserves the final
+2 seconds for the lease-aware finish RPC, waits for the domain to unwind after
+cancellation, and then records the timeout as a transient durable failure.
 
 ### 1. Warehouses
 
@@ -315,6 +392,13 @@ Report-generating endpoints may return an Ozon report code. Tover stores report
 code, status, file URL, request params, and response payload in `ozon_report_runs`
 and summarizes rows in `ozon_finance_reports`.
 
+Ozon can legitimately return `404` while a monthly settlement document does not
+yet exist. Tover treats only a `404` whose safe code or message exactly
+identifies `finance document not found` (including Ozon's terminal RPC
+`desc = finance document not found` form) as empty data. That report/month is
+counted as skipped, and compensation, decompensation, cash flow, buyout, and
+other months continue. Every other `404` is a permanent error.
+
 Buyout reports are seller-side sale evidence, not merchant purchases. They remain
 reporting data.
 
@@ -343,6 +427,24 @@ candidates when bundle items are known. Tover transfer operations support one
 product per operation, so a multi-product Ozon supply becomes one transfer
 candidate per product line.
 
+The list request uses the real Ozon contract:
+
+```json
+{
+  "filter": {},
+  "last_id": "",
+  "limit": 100,
+  "sort_by": "ORDER_CREATION",
+  "sort_dir": "DESC"
+}
+```
+
+Tover reads `order_ids` and `last_id` from either the response root or its
+`result` wrapper, canonicalizes numeric/string IDs, and follows the cursor until
+it is empty or repeats (with a 100-page safety limit). It then calls
+`POST /v3/supply-order/get` in batches of at most 50 IDs. The list endpoint is
+not assumed to contain full order records.
+
 The Ozon destination warehouse can auto-map. The local source warehouse is not
 known from Ozon and must be selected by the user before commit.
 
@@ -366,6 +468,186 @@ Endpoint: `POST /v1/product/info/discounted`.
 Tover mirrors discounted products. A `defect` candidate is generated only when
 reason/status explicitly proves physical defect or damage. Generic markdowns or
 discounts remain mirror-only.
+
+## Recovery Worker Operations
+
+On a fresh Supabase project, enable the three dependencies before applying
+migration 020:
+
+```sql
+create extension if not exists pg_net with schema extensions;
+create extension if not exists pg_cron;
+create extension if not exists supabase_vault with schema vault;
+```
+
+Run these statements as the project owner in the SQL Editor, or enable the same
+extensions from Database > Extensions in the hosted Dashboard. `pg_net`
+exposes `net.http_post` and its response table in the `net` schema; `pg_cron`
+creates the `cron` schema; and `supabase_vault` creates/uses `vault`. The
+`IF NOT EXISTS` form is safe for hosted projects where an extension is already
+enabled. If extension creation is denied, a project owner/database
+administrator must enable it before migration 020 and before scheduling.
+
+The Next.js deployment must set:
+
+```bash
+OZON_SYNC_RECOVERY_SECRET=replace-with-a-separate-long-random-secret
+```
+
+Supabase Cron calls
+`POST /api/internal/integrations/ozon/recover`. The route requires the same
+value in `x-tover-recovery-secret`, uses the service-role Supabase client, and
+claims at most one due step per invocation. It returns only whether a step was
+processed. Missing server configuration returns `503`; a bad secret returns
+`401`. The app route has a 110-second execution budget, inside the migration's
+120-second `pg_net` timeout. Claimed work receives a 100-second absolute
+deadline, with an additional finish margin inside that worker budget.
+
+After migration 020 is applied and the route is reachable, create the two
+required Vault values with placeholders replaced at deployment time:
+
+```sql
+select vault.create_secret(
+  'https://your-app.example.com/api/internal/integrations/ozon/recover',
+  'tover_ozon_recovery_url'
+);
+
+select vault.create_secret(
+  'replace-with-the-app-recovery-secret',
+  'tover_ozon_recovery_secret'
+);
+
+select public.schedule_ozon_sync_recovery();
+```
+
+`schedule_ozon_sync_recovery()` verifies both secrets, removes any existing
+`tover-ozon-sync-recovery` job, and recreates it on `* * * * *`. The scheduled
+command reads the URL and header value from Vault on every execution. Never put
+a real URL or secret in a migration.
+
+Pause and resume an existing job without deleting durable work:
+
+```sql
+select cron.alter_job(
+  job_id := (
+    select jobid
+    from cron.job
+    where jobname = 'tover-ozon-sync-recovery'
+  ),
+  active := false
+);
+
+select cron.alter_job(
+  job_id := (
+    select jobid
+    from cron.job
+    where jobname = 'tover-ozon-sync-recovery'
+  ),
+  active := true
+);
+```
+
+Remove it completely, or recreate it later:
+
+```sql
+select cron.unschedule('tover-ozon-sync-recovery');
+select public.schedule_ozon_sync_recovery();
+```
+
+Inspect the definition and recent scheduler executions:
+
+```sql
+select *
+from cron.job
+where jobname = 'tover-ozon-sync-recovery';
+
+select *
+from cron.job_run_details
+where jobid in (
+  select jobid
+  from cron.job
+  where jobname = 'tover-ozon-sync-recovery'
+)
+order by start_time desc;
+```
+
+`cron.job_run_details` proves that pg_cron ran the SQL command. It does not
+prove that the recovery endpoint succeeded: `net.http_post` only enqueues the
+HTTP request and returns its request ID asynchronously. Inspect recent
+responses with a bounded, header-free projection:
+
+```sql
+select
+  id,
+  status_code,
+  timed_out,
+  error_msg,
+  content,
+  created
+from net._http_response
+where created >= now() - interval '6 hours'
+order by created desc
+limit 100;
+```
+
+By default pg_net retains responses in `net._http_response` for six hours.
+HTTP `401` means the Vault secret does not match the deployed
+`OZON_SYNC_RECOVERY_SECRET`; `503` means the app variable is missing; HTTP
+`500` returns the route's minimal recovery failure; and transport failures show
+through `timed_out` or `error_msg`. The response `content` is safe here because
+the recovery route returns only minimal JSON and no credentials. The query
+intentionally omits headers and limits output to the recent diagnostic fields;
+never select Vault decrypted secrets into logs.
+
+Inspect recent runs and their ordered steps:
+
+```sql
+select
+  runs.id,
+  runs.connection_id,
+  runs.status,
+  runs.date_from,
+  runs.date_to,
+  runs.started_at,
+  runs.completed_at,
+  steps.step_order,
+  steps.step_key,
+  steps.state,
+  steps.attempt_count,
+  steps.next_attempt_at,
+  steps.lease_expires_at,
+  steps.last_error
+from marketplace_sync_runs as runs
+join marketplace_sync_run_steps as steps on steps.run_id = runs.id
+where runs.provider = 'ozon'
+order by runs.started_at desc, steps.step_order;
+```
+
+Monitor overdue retries and expired leases:
+
+```sql
+select
+  run_id,
+  connection_id,
+  step_key,
+  state,
+  attempt_count,
+  next_attempt_at,
+  lease_expires_at
+from marketplace_sync_run_steps
+where
+  (state = 'retry_scheduled' and next_attempt_at < now())
+  or (state = 'running' and lease_expires_at < now())
+order by coalesce(next_attempt_at, lease_expires_at);
+```
+
+In the UI, **Retry now** calls the normal sync endpoint for an active
+`running`/`retrying` run. It preserves attempt counts, completed/skipped steps,
+and the original date window while making scheduled retries eligible
+immediately. **Retry failed steps** is available for a terminal partial/failed
+run; it calls `POST /api/integrations/ozon/sync/retry` with that `runId` and
+resets only terminal `failed` steps to `pending`. It reuses the same run and date
+window, while completed/skipped steps remain untouched.
 
 ## Candidate Status Preservation
 
@@ -407,18 +689,22 @@ fabricated as operations.
 5. Manager clicks Sync now for Ozon.
 6. Tover mirrors Ozon products, warehouses, stocks, postings, returns, finance,
    legal-entity rows, removals, supplies, analytics, and discounted products.
-7. Tover generates candidates only for supported operation evidence.
-8. Operations > Marketplaces shows mirror counts and sync health.
-9. Operations shows Review candidates when Ozon has pending ready,
+7. If a transient step fails, Operations > Marketplaces shows automatic
+   recovery, the next retry time, and the safe error while keeping successful
+   mirror counts visible. The manager can choose Retry now.
+8. A terminal partial failure offers Retry failed steps for the same run/window.
+9. Tover generates candidates only for supported operation evidence.
+10. Operations > Marketplaces shows mirror counts and sync health.
+11. Operations shows Review candidates when Ozon has pending ready,
    needs-mapping, or approved candidates.
-10. Manager opens `/operations/marketplace/ozon`.
-11. Manager filters by status, operation type, source type, evidence, date, or
+12. Manager opens `/operations/marketplace/ozon`.
+13. Manager filters by status, operation type, source type, evidence, date, or
     mapping state.
-12. Manager reviews candidate details and all line items.
-13. Manager maps existing products/warehouses or creates missing local records.
-14. Manager approves valid candidates.
-15. Manager commits approved candidates.
-16. Tover calls existing `processOperation`, marks candidates committed, stores
+14. Manager reviews candidate details and all line items.
+15. Manager maps existing products/warehouses or creates missing local records.
+16. Manager approves valid candidates.
+17. Manager commits approved candidates.
+18. Tover calls existing `processOperation`, marks candidates committed, stores
     `created_operation_id`, and shows the created operations in the normal
     Operations list.
 
@@ -516,7 +802,18 @@ available:
 - product and warehouse creation from Ozon data;
 - manual mapping, approval, commit, and idempotent repeated commit;
 - concurrent/double commit attempts create only one local operation;
-- partial sync errors surface as `completed_with_errors`;
+- transient Ozon failures become `retrying`, recovery reuses the same run, and
+  completed steps are not repeated;
+- permanent failures become `completed_with_errors` or `failed`, and manual
+  retry resets only failed steps;
+- runner unit tests cover HTTP error classification, the exact durable retry
+  schedule, and conversion of a transient attempt eight into a terminal result;
+- migration-020 service-role RPC tests cover active-run serialization, single
+  lease ownership, stale-token rejection, persistence/aggregation of
+  caller-supplied failed results, selective reset, and run-to-step cascade
+  cleanup;
+- an exact missing mutual-settlement document is skipped while remaining report
+  types continue;
 - sale, return, write-off, transfer, and defect operations become normal Tover
   operations;
 - user decisions survive re-sync;

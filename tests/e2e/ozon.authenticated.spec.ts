@@ -47,7 +47,13 @@ interface OzonSummaryResponse {
       error?: string;
       validation?: unknown;
     };
-    lastSyncStatus?: "running" | "completed" | "completed_with_errors" | "failed" | null;
+    lastSyncStatus?:
+      | "running"
+      | "retrying"
+      | "completed"
+      | "completed_with_errors"
+      | "failed"
+      | null;
   } | null;
   counts: {
     products: number;
@@ -67,7 +73,41 @@ interface OzonSummaryResponse {
     candidatesReady: number;
     candidatesNeedsMapping: number;
   };
+  recovery: {
+    runId: string;
+    status:
+      | "running"
+      | "retrying"
+      | "completed"
+      | "completed_with_errors"
+      | "failed";
+    pendingStepCount: number;
+    scheduledRetryCount: number;
+    failedStepCount: number;
+    nextRetryAt: string | null;
+    lastError: string | null;
+  } | null;
   setupError?: string;
+}
+
+interface OzonSyncResponse {
+  runId: string;
+  status:
+    | "running"
+    | "retrying"
+    | "completed"
+    | "completed_with_errors"
+    | "failed";
+  summary: {
+    errors: string[];
+    reports?: { fetched: number; skipped?: number };
+  };
+  recovery: {
+    pendingStepCount: number;
+    scheduledRetryCount: number;
+    failedStepCount: number;
+    nextRetryAt: string | null;
+  };
 }
 
 interface CandidateListResponse {
@@ -100,6 +140,30 @@ interface OperationDetailsResponse {
     quantity: number;
     direction: string;
   }[];
+}
+
+interface OzonSyncRunRow {
+  id: string;
+  status:
+    | "running"
+    | "retrying"
+    | "completed"
+    | "completed_with_errors"
+    | "failed";
+}
+
+interface OzonSyncStepRow {
+  id: string;
+  step_key: string;
+  state:
+    | "pending"
+    | "running"
+    | "retry_scheduled"
+    | "completed"
+    | "skipped"
+    | "failed";
+  attempt_count: number;
+  lease_token: string | null;
 }
 
 function uniqueName(prefix: string, testInfo: { workerIndex: number }): string {
@@ -175,14 +239,18 @@ async function connectOzon(
 }
 
 async function syncOzon(request: APIRequestContext, fixture: OzonMockFixture) {
-  return postJson<{ status: string; summary: { errors: string[] } }>(
-    request,
-    "/api/integrations/ozon/sync",
-    {
+  const response = await request.post("/api/integrations/ozon/sync", {
+    data: {
       dateFrom: fixture.dateFrom,
       dateTo: fixture.dateTo,
-    }
+    },
+  });
+  const bodyText = await response.text();
+  const result = JSON.parse(bodyText) as OzonSyncResponse;
+  expect(response.status(), bodyText).toBe(
+    result.status === "running" || result.status === "retrying" ? 202 : 200
   );
+  return result;
 }
 
 async function listCandidates(request: APIRequestContext) {
@@ -213,7 +281,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 015_ozon_commit_hardening.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 020_ozon_sync_recovery.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("Invalid", testInfo));
@@ -242,15 +310,14 @@ test.describe("Ozon marketplace integration", () => {
     }
   });
 
-  test("reports partial sync completion when one Ozon step fails", async ({
-    page,
+  test("resumes a transient failure in the same run without repeating completed steps", async ({
     request,
   }, testInfo) => {
     const adminWorkspace = await getAdminWorkspace();
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 015_ozon_commit_hardening.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 020_ozon_sync_recovery.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("Partial", testInfo));
@@ -259,30 +326,346 @@ test.describe("Ozon marketplace integration", () => {
     try {
       await resetOzonState(adminWorkspace!, false);
       mock = await startOzonMockServer(fixture, {
-        failPaths: ["/v1/finance/accrual/types"],
+        responseSequences: {
+          "/v1/finance/accrual/types": Array.from({ length: 4 }, () => ({
+            status: 500,
+            body: { error: { message: "temporary finance failure" } },
+          })),
+        },
+        validClientId: VALID_CLIENT_ID,
+        validApiKey: VALID_API_KEY,
+      });
+
+      await connectOzon(request);
+      const firstResult = await syncOzon(request, fixture);
+      expect(firstResult.status).toBe("retrying");
+      expect(firstResult.recovery.scheduledRetryCount).toBe(1);
+      expect(firstResult.recovery.nextRetryAt).not.toBeNull();
+      expect(firstResult.summary.errors.join(" ")).toContain("finance");
+
+      const completedStepCounts = Object.fromEntries(
+        [
+          "/v2/warehouse/list",
+          "/v3/product/list",
+          "/v4/product/info/stocks",
+          "/v4/posting/fbs/list",
+          "/v1/returns/list",
+        ].map((path) => [path, mock!.requestCounts[path] ?? 0])
+      );
+
+      const retryingSummary = await expectJson<OzonSummaryResponse>(
+        request.get("/api/integrations/ozon"),
+        200
+      );
+      expect(retryingSummary.connection?.lastSyncStatus).toBe("retrying");
+      expect(retryingSummary.recovery?.runId).toBe(firstResult.runId);
+      expect(retryingSummary.connection?.health?.validation).toBeUndefined();
+
+      const resumedResult = await syncOzon(request, fixture);
+      expect(resumedResult.runId).toBe(firstResult.runId);
+      expect(resumedResult.status).toBe("completed");
+      expect(resumedResult.summary.errors).toEqual([]);
+
+      for (const [path, count] of Object.entries(completedStepCounts)) {
+        expect(mock.requestCounts[path] ?? 0, path).toBe(count);
+      }
+
+      const completedSummary = await expectJson<OzonSummaryResponse>(
+        request.get("/api/integrations/ozon"),
+        200
+      );
+      expect(completedSummary.connection?.lastSyncStatus).toBe("completed");
+      expect(completedSummary.recovery?.runId).toBe(firstResult.runId);
+    } finally {
+      await mock?.close();
+      await resetOzonState(adminWorkspace!, false);
+    }
+  });
+
+  test("service-role recovery RPCs serialize ownership and persist caller-supplied terminal results", async () => {
+    const adminWorkspace = await getAdminWorkspace();
+    test.skip(!adminWorkspace, adminSkipReason());
+    requireOzonSchema(
+      await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
+      "Local Supabase schema is missing Ozon marketplace migrations through 020_ozon_sync_recovery.sql"
+    );
+
+    const { admin } = adminWorkspace!;
+    let connectionId: string | null = null;
+
+    try {
+      await resetOzonState(adminWorkspace!, false);
+      const connection = await insertOzonRecoveryTestConnection(adminWorkspace!);
+      connectionId = connection.id;
+      const window = {
+        p_connection_id: connection.id,
+        p_date_from: "2099-06-01T00:00:00.000Z",
+        p_date_to: "2099-06-02T00:00:00.000Z",
+      };
+
+      const beginResults = await Promise.all([
+        admin.rpc("begin_or_resume_ozon_sync_run", window),
+        admin.rpc("begin_or_resume_ozon_sync_run", window),
+      ]);
+      for (const result of beginResults) expect(result.error).toBeNull();
+      const begunRuns = beginResults.map((result) =>
+        firstRpcRow<OzonSyncRunRow>(result.data)
+      );
+      expect(begunRuns[0].id).toBe(begunRuns[1].id);
+      const runId = begunRuns[0].id;
+
+      const { data: initialSteps, error: initialStepsError } = await admin
+        .from("marketplace_sync_run_steps")
+        .select("id")
+        .eq("run_id", runId);
+      expect(initialStepsError).toBeNull();
+      expect(initialSteps).toHaveLength(12);
+
+      const firstClaims = await Promise.all([
+        admin.rpc("claim_ozon_sync_run_step", { p_run_id: runId }),
+        admin.rpc("claim_ozon_sync_run_step", { p_run_id: runId }),
+      ]);
+      for (const result of firstClaims) expect(result.error).toBeNull();
+      const ownedClaims = firstClaims
+        .flatMap((result) => rpcRows<OzonSyncStepRow>(result.data));
+      expect(ownedClaims).toHaveLength(1);
+      const firstClaim = ownedClaims[0];
+      expect(firstClaim.step_key).toBe("warehouses");
+      expect(firstClaim.attempt_count).toBe(1);
+      expect(firstClaim.lease_token).not.toBeNull();
+
+      const retryResult = await admin.rpc("finish_ozon_sync_run_step", {
+        p_step_id: firstClaim.id,
+        p_lease_token: firstClaim.lease_token,
+        p_state: "retry_scheduled",
+        p_summary: { fetched: 0 },
+        p_last_error: {
+          kind: "server",
+          status: 500,
+          retryable: true,
+        },
+        p_next_attempt_at: "2000-01-01T00:00:00.000Z",
+      });
+      expect(retryResult.error).toBeNull();
+
+      const reclaimed = await claimRecoveryStep(admin, runId);
+      expect(reclaimed.id).toBe(firstClaim.id);
+      expect(reclaimed.attempt_count).toBe(2);
+      expect(reclaimed.lease_token).not.toBe(firstClaim.lease_token);
+
+      const staleFinish = await admin.rpc("finish_ozon_sync_run_step", {
+        p_step_id: firstClaim.id,
+        p_lease_token: firstClaim.lease_token,
+        p_state: "completed",
+        p_summary: { fetched: 1 },
+        p_last_error: null,
+        p_next_attempt_at: null,
+      });
+      expect(staleFinish.error).not.toBeNull();
+
+      let currentClaim = reclaimed;
+      for (let attempt = 2; attempt < 8; attempt += 1) {
+        const finishRetry = await admin.rpc("finish_ozon_sync_run_step", {
+          p_step_id: currentClaim.id,
+          p_lease_token: currentClaim.lease_token,
+          p_state: "retry_scheduled",
+          p_summary: { fetched: 0 },
+          p_last_error: {
+            kind: "server",
+            status: 500,
+            retryable: true,
+          },
+          p_next_attempt_at: "2000-01-01T00:00:00.000Z",
+        });
+        expect(finishRetry.error).toBeNull();
+        currentClaim = await claimRecoveryStep(admin, runId);
+        expect(currentClaim.attempt_count).toBe(attempt + 1);
+      }
+
+      const persistedAttemptEightFailure = await admin.rpc(
+        "finish_ozon_sync_run_step",
+        {
+          p_step_id: currentClaim.id,
+          p_lease_token: currentClaim.lease_token,
+          p_state: "failed",
+          p_summary: { fetched: 0 },
+          p_last_error: {
+            kind: "server",
+            status: 500,
+            retryable: false,
+          },
+          p_next_attempt_at: null,
+        }
+      );
+      expect(persistedAttemptEightFailure.error).toBeNull();
+      const failedStep = firstRpcRow<OzonSyncStepRow>(
+        persistedAttemptEightFailure.data
+      );
+      expect(failedStep.state).toBe("failed");
+      expect(failedStep.attempt_count).toBe(8);
+
+      for (let remaining = 0; remaining < 11; remaining += 1) {
+        const claim = await claimRecoveryStep(admin, runId);
+        const finish = await admin.rpc("finish_ozon_sync_run_step", {
+          p_step_id: claim.id,
+          p_lease_token: claim.lease_token,
+          p_state: "completed",
+          p_summary: { fetched: 1 },
+          p_last_error: null,
+          p_next_attempt_at: null,
+        });
+        expect(finish.error).toBeNull();
+      }
+
+      const { data: terminalRun, error: terminalRunError } = await admin
+        .from("marketplace_sync_runs")
+        .select("status")
+        .eq("id", runId)
+        .single();
+      expect(terminalRunError).toBeNull();
+      expect(terminalRun?.status).toBe("completed_with_errors");
+
+      const manualRetry = await admin.rpc(
+        "retry_failed_ozon_sync_run_steps",
+        { p_run_id: runId }
+      );
+      expect(manualRetry.error).toBeNull();
+      expect(firstRpcRow<OzonSyncRunRow>(manualRetry.data).id).toBe(runId);
+
+      const { data: resetSteps, error: resetStepsError } = await admin
+        .from("marketplace_sync_run_steps")
+        .select("step_key, state, attempt_count")
+        .eq("run_id", runId)
+        .order("step_order");
+      expect(resetStepsError).toBeNull();
+      expect(resetSteps?.[0]).toMatchObject({
+        step_key: "warehouses",
+        state: "pending",
+        attempt_count: 0,
+      });
+      expect(resetSteps?.slice(1).every((step) =>
+        step.state === "completed" && step.attempt_count === 1
+      )).toBe(true);
+
+      const deleteRun = await admin
+        .from("marketplace_sync_runs")
+        .delete()
+        .eq("id", runId);
+      expect(deleteRun.error).toBeNull();
+      const { count: remainingStepCount, error: remainingStepsError } = await admin
+        .from("marketplace_sync_run_steps")
+        .select("id", { count: "exact", head: true })
+        .eq("run_id", runId);
+      expect(remainingStepsError).toBeNull();
+      expect(remainingStepCount).toBe(0);
+
+      const permanentRunResult = await admin.rpc(
+        "begin_or_resume_ozon_sync_run",
+        window
+      );
+      expect(permanentRunResult.error).toBeNull();
+      const permanentRun = firstRpcRow<OzonSyncRunRow>(permanentRunResult.data);
+      const permanentClaim = await claimRecoveryStep(admin, permanentRun.id);
+      const persisted400Failure = await admin.rpc("finish_ozon_sync_run_step", {
+        p_step_id: permanentClaim.id,
+        p_lease_token: permanentClaim.lease_token,
+        p_state: "failed",
+        p_summary: { fetched: 0 },
+        p_last_error: {
+          kind: "client",
+          status: 400,
+          retryable: false,
+        },
+        p_next_attempt_at: null,
+      });
+      expect(persisted400Failure.error).toBeNull();
+      expect(
+        firstRpcRow<OzonSyncStepRow>(persisted400Failure.data)
+      ).toMatchObject({
+        state: "failed",
+        attempt_count: 1,
+      });
+      const { data: permanentStep, error: permanentStepError } = await admin
+        .from("marketplace_sync_run_steps")
+        .select("state, next_attempt_at, last_error")
+        .eq("id", permanentClaim.id)
+        .single();
+      expect(permanentStepError).toBeNull();
+      expect(permanentStep).toMatchObject({
+        state: "failed",
+        next_attempt_at: null,
+        last_error: {
+          kind: "client",
+          status: 400,
+          retryable: false,
+        },
+      });
+    } finally {
+      if (connectionId) {
+        const { error: cleanupError } = await admin
+          .from("marketplace_connections")
+          .delete()
+          .eq("id", connectionId);
+        if (cleanupError) {
+          throw new Error(
+            `Failed to delete Ozon recovery test connection: ${cleanupError.message}`
+          );
+        }
+      }
+      await resetWorkspaceSettings(adminWorkspace!, false);
+    }
+  });
+
+  test("skips only a missing current-month mutual settlement report and completes the remaining reports", async ({
+    request,
+  }, testInfo) => {
+    const adminWorkspace = await getAdminWorkspace();
+    test.skip(!adminWorkspace, adminSkipReason());
+    requireOzonSchema(
+      await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
+      "Local Supabase schema is missing Ozon marketplace migrations through 020_ozon_sync_recovery.sql"
+    );
+
+    const fixture = buildOzonFixture(uniqueName("MissingMutual", testInfo));
+    let mock: OzonMockServer | null = null;
+
+    try {
+      await resetOzonState(adminWorkspace!, false);
+      mock = await startOzonMockServer(fixture, {
+        responseSequences: {
+          "/v1/finance/mutual-settlement": [
+            {
+              status: 404,
+              body: {
+                error: {
+                  code: "FINANCE_DOCUMENT_NOT_FOUND",
+                  message: "finance document not found",
+                },
+              },
+            },
+          ],
+        },
         validClientId: VALID_CLIENT_ID,
         validApiKey: VALID_API_KEY,
       });
 
       await connectOzon(request);
       const syncResult = await syncOzon(request, fixture);
-      expect(syncResult.status).toBe("completed_with_errors");
-      expect(syncResult.summary.errors.join(" ")).toContain(
-        "/v1/finance/accrual/types"
-      );
+
+      expect(syncResult.status).toBe("completed");
+      expect(syncResult.summary.errors).toEqual([]);
+      expect(syncResult.summary.reports).toMatchObject({ skipped: 1 });
+      expect(mock.requestCounts["/v1/finance/mutual-settlement"]).toBe(1);
+      expect(mock.requestCounts["/v1/finance/compensation"]).toBe(1);
+      expect(mock.requestCounts["/v1/finance/decompensation"]).toBe(1);
+      expect(mock.requestCounts["/v1/finance/cash-flow-statement/list"]).toBe(1);
+      expect(mock.requestCounts["/v1/finance/products/buyout"]).toBe(1);
 
       const summary = await expectJson<OzonSummaryResponse>(
         request.get("/api/integrations/ozon"),
         200
       );
-      expect(summary.connection?.lastSyncStatus).toBe("completed_with_errors");
-      expect(summary.connection?.health?.validation).toBeUndefined();
-
-      await page.goto("/operations/marketplaces");
-      await expect(page.getByText("Completed with errors")).toBeVisible();
-      await expect(
-        page.getByText("/v1/finance/accrual/types", { exact: false })
-      ).toBeVisible();
+      expect(summary.counts.financeReports).toBe(4);
     } finally {
       await mock?.close();
       await resetOzonState(adminWorkspace!, false);
@@ -297,7 +680,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 015_ozon_commit_hardening.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 020_ozon_sync_recovery.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("Happy", testInfo));
@@ -391,6 +774,18 @@ test.describe("Ozon marketplace integration", () => {
         candidatesReady: 3,
         candidatesNeedsMapping: 3,
       });
+      expect(mock.requestBodies["/v3/supply-order/list"]).toEqual([
+        {
+          filter: {},
+          last_id: "",
+          limit: 100,
+          sort_by: "ORDER_CREATION",
+          sort_dir: "DESC",
+        },
+      ]);
+      expect(mock.requestBodies["/v3/supply-order/get"]).toEqual([
+        { order_ids: [fixture.supplyOrderId] },
+      ]);
 
       let candidates = await listCandidates(request);
       expect(candidates.summary).toMatchObject({
@@ -1046,6 +1441,52 @@ async function findUserByEmail(
   );
 }
 
+function rpcRows<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (data && typeof data === "object") return [data as T];
+  return [];
+}
+
+function firstRpcRow<T>(data: unknown): T {
+  const rows = rpcRows<T>(data);
+  expect(rows).toHaveLength(1);
+  return rows[0];
+}
+
+async function claimRecoveryStep(
+  admin: SupabaseClient,
+  runId: string
+): Promise<OzonSyncStepRow> {
+  const result = await admin.rpc("claim_ozon_sync_run_step", {
+    p_run_id: runId,
+  });
+  expect(result.error).toBeNull();
+  return firstRpcRow<OzonSyncStepRow>(result.data);
+}
+
+async function insertOzonRecoveryTestConnection({
+  admin,
+  workspaceId,
+}: AdminWorkspace) {
+  const { data, error } = await admin
+    .from("marketplace_connections")
+    .insert({
+      workspace_id: workspaceId,
+      provider: "ozon",
+      name: "Ozon recovery RPC test",
+      credential_ciphertext: {},
+      status: "connected",
+    })
+    .select("id")
+    .single();
+  if (error || !data?.id) {
+    throw new Error(
+      `Failed to create Ozon recovery test connection: ${error?.message}`
+    );
+  }
+  return { id: String(data.id) };
+}
+
 async function supportsOzonSchema(admin: SupabaseClient, workspaceId: string) {
   const base = await admin
     .from("marketplace_connections")
@@ -1066,8 +1507,22 @@ async function supportsOzonSchema(admin: SupabaseClient, workspaceId: string) {
     .select("id")
     .eq("workspace_id", workspaceId)
     .limit(1);
+  if (claims.error) return false;
 
-  return !claims.error;
+  const steps = await admin
+    .from("marketplace_sync_run_steps")
+    .select("id")
+    .eq("workspace_id", workspaceId)
+    .limit(1);
+  if (steps.error) return false;
+
+  const recoveryRpc = await admin.rpc("begin_or_resume_ozon_sync_run", {
+    p_connection_id: "00000000-0000-0000-0000-000000000000",
+    p_date_from: "2099-01-01T00:00:00.000Z",
+    p_date_to: "2099-01-02T00:00:00.000Z",
+  });
+
+  return recoveryRpc.error?.code === "P0002";
 }
 
 function requireOzonSchema(supported: boolean, message: string) {
@@ -1121,11 +1576,14 @@ async function resetOzonState(
   { admin, workspaceId }: AdminWorkspace,
   categoryRequired: boolean
 ) {
-  await admin
+  const { error } = await admin
     .from("marketplace_connections")
     .delete()
     .eq("workspace_id", workspaceId)
     .eq("provider", "ozon");
+  if (error) {
+    throw new Error(`Failed to reset Ozon connections: ${error.message}`);
+  }
   await resetWorkspaceSettings({ admin, workspaceId }, categoryRequired);
 }
 
