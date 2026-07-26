@@ -223,6 +223,10 @@ export class OzonClient {
     throw new Error("Ozon request retry loop exited unexpectedly");
   }
 
+  executionAbortSignal() {
+    return this.executionSignal;
+  }
+
   private async waitForRequestStart() {
     const now = this.runtime.now();
     const requestStartAt = Math.max(now, this.nextRequestStartAt);

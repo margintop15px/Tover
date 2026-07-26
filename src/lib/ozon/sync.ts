@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import Papa from "papaparse";
 import {
   canSyncUpdateCandidateStatus,
   normalizeOzonCandidateOperation,
@@ -11,6 +12,7 @@ import {
   OzonApiError,
   OzonClient,
   OzonIncompleteResponseError,
+  OzonInvariantError,
   type OzonReadOnlyEndpoint,
 } from "./client";
 import { decryptOzonCredentials } from "./credentials";
@@ -48,6 +50,14 @@ const PRODUCT_PAGE_LIMIT = 1000;
 const POSTING_PAGE_LIMIT = 100;
 const FINANCE_ACCRUAL_PAGE_LIMIT = 200;
 const DEFAULT_SYNC_DAYS = 30;
+const DISCOUNTED_REPORT_REUSE_MS = 10 * 60 * 1000;
+const OZON_REPORT_DOWNLOAD_LIMIT_BYTES = 10 * 1024 * 1024;
+const OZON_REPORT_DOWNLOAD_TIMEOUT_MS = 30_000;
+const OZON_REPORT_MAX_REDIRECTS = 5;
+const TRUSTED_OZON_REPORT_HOSTS = new Set([
+  "cdn1.ozone.ru",
+  "cdn2.ozone.ru",
+]);
 
 const PII_KEY_PATTERNS = [
   "address",
@@ -2274,7 +2284,9 @@ async function syncSupplies(
   return { fetched: orders.length, createdCandidates };
 }
 
-type OzonRequestClient = Pick<OzonClient, "request">;
+type OzonRequestClient = Pick<OzonClient, "request"> & {
+  executionAbortSignal?: () => AbortSignal | undefined;
+};
 
 export async function fetchSupplyOrders(client: OzonRequestClient): Promise<JsonRecord[]> {
   const orderIds = new Set<string>();
@@ -2618,7 +2630,9 @@ async function loadOzonProductRefs(
 ) {
   const { data, error } = await supabase
     .from("ozon_products")
-    .select("ozon_product_id, offer_id, sku, name, price, local_product_id")
+    .select(
+      "ozon_product_id, offer_id, sku, name, price, raw_payload, local_product_id"
+    )
     .eq("workspace_id", workspaceId)
     .eq("connection_id", connectionId);
   if (error) throw new Error(error.message);
@@ -2715,43 +2729,404 @@ async function syncDiscountedProducts(
   let fetched = 0;
   let createdCandidates = 0;
 
-  for (const chunk of chunkArray(products, 100)) {
-    const skus = chunk
-      .map((product) => product.sku)
-      .filter((value): value is string => Boolean(value));
-    if (skus.length === 0) continue;
-    const response = await client
-      .request<JsonRecord>("/v1/product/info/discounted", { skus })
-      .catch(() => ({}));
-    const items = extractItems(response, ["items", "products", "rows"]);
-    fetched += items.length;
-    for (const item of items) {
-      const row = toDiscountedProductRow(
-        item,
-        workspaceId,
-        connectionId,
-        mapping
-      );
-      const { data, error } = await supabase
-        .from("ozon_discounted_products")
-        .upsert(row, { onConflict: "connection_id,external_id" })
-        .select("*")
-        .single();
-      if (error || !data) {
-        throw new Error(error?.message ?? "Failed to save discounted product");
-      }
-      const candidate = buildDefectCandidate(data as JsonRecord);
-      if (!candidate) continue;
-      const saved = await upsertCandidatePreservingReview(supabase, candidate);
-      await supabase
-        .from("ozon_discounted_products")
-        .update({ operation_candidate_id: saved.id })
-        .eq("id", data.id);
-      createdCandidates += 1;
+  const discountedSkus = new Set(selectDiscountedSkus(products));
+  for (const sku of await discoverDiscountedSkus(client)) {
+    discountedSkus.add(sku);
+  }
+  const items = await fetchDiscountedProducts(client, [...discountedSkus]);
+  fetched = items.length;
+
+  for (const item of items) {
+    const row = toDiscountedProductRow(
+      item,
+      workspaceId,
+      connectionId,
+      mapping
+    );
+    const { data, error } = await supabase
+      .from("ozon_discounted_products")
+      .upsert(row, { onConflict: "connection_id,external_id" })
+      .select("*")
+      .single();
+    if (error || !data) {
+      throw new Error(error?.message ?? "Failed to save discounted product");
     }
+    const candidate = buildDefectCandidate(data as JsonRecord);
+    if (!candidate) continue;
+    const saved = await upsertCandidatePreservingReview(supabase, candidate);
+    await supabase
+      .from("ozon_discounted_products")
+      .update({ operation_candidate_id: saved.id })
+      .eq("id", data.id);
+    createdCandidates += 1;
   }
 
   return { fetched, createdCandidates };
+}
+
+export function selectDiscountedSkus(products: JsonRecord[]) {
+  const discountedSkus = new Set<string>();
+
+  for (const product of products) {
+    const rawPayload = toRecord(product.raw_payload);
+    const source = toRecord(rawPayload.source);
+    if (source.is_discounted !== true) continue;
+
+    const sku = toStringValue(product.sku ?? source.sku);
+    if (sku) discountedSkus.add(sku);
+  }
+
+  return [...discountedSkus];
+}
+
+interface DiscountedReportRuntime {
+  now: () => number;
+  fetchText: (url: string, executionSignal?: AbortSignal) => Promise<string>;
+}
+
+const DEFAULT_DISCOUNTED_REPORT_RUNTIME: DiscountedReportRuntime = {
+  now: Date.now,
+  fetchText: downloadOzonReportText,
+};
+
+export async function discoverDiscountedSkus(
+  client: OzonRequestClient,
+  runtime: DiscountedReportRuntime = DEFAULT_DISCOUNTED_REPORT_RUNTIME
+) {
+  const listResponse = await client.request<JsonRecord>("/v1/report/list", {
+    page: 0,
+    page_size: 100,
+    report_type: "SELLER_PRODUCT_DISCOUNTED",
+  });
+  const reports = extractItems(listResponse, ["reports", "items"])
+    .map(toRecord)
+    .filter((report) => {
+      const reportType = toStringValue(report.report_type);
+      return (
+        !reportType ||
+        reportType.toUpperCase() === "SELLER_PRODUCT_DISCOUNTED"
+      );
+    })
+    .sort(
+      (left, right) =>
+        reportCreatedAt(right) - reportCreatedAt(left)
+    );
+
+  let report = reports[0] ?? null;
+  if (!isReusableDiscountedReport(report, runtime.now())) {
+    const createResponse = await client.request<JsonRecord>(
+      "/v1/report/discounted/create",
+      {}
+    );
+    const createRoot = unwrapResult(createResponse);
+    const code = toStringValue(createRoot.code ?? createResponse.code);
+    if (!code) {
+      throw new OzonIncompleteResponseError(
+        "Ozon discounted report creation returned no code"
+      );
+    }
+    report = await fetchOzonReportInfo(client, code);
+  } else if (normalizeStatus(report?.status) !== "success") {
+    const code = toStringValue(report?.code);
+    if (!code) {
+      throw new OzonIncompleteResponseError(
+        "Ozon discounted report has no code"
+      );
+    }
+    report = await fetchOzonReportInfo(client, code);
+  }
+
+  const status = normalizeStatus(report?.status);
+  if (status === "waiting" || status === "processing") {
+    throw new OzonIncompleteResponseError(
+      "Ozon discounted report is still processing"
+    );
+  }
+  if (status !== "success") {
+    throw new OzonInvariantError("Ozon discounted report failed");
+  }
+
+  const fileUrl = toStringValue(report?.file);
+  if (!fileUrl) {
+    throw new OzonIncompleteResponseError(
+      "Ozon discounted report has no file"
+    );
+  }
+
+  return extractDiscountedSkusFromReportCsv(
+    await runtime.fetchText(fileUrl, client.executionAbortSignal?.())
+  );
+}
+
+async function fetchOzonReportInfo(
+  client: OzonRequestClient,
+  code: string
+) {
+  const response = await client.request<JsonRecord>("/v1/report/info", {
+    code,
+  });
+  const root = unwrapResult(response);
+  const nestedReport = toRecord(toRecord(response).report);
+  return Object.keys(nestedReport).length > 0 ? nestedReport : root;
+}
+
+function reportCreatedAt(report: JsonRecord) {
+  const createdAt = toStringValue(report.created_at);
+  if (!createdAt) return 0;
+  const timestamp = Date.parse(createdAt);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function isReusableDiscountedReport(
+  report: JsonRecord | null,
+  now: number
+) {
+  if (!report) return false;
+  const status = normalizeStatus(report.status);
+  if (status === "waiting" || status === "processing") return true;
+  if (status !== "success" || !toStringValue(report.file)) return false;
+
+  const createdAt = reportCreatedAt(report);
+  return createdAt > 0 && now - createdAt <= DISCOUNTED_REPORT_REUSE_MS;
+}
+
+export function extractDiscountedSkusFromReportCsv(text: string) {
+  const parsed = Papa.parse<string[]>(text, {
+    skipEmptyLines: true,
+  });
+  if (parsed.errors.length > 0) {
+    throw new OzonInvariantError("Ozon discounted report CSV is invalid");
+  }
+
+  const [headers = [], ...rows] = parsed.data;
+  const discountedSkuIndex = headers.findIndex(isDiscountedSkuHeader);
+  if (discountedSkuIndex < 0) {
+    throw new OzonInvariantError(
+      "Ozon discounted report has no discounted SKU column"
+    );
+  }
+
+  const skus = new Set<string>();
+  for (const row of rows) {
+    const sku = String(row[discountedSkuIndex] ?? "").trim();
+    if (/^\d+$/.test(sku)) skus.add(sku);
+  }
+  return [...skus];
+}
+
+function isDiscountedSkuHeader(value: string) {
+  const header = value
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^a-zа-я0-9]+/g, "");
+  return (
+    header.includes("sku") &&
+    (header.includes("discount") ||
+      header.includes("markdown") ||
+      header.includes("уцен"))
+  );
+}
+
+interface OzonReportDownloadRuntime {
+  fetch: typeof fetch;
+  timeoutSignal: (milliseconds: number) => AbortSignal;
+  maxBytes?: number;
+}
+
+const DEFAULT_OZON_REPORT_DOWNLOAD_RUNTIME: OzonReportDownloadRuntime = {
+  fetch,
+  timeoutSignal: (milliseconds) => AbortSignal.timeout(milliseconds),
+};
+
+export async function downloadOzonReportText(
+  url: string,
+  executionSignal?: AbortSignal,
+  runtime: OzonReportDownloadRuntime = DEFAULT_OZON_REPORT_DOWNLOAD_RUNTIME
+) {
+  const requestSignal = combineOzonReportAbortSignals(
+    runtime.timeoutSignal(OZON_REPORT_DOWNLOAD_TIMEOUT_MS),
+    executionSignal
+  );
+
+  try {
+    throwIfOzonReportDownloadAborted(requestSignal.signal);
+    let currentUrl = assertSafeOzonReportUrl(url);
+
+    for (let redirectCount = 0; ; redirectCount += 1) {
+      const response = await runtime.fetch(currentUrl, {
+        cache: "no-store",
+        redirect: "manual",
+        signal: requestSignal.signal,
+      });
+
+      if (isRedirectResponse(response.status)) {
+        if (redirectCount >= OZON_REPORT_MAX_REDIRECTS) {
+          await response.body?.cancel();
+          throw new OzonInvariantError(
+            "Ozon discounted report has too many redirects"
+          );
+        }
+        const location = response.headers.get("location");
+        await response.body?.cancel();
+        if (!location) {
+          throw new OzonInvariantError(
+            "Ozon discounted report redirect has no location"
+          );
+        }
+        currentUrl = assertSafeOzonReportUrl(
+          new URL(location, currentUrl).toString()
+        );
+        continue;
+      }
+
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error(
+          `Ozon report download failed with HTTP ${response.status}`
+        );
+      }
+
+      return readBoundedOzonReportText(
+        response,
+        runtime.maxBytes ?? OZON_REPORT_DOWNLOAD_LIMIT_BYTES
+      );
+    }
+  } finally {
+    requestSignal.cleanup();
+  }
+}
+
+function assertSafeOzonReportUrl(value: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new OzonInvariantError("Ozon discounted report URL is invalid");
+  }
+
+  if (
+    url.protocol === "https:" &&
+    TRUSTED_OZON_REPORT_HOSTS.has(url.hostname.toLowerCase())
+  ) {
+    return url;
+  }
+
+  const configuredApiUrl = process.env.OZON_API_BASE_URL;
+  if (
+    configuredApiUrl &&
+    url.origin === safeUrlOrigin(configuredApiUrl)
+  ) {
+    return url;
+  }
+  throw new OzonInvariantError("Ozon discounted report URL is not trusted");
+}
+
+function safeUrlOrigin(value: string) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function isRedirectResponse(status: number) {
+  return [301, 302, 303, 307, 308].includes(status);
+}
+
+async function readBoundedOzonReportText(
+  response: Response,
+  maxBytes: number
+) {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    await response.body?.cancel();
+    throw new OzonInvariantError("Ozon discounted report is too large");
+  }
+
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let byteCount = 0;
+  let text = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteCount += value.byteLength;
+      if (byteCount > maxBytes) {
+        await reader.cancel();
+        throw new OzonInvariantError("Ozon discounted report is too large");
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function combineOzonReportAbortSignals(
+  timeoutSignal: AbortSignal,
+  executionSignal?: AbortSignal
+) {
+  if (!executionSignal) {
+    return { signal: timeoutSignal, cleanup: () => {} };
+  }
+
+  const controller = new AbortController();
+  const sources = [timeoutSignal, executionSignal];
+  const listeners = sources.map((source) => {
+    const listener = () => {
+      if (!controller.signal.aborted) {
+        controller.abort(ozonReportAbortReason(source));
+      }
+    };
+    if (source.aborted) listener();
+    else source.addEventListener("abort", listener, { once: true });
+    return { source, listener };
+  });
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      for (const { source, listener } of listeners) {
+        source.removeEventListener("abort", listener);
+      }
+    },
+  };
+}
+
+function throwIfOzonReportDownloadAborted(signal: AbortSignal) {
+  if (signal.aborted) throw ozonReportAbortReason(signal);
+}
+
+function ozonReportAbortReason(signal: AbortSignal) {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Ozon report download aborted", "AbortError");
+}
+
+export async function fetchDiscountedProducts(
+  client: OzonRequestClient,
+  discountedSkus: string[]
+): Promise<JsonRecord[]> {
+  const items: JsonRecord[] = [];
+
+  for (const chunk of chunkArray(discountedSkus, 100)) {
+    const response = await client.request<JsonRecord>(
+      "/v1/product/info/discounted",
+      { discounted_skus: chunk }
+    );
+    items.push(
+      ...(extractItems(response, ["items", "products", "rows"]) as JsonRecord[])
+    );
+  }
+
+  return items;
 }
 
 function toDiscountedProductRow(
@@ -2782,8 +3157,10 @@ function toDiscountedProductRow(
     sku,
     offer_id: offerId,
     name: toStringValue(item.name ?? item.product_name),
-    status: toStringValue(item.status),
-    reason: toStringValue(item.reason ?? item.discount_reason ?? item.comment),
+    status: toStringValue(
+      item.status ?? item.condition ?? item.condition_estimation
+    ),
+    reason: discountedDamageEvidence(item),
     quantity: toNumberValue(item.quantity ?? item.stock),
     discount_percent: toNumberValue(item.discount_percent),
     raw_payload: sanitizeOzonPayload(item),
@@ -2791,6 +3168,28 @@ function toDiscountedProductRow(
     local_warehouse_id: findLocalWarehouseId(mapping, warehouseId, warehouseName),
     synced_at: new Date().toISOString(),
   };
+}
+
+export function discountedDamageEvidence(item: JsonRecord) {
+  const parts = [
+    item.reason_damaged,
+    item.comment_reason_damaged,
+    item.defects,
+    item.mechanical_damage,
+    item.package_damage,
+    item.packaging_violation,
+    item.shortage,
+    item.repair,
+    item.reason,
+    item.discount_reason,
+    item.comment,
+    item.condition,
+    item.condition_estimation,
+  ]
+    .map(toStringValue)
+    .filter((value): value is string => Boolean(value));
+
+  return parts.length > 0 ? parts.join("; ") : null;
 }
 
 function buildDefectCandidate(row: JsonRecord) {
@@ -3216,10 +3615,23 @@ function isCompletedSupplyStatus(status: string) {
   );
 }
 
-function isDefectReason(reason: string) {
-  return ["defect", "damage", "damaged", "broken", "brak"].some((marker) =>
-    reason.includes(marker)
-  );
+export function isDefectReason(reason: string) {
+  const normalizedReason = normalizeStatus(reason).replace(/ё/g, "е");
+  return [
+    "defect",
+    "damage",
+    "damaged",
+    "broken",
+    "brak",
+    "брак",
+    "вмят",
+    "дефект",
+    "нарушен",
+    "повреж",
+    "сломан",
+    "трещ",
+    "царап",
+  ].some((marker) => normalizedReason.includes(marker));
 }
 
 function normalizeKey(value: string) {

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { OzonApiError } from "../../src/lib/ozon/client";
+import {
+  OzonApiError,
+  OzonClient,
+  OzonIncompleteResponseError,
+  OzonInvariantError,
+} from "../../src/lib/ozon/client";
 import * as sync from "../../src/lib/ozon/sync";
 import {
   buildOzonFixture,
@@ -12,13 +17,460 @@ type FetchSupplyOrders = (client: {
   request: <T>(endpoint: string, body: Record<string, unknown>) => Promise<T>;
 }) => Promise<unknown[]>;
 
+type FetchDiscountedProducts = (
+  client: {
+    request: <T>(endpoint: string, body: Record<string, unknown>) => Promise<T>;
+  },
+  discountedSkus: string[]
+) => Promise<unknown[]>;
+
+type DiscoverDiscountedSkus = (
+  client: {
+    request: <T>(endpoint: string, body: Record<string, unknown>) => Promise<T>;
+    executionAbortSignal?: () => AbortSignal | undefined;
+  },
+  runtime: {
+    now: () => number;
+    fetchText: (url: string, signal?: AbortSignal) => Promise<string>;
+  } | undefined
+) => Promise<string[]>;
+
+type DownloadOzonReportText = (
+  url: string,
+  executionSignal: AbortSignal | undefined,
+  runtime: {
+    fetch: typeof fetch;
+    timeoutSignal: (milliseconds: number) => AbortSignal;
+    maxBytes?: number;
+  }
+) => Promise<string>;
+
 const fetchSupplyOrders = (sync as unknown as {
   fetchSupplyOrders: FetchSupplyOrders;
 }).fetchSupplyOrders;
 
+const fetchDiscountedProducts = (sync as unknown as {
+  fetchDiscountedProducts: FetchDiscountedProducts;
+}).fetchDiscountedProducts;
+
+const selectDiscountedSkus = (sync as unknown as {
+  selectDiscountedSkus: (products: Record<string, unknown>[]) => string[];
+}).selectDiscountedSkus;
+
+const discoverDiscountedSkus = (sync as unknown as {
+  discoverDiscountedSkus: DiscoverDiscountedSkus;
+}).discoverDiscountedSkus;
+
+const downloadOzonReportText = (sync as unknown as {
+  downloadOzonReportText: DownloadOzonReportText;
+}).downloadOzonReportText;
+
+const discountedDamageEvidence = (sync as unknown as {
+  discountedDamageEvidence: (item: Record<string, unknown>) => string | null;
+}).discountedDamageEvidence;
+
+const isDefectReason = (sync as unknown as {
+  isDefectReason: (reason: string) => boolean;
+}).isDefectReason;
+
 const isMissingFinanceDocumentError = (sync as unknown as {
   isMissingFinanceDocumentError: (error: unknown) => boolean;
 }).isMissingFinanceDocumentError;
+
+test("selectDiscountedSkus excludes ordinary products and discounted analog parents", () => {
+  const products = [
+    {
+      sku: "320067758",
+      raw_payload: {
+        source: {
+          sku: 320067758,
+          has_discounted_item: true,
+          is_discounted: false,
+          discounted_stocks: { coming: 0, present: 1, reserved: 0 },
+        },
+      },
+    },
+    {
+      sku: "635548518",
+      raw_payload: {
+        source: {
+          sku: 635548518,
+          has_discounted_item: false,
+          is_discounted: true,
+          discounted_stocks: { coming: 0, present: 1, reserved: 0 },
+        },
+      },
+    },
+    {
+      sku: "ordinary-without-details",
+      raw_payload: {},
+    },
+  ];
+
+  assert.deepEqual(selectDiscountedSkus(products), ["635548518"]);
+});
+
+test("fetchDiscountedProducts uses Ozon's discounted_skus request contract", async () => {
+  const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
+  const client = {
+    request: async <T>(endpoint: string, body: Record<string, unknown>) => {
+      requests.push({ endpoint, body });
+      return {
+        items: [
+          {
+            discounted_sku: 635548518,
+            sku: 320067758,
+            condition: "used",
+          },
+        ],
+      } as T;
+    },
+  };
+
+  const products = await fetchDiscountedProducts(client, ["635548518"]);
+
+  assert.deepEqual(requests, [
+    {
+      endpoint: "/v1/product/info/discounted",
+      body: { discounted_skus: ["635548518"] },
+    },
+  ]);
+  assert.deepEqual(products, [
+    {
+      discounted_sku: 635548518,
+      sku: 320067758,
+      condition: "used",
+    },
+  ]);
+});
+
+test("fetchDiscountedProducts propagates an Ozon request failure", async () => {
+  const failure = new OzonApiError("/v1/product/info/discounted", 400, {
+    code: 3,
+    message: "Request validation error",
+  });
+  const client = {
+    request: async () => {
+      throw failure;
+    },
+  };
+
+  await assert.rejects(
+    fetchDiscountedProducts(client, ["635548518"]),
+    (error: unknown) => error === failure
+  );
+});
+
+test("discoverDiscountedSkus reads authoritative discounted IDs from the latest Ozon report", async () => {
+  const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
+  const downloadedUrls: string[] = [];
+  const client = {
+    request: async <T>(endpoint: string, body: Record<string, unknown>) => {
+      requests.push({ endpoint, body });
+      return {
+        result: {
+          reports: [
+            {
+              code: "REPORT-DISCOUNTED",
+              report_type: "SELLER_PRODUCT_DISCOUNTED",
+              status: "success",
+              created_at: "2026-07-27T00:00:00.000Z",
+              file: "https://cdn1.ozone.ru/reports/discounted.csv",
+            },
+          ],
+        },
+      } as T;
+    },
+  };
+
+  const skus = await discoverDiscountedSkus(client, {
+    now: () => Date.parse("2026-07-27T00:05:00.000Z"),
+    fetchText: async (url) => {
+      downloadedUrls.push(url);
+      return [
+        "SKU основного товара;SKU уценённого товара",
+        "320067758;635548518",
+        "320067759;635548519",
+      ].join("\n");
+    },
+  });
+
+  assert.deepEqual(requests, [
+    {
+      endpoint: "/v1/report/list",
+      body: {
+        page: 0,
+        page_size: 100,
+        report_type: "SELLER_PRODUCT_DISCOUNTED",
+      },
+    },
+  ]);
+  assert.deepEqual(downloadedUrls, [
+    "https://cdn1.ozone.ru/reports/discounted.csv",
+  ]);
+  assert.deepEqual(skus, ["635548518", "635548519"]);
+});
+
+test("discoverDiscountedSkus passes the durable step deadline to the report download", async () => {
+  const controller = new AbortController();
+  let downloadSignal: AbortSignal | undefined;
+  const client = {
+    executionAbortSignal: () => controller.signal,
+    request: async <T>() =>
+      ({
+        result: {
+          reports: [
+            {
+              code: "REPORT-DISCOUNTED",
+              report_type: "SELLER_PRODUCT_DISCOUNTED",
+              status: "success",
+              created_at: "2026-07-27T00:00:00.000Z",
+              file: "https://cdn1.ozone.ru/reports/discounted.csv",
+            },
+          ],
+        },
+      }) as T,
+  };
+
+  await discoverDiscountedSkus(client, {
+    now: () => Date.parse("2026-07-27T00:05:00.000Z"),
+    fetchText: async (_url, signal) => {
+      downloadSignal = signal;
+      return [
+        "SKU основного товара;SKU уценённого товара",
+        "320067758;635548518",
+      ].join("\n");
+    },
+  });
+
+  assert.equal(downloadSignal, controller.signal);
+});
+
+test("discoverDiscountedSkus creates a missing report and exposes processing as a durable retry", async () => {
+  const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
+  const responses = [
+    { result: { reports: [] } },
+    { code: "REPORT-NEW" },
+    {
+      result: {
+        code: "REPORT-NEW",
+        report_type: "SELLER_PRODUCT_DISCOUNTED",
+        status: "processing",
+      },
+    },
+  ];
+  const client = {
+    request: async <T>(endpoint: string, body: Record<string, unknown>) => {
+      requests.push({ endpoint, body });
+      return responses.shift() as T;
+    },
+  };
+
+  await assert.rejects(
+    discoverDiscountedSkus(client, {
+      now: () => Date.parse("2026-07-27T00:05:00.000Z"),
+      fetchText: async () => {
+        throw new Error("report should not be downloaded while processing");
+      },
+    }),
+    OzonIncompleteResponseError
+  );
+  assert.deepEqual(requests, [
+    {
+      endpoint: "/v1/report/list",
+      body: {
+        page: 0,
+        page_size: 100,
+        report_type: "SELLER_PRODUCT_DISCOUNTED",
+      },
+    },
+    {
+      endpoint: "/v1/report/discounted/create",
+      body: {},
+    },
+    {
+      endpoint: "/v1/report/info",
+      body: { code: "REPORT-NEW" },
+    },
+  ]);
+});
+
+test("fetchDiscountedProducts batches 101 IDs and preserves response order", async () => {
+  const batchSizes: number[] = [];
+  const client = {
+    request: async <T>(
+      _endpoint: string,
+      body: Record<string, unknown>
+    ) => {
+      const discountedSkus = body.discounted_skus as string[];
+      batchSizes.push(discountedSkus.length);
+      return {
+        result: {
+          items: discountedSkus.map((discounted_sku) => ({ discounted_sku })),
+        },
+      } as T;
+    },
+  };
+  const discountedSkus = Array.from(
+    { length: 101 },
+    (_, index) => String(635548500 + index)
+  );
+
+  const products = await fetchDiscountedProducts(client, discountedSkus);
+
+  assert.deepEqual(batchSizes, [100, 1]);
+  assert.deepEqual(
+    products.map((product) => (product as Record<string, unknown>).discounted_sku),
+    discountedSkus
+  );
+});
+
+test("discounted report discovery and detail lookup agree on the same SKU over HTTP", async () => {
+  const fixture = buildOzonFixture("unit-discounted-report");
+  const previousBaseUrl = process.env.OZON_API_BASE_URL;
+  process.env.OZON_API_BASE_URL = "http://127.0.0.1:32124";
+  const mock = await startOzonMockServer(fixture);
+
+  try {
+    const client = new OzonClient({
+      clientId: "ozon-client",
+      apiKey: "ozon-api-key",
+    });
+    const discountedSkus = await discoverDiscountedSkus(client, undefined);
+    const products = await fetchDiscountedProducts(client, discountedSkus);
+
+    assert.deepEqual(discountedSkus, [fixture.discountedSku]);
+    assert.deepEqual(
+      mock.requestBodies["/v1/product/info/discounted"],
+      [{ discounted_skus: [fixture.discountedSku] }]
+    );
+    assert.equal(
+      (products[0] as Record<string, unknown>).discounted_sku,
+      fixture.discountedSku
+    );
+  } finally {
+    await mock.close();
+    if (previousBaseUrl === undefined) {
+      delete process.env.OZON_API_BASE_URL;
+    } else {
+      process.env.OZON_API_BASE_URL = previousBaseUrl;
+    }
+  }
+});
+
+test("discounted report download rejects an untrusted redirect before following it", async () => {
+  const requests: Array<{ url: string; redirect: RequestRedirect | undefined }> = [];
+
+  await assert.rejects(
+    downloadOzonReportText(
+      "https://cdn1.ozone.ru/reports/discounted.csv",
+      undefined,
+      {
+        fetch: async (input, init) => {
+          requests.push({
+            url: String(input),
+            redirect: init?.redirect,
+          });
+          return new Response(null, {
+            status: 302,
+            headers: {
+              location: "https://internal.example/reports/private.csv",
+            },
+          });
+        },
+        timeoutSignal: () => new AbortController().signal,
+      }
+    ),
+    OzonInvariantError
+  );
+
+  assert.deepEqual(requests, [
+    {
+      url: "https://cdn1.ozone.ru/reports/discounted.csv",
+      redirect: "manual",
+    },
+  ]);
+});
+
+test("discounted report download enforces its byte limit while streaming", async () => {
+  let pulls = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      if (pulls === 1) {
+        controller.enqueue(new TextEncoder().encode("1234"));
+        return;
+      }
+      controller.enqueue(new TextEncoder().encode("56"));
+      controller.close();
+    },
+  });
+
+  await assert.rejects(
+    downloadOzonReportText(
+      "https://cdn1.ozone.ru/reports/discounted.csv",
+      undefined,
+      {
+        fetch: async () => new Response(body, { status: 200 }),
+        timeoutSignal: () => new AbortController().signal,
+        maxBytes: 5,
+      }
+    ),
+    OzonInvariantError
+  );
+  assert.equal(pulls, 2);
+});
+
+test("discounted report download honors the durable step deadline", async () => {
+  const deadline = new DOMException("Step deadline exceeded", "TimeoutError");
+  const controller = new AbortController();
+  controller.abort(deadline);
+  let requested = false;
+
+  await assert.rejects(
+    downloadOzonReportText(
+      "https://cdn1.ozone.ru/reports/discounted.csv",
+      controller.signal,
+      {
+        fetch: async () => {
+          requested = true;
+          return new Response("not reached");
+        },
+        timeoutSignal: () => new AbortController().signal,
+      }
+    ),
+    (error: unknown) => error === deadline
+  );
+  assert.equal(requested, false);
+});
+
+test("discounted damage evidence uses Ozon's damaged-product fields and Russian reasons", () => {
+  const evidence = discountedDamageEvidence({
+    condition: "used",
+    condition_estimation: "good",
+    reason_damaged: "Повреждение товара",
+    comment_reason_damaged: "Царапины на корпусе",
+    defects: "Вмятина",
+    mechanical_damage: "Есть",
+    package_damage: "Повреждена упаковка",
+    packaging_violation: "Есть",
+  });
+
+  assert.equal(
+    evidence,
+    [
+      "Повреждение товара",
+      "Царапины на корпусе",
+      "Вмятина",
+      "Есть",
+      "Повреждена упаковка",
+      "Есть",
+      "used",
+      "good",
+    ].join("; ")
+  );
+  assert.equal(isDefectReason(evidence ?? ""), true);
+});
 
 test("fetchSupplyOrders sends the documented list payload, follows cursor pages, and batches canonical IDs by 50", async () => {
   const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
