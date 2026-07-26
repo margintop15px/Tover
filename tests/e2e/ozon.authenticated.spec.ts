@@ -786,6 +786,11 @@ test.describe("Ozon marketplace integration", () => {
       expect(mock.requestBodies["/v3/supply-order/get"]).toEqual([
         { order_ids: [fixture.supplyOrderId] },
       ]);
+      expect(mock.requestBodies["/v1/product/info/discounted"]).toEqual([
+        {
+          discounted_skus: [fixture.discountedSku],
+        },
+      ]);
 
       let candidates = await listCandidates(request);
       expect(candidates.summary).toMatchObject({

@@ -117,7 +117,7 @@ export function buildOzonFixture(runId: string): OzonMockFixture {
     removalId: `REMOVAL-${suffix}`,
     supplyOrderId: `SUPPLY-${suffix}`,
     supplyBundleId: `BUNDLE-${suffix}`,
-    discountedSku: `DISC-${suffix}`,
+    discountedSku: `${numericBase}4`,
     dateFrom: "2099-05-01T00:00:00.000Z",
     dateTo: "2099-05-05T00:00:00.000Z",
   };
@@ -143,6 +143,19 @@ export async function startOzonMockServer(
 
   const server = http.createServer(async (request, response) => {
     const path = new URL(request.url || "/", url).pathname;
+    if (request.method === "GET" && path === "/reports/discounted.csv") {
+      writeText(
+        response,
+        200,
+        [
+          "SKU основного товара;SKU уценённого товара",
+          `${fixture.autoProduct.sku};${fixture.discountedSku}`,
+        ].join("\n"),
+        "text/csv; charset=utf-8"
+      );
+      return;
+    }
+
     const body = await readJsonBody(request);
     const apiKey = request.headers["api-key"]?.toString();
     const clientId = request.headers["client-id"]?.toString();
@@ -231,7 +244,11 @@ function responseFor(
     case "/v3/product/info/list":
       return {
         result: {
-          items: [productInfo(fixture.autoProduct), productInfo(fixture.missingProduct), productInfo(fixture.returnProduct)],
+          items: [
+            productInfo(fixture.autoProduct),
+            productInfo(fixture.missingProduct),
+            productInfo(fixture.returnProduct),
+          ],
         },
       };
     case "/v4/product/info/attributes":
@@ -365,7 +382,37 @@ function responseFor(
       return { result: { code: `COMP-${fixture.runId}` } };
     case "/v1/finance/decompensation":
       return { result: { code: `DECOMP-${fixture.runId}` } };
+    case "/v1/report/list":
+      return {
+        result: {
+          reports: [
+            {
+              code: `DISCOUNTED-${fixture.runId}`,
+              status: "success",
+              error: "",
+              file: `${ozonMockBaseUrl()}/reports/discounted.csv`,
+              report_type: "SELLER_PRODUCT_DISCOUNTED",
+              created_at: new Date().toISOString(),
+            },
+          ],
+          total: 1,
+        },
+      };
+    case "/v1/report/discounted/create":
+      return { code: `DISCOUNTED-${fixture.runId}` };
     case "/v1/report/info":
+      if (body.code === `DISCOUNTED-${fixture.runId}`) {
+        return {
+          result: {
+            code: body.code,
+            status: "success",
+            error: "",
+            file: `${ozonMockBaseUrl()}/reports/discounted.csv`,
+            report_type: "SELLER_PRODUCT_DISCOUNTED",
+            created_at: new Date().toISOString(),
+          },
+        };
+      }
       return {
         result: {
           code: body.code,
@@ -480,8 +527,14 @@ function responseFor(
               offer_id: fixture.autoProduct.offerId,
               sku: fixture.autoProduct.sku,
               name: fixture.autoProduct.name,
-              status: "damaged",
-              reason: "physical_damage",
+              condition: "used",
+              condition_estimation: "good",
+              reason_damaged: "Повреждение товара",
+              comment_reason_damaged: "Царапины на корпусе",
+              defects: "Вмятина",
+              mechanical_damage: "Есть",
+              package_damage: "Повреждена упаковка",
+              packaging_violation: "Есть",
               quantity: 1,
               warehouse_id: fixture.autoWarehouse.id,
               warehouse_name: fixture.autoWarehouse.name,
@@ -509,6 +562,9 @@ function productInfo(product: OzonMockProduct) {
     currency_code: "RUB",
     statuses: { status: "published" },
     visibility_details: { has_price: true },
+    has_discounted_item: false,
+    is_discounted: false,
+    discounted_stocks: { coming: 0, present: 0, reserved: 0 },
     primary_image: [`https://example.invalid/${product.offerId}.jpg`],
     barcodes: [],
   };
@@ -660,4 +716,14 @@ function writeJson(
 ) {
   response.writeHead(status, { "Content-Type": "application/json", ...headers });
   response.end(JSON.stringify(value));
+}
+
+function writeText(
+  response: ServerResponse,
+  status: number,
+  value: string,
+  contentType: string
+) {
+  response.writeHead(status, { "Content-Type": contentType });
+  response.end(value);
 }

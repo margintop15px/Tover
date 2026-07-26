@@ -465,9 +465,35 @@ workflow.
 
 Endpoint: `POST /v1/product/info/discounted`.
 
-Tover mirrors discounted products. A `defect` candidate is generated only when
-reason/status explicitly proves physical defect or damage. Generic markdowns or
-discounts remain mirror-only.
+Tover obtains authoritative discounted SKU identifiers through Ozon's
+`SELLER_PRODUCT_DISCOUNTED` report. It reuses a completed report generated in
+the preceding 10 minutes, resumes a `waiting`/`processing` report through
+`POST /v1/report/info`, or starts one through
+`POST /v1/report/discounted/create`. A processing report raises a transient
+incomplete-response error so the durable runner resumes the same step later.
+The report download accepts only the known Ozon report CDN hosts (or the exact
+configured local mock origin), validates every redirect before following it,
+shares the durable step deadline, and has its own 30-second timeout. It streams
+the response with a hard 10 MiB limit instead of buffering an unbounded file.
+
+Seller-created discounted products whose mirrored payload explicitly has
+`is_discounted: true` are also included. `has_discounted_item` identifies a
+main product that has a discounted analogue, but does not provide that
+analogue's SKU, so it is never submitted as if it were the discounted SKU.
+
+The detail request uses Ozon's `discounted_skus` field and batches identifiers
+in groups of at most 100.
+
+Request failures are not converted to empty results: the durable runner
+classifies and persists them so transient failures can recover and permanent
+validation failures remain visible.
+
+Tover mirrors the returned discounted products. It reads Ozon's damaged-product
+evidence fields, including `reason_damaged`, `comment_reason_damaged`,
+`defects`, mechanical/package damage, condition, and condition estimation. A
+`defect` candidate is generated only when that evidence explicitly proves
+physical defect or damage, including Russian damage descriptions. Generic
+markdowns or discounts remain mirror-only.
 
 ## Recovery Worker Operations
 
@@ -502,6 +528,25 @@ processed. Missing server configuration returns `503`; a bad secret returns
 `401`. The app route has a 110-second execution budget, inside the migration's
 120-second `pg_net` timeout. Claimed work receives a 100-second absolute
 deadline, with an additional finish margin inside that worker budget.
+
+Keep the production Vault URL pointed at the production deployment. Hosted
+Supabase cannot call `localhost`. Manual local sync/retry does not use the Vault
+URL or Cron. To exercise one recovery invocation against a local Next.js server,
+set `OZON_SYNC_RECOVERY_SECRET` in `.env.local` and call:
+
+```bash
+RECOVERY_SECRET='the-same-value-used-in-.env.local'
+curl -i -X POST http://localhost:3000/api/internal/integrations/ozon/recover \
+  -H "x-tover-recovery-secret: $RECOVERY_SECRET"
+```
+
+The local route uses the Supabase URL and service-role key from the same local
+environment. Use a local/staging Supabase project for isolated testing. If it
+points to production, the call is a real production worker invocation; the
+lease prevents duplicate ownership, but the call can still process live Ozon
+data. Testing hosted Cron against local code requires an intentional temporary
+HTTPS tunnel (or a separate Supabase branch) and a temporary Vault URL, followed
+by restoring the production value.
 
 After migration 020 is applied and the route is reachable, create the two
 required Vault values with placeholders replaced at deployment time:
