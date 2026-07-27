@@ -83,6 +83,7 @@ const DISCOUNTED_REPORT_REUSE_MS = 10 * 60 * 1000;
 const OZON_REPORT_DOWNLOAD_LIMIT_BYTES = 10 * 1024 * 1024;
 const OZON_REPORT_DOWNLOAD_TIMEOUT_MS = 30_000;
 const OZON_REPORT_MAX_REDIRECTS = 5;
+const OZON_REPORT_DOWNLOAD_RETRY_DELAYS_MS = [500, 1_000, 2_000] as const;
 const TRUSTED_OZON_REPORT_DOMAINS = ["ozon.ru", "ozone.ru"] as const;
 
 const PII_KEY_PATTERNS = [
@@ -4660,11 +4661,19 @@ interface OzonReportDownloadRuntime {
   fetch: typeof fetch;
   timeoutSignal: (milliseconds: number) => AbortSignal;
   maxBytes?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  logAttempt?: (entry: Record<string, unknown>) => void;
 }
 
 const DEFAULT_OZON_REPORT_DOWNLOAD_RUNTIME: OzonReportDownloadRuntime = {
   fetch,
   timeoutSignal: (milliseconds) => AbortSignal.timeout(milliseconds),
+  sleep: (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  now: Date.now,
+  logAttempt: (entry) =>
+    console.warn("Ozon report download attempt failed", entry),
 };
 
 export async function downloadOzonReportText(
@@ -4681,6 +4690,60 @@ export async function downloadOzonReportBytes(
   url: string,
   executionSignal?: AbortSignal,
   runtime: OzonReportDownloadRuntime = DEFAULT_OZON_REPORT_DOWNLOAD_RUNTIME
+) {
+  const safeUrl = assertSafeOzonReportUrl(url);
+
+  for (
+    let attempt = 0;
+    attempt <= OZON_REPORT_DOWNLOAD_RETRY_DELAYS_MS.length;
+    attempt += 1
+  ) {
+    const startedAt = runtime.now?.() ?? Date.now();
+    try {
+      return await downloadOzonReportBytesAttempt(
+        safeUrl.toString(),
+        executionSignal,
+        runtime
+      );
+    } catch (error) {
+      if (executionSignal?.aborted) {
+        throw ozonReportAbortReason(executionSignal);
+      }
+      const retryable = isRetryableOzonReportDownloadError(error);
+      const willRetry =
+        retryable && attempt < OZON_REPORT_DOWNLOAD_RETRY_DELAYS_MS.length;
+      runtime.logAttempt?.({
+        event: "ozon_report_download_attempt_failed",
+        host: safeUrl.hostname,
+        attempt: attempt + 1,
+        durationMs: Math.max(
+          0,
+          (runtime.now?.() ?? Date.now()) - startedAt
+        ),
+        kind: isTimeoutLikeOzonReportDownloadError(error)
+          ? "timeout"
+          : error instanceof OzonReportDownloadError
+            ? "http"
+            : "transport",
+        ...(error instanceof OzonReportDownloadError
+          ? { status: error.status }
+          : {}),
+        willRetry,
+      });
+      if (!willRetry) throw error;
+      await (runtime.sleep ?? DEFAULT_OZON_REPORT_DOWNLOAD_RUNTIME.sleep)?.(
+        OZON_REPORT_DOWNLOAD_RETRY_DELAYS_MS[attempt]
+      );
+    }
+  }
+
+  throw new OzonInvariantError("Ozon discounted report download exhausted");
+}
+
+async function downloadOzonReportBytesAttempt(
+  url: string,
+  executionSignal: AbortSignal | undefined,
+  runtime: OzonReportDownloadRuntime
 ) {
   const requestSignal = combineOzonReportAbortSignals(
     runtime.timeoutSignal(OZON_REPORT_DOWNLOAD_TIMEOUT_MS),
@@ -4731,6 +4794,40 @@ export async function downloadOzonReportBytes(
   } finally {
     requestSignal.cleanup();
   }
+}
+
+function isRetryableOzonReportDownloadError(error: unknown) {
+  if (error instanceof OzonReportDownloadError) {
+    return (
+      [408, 425, 429].includes(error.status) ||
+      (error.status >= 500 && error.status <= 599)
+    );
+  }
+  if (error instanceof OzonInvariantError) return false;
+  if (isTimeoutLikeOzonReportDownloadError(error)) return true;
+  if (error instanceof TypeError) return true;
+  if (!error || typeof error !== "object" || !("code" in error)) return false;
+  return [
+    "ECONNABORTED",
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "ENOTFOUND",
+    "EPIPE",
+  ].includes(String(error.code));
+}
+
+function isTimeoutLikeOzonReportDownloadError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const name = "name" in error ? error.name : undefined;
+  const code = "code" in error ? error.code : undefined;
+  return (
+    name === "TimeoutError" ||
+    name === "AbortError" ||
+    code === "ETIMEDOUT" ||
+    code === "ESOCKETTIMEDOUT"
+  );
 }
 
 function assertSafeOzonReportUrl(value: string) {
