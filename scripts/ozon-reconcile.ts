@@ -324,11 +324,13 @@ async function main() {
   if (
     steps.some(
       (step) =>
-        !["completed", "skipped", "failed"].includes(String(step.state))
+        !["completed", "skipped", "failed", "retry_scheduled"].includes(
+          String(step.state)
+        )
     )
   ) {
     throw new Error(
-      "Apply refused: every selected step must be completed, skipped, or failed"
+      "Apply refused: every selected step must be completed, skipped, failed, or retry-scheduled"
     );
   }
   const { error } = await supabase.rpc("repair_ozon_sync_run_steps_v2", {

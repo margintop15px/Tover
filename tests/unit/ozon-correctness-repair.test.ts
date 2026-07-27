@@ -35,6 +35,17 @@ const migration022 = readFileSync(
   ),
   "utf8"
 );
+const repairRetryMigration = readFileSync(
+  new URL(
+    "../../supabase/migrations/20260727133620_ozon_repair_retry_scheduled_steps.sql",
+    import.meta.url
+  ),
+  "utf8"
+);
+const reconcileScript = readFileSync(
+  new URL("../../scripts/ozon-reconcile.ts", import.meta.url),
+  "utf8"
+);
 
 test("canonical values preserve exact decimals and recursively sort evidence keys", () => {
   assert.equal(decimalString("00012345678901234567890.12000"), "12345678901234567890.12");
@@ -246,6 +257,21 @@ test("migration 021 separates execution count, failure count, checkpoints, and y
   assert.match(
     migration021,
     /SET state = 'pending',[\s\S]*lease_token = NULL,[\s\S]*lease_expires_at = NULL/
+  );
+});
+
+test("approved repair can reset legacy scheduled retries without a live lease", () => {
+  assert.match(
+    repairRetryMigration,
+    /state IN \('completed', 'skipped', 'failed', 'retry_scheduled'\)/
+  );
+  assert.match(
+    repairRetryMigration,
+    /state = 'running'\s+AND lease_expires_at > clock_timestamp\(\)/
+  );
+  assert.match(
+    reconcileScript,
+    /\["completed", "skipped", "failed", "retry_scheduled"\]/
   );
 });
 
