@@ -125,12 +125,12 @@ last re-verified against the official Ozon Seller API reference on 2026-07-27:
 | --- | --- | --- |
 | Warehouses | `/v2/warehouse/list`, `/v1/warehouse/ozon/list` | cursor/`warehouses`; required FBO/Fresh/returns `warehouse_types` |
 | Products | `/v3/product/list`, `/v3/product/info/list`, `/v4/product/info/attributes`, `/v5/product/info/prices` | string IDs; one identifier family per info-list request; nested price; string/array images |
-| Stocks | `/v4/product/info/stocks` | stock `type`, `present`, `reserved`; no warehouse |
+| Stocks | `/v4/product/info/stocks` | stock `type`, `present`, `reserved`; empty `stocks[]` means no stock rows; no warehouse |
 | Postings | `/v4/posting/fbs/list`, `/v3/posting/fbo/list` | Money product price and schema-specific `analytics_data` warehouse |
-| Returns | `/v1/returns/list`, `/v2/returns/rfbs/list`, `/v2/returns/rfbs/get` | documented nested filters, `last_id`, root/member wrappers |
+| Returns | `/v1/returns/list`, `/v2/returns/rfbs/list`, `/v2/returns/rfbs/get` | documented nested filters, numeric-zero first `last_id`, root/member wrappers |
 | Finance | `/v1/finance/accrual/types`, `/v1/finance/accrual/by-day` | `accrual_id`, Money, item/non-item fees |
 | Legal | `/v1/finance/document-b2b-sales/json`, `/v1/posting/unpaid-legal/product/list` | B2B `buyer_info`/`info`/`operations`; reporting only |
-| Reports | `/v1/finance/mutual-settlement`, `/v1/finance/compensation`, `/v1/finance/decompensation`, `/v1/finance/cash-flow-statement/list`, `/v1/finance/products/buyout`, `/v1/report/info` | monthly codes, half-month cash flow keyed by period/currency, <=31-day buyout |
+| Reports | `/v1/finance/mutual-settlement`, `/v1/finance/compensation`, `/v1/finance/decompensation`, `/v1/finance/cash-flow-statement/list`, `/v1/finance/products/buyout`, `/v1/report/info` | monthly codes, half-month cash flow keyed by period boundaries/currency, <=31-day buyout |
 | Removals | `/v1/removal/from-stock/list`, `/v1/removal/from-supply/list` | return/box IDs, stock type, dates, utilization evidence |
 | Supplies | `/v3/supply-order/list`, `/v3/supply-order/get`, `/v1/supply-order/bundle` | `order_ids`, nested `supplies[]`, paginated bundle items |
 | Analytics | `/v1/analytics/stocks`, `/v1/analytics/turnover/stocks` | official named counts; one turnover request/minute |
@@ -313,7 +313,9 @@ Endpoint: `POST /v4/product/info/stocks`.
 Tover inserts point-in-time rows into `ozon_stock_snapshots` by documented
 stock `type`, `present`, and `reserved`. This endpoint does not identify a
 warehouse, so Tover does not invent one or attach a local warehouse mapping.
-Snapshots are mirrors, not operations.
+An item with an empty `stocks[]` array contributes no stock rows; Tover does not
+reinterpret the product wrapper as a stock record. Snapshots are mirrors, not
+operations.
 
 ### 4. Postings
 
@@ -339,15 +341,18 @@ Endpoints:
 - `POST /v2/returns/rfbs/list`
 - `POST /v2/returns/rfbs/get`
 
-`/v1/returns/list` uses `filter.logistic_return_date`, `limit`, and `last_id`;
-the root `returns` member is followed while `has_next` is true. The next
-`last_id` is the last returned row's `id`; Ozon does not return a separate
-cursor. Its product price uses the documented legacy
+`/v1/returns/list` uses `filter.logistic_return_date`, `limit`, and `last_id`.
+The first request sends numeric zero because the field is `int64`; later
+cursors are preserved as decimal strings so large identifiers are not rounded
+by JavaScript. The root `returns` member is followed while `has_next` is true.
+The next `last_id` is the last returned row's `id`; Ozon does not return a
+separate cursor. Its product price uses the documented legacy
 `{ price, currency_code }` object. rFBS uses `filter.created_at`; a full page is
-continued with the last row's `return_id`, and detail responses are unwrapped
-from their `returns` member. The current rFBS detail contract does not prove
-both quantity and seller-receipt time, so those rows remain mirrors. A return
-candidate is created only when Ozon explicitly
+continued with the last row's `return_id`, using the same numeric-zero first
+cursor, and detail responses are unwrapped from their `returns` member. The
+current rFBS detail contract does not prove both quantity and seller-receipt
+time, so those rows remain mirrors. A return candidate is created only when
+Ozon explicitly
 proves seller receipt and supplies the product, positive quantity, event date,
 and a mappable warehouse. `WriteOff` and incomplete states remain mirrored.
 
@@ -451,7 +456,21 @@ The list request uses the real Ozon contract:
 
 ```json
 {
-  "filter": {},
+  "filter": {
+    "states": [
+      "DATA_FILLING",
+      "READY_TO_SUPPLY",
+      "ACCEPTED_AT_SUPPLY_WAREHOUSE",
+      "IN_TRANSIT",
+      "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
+      "REPORTS_CONFIRMATION_AWAITING",
+      "REPORT_REJECTED",
+      "COMPLETED",
+      "REJECTED_AT_SUPPLY_WAREHOUSE",
+      "CANCELLED",
+      "OVERDUE"
+    ]
+  },
   "last_id": "",
   "limit": 100,
   "sort_by": "ORDER_CREATION",

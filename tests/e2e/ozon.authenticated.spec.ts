@@ -682,7 +682,7 @@ test.describe("Ozon marketplace integration", () => {
         request.get("/api/integrations/ozon"),
         200
       );
-      expect(summary.counts.financeReports).toBe(3);
+      expect(summary.counts.financeReports).toBe(4);
     } finally {
       await mock?.close();
       await resetOzonState(adminWorkspace!, false);
@@ -783,7 +783,7 @@ test.describe("Ozon marketplace integration", () => {
         financeTransactions: 1,
         legalEntitySales: 1,
         unpaidLegalProducts: 1,
-        financeReports: 5,
+        financeReports: 6,
         removals: 1,
         supplies: 1,
         stockAnalytics: 0,
@@ -793,11 +793,49 @@ test.describe("Ozon marketplace integration", () => {
       });
       expect(mock.requestBodies["/v3/supply-order/list"]).toEqual([
         {
-          filter: {},
+          filter: {
+            states: [
+              "DATA_FILLING",
+              "READY_TO_SUPPLY",
+              "ACCEPTED_AT_SUPPLY_WAREHOUSE",
+              "IN_TRANSIT",
+              "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
+              "REPORTS_CONFIRMATION_AWAITING",
+              "REPORT_REJECTED",
+              "COMPLETED",
+              "REJECTED_AT_SUPPLY_WAREHOUSE",
+              "CANCELLED",
+              "OVERDUE",
+            ],
+          },
           last_id: "",
           limit: 100,
           sort_by: "ORDER_CREATION",
           sort_dir: "DESC",
+        },
+      ]);
+      expect(mock.requestBodies["/v1/returns/list"]).toEqual([
+        {
+          filter: {
+            logistic_return_date: {
+              time_from: fixture.dateFrom,
+              time_to: fixture.dateTo,
+            },
+          },
+          last_id: 0,
+          limit: 100,
+        },
+      ]);
+      expect(mock.requestBodies["/v2/returns/rfbs/list"]).toEqual([
+        {
+          filter: {
+            created_at: {
+              from: fixture.dateFrom,
+              to: fixture.dateTo,
+            },
+          },
+          last_id: 0,
+          limit: 100,
         },
       ]);
       expect(mock.requestBodies["/v3/supply-order/get"]).toEqual([

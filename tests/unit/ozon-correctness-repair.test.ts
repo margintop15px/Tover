@@ -92,10 +92,10 @@ test("cash-flow periods use Ozon's complete calendar halves and buyout periods d
   ]);
 });
 
-test("cash-flow rows use period and currency identity and deduplicate exact repeats", () => {
+test("cash-flow rows use period boundaries and currency identity and deduplicate exact repeats", () => {
   const rub = {
     period: {
-      id: "11567022278500",
+      id: "0",
       begin: "2026-07-01T00:00:00.000Z",
       end: "2026-07-15T23:59:59.999Z",
     },
@@ -103,7 +103,19 @@ test("cash-flow rows use period and currency identity and deduplicate exact repe
     currency_code: "RUB",
   };
   const rows = decodeCashFlowReportRows(
-    [rub, { ...rub }, { ...rub, currency_code: "USD" }],
+    [
+      rub,
+      { ...rub },
+      { ...rub, currency_code: "USD" },
+      {
+        ...rub,
+        period: {
+          id: "0",
+          begin: "2026-07-16T00:00:00.000Z",
+          end: "2026-07-31T23:59:59.999Z",
+        },
+      },
+    ],
     "workspace-id",
     "connection-id",
     "run-id"
@@ -119,18 +131,25 @@ test("cash-flow rows use period and currency identity and deduplicate exact repe
     })),
     [
       {
-        external_id: "cash-flow:11567022278500:RUB",
+        external_id: "cash-flow:0:2026-07-01:2026-07-15:RUB",
         period_start: "2026-07-01",
         period_end: "2026-07-15",
         amount: "1000.25",
         currency_code: "RUB",
       },
       {
-        external_id: "cash-flow:11567022278500:USD",
+        external_id: "cash-flow:0:2026-07-01:2026-07-15:USD",
         period_start: "2026-07-01",
         period_end: "2026-07-15",
         amount: "1000.25",
         currency_code: "USD",
+      },
+      {
+        external_id: "cash-flow:0:2026-07-16:2026-07-31:RUB",
+        period_start: "2026-07-16",
+        period_end: "2026-07-31",
+        amount: "1000.25",
+        currency_code: "RUB",
       },
     ]
   );

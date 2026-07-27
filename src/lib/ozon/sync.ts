@@ -70,6 +70,19 @@ export const OZON_WAREHOUSE_TYPES = [
   "FULL_FILLMENT_DEFECT",
   "EXPRESS_DARK_STORE",
 ] as const;
+export const OZON_SUPPLY_ORDER_STATES = [
+  "DATA_FILLING",
+  "READY_TO_SUPPLY",
+  "ACCEPTED_AT_SUPPLY_WAREHOUSE",
+  "IN_TRANSIT",
+  "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
+  "REPORTS_CONFIRMATION_AWAITING",
+  "REPORT_REJECTED",
+  "COMPLETED",
+  "REJECTED_AT_SUPPLY_WAREHOUSE",
+  "CANCELLED",
+  "OVERDUE",
+] as const;
 const DISCOUNTED_REPORT_REUSE_MS = 10 * 60 * 1000;
 const OZON_REPORT_DOWNLOAD_LIMIT_BYTES = 10 * 1024 * 1024;
 const OZON_REPORT_DOWNLOAD_TIMEOUT_MS = 30_000;
@@ -1075,8 +1088,7 @@ function toStockRows(
   );
   const offerId = toStringValue(item.offer_id);
   const sku = toStringValue(item.sku);
-  const stocks = asArray(item.stocks);
-  const stockItems = stocks.length > 0 ? stocks : [item];
+  const stockItems = decodeProductStockEntries(item);
 
   return stockItems.map((stock) => {
     const stockRecord = toRecord(stock);
@@ -1108,6 +1120,16 @@ function toStockRows(
       ...ozonMirrorProvenance(runId),
     };
   });
+}
+
+export function decodeProductStockEntries(value: unknown) {
+  const stocks = toRecord(value).stocks;
+  if (!Array.isArray(stocks)) {
+    throw new OzonIncompleteResponseError(
+      "Ozon /v4/product/info/stocks response has no stocks array"
+    );
+  }
+  return stocks;
 }
 
 async function syncPostings(
@@ -1489,16 +1511,10 @@ async function syncReturns(
   if (!standardReturnsComplete) {
     for (let page = 0; page < 100; page += 1) {
       execution?.yieldIfNeeded?.();
-      const response = await client.request<JsonRecord>("/v1/returns/list", {
-        filter: {
-          logistic_return_date: {
-            time_from: dateFrom,
-            time_to: dateTo,
-          },
-        },
-        limit: POSTING_PAGE_LIMIT,
-        last_id: lastId,
-      });
+      const response = await client.request<JsonRecord>(
+        "/v1/returns/list",
+        buildReturnsListRequest(lastId, dateFrom, dateTo)
+      );
       const root = toRecord(response);
       const items = requireArrayMember(root, "returns", "/v1/returns/list");
       fetched += items.length;
@@ -1553,16 +1569,10 @@ async function syncReturns(
       : "";
   for (let page = 0; page < 100; page += 1) {
     execution?.yieldIfNeeded?.();
-    const response = await client.request<JsonRecord>("/v2/returns/rfbs/list", {
-      last_id: lastId,
-      limit: POSTING_PAGE_LIMIT,
-      filter: {
-        created_at: {
-          from: dateFrom,
-          to: dateTo,
-        },
-      },
-    });
+    const response = await client.request<JsonRecord>(
+      "/v2/returns/rfbs/list",
+      buildRfbsReturnsListRequest(lastId, dateFrom, dateTo)
+    );
     const root = unwrapResult(response);
     const items = requireArrayMember(root, "returns", "/v2/returns/rfbs/list");
     const startDetailIndex =
@@ -1647,6 +1657,40 @@ async function syncReturns(
   throw new OzonIncompleteResponseError(
     "Ozon rFBS returns pagination exceeded the 100-page safety limit"
   );
+}
+
+export function buildReturnsListRequest(
+  lastId: string,
+  dateFrom: string,
+  dateTo: string
+) {
+  return {
+    filter: {
+      logistic_return_date: {
+        time_from: dateFrom,
+        time_to: dateTo,
+      },
+    },
+    limit: POSTING_PAGE_LIMIT,
+    last_id: lastId || 0,
+  };
+}
+
+export function buildRfbsReturnsListRequest(
+  lastId: string,
+  dateFrom: string,
+  dateTo: string
+) {
+  return {
+    last_id: lastId || 0,
+    limit: POSTING_PAGE_LIMIT,
+    filter: {
+      created_at: {
+        from: dateFrom,
+        to: dateTo,
+      },
+    },
+  };
 }
 
 async function upsertReturn(
@@ -2805,7 +2849,8 @@ export function decodeCashFlowReportRows(
       );
     }
 
-    const externalId = `cash-flow:${periodId}:${currencyCode}`;
+    const externalId =
+      `cash-flow:${periodId}:${periodStart}:${periodEnd}:${currencyCode}`;
     const hash = stableHash(item);
     const existing = rows.get(externalId);
     if (existing && existing.hash !== hash) {
@@ -3180,13 +3225,7 @@ async function syncSupplies(
     if (phase === "list") {
       const response = await client.request<JsonRecord>(
         "/v3/supply-order/list",
-        {
-          filter: {},
-          last_id: listCursor,
-          limit: 100,
-          sort_by: "ORDER_CREATION",
-          sort_dir: "DESC",
-        }
+        buildSupplyOrderListRequest(listCursor)
       );
       const root = unwrapResult(response);
       pendingOrderIds = [
@@ -3408,13 +3447,10 @@ export async function fetchSupplyOrders(client: OzonRequestClient): Promise<Json
   let listComplete = false;
 
   for (let page = 0; page < 100; page += 1) {
-    const response = await client.request<JsonRecord>("/v3/supply-order/list", {
-      filter: {},
-      last_id: lastId,
-      limit: 100,
-      sort_by: "ORDER_CREATION",
-      sort_dir: "DESC",
-    });
+    const response = await client.request<JsonRecord>(
+      "/v3/supply-order/list",
+      buildSupplyOrderListRequest(lastId)
+    );
     const root = unwrapResult(response);
     const pageOrderIds = new Set<string>();
 
@@ -3449,6 +3485,16 @@ export async function fetchSupplyOrders(client: OzonRequestClient): Promise<Json
   }
 
   return detailedOrders;
+}
+
+export function buildSupplyOrderListRequest(lastId: string) {
+  return {
+    filter: { states: OZON_SUPPLY_ORDER_STATES },
+    last_id: lastId,
+    limit: 100,
+    sort_by: "ORDER_CREATION",
+    sort_dir: "DESC",
+  };
 }
 
 function isUsableSupplyOrderRecord(order: JsonRecord) {
