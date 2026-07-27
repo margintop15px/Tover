@@ -1,6 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ValidatedOperation } from "./validate-operation";
-import { getProductBalance } from "./update-balances";
 
 export async function processDefect(
   supabase: SupabaseClient,
@@ -8,16 +7,6 @@ export async function processDefect(
   data: ValidatedOperation
 ) {
   const outItem = data.items[0]; // The source item
-
-  // Read source cost
-  const sourceBalance = await getProductBalance(
-    supabase,
-    workspaceId,
-    outItem.productId,
-    outItem.warehouseId,
-    "ordinary"
-  );
-  const unitCost = sourceBalance?.unit_cost ?? 0;
 
   // Insert operation
   const { data: operation, error: opError } = await supabase
@@ -42,7 +31,7 @@ export async function processDefect(
         product_id: outItem.productId,
         warehouse_id: outItem.warehouseId,
         quantity: outItem.quantity,
-        unit_price: unitCost,
+        unit_price: null,
         direction: "out",
         store_id: outItem.storeId || null,
         quality_status: "ordinary",
@@ -52,7 +41,7 @@ export async function processDefect(
         product_id: outItem.productId,
         warehouse_id: outItem.warehouseId,
         quantity: outItem.quantity,
-        unit_price: unitCost,
+        unit_price: null,
         direction: "in",
         store_id: outItem.storeId || null,
         quality_status: "defect",

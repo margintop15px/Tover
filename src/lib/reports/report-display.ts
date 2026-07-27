@@ -138,77 +138,11 @@ export function previewColumnType(key: string): PreviewColumnType {
 }
 
 export function getReportTableRows(
-  source: ReportTemplateSource,
-  rowDimension: ReportDimension | null | undefined,
+  _source: ReportTemplateSource,
+  _rowDimension: ReportDimension | null | undefined,
   report: PreviewReport | null
 ): Record<string, unknown>[] {
-  const rows = (report?.rows || []) as Record<string, unknown>[];
-  if (source !== "inventory_balances" || !rowDimension) return rows;
-
-  const groupMap = new Map<string, Record<string, unknown>>();
-  const addToGroup = (
-    groupId: string,
-    groupName: string,
-    quantity: number,
-    cost: number,
-    extra: Record<string, unknown> = {}
-  ) => {
-    const current = groupMap.get(groupId) || {
-      groupName,
-      totalQuantity: 0,
-      totalCost: 0,
-      ...extra,
-    };
-    current.totalQuantity = Number(current.totalQuantity || 0) + quantity;
-    current.totalCost = Number(current.totalCost || 0) + cost;
-    groupMap.set(groupId, current);
-  };
-
-  for (const row of rows) {
-    const quantity = Number(row.totalQuantity || 0);
-    const cost = Number(row.totalCost || 0);
-
-    if (rowDimension === "warehouse") {
-      const warehouses = Array.isArray(row.warehouses)
-        ? (row.warehouses as Record<string, unknown>[])
-        : [];
-      for (const warehouse of warehouses) {
-        const warehouseId = String(warehouse.warehouseId || "unassigned");
-        addToGroup(
-          warehouseId,
-          String(warehouse.warehouseName || "Unknown"),
-          Number(warehouse.quantity || 0),
-          Number(warehouse.totalCost || 0)
-        );
-      }
-      continue;
-    }
-
-    const groupId =
-      rowDimension === "category"
-        ? String(row.categoryName || "uncategorized")
-        : rowDimension === "store"
-          ? String(row.storeName || "unassigned")
-          : rowDimension === "quality"
-            ? String(row.qualityStatus || "ordinary")
-            : String(row.productId || row.productName || "unknown");
-    const groupName =
-      rowDimension === "category"
-        ? String(row.categoryName || "No category")
-        : rowDimension === "store"
-          ? String(row.storeName || "No store")
-          : rowDimension === "quality"
-            ? String(row.qualityStatus || "ordinary")
-            : String(row.productName || "Unknown");
-
-    addToGroup(groupId, groupName, quantity, cost, {
-      skuCode: rowDimension === "product" ? row.skuCode : null,
-    });
-  }
-
-  return Array.from(groupMap.values()).sort((a, b) =>
-    String(a.groupName).localeCompare(String(b.groupName))
-  );
+  return (report?.rows || []) as Record<string, unknown>[];
 }
 
 export function getReportColumnKeys(

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 import type {
+  InventoryBalanceCell,
   InventoryBalanceRow,
   InventoryBalancesReport,
   QualityStatus,
@@ -8,197 +9,162 @@ import type {
 
 export const dynamic = "force-dynamic";
 
-interface Filters {
-  productId: string | null;
-  categoryId: string | null;
-  warehouseId: string | null;
-  storeId: string | null;
-  qualityStatus: string | null;
-  search: string | null;
-  hideZeros: boolean;
-  negativesOnly: boolean;
+interface InventoryBalanceRpcRow {
+  product_id: string;
+  product_name: string;
+  sku_code: string | null;
+  category_name: string | null;
+  store_id: string | null;
+  store_name: string | null;
+  quality_status: QualityStatus;
+  warehouses: Array<{
+    warehouseId: string;
+    warehouseName: string;
+    qualityStatus: QualityStatus;
+    quantity: number | string;
+    totalCost: number | string | null;
+    hasNegative: boolean;
+  }>;
+  total_quantity: number | string;
+  total_cost: number | string | null;
+  has_negative: boolean;
+  grand_total_quantity: number | string;
+  grand_total_cost: number | string | null;
+  grand_has_negative: boolean;
+}
+
+interface GroupedInventoryBalanceRpcRow {
+  group_id: string;
+  group_name: string;
+  sku_code: string | null;
+  total_quantity: number | string;
+  total_cost: number | string | null;
+  has_negative: boolean;
+  grand_total_quantity: number | string;
+  grand_total_cost: number | string | null;
+  grand_has_negative: boolean;
 }
 
 export async function GET(request: NextRequest) {
   try {
     const { supabase, workspaceId } = await getRouteContext(request);
     const { searchParams } = new URL(request.url);
-
-    const today = new Date().toISOString().split("T")[0];
-    const asOfDate = searchParams.get("date") || today;
-    const filters: Filters = {
-      productId: searchParams.get("productId"),
-      categoryId: searchParams.get("categoryId"),
-      warehouseId: searchParams.get("warehouseId"),
-      storeId: searchParams.get("storeId"),
-      qualityStatus: searchParams.get("qualityStatus"),
-      search: searchParams.get("search"),
-      hideZeros: searchParams.get("hideZeros") === "true",
-      negativesOnly: searchParams.get("negativesOnly") === "true",
+    const asOfDate =
+      searchParams.get("date") || new Date().toISOString().split("T")[0];
+    const groupBy = searchParams.get("groupBy");
+    const commonRpcArgs = {
+      p_workspace_id: workspaceId,
+      p_target_date: asOfDate,
+      p_product_id: searchParams.get("productId"),
+      p_category_id: searchParams.get("categoryId"),
+      p_warehouse_id: searchParams.get("warehouseId"),
+      p_store_id: searchParams.get("storeId"),
+      p_quality_status: searchParams.get("qualityStatus"),
+      p_search: searchParams.get("search"),
+      p_hide_zeros: searchParams.get("hideZeros") === "true",
+      p_negatives_only: searchParams.get("negativesOnly") === "true",
     };
 
-    const { data: rpcData, error: rpcError } = await supabase.rpc(
-      "report_inventory_balances_at_date",
-      { p_workspace_id: workspaceId, p_target_date: asOfDate }
+    if (groupBy) {
+      const { data, error } = await supabase.rpc(
+        "report_inventory_balances_grouped_v2",
+        { ...commonRpcArgs, p_group_by: groupBy }
+      );
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+      const groupedRows = (data ?? []) as GroupedInventoryBalanceRpcRow[];
+      const totals = groupedRows[0];
+      return NextResponse.json({
+        asOfDate,
+        rows: groupedRows.map((row) => ({
+          groupId: row.group_id,
+          groupName: row.group_name,
+          skuCode: row.sku_code,
+          totalQuantity: numericValue(row.total_quantity),
+          totalCost: nullableNumericValue(row.total_cost),
+          hasNegative: row.has_negative,
+        })),
+        totals: {
+          totalQuantity: totals
+            ? numericValue(totals.grand_total_quantity)
+            : 0,
+          totalCost: totals
+            ? nullableNumericValue(totals.grand_total_cost)
+            : 0,
+          hasNegative: totals?.grand_has_negative ?? false,
+        },
+      });
+    }
+
+    const { data, error } = await supabase.rpc(
+      "report_inventory_balances_v2",
+      commonRpcArgs
     );
-
-    if (rpcError) {
-      return NextResponse.json({ error: rpcError.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const productIds = [
-      ...new Set((rpcData || []).map((r: { product_id: string }) => r.product_id)),
-    ];
-    const warehouseIds = [
-      ...new Set((rpcData || []).map((r: { warehouse_id: string }) => r.warehouse_id)),
-    ];
-    const storeIds = [
-      ...new Set(
-        (rpcData || [])
-          .map((r: { store_id: string | null }) => r.store_id)
-          .filter(Boolean)
-      ),
-    ] as string[];
-
-    const [productsRes, warehousesRes, storesRes] = await Promise.all([
-      productIds.length > 0
-        ? supabase
-            .from("products")
-            .select("id, name, sku_code, is_defect_copy, category_id, store_id, categories(name), stores(name)")
-            .in("id", productIds)
-        : { data: [] },
-      warehouseIds.length > 0
-        ? supabase.from("warehouses").select("id, name").in("id", warehouseIds)
-        : { data: [] },
-      storeIds.length > 0
-        ? supabase.from("stores").select("id, name").in("id", storeIds)
-        : { data: [] },
-    ]);
-
-    const productInfo = new Map<
-      string,
-      {
-        name: string;
-        skuCode: string | null;
-        isDefectCopy: boolean;
-        categoryId: string | null;
-        storeId: string | null;
-        categoryName: string | null;
-        storeName: string | null;
-      }
-    >();
-
-    for (const p of productsRes.data || []) {
-      const cat = p.categories as unknown as { name: string } | null;
-      const st = p.stores as unknown as { name: string } | null;
-      productInfo.set(p.id, {
-        name: p.name,
-        skuCode: p.sku_code,
-        isDefectCopy: p.is_defect_copy,
-        categoryId: p.category_id,
-        storeId: p.store_id,
-        categoryName: cat?.name ?? null,
-        storeName: st?.name ?? null,
-      });
-    }
-
-    const warehouseInfo = new Map<string, string>();
-    for (const w of warehousesRes.data || []) warehouseInfo.set(w.id, w.name);
-
-    const storeInfo = new Map<string, string>();
-    for (const s of storesRes.data || []) storeInfo.set(s.id, s.name);
-
-    const productMap = new Map<string, InventoryBalanceRow>();
-    const warehouseSet = new Map<string, string>();
-
-    for (const row of rpcData || []) {
-      const productId = row.product_id as string;
-      const warehouseId = row.warehouse_id as string;
-      const movementStoreId = row.store_id as string | null;
-      const qualityStatus = (row.quality_status || "ordinary") as QualityStatus;
-      const quantity = Number(row.quantity);
-      const totalCost = Number(row.total_cost);
-      const hasNegative = Boolean(row.has_negative);
-
-      const product = productInfo.get(productId);
-      if (!product || product.isDefectCopy) continue;
-      const effectiveStoreId = movementStoreId || product.storeId;
-      const effectiveStoreName = effectiveStoreId
-        ? storeInfo.get(effectiveStoreId) || product.storeName
-        : product.storeName;
-
-      if (filters.productId && productId !== filters.productId) continue;
-      if (filters.categoryId && product.categoryId !== filters.categoryId) continue;
-      if (filters.storeId && effectiveStoreId !== filters.storeId) continue;
-      if (filters.warehouseId && warehouseId !== filters.warehouseId) continue;
-      if (filters.qualityStatus && qualityStatus !== filters.qualityStatus) continue;
-      if (filters.search) {
-        const search = filters.search.toLowerCase();
-        if (
-          !product.name.toLowerCase().includes(search) &&
-          !(product.skuCode && product.skuCode.toLowerCase().includes(search))
-        ) {
-          continue;
+    const rpcRows = (data ?? []) as InventoryBalanceRpcRow[];
+    const warehouseColumns = new Map<string, string>();
+    const rows: InventoryBalanceRow[] = rpcRows.map((row) => {
+      const warehouses: InventoryBalanceCell[] = (row.warehouses ?? []).map(
+        (warehouse) => {
+          warehouseColumns.set(
+            warehouse.warehouseId,
+            warehouse.warehouseName
+          );
+          return {
+            warehouseId: warehouse.warehouseId,
+            warehouseName: warehouse.warehouseName,
+            qualityStatus: warehouse.qualityStatus,
+            quantity: numericValue(warehouse.quantity),
+            totalCost: nullableNumericValue(warehouse.totalCost),
+            hasNegative: warehouse.hasNegative,
+          };
         }
-      }
-
-      const warehouseName = warehouseInfo.get(warehouseId) ?? "";
-      warehouseSet.set(warehouseId, warehouseName);
-
-      const rowKey = `${productId}:${effectiveStoreId || ""}:${qualityStatus}`;
-      let reportRow = productMap.get(rowKey);
-      if (!reportRow) {
-        reportRow = {
-          productId,
-          productName: product.name,
-          skuCode: product.skuCode,
-          categoryName: product.categoryName,
-          storeId: effectiveStoreId ?? null,
-          storeName: effectiveStoreName ?? null,
-          qualityStatus,
-          warehouses: [],
-          totalQuantity: 0,
-          totalCost: 0,
-          hasNegative: false,
-        };
-        productMap.set(rowKey, reportRow);
-      }
-
-      reportRow.warehouses.push({
-        warehouseId,
-        warehouseName,
-        qualityStatus,
-        quantity,
-        totalCost,
-        hasNegative,
-      });
-      reportRow.totalQuantity += quantity;
-      reportRow.totalCost += totalCost;
-      reportRow.hasNegative = reportRow.hasNegative || hasNegative || quantity < 0;
-    }
-
-    let rows = Array.from(productMap.values());
-    if (filters.hideZeros) rows = rows.filter((r) => r.totalQuantity !== 0);
-    if (filters.negativesOnly) {
-      rows = rows.filter((r) => r.hasNegative || r.totalQuantity < 0);
-    }
-    rows.sort((a, b) => a.productName.localeCompare(b.productName));
-
+      );
+      return {
+        productId: row.product_id,
+        productName: row.product_name,
+        skuCode: row.sku_code,
+        categoryName: row.category_name,
+        storeId: row.store_id,
+        storeName: row.store_name,
+        qualityStatus: row.quality_status,
+        warehouses,
+        totalQuantity: numericValue(row.total_quantity),
+        totalCost: nullableNumericValue(row.total_cost),
+        hasNegative: row.has_negative,
+      };
+    });
+    const totals = rpcRows[0];
     const report: InventoryBalancesReport = {
       asOfDate,
-      warehouseColumns: Array.from(warehouseSet.entries())
+      warehouseColumns: [...warehouseColumns.entries()]
         .map(([id, name]) => ({ id, name }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
+        .sort((left, right) => left.name.localeCompare(right.name)),
       rows,
       totals: {
-        totalQuantity: rows.reduce((sum, row) => sum + row.totalQuantity, 0),
-        totalCost: rows.reduce((sum, row) => sum + row.totalCost, 0),
-        hasNegative: rows.some((row) => row.hasNegative || row.totalQuantity < 0),
+        totalQuantity: totals
+          ? numericValue(totals.grand_total_quantity)
+          : 0,
+        totalCost: totals
+          ? nullableNumericValue(totals.grand_total_cost)
+          : 0,
+        hasNegative: totals?.grand_has_negative ?? false,
       },
     };
-
     return NextResponse.json(report);
   } catch (error) {
     return toRouteErrorResponse(error);
   }
+}
+
+function numericValue(value: number | string) {
+  return typeof value === "number" ? value : Number(value);
+}
+
+function nullableNumericValue(value: number | string | null) {
+  return value === null ? null : numericValue(value);
 }

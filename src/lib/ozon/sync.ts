@@ -13,19 +13,34 @@ import {
   OzonClient,
   OzonIncompleteResponseError,
   OzonInvariantError,
+  OzonReportPendingError,
   type OzonReadOnlyEndpoint,
 } from "./client";
-import { decryptOzonCredentials } from "./credentials";
 import type {
   LocalProductRef,
   LocalWarehouseRef,
-  OzonConnectionRecord,
-  OzonSyncOptions,
   OzonSyncStepSummary,
-  OzonSyncSummary,
 } from "./types";
 
 type JsonRecord = Record<string, unknown>;
+
+export class OzonDatabaseError extends Error {
+  constructor(
+    readonly code: string | null,
+    readonly operation: string,
+    readonly permanent: boolean
+  ) {
+    super("Ozon database operation failed");
+    this.name = "OzonDatabaseError";
+  }
+}
+
+export class OzonReportDownloadError extends Error {
+  constructor(readonly status: number) {
+    super("Ozon report download failed");
+    this.name = "OzonReportDownloadError";
+  }
+}
 
 interface ExternalProductRef {
   ozonProductId: string;
@@ -49,7 +64,6 @@ interface ExistingMapping {
 const PRODUCT_PAGE_LIMIT = 1000;
 const POSTING_PAGE_LIMIT = 100;
 const FINANCE_ACCRUAL_PAGE_LIMIT = 200;
-const DEFAULT_SYNC_DAYS = 30;
 const DISCOUNTED_REPORT_REUSE_MS = 10 * 60 * 1000;
 const OZON_REPORT_DOWNLOAD_LIMIT_BYTES = 10 * 1024 * 1024;
 const OZON_REPORT_DOWNLOAD_TIMEOUT_MS = 30_000;
@@ -107,11 +121,6 @@ const SAFE_LEGAL_IDENTIFIER_KEYS = new Set([
   "organization_name",
 ]);
 
-type TerminalOzonSyncRunStatus =
-  | "completed"
-  | "completed_with_errors"
-  | "failed";
-
 export interface OzonSyncDomainExecutionContext {
   supabase: SupabaseClient;
   client: OzonClient;
@@ -119,6 +128,13 @@ export interface OzonSyncDomainExecutionContext {
   connectionId: string;
   dateFrom: string;
   dateTo: string;
+  runId?: string;
+  checkpoint?: JsonRecord;
+  saveCheckpoint?: (
+    checkpoint: JsonRecord,
+    summary?: OzonSyncStepSummary | Record<string, never>
+  ) => Promise<void>;
+  yieldIfNeeded?: () => void;
 }
 
 interface OzonSyncDomainDefinition {
@@ -138,7 +154,9 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.client,
           context.workspaceId,
           context.connectionId,
-          mapping
+          mapping,
+          context.runId,
+          context
         )
       ),
   },
@@ -151,7 +169,9 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.client,
           context.workspaceId,
           context.connectionId,
-          mapping
+          mapping,
+          context.runId,
+          context
         )
       ),
   },
@@ -164,7 +184,9 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.client,
           context.workspaceId,
           context.connectionId,
-          mapping
+          mapping,
+          context.runId,
+          context
         )
       ),
   },
@@ -179,7 +201,9 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.connectionId,
           mapping,
           context.dateFrom,
-          context.dateTo
+          context.dateTo,
+          context.runId,
+          context
         )
       ),
   },
@@ -194,7 +218,8 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.connectionId,
           mapping,
           context.dateFrom,
-          context.dateTo
+          context.dateTo,
+          context
         )
       ),
   },
@@ -208,7 +233,8 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.workspaceId,
           context.connectionId,
           context.dateFrom,
-          context.dateTo
+          context.dateTo,
+          context
         )
       ),
   },
@@ -223,7 +249,9 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.connectionId,
           mapping,
           context.dateFrom,
-          context.dateTo
+          context.dateTo,
+          context.runId,
+          context
         )
       ),
   },
@@ -237,7 +265,8 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.workspaceId,
           context.connectionId,
           context.dateFrom,
-          context.dateTo
+          context.dateTo,
+          context
         )
       ),
   },
@@ -252,7 +281,8 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.connectionId,
           mapping,
           context.dateFrom,
-          context.dateTo
+          context.dateTo,
+          context
         )
       ),
   },
@@ -265,7 +295,8 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.client,
           context.workspaceId,
           context.connectionId,
-          mapping
+          mapping,
+          context
         )
       ),
   },
@@ -278,7 +309,8 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.client,
           context.workspaceId,
           context.connectionId,
-          mapping
+          mapping,
+          context
         )
       ),
   },
@@ -291,7 +323,8 @@ export const OZON_SYNC_DOMAIN_REGISTRY = [
           context.client,
           context.workspaceId,
           context.connectionId,
-          mapping
+          mapping,
+          context
         )
       ),
   },
@@ -323,234 +356,6 @@ async function executeWithCurrentMapping(
   return execute(mapping);
 }
 
-export async function syncOzonConnection(
-  supabase: SupabaseClient,
-  workspaceId: string,
-  connectionId: string,
-  options: OzonSyncOptions = {}
-) {
-  const { data: connection, error: connectionError } = await supabase
-    .from("marketplace_connections")
-    .select("*")
-    .eq("id", connectionId)
-    .eq("workspace_id", workspaceId)
-    .eq("provider", "ozon")
-    .maybeSingle();
-
-  if (connectionError) throw new Error(connectionError.message);
-  if (!connection) throw new Error("Ozon connection not found");
-  if (connection.status === "disabled") {
-    throw new Error("Ozon connection is disabled");
-  }
-
-  const credentials = decryptOzonCredentials(
-    (connection as OzonConnectionRecord).credential_ciphertext
-  );
-  const client = new OzonClient(credentials);
-  const dateWindow = resolveSyncWindow(options);
-
-  const { data: run, error: runError } = await supabase
-    .from("marketplace_sync_runs")
-    .insert({
-      workspace_id: workspaceId,
-      connection_id: connectionId,
-      provider: "ozon",
-      status: "running",
-      date_from: dateWindow.dateFrom,
-      date_to: dateWindow.dateTo,
-    })
-    .select("*")
-    .single();
-
-  if (runError || !run) {
-    throw new Error(runError?.message ?? "Failed to create Ozon sync run");
-  }
-
-  await supabase
-    .from("marketplace_connections")
-    .update({
-      last_sync_status: "running",
-      last_sync_error: null,
-    })
-    .eq("id", connectionId);
-
-  const summary: OzonSyncSummary = { errors: [] };
-  let successfulSteps = 0;
-
-  try {
-    const mapping = await loadMappingContext(supabase, workspaceId, connectionId);
-
-    successfulSteps += await runStep(summary, "warehouses", () =>
-      syncWarehouses(supabase, client, workspaceId, connectionId, mapping)
-    );
-    successfulSteps += await runStep(summary, "products", () =>
-      syncProducts(supabase, client, workspaceId, connectionId, mapping)
-    );
-    successfulSteps += await runStep(summary, "stocks", () =>
-      syncStocks(supabase, client, workspaceId, connectionId, mapping)
-    );
-    successfulSteps += await runStep(summary, "postings", () =>
-      syncPostings(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        mapping,
-        dateWindow.dateFrom,
-        dateWindow.dateTo
-      )
-    );
-    successfulSteps += await runStep(summary, "returns", () =>
-      syncReturns(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        mapping,
-        dateWindow.dateFrom,
-        dateWindow.dateTo
-      )
-    );
-    successfulSteps += await runStep(summary, "finance", () =>
-      syncFinance(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        dateWindow.dateFrom,
-        dateWindow.dateTo
-      )
-    );
-    successfulSteps += await runStep(summary, "legalEntities", () =>
-      syncLegalEntities(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        mapping,
-        dateWindow.dateFrom,
-        dateWindow.dateTo
-      )
-    );
-    successfulSteps += await runStep(summary, "reports", () =>
-      syncFinanceReports(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        dateWindow.dateFrom,
-        dateWindow.dateTo
-      )
-    );
-    successfulSteps += await runStep(summary, "removals", () =>
-      syncRemovals(
-        supabase,
-        client,
-        workspaceId,
-        connectionId,
-        mapping,
-        dateWindow.dateFrom,
-        dateWindow.dateTo
-      )
-    );
-    successfulSteps += await runStep(summary, "supplies", () =>
-      syncSupplies(supabase, client, workspaceId, connectionId, mapping)
-    );
-    successfulSteps += await runStep(summary, "analytics", () =>
-      syncStockAnalytics(supabase, client, workspaceId, connectionId, mapping)
-    );
-    successfulSteps += await runStep(summary, "discountedProducts", () =>
-      syncDiscountedProducts(supabase, client, workspaceId, connectionId, mapping)
-    );
-
-    const status = resolveSyncStatus(successfulSteps, summary);
-    const error = summary.errors.length > 0 ? summary.errors.join("; ") : null;
-
-    await supabase
-      .from("marketplace_sync_runs")
-      .update({
-        status,
-        completed_at: new Date().toISOString(),
-        summary,
-        error,
-      })
-      .eq("id", run.id);
-
-    await supabase
-      .from("marketplace_connections")
-      .update({
-        status: status === "failed" ? "error" : "connected",
-        last_sync_at: new Date().toISOString(),
-        last_sync_status: status,
-        last_sync_error: error,
-        health: {
-          lastSyncRunId: run.id,
-          lastSyncSummary: summary,
-        },
-      })
-      .eq("id", connectionId);
-
-    return { runId: run.id as string, status, summary };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Ozon sync failed";
-
-    await supabase
-      .from("marketplace_sync_runs")
-      .update({
-        status: "failed",
-        completed_at: new Date().toISOString(),
-        summary,
-        error: message,
-      })
-      .eq("id", run.id);
-
-    await supabase
-      .from("marketplace_connections")
-      .update({
-        status: "error",
-        last_sync_status: "failed",
-        last_sync_error: message,
-      })
-      .eq("id", connectionId);
-
-    throw error;
-  }
-}
-
-async function runStep(
-  summary: OzonSyncSummary,
-  key: Exclude<keyof OzonSyncSummary, "errors">,
-  fn: () => Promise<OzonSyncStepSummary>
-) {
-  try {
-    summary[key] = await fn();
-    return 1;
-  } catch (error) {
-    summary.errors.push(formatError(error));
-    return 0;
-  }
-}
-
-function resolveSyncStatus(
-  successfulSteps: number,
-  summary: OzonSyncSummary
-): TerminalOzonSyncRunStatus {
-  if (successfulSteps === 0) return "failed";
-  return summary.errors.length > 0 ? "completed_with_errors" : "completed";
-}
-
-function resolveSyncWindow(options: OzonSyncOptions) {
-  const dateTo = options.dateTo ? new Date(options.dateTo) : new Date();
-  const dateFrom = options.dateFrom
-    ? new Date(options.dateFrom)
-    : new Date(dateTo.getTime() - DEFAULT_SYNC_DAYS * 24 * 60 * 60 * 1000);
-
-  return {
-    dateFrom: dateFrom.toISOString(),
-    dateTo: dateTo.toISOString(),
-  };
-}
-
 async function loadMappingContext(
   supabase: SupabaseClient,
   workspaceId: string,
@@ -579,13 +384,15 @@ async function loadMappingContext(
         .eq("connection_id", connectionId),
     ]);
 
-  for (const result of [
-    productsResult,
-    warehousesResult,
-    ozonProductsResult,
-    ozonWarehousesResult,
-  ]) {
-    if (result.error) throw new Error(result.error.message);
+  for (const [table, result] of [
+    ["products", productsResult],
+    ["warehouses", warehousesResult],
+    ["ozon_products", ozonProductsResult],
+    ["ozon_warehouses", ozonWarehousesResult],
+  ] as const) {
+    if (result.error) {
+      throw ozonDatabaseError(result.error, `select:${table}`);
+    }
   }
 
   const productsByExternalKey = new Map<string, LocalProductRef>();
@@ -633,17 +440,148 @@ async function syncWarehouses(
   client: OzonClient,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
-  const response = await client.request<JsonRecord>("/v2/warehouse/list", {});
-  const warehouses = extractItems(response, ["warehouses", "items"]);
-  const rows = warehouses
-    .map((item) => toWarehouseRow(item, workspaceId, connectionId, mapping))
-    .filter(Boolean) as JsonRecord[];
+  const checkpoint = toRecord(execution?.checkpoint);
+  let fetched = toInteger(checkpoint.processed) ?? 0;
+  let cursor =
+    checkpoint.phase === "marketplace"
+      ? toStringValue(checkpoint.cursor) ?? ""
+      : "";
+  let pageIndex =
+    checkpoint.phase === "marketplace"
+      ? toInteger(checkpoint.pageIndex) ?? 0
+      : 0;
+  let marketplaceWarehousesComplete =
+    checkpoint.phase === "ozon" || checkpoint.phase === "complete";
 
-  await upsertRows(supabase, "ozon_warehouses", rows, "connection_id,ozon_warehouse_id");
+  while (!marketplaceWarehousesComplete && pageIndex < 100) {
+    execution?.yieldIfNeeded?.();
+    const response = await client.request<JsonRecord>("/v2/warehouse/list", {
+      limit: 200,
+      cursor,
+    });
+    const root = unwrapResult(response);
+    const pageWarehouses = requireItems(
+      root,
+      ["warehouses", "items"],
+      "/v2/warehouse/list"
+    );
+    const rows = decodeWarehouseRows(
+      pageWarehouses,
+      workspaceId,
+      connectionId,
+      mapping,
+      runId
+    );
+    await upsertRows(
+      supabase,
+      "ozon_warehouses",
+      rows,
+      "connection_id,ozon_warehouse_id"
+    );
+    fetched += pageWarehouses.length;
+    pageIndex += 1;
 
-  return { fetched: warehouses.length };
+    if (root.has_next !== true) {
+      marketplaceWarehousesComplete = true;
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "ozon",
+          cursor: "",
+          pageIndex,
+          processed: fetched,
+          total: null,
+        },
+        { fetched }
+      );
+      break;
+    }
+    const nextCursor = toStringValue(root.cursor ?? response.cursor);
+    if (!nextCursor || nextCursor === cursor || pageWarehouses.length === 0) {
+      throw new OzonIncompleteResponseError(
+        "Ozon warehouse page indicates more data without a new cursor"
+      );
+    }
+    cursor = nextCursor;
+    await execution?.saveCheckpoint?.(
+      {
+        phase: "marketplace",
+        cursor,
+        pageIndex,
+        processed: fetched,
+        total: null,
+      },
+      { fetched }
+    );
+  }
+  if (!marketplaceWarehousesComplete) {
+    throw new OzonIncompleteResponseError(
+      "Ozon warehouse pagination exceeded the 100-page safety limit"
+    );
+  }
+
+  if (checkpoint.phase !== "complete") {
+    execution?.yieldIfNeeded?.();
+    const ozonWarehousesResponse = await client.request<JsonRecord>(
+      "/v1/warehouse/ozon/list",
+      {}
+    );
+    const ozonWarehouses = requireItems(
+      ozonWarehousesResponse,
+      ["warehouses", "items"],
+      "/v1/warehouse/ozon/list"
+    );
+    await upsertRows(
+      supabase,
+      "ozon_warehouses",
+      decodeWarehouseRows(
+        ozonWarehouses,
+        workspaceId,
+        connectionId,
+        mapping,
+        runId
+      ),
+      "connection_id,ozon_warehouse_id"
+    );
+    fetched += ozonWarehouses.length;
+    await execution?.saveCheckpoint?.(
+      {
+        phase: "complete",
+        processed: fetched,
+        total: fetched,
+      },
+      { fetched }
+    );
+  }
+
+  return { fetched };
+}
+
+function decodeWarehouseRows(
+  warehouses: unknown[],
+  workspaceId: string,
+  connectionId: string,
+  mapping: MappingContext,
+  runId?: string
+) {
+  return [
+    ...new Map(
+      warehouses
+        .map((item) => ({
+          ...toWarehouseRow(
+            item,
+            workspaceId,
+            connectionId,
+            mapping
+          ),
+          ...ozonMirrorProvenance(runId),
+        }))
+        .map((row) => [String(row.ozon_warehouse_id), row])
+    ).values(),
+  ];
 }
 
 function toWarehouseRow(
@@ -657,7 +595,11 @@ function toWarehouseRow(
     item.warehouse_id ?? item.id ?? item.delivery_method_id ?? item.name
   );
   const name = toStringValue(item.name ?? item.warehouse_name);
-  if (!warehouseId || !name) return null;
+  if (!warehouseId || !name) {
+    throw new OzonIncompleteResponseError(
+      "Ozon warehouse response has no warehouse_id or name"
+    );
+  }
 
   const preserved = mapping.ozonWarehouseMappings.get(warehouseId);
   const localWarehouse = mapping.warehousesByName.get(normalizeKey(name));
@@ -685,63 +627,97 @@ async function syncProducts(
   client: OzonClient,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
-  const refs = await fetchProductRefs(client);
-  const [details, prices, attributes] = await Promise.all([
-    fetchProductDetails(client, refs).catch(() => []),
-    fetchProductPrices(client, refs).catch(() => []),
-    fetchProductAttributes(client).catch(() => []),
-  ]);
+  const checkpoint = toRecord(execution?.checkpoint);
+  let lastId = toStringValue(checkpoint.lastId) ?? "";
+  let pageIndex = toInteger(checkpoint.pageIndex) ?? 0;
+  let fetched = toInteger(checkpoint.processed) ?? 0;
 
-  const detailMap = indexExternalProducts(details);
-  const priceMap = indexExternalProducts(prices);
-  const attributeMap = indexExternalProducts(attributes);
-
-  const rows = refs.map((ref) => {
-    const detail = lookupExternalProduct(detailMap, ref);
-    const price = lookupExternalProduct(priceMap, ref);
-    const attributesItem = lookupExternalProduct(attributeMap, ref);
-    return toProductRow(
-      workspaceId,
-      connectionId,
-      mapping,
-      ref,
-      detail,
-      price,
-      attributesItem
-    );
-  });
-
-  await upsertRows(supabase, "ozon_products", rows, "connection_id,ozon_product_id");
-
-  return { fetched: refs.length };
-}
-
-async function fetchProductRefs(client: OzonClient) {
-  const refs: ExternalProductRef[] = [];
-  let lastId = "";
-
-  for (let page = 0; page < 100; page += 1) {
+  while (pageIndex < 100) {
+    execution?.yieldIfNeeded?.();
     const response = await client.request<JsonRecord>("/v3/product/list", {
       filter: { visibility: "ALL" },
       limit: PRODUCT_PAGE_LIMIT,
       last_id: lastId,
     });
     const root = unwrapResult(response);
-    const items = extractItems(root, ["items", "products"]);
-
-    for (const item of items) {
+    const items = requireItems(root, ["items", "products"], "/v3/product/list");
+    const refs = items.map((item) => {
       const ref = toProductRef(item);
-      if (ref) refs.push(ref);
-    }
+      if (!ref) {
+        throw new OzonIncompleteResponseError(
+          "Ozon product list item has no documented identifier"
+        );
+      }
+      return ref;
+    });
+
+    const [details, prices, attributes] = await Promise.all([
+      fetchProductDetails(client, refs),
+      fetchProductPrices(client, refs),
+      fetchProductAttributes(client, refs),
+    ]);
+    const detailMap = indexExternalProducts(details);
+    const priceMap = indexExternalProducts(prices);
+    const attributeMap = indexExternalProducts(attributes);
+    const rows = refs.map((ref) => ({
+      ...toProductRow(
+        workspaceId,
+        connectionId,
+        mapping,
+        ref,
+        lookupExternalProduct(detailMap, ref),
+        lookupExternalProduct(priceMap, ref),
+        lookupExternalProduct(attributeMap, ref)
+      ),
+      ...ozonMirrorProvenance(runId),
+    }));
+    await upsertRows(
+      supabase,
+      "ozon_products",
+      rows,
+      "connection_id,ozon_product_id"
+    );
+    fetched += refs.length;
+    pageIndex += 1;
 
     const nextLastId = toStringValue(root.last_id ?? root.cursor ?? response.cursor);
-    if (!nextLastId || nextLastId === lastId || items.length === 0) break;
+    if (!nextLastId || items.length === 0) {
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "complete",
+          pageIndex,
+          processed: fetched,
+          total: fetched,
+        },
+        { fetched }
+      );
+      return { fetched };
+    }
+    if (nextLastId === lastId) {
+      throw new OzonIncompleteResponseError(
+        "Ozon product list repeated its pagination identifier"
+      );
+    }
     lastId = nextLastId;
+    await execution?.saveCheckpoint?.(
+      {
+        phase: "products",
+        lastId,
+        pageIndex,
+        processed: fetched,
+        total: null,
+      },
+      { fetched }
+    );
   }
 
-  return refs;
+  throw new OzonIncompleteResponseError(
+    "Ozon product list exceeded the 100-page safety limit"
+  );
 }
 
 async function fetchProductDetails(client: OzonClient, refs: ExternalProductRef[]) {
@@ -749,18 +725,24 @@ async function fetchProductDetails(client: OzonClient, refs: ExternalProductRef[
 
   for (const chunk of chunkArray(refs, 100)) {
     const productIds = chunk
-      .map((ref) => numericId(ref.ozonProductId))
-      .filter((value): value is number => value !== null);
+      .map((ref) => ref.ozonProductId)
+      .filter((value): value is string => /^\d+$/.test(value));
     const offerIds = chunk
       .map((ref) => ref.offerId)
       .filter((value): value is string => Boolean(value));
 
     const response = await client.request<JsonRecord>("/v3/product/info/list", {
       product_id: productIds,
-      offer_id: productIds.length > 0 ? [] : offerIds,
+      offer_id: offerIds,
     });
 
-    details.push(...(extractItems(response, ["items", "products"]) as JsonRecord[]));
+    details.push(
+      ...(requireItems(
+        response,
+        ["items", "products"],
+        "/v3/product/info/list"
+      ) as JsonRecord[])
+    );
   }
 
   return details;
@@ -768,57 +750,111 @@ async function fetchProductDetails(client: OzonClient, refs: ExternalProductRef[
 
 async function fetchProductPrices(client: OzonClient, refs: ExternalProductRef[]) {
   const prices: JsonRecord[] = [];
-  let cursor = "";
-
-  for (let page = 0; page < 100; page += 1) {
-    const response = await client.request<JsonRecord>("/v5/product/info/prices", {
-      filter: {
-        visibility: "ALL",
-      },
-      limit: PRODUCT_PAGE_LIMIT,
-      cursor,
-    });
-    const root = unwrapResult(response);
-    const items = extractItems(root, ["items", "products"]);
-    prices.push(...(items as JsonRecord[]));
-    const nextCursor = toStringValue(root.cursor ?? response.cursor);
-    if (!nextCursor || nextCursor === cursor || items.length === 0) break;
-    cursor = nextCursor;
-  }
-
-  if (prices.length > 0 || refs.length === 0) return prices;
-
   for (const chunk of chunkArray(refs, 100)) {
+    const productIds = chunk
+      .map((ref) => ref.ozonProductId)
+      .filter((value): value is string => /^\d+$/.test(value));
     const offerIds = chunk
       .map((ref) => ref.offerId)
       .filter((value): value is string => Boolean(value));
-    const response = await client.request<JsonRecord>("/v5/product/info/prices", {
-      filter: { offer_id: offerIds },
-      limit: PRODUCT_PAGE_LIMIT,
-    });
-    prices.push(...(extractItems(response, ["items", "products"]) as JsonRecord[]));
+    let cursor = "";
+    let complete = false;
+    for (let page = 0; page < 100; page += 1) {
+      const response = await client.request<JsonRecord>(
+        "/v5/product/info/prices",
+        {
+          filter: {
+            product_id: productIds,
+            offer_id: offerIds,
+            visibility: "ALL",
+          },
+          limit: PRODUCT_PAGE_LIMIT,
+          cursor,
+        }
+      );
+      const root = unwrapResult(response);
+      const items = requireItems(
+        root,
+        ["items", "products"],
+        "/v5/product/info/prices"
+      );
+      prices.push(...(items as JsonRecord[]));
+      const nextCursor = toStringValue(root.cursor ?? response.cursor);
+      if (!nextCursor || items.length === 0) {
+        complete = true;
+        break;
+      }
+      if (nextCursor === cursor) {
+        throw new OzonIncompleteResponseError(
+          "Ozon product price list repeated its cursor"
+        );
+      }
+      cursor = nextCursor;
+    }
+    if (!complete) {
+      throw new OzonIncompleteResponseError(
+        "Ozon product price list exceeded the 100-page safety limit"
+      );
+    }
   }
 
   return prices;
 }
 
-async function fetchProductAttributes(client: OzonClient) {
+async function fetchProductAttributes(
+  client: OzonClient,
+  refs: ExternalProductRef[]
+) {
   const attributes: JsonRecord[] = [];
-  let lastId = "";
+  for (const chunk of chunkArray(refs, 100)) {
+    const productIds = chunk
+      .map((ref) => ref.ozonProductId)
+      .filter((value): value is string => /^\d+$/.test(value));
+    const offerIds = chunk
+      .map((ref) => ref.offerId)
+      .filter((value): value is string => Boolean(value));
+    let lastId = "";
+    let complete = false;
+    for (let page = 0; page < 100; page += 1) {
+      const response = await client.request<JsonRecord>(
+        "/v4/product/info/attributes",
+        {
+          filter: {
+            product_id: productIds,
+            offer_id: offerIds,
+            visibility: "ALL",
+          },
+          limit: PRODUCT_PAGE_LIMIT,
+          last_id: lastId,
+        }
+      );
+      const root = unwrapResult(response);
+      const items = requireItems(
+        root,
+        ["items", "products"],
+        "/v4/product/info/attributes"
+      );
+      attributes.push(...(items as JsonRecord[]));
 
-  for (let page = 0; page < 100; page += 1) {
-    const response = await client.request<JsonRecord>("/v4/product/info/attributes", {
-      filter: { visibility: "ALL" },
-      limit: PRODUCT_PAGE_LIMIT,
-      last_id: lastId,
-    });
-    const root = unwrapResult(response);
-    const items = extractItems(root, ["items", "products"]);
-    attributes.push(...(items as JsonRecord[]));
-
-    const nextLastId = toStringValue(root.last_id ?? root.cursor ?? response.cursor);
-    if (!nextLastId || nextLastId === lastId || items.length === 0) break;
-    lastId = nextLastId;
+      const nextLastId = toStringValue(
+        root.last_id ?? root.cursor ?? response.cursor
+      );
+      if (!nextLastId || items.length === 0) {
+        complete = true;
+        break;
+      }
+      if (nextLastId === lastId) {
+        throw new OzonIncompleteResponseError(
+          "Ozon product attributes repeated their pagination identifier"
+        );
+      }
+      lastId = nextLastId;
+    }
+    if (!complete) {
+      throw new OzonIncompleteResponseError(
+        "Ozon product attributes exceeded the 100-page safety limit"
+      );
+    }
   }
 
   return attributes;
@@ -865,6 +901,7 @@ function toProductRow(
   const mappingResult = resolveMapping(preserved, localProductId);
   const statuses = toRecord(source.statuses);
   const visibility = toRecord(source.visibility_details);
+  const priceFields = toRecord(source.price);
 
   return {
     workspace_id: workspaceId,
@@ -873,19 +910,24 @@ function toProductRow(
     offer_id: offerId,
     sku,
     name: toStringValue(source.name),
-    currency_code: toStringValue(source.currency_code ?? source.currency),
-    price: toNumberValue(source.price),
-    old_price: toNumberValue(source.old_price),
-    min_price: toNumberValue(source.min_price),
+    currency_code: toStringValue(
+      priceFields.currency_code ??
+        priceFields.currency ??
+        source.currency_code ??
+        source.currency
+    ),
+    price: decimalString(priceFields.marketing_price ?? priceFields.price ?? source.price),
+    old_price: decimalString(priceFields.old_price ?? source.old_price),
+    min_price: decimalString(priceFields.min_price ?? source.min_price),
     status: toStringValue(statuses.status ?? source.status),
     visibility: Object.keys(visibility).length > 0 ? JSON.stringify(visibility) : null,
     description_category_id: toStringValue(source.description_category_id),
     type_id: toStringValue(source.type_id),
     barcodes,
     images: [
-      ...asArray(source.primary_image),
-      ...asArray(source.images),
-      ...asArray(source.color_image),
+      ...stringOrArray(source.primary_image),
+      ...stringOrArray(source.images),
+      ...stringOrArray(source.color_image),
     ],
     attributes: asArray(attributes?.attributes ?? attributes?.items ?? []),
     raw_payload: sanitizeOzonPayload({ source, attributes }),
@@ -900,35 +942,90 @@ async function syncStocks(
   client: OzonClient,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
-  const rows: JsonRecord[] = [];
-  let cursor = "";
-  const snapshotAt = new Date().toISOString();
+  const checkpoint = toRecord(execution?.checkpoint);
+  let cursor = toStringValue(checkpoint.cursor) ?? "";
+  const snapshotAt =
+    toStringValue(checkpoint.snapshotAt) ?? new Date().toISOString();
+  let fetched = toInteger(checkpoint.processed) ?? 0;
+  let pageIndex = toInteger(checkpoint.pageIndex) ?? 0;
+  let complete = checkpoint.phase === "complete";
 
-  for (let page = 0; page < 100; page += 1) {
+  while (!complete && pageIndex < 100) {
+    execution?.yieldIfNeeded?.();
     const response = await client.request<JsonRecord>("/v4/product/info/stocks", {
       filter: { visibility: "ALL" },
       limit: PRODUCT_PAGE_LIMIT,
       cursor,
     });
     const root = unwrapResult(response);
-    const items = extractItems(root, ["items", "products"]);
+    const items = requireItems(
+      root,
+      ["items", "products"],
+      "/v4/product/info/stocks"
+    );
 
+    const rows: JsonRecord[] = [];
     for (const item of items) {
       rows.push(
-        ...toStockRows(item, workspaceId, connectionId, mapping, snapshotAt)
+        ...toStockRows(
+          item,
+          workspaceId,
+          connectionId,
+          mapping,
+          snapshotAt,
+          runId
+        )
       );
     }
+    await insertRows(supabase, "ozon_stock_snapshots", rows);
+    fetched += rows.length;
+    pageIndex += 1;
 
     const nextCursor = toStringValue(root.cursor ?? response.cursor);
-    if (!nextCursor || nextCursor === cursor || items.length === 0) break;
+    if (!nextCursor || items.length === 0) {
+      complete = true;
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "complete",
+          cursor: "",
+          snapshotAt,
+          pageIndex,
+          processed: fetched,
+          total: fetched,
+        },
+        { fetched }
+      );
+      break;
+    }
+    if (nextCursor === cursor) {
+      throw new OzonIncompleteResponseError(
+        "Ozon stock list repeated its cursor"
+      );
+    }
     cursor = nextCursor;
+    await execution?.saveCheckpoint?.(
+      {
+        phase: "stocks",
+        cursor,
+        snapshotAt,
+        pageIndex,
+        processed: fetched,
+        total: null,
+      },
+      { fetched }
+    );
+  }
+  if (!complete) {
+    throw new OzonIncompleteResponseError(
+      "Ozon stock list exceeded the 100-page safety limit"
+    );
   }
 
-  await insertRows(supabase, "ozon_stock_snapshots", rows);
-
-  return { fetched: rows.length };
+  return { fetched };
 }
 
 function toStockRows(
@@ -936,7 +1033,8 @@ function toStockRows(
   workspaceId: string,
   connectionId: string,
   mapping: MappingContext,
-  snapshotAt: string
+  snapshotAt: string,
+  runId?: string
 ) {
   const item = toRecord(value);
   const ozonProductId = toStringValue(
@@ -949,12 +1047,7 @@ function toStockRows(
 
   return stockItems.map((stock) => {
     const stockRecord = toRecord(stock);
-    const warehouseName = toStringValue(
-      stockRecord.warehouse_name ?? stockRecord.source ?? stockRecord.name
-    );
-    const warehouseId = toStringValue(
-      stockRecord.warehouse_id ?? stockRecord.source ?? warehouseName
-    );
+    const stockType = toStringValue(stockRecord.type);
 
     return {
       workspace_id: workspaceId,
@@ -963,16 +1056,23 @@ function toStockRows(
       ozon_product_id: ozonProductId,
       offer_id: offerId,
       sku,
-      warehouse_name: warehouseName,
-      ozon_warehouse_id: warehouseId,
-      fulfillment_schema: toStringValue(
-        stockRecord.fulfillment_schema ?? stockRecord.source
+      warehouse_name: null,
+      ozon_warehouse_id: null,
+      fulfillment_schema: stockType,
+      present: requiredDecimal(
+        stockRecord.present,
+        "/v4/product/info/stocks",
+        "stocks.present"
       ),
-      present: toNumberValue(stockRecord.present ?? stockRecord.quantity) ?? 0,
-      reserved: toNumberValue(stockRecord.reserved) ?? 0,
+      reserved: requiredDecimal(
+        stockRecord.reserved,
+        "/v4/product/info/stocks",
+        "stocks.reserved"
+      ),
       raw_payload: sanitizeOzonPayload({ item, stock: stockRecord }),
       local_product_id: findLocalProductId(mapping, ozonProductId, [offerId, sku]),
-      local_warehouse_id: findLocalWarehouseId(mapping, warehouseId, warehouseName),
+      local_warehouse_id: null,
+      ...ozonMirrorProvenance(runId),
     };
   });
 }
@@ -984,17 +1084,40 @@ async function syncPostings(
   connectionId: string,
   mapping: MappingContext,
   dateFrom: string,
-  dateTo: string
+  dateTo: string,
+  runId?: string,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
-  let fetched = 0;
-  let createdCandidates = 0;
+  const checkpoint = toRecord(execution?.checkpoint);
+  let fetched = toInteger(checkpoint.processed) ?? 0;
+  let createdCandidates = toInteger(checkpoint.createdCandidates) ?? 0;
+  const startSchemaIndex =
+    checkpoint.phase === "postings"
+      ? toInteger(checkpoint.schemaIndex) ?? 0
+      : checkpoint.phase === "complete"
+        ? 2
+        : 0;
 
-  for (const schema of ["fbs", "fbo"] as const) {
+  for (
+    let schemaIndex = startSchemaIndex;
+    schemaIndex < 2;
+    schemaIndex += 1
+  ) {
+    const schema = (["fbs", "fbo"] as const)[schemaIndex];
     const endpoint =
       schema === "fbs" ? "/v4/posting/fbs/list" : "/v3/posting/fbo/list";
-    let cursor = "";
+    let cursor =
+      schemaIndex === startSchemaIndex
+        ? toStringValue(checkpoint.cursor) ?? ""
+        : "";
+    let pageIndex =
+      schemaIndex === startSchemaIndex
+        ? toInteger(checkpoint.pageIndex) ?? 0
+        : 0;
+    let complete = false;
 
-    for (let page = 0; page < 200; page += 1) {
+    while (!complete && pageIndex < 200) {
+      execution?.yieldIfNeeded?.();
       const response = await client.request<JsonRecord>(endpoint, {
         cursor,
         filter: {
@@ -1009,7 +1132,7 @@ async function syncPostings(
           financial_data: true,
         },
       });
-      const items = extractItems(response, ["postings", "items"]);
+      const items = requireItems(response, ["postings", "items"], endpoint);
       fetched += items.length;
 
       for (const posting of items) {
@@ -1019,16 +1142,55 @@ async function syncPostings(
           connectionId,
           schema,
           posting,
-          mapping
+          mapping,
+          runId
         );
         createdCandidates += result.createdCandidate ? 1 : 0;
       }
+      pageIndex += 1;
 
-      if (items.length < POSTING_PAGE_LIMIT) break;
       const root = unwrapResult(response);
+      if (root.has_next !== true) {
+        complete = true;
+        const nextSchemaIndex = schemaIndex + 1;
+        await execution?.saveCheckpoint?.(
+          {
+            phase: nextSchemaIndex < 2 ? "postings" : "complete",
+            schemaIndex: nextSchemaIndex,
+            cursor: "",
+            pageIndex: 0,
+            processed: fetched,
+            createdCandidates,
+            total: null,
+          },
+          { fetched, createdCandidates }
+        );
+        break;
+      }
       const nextCursor = toStringValue(root.cursor ?? response.cursor);
-      if (!nextCursor || nextCursor === cursor) break;
+      if (!nextCursor || nextCursor === cursor) {
+        throw new OzonIncompleteResponseError(
+          `Ozon ${endpoint} response indicates more postings without a new cursor`
+        );
+      }
       cursor = nextCursor;
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "postings",
+          schemaIndex,
+          cursor,
+          pageIndex,
+          processed: fetched,
+          createdCandidates,
+          total: null,
+        },
+        { fetched, createdCandidates }
+      );
+    }
+    if (!complete) {
+      throw new OzonIncompleteResponseError(
+        `Ozon ${endpoint} exceeded the 200-page safety limit`
+      );
     }
   }
 
@@ -1041,20 +1203,37 @@ async function upsertPosting(
   connectionId: string,
   schema: "fbs" | "fbo",
   value: unknown,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string
 ) {
   const item = toRecord(value);
   const postingNumber = toStringValue(
     item.posting_number ?? item.postingNumber ?? item.order_number
   );
-  if (!postingNumber) return { createdCandidate: false };
+  if (!postingNumber) {
+    throw new OzonIncompleteResponseError(
+      `Ozon ${schema.toUpperCase()} posting has no posting_number`
+    );
+  }
 
   const deliveryMethod = toRecord(item.delivery_method);
   const cancellation = toRecord(item.cancellation);
+  const analyticsData = toRecord(item.analytics_data);
   const warehouseName = toStringValue(
-    deliveryMethod.warehouse ?? item.warehouse_name ?? item.warehouse
+    schema === "fbs"
+      ? analyticsData.warehouse ?? deliveryMethod.warehouse
+      : analyticsData.warehouse_name
   );
-  const localWarehouseId = findLocalWarehouseId(mapping, null, warehouseName);
+  const warehouseId = toStringValue(
+    schema === "fbo"
+      ? analyticsData.warehouse_id
+      : analyticsData.warehouse_id ?? warehouseName
+  );
+  const localWarehouseId = findLocalWarehouseId(
+    mapping,
+    warehouseId,
+    warehouseName
+  );
 
   const postingRow = {
     workspace_id: workspaceId,
@@ -1074,21 +1253,8 @@ async function upsertPosting(
     raw_payload: sanitizeOzonPayload(item),
     local_warehouse_id: localWarehouseId,
     synced_at: new Date().toISOString(),
+    ...ozonMirrorProvenance(runId),
   };
-
-  const { data: posting, error } = await supabase
-    .from("ozon_postings")
-    .upsert(postingRow, {
-      onConflict: "connection_id,posting_schema,posting_number",
-    })
-    .select("*")
-    .single();
-
-  if (error || !posting) {
-    throw new Error(error?.message ?? "Failed to save Ozon posting");
-  }
-
-  await supabase.from("ozon_posting_items").delete().eq("posting_id", posting.id);
 
   const products = asArray(item.products);
   const itemRows = products.map((product) =>
@@ -1096,12 +1262,34 @@ async function upsertPosting(
       product,
       workspaceId,
       connectionId,
-      posting.id as string,
-      mapping
+      PERSISTENCE_PLACEHOLDER_ID,
+      mapping,
+      runId,
+      schema
     )
   );
 
-  await insertRows(supabase, "ozon_posting_items", itemRows);
+  const { data: postingId, error: replaceError } = await supabase.rpc(
+    "replace_ozon_posting_with_items_v2",
+    {
+      p_parent: postingRow,
+      p_rows: itemRows,
+    }
+  );
+  if (replaceError || typeof postingId !== "string") {
+    throw ozonDatabaseError(
+      replaceError ?? {},
+      "rpc:replace_ozon_posting_with_items_v2"
+    );
+  }
+  const { data: posting, error } = await supabase
+    .from("ozon_postings")
+    .select("*")
+    .eq("id", postingId)
+    .single();
+  if (error || !posting) {
+    throw ozonDatabaseError(error ?? {}, "select:ozon_postings");
+  }
 
   const candidate = buildPostingCandidate(
     posting as JsonRecord,
@@ -1114,10 +1302,13 @@ async function upsertPosting(
 
   const candidateRow = await upsertCandidatePreservingReview(supabase, candidate);
 
-  await supabase
+  const { error: linkError } = await supabase
     .from("ozon_postings")
     .update({ operation_candidate_id: candidateRow.id })
     .eq("id", posting.id);
+  if (linkError) {
+    throw ozonDatabaseError(linkError, "update:ozon_postings");
+  }
 
   return { createdCandidate: true };
 }
@@ -1127,7 +1318,9 @@ function toPostingItemRow(
   workspaceId: string,
   connectionId: string,
   postingId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId: string | undefined,
+  schema: "fbs" | "fbo"
 ) {
   const item = toRecord(value);
   const ozonProductId = toStringValue(
@@ -1144,11 +1337,24 @@ function toPostingItemRow(
     offer_id: offerId,
     sku,
     name: toStringValue(item.name),
-    quantity: toNumberValue(item.quantity) ?? 0,
-    price: toNumberValue(item.price),
-    currency_code: toStringValue(item.currency_code ?? item.currency),
+    quantity: requiredDecimal(
+      item.quantity,
+      schema === "fbs" ? "/v4/posting/fbs/list" : "/v3/posting/fbo/list",
+      "products.quantity"
+    ),
+    price: requiredMoneyAmount(
+      item.price,
+      schema === "fbs" ? "/v4/posting/fbs/list" : "/v3/posting/fbo/list",
+      "products.price"
+    ),
+    currency_code: requiredMoneyCurrency(
+      item.price,
+      schema === "fbs" ? "/v4/posting/fbs/list" : "/v3/posting/fbo/list",
+      "products.price"
+    ),
     raw_payload: sanitizeOzonPayload(item),
     local_product_id: findLocalProductId(mapping, ozonProductId, [offerId, sku]),
+    ...ozonMirrorProvenance(runId),
   };
 }
 
@@ -1159,10 +1365,10 @@ function buildPostingCandidate(
   postingNumber: string
 ) {
   const status = normalizeStatus(posting.status);
-  const operationDate =
-    toDateOnly(posting.delivered_at) ??
-    toDateOnly(posting.shipment_date) ??
-    toDateOnly(posting.in_process_at);
+  // The list contracts do not expose a `delivered_at` field. Finality comes
+  // from the documented delivered status; use only the documented posting
+  // processing timestamp as the source event date.
+  const operationDate = toDateOnly(posting.in_process_at);
 
   if (isCancelledStatus(status)) {
     return {
@@ -1184,11 +1390,11 @@ function buildPostingCandidate(
           severity: "warning",
         },
       ],
-      raw_payload: sanitizeOzonPayload(posting),
+      raw_payload: sanitizeOzonPayload(posting.raw_payload ?? posting),
     };
   }
 
-  if (!isDeliveredStatus(status)) return null;
+  if (!isDeliveredStatus(status) || !operationDate) return null;
 
   const operation = {
     type: "sale" as const,
@@ -1203,8 +1409,8 @@ function buildPostingCandidate(
       ozonProductId: toStringValue(item.ozon_product_id),
       warehouseId: toStringValue(posting.local_warehouse_id),
       warehouseName: toStringValue(posting.warehouse_name),
-      quantity: toNumberValue(item.quantity),
-      unitPrice: toNumberValue(item.price),
+      quantity: decimalString(item.quantity),
+      unitPrice: decimalString(item.price),
       direction: "out" as const,
     })),
   };
@@ -1224,7 +1430,7 @@ function buildPostingCandidate(
     operation: normalizedOperation,
     normalized_operation: normalizedOperation,
     validation_errors: validationErrors,
-    raw_payload: sanitizeOzonPayload(posting),
+    raw_payload: sanitizeOzonPayload(posting.raw_payload ?? posting),
   };
 }
 
@@ -1235,80 +1441,179 @@ async function syncReturns(
   connectionId: string,
   mapping: MappingContext,
   dateFrom: string,
-  dateTo: string
+  dateTo: string,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
-  let fetched = 0;
+  const savedCheckpoint = toRecord(execution?.checkpoint);
+  let fetched = toInteger(savedCheckpoint.processed) ?? 0;
   let createdCandidates = 0;
-  let offset = 0;
+  let lastId =
+    savedCheckpoint.phase === "returns"
+      ? toStringValue(savedCheckpoint.lastId) ?? ""
+      : "";
+  let standardReturnsComplete = savedCheckpoint.phase === "rfbs";
 
+  if (!standardReturnsComplete) {
+    for (let page = 0; page < 100; page += 1) {
+      execution?.yieldIfNeeded?.();
+      const response = await client.request<JsonRecord>("/v1/returns/list", {
+        filter: {
+          logistic_return_date: {
+            time_from: dateFrom,
+            time_to: dateTo,
+          },
+        },
+        limit: POSTING_PAGE_LIMIT,
+        last_id: lastId,
+      });
+      const root = toRecord(response);
+      const items = requireArrayMember(root, "returns", "/v1/returns/list");
+      fetched += items.length;
+
+      for (const item of items) {
+        const created = await upsertReturn(
+          supabase,
+          workspaceId,
+          connectionId,
+          item,
+          mapping,
+          "fbo_fbs",
+          execution?.runId
+        );
+        if (created) createdCandidates += 1;
+      }
+
+      if (root.has_next !== true) {
+        standardReturnsComplete = true;
+        await execution?.saveCheckpoint?.(
+          { phase: "rfbs", lastId: "", processed: fetched, total: null },
+          { fetched, createdCandidates }
+        );
+        break;
+      }
+      const nextLastId = returnPageCursor(
+        items,
+        "id",
+        "/v1/returns/list"
+      );
+      if (nextLastId === lastId) {
+        throw new OzonIncompleteResponseError(
+          "Ozon returns page repeated its last return identifier"
+        );
+      }
+      lastId = nextLastId;
+      await execution?.saveCheckpoint?.(
+        { phase: "returns", lastId, processed: fetched, total: null },
+        { fetched, createdCandidates }
+      );
+    }
+    if (!standardReturnsComplete) {
+      throw new OzonIncompleteResponseError(
+        "Ozon returns pagination exceeded the 100-page safety limit"
+      );
+    }
+  }
+
+  lastId =
+    savedCheckpoint.phase === "rfbs"
+      ? toStringValue(savedCheckpoint.lastId) ?? ""
+      : "";
   for (let page = 0; page < 100; page += 1) {
-    const response = await client.request<JsonRecord>("/v1/returns/list", {
+    execution?.yieldIfNeeded?.();
+    const response = await client.request<JsonRecord>("/v2/returns/rfbs/list", {
+      last_id: lastId,
+      limit: POSTING_PAGE_LIMIT,
       filter: {
-        date: {
+        created_at: {
           from: dateFrom,
           to: dateTo,
         },
       },
-      limit: POSTING_PAGE_LIMIT,
-      offset,
-    });
-    const items = extractItems(response, ["returns", "items"]);
-    fetched += items.length;
-
-    for (const item of items) {
-      const created = await upsertReturn(
-        supabase,
-        workspaceId,
-        connectionId,
-        item,
-        mapping
-      );
-      if (created) createdCandidates += 1;
-    }
-
-    if (items.length < POSTING_PAGE_LIMIT) break;
-    offset += POSTING_PAGE_LIMIT;
-  }
-
-  let cursor = "";
-  for (let page = 0; page < 100; page += 1) {
-    const response = await client.request<JsonRecord>("/v2/returns/rfbs/list", {
-      cursor,
-      limit: POSTING_PAGE_LIMIT,
-      filter: {
-        created_at_from: dateFrom,
-        created_at_to: dateTo,
-      },
     });
     const root = unwrapResult(response);
-    const items = extractItems(root, ["returns", "items"]);
-    fetched += items.length;
+    const items = requireArrayMember(root, "returns", "/v2/returns/rfbs/list");
+    const startDetailIndex =
+      page === 0 && savedCheckpoint.phase === "rfbs"
+        ? toInteger(savedCheckpoint.detailIndex) ?? 0
+        : 0;
 
-    for (const item of items) {
+    for (
+      let detailIndex = startDetailIndex;
+      detailIndex < items.length;
+      detailIndex += 1
+    ) {
+      const item = items[detailIndex];
       const returnId = toStringValue(
         toRecord(item).return_id ?? toRecord(item).id ?? toRecord(item).posting_number
       );
-      const detail = returnId
-        ? await client
-            .request<JsonRecord>("/v2/returns/rfbs/get", { return_id: returnId })
-            .catch(() => item)
-        : item;
+      if (!returnId) {
+        throw new OzonIncompleteResponseError(
+          "Ozon rFBS return list item has no return identifier"
+        );
+      }
+      const detailResponse = await client.request<JsonRecord>(
+        "/v2/returns/rfbs/get",
+        { return_id: returnId }
+      );
+      const detailMember = toRecord(detailResponse).returns;
+      const detail = Array.isArray(detailMember)
+        ? detailMember[0]
+        : detailMember ?? unwrapResult(detailResponse);
+      if (!isRecord(detail)) {
+        throw new OzonIncompleteResponseError(
+          "Ozon rFBS return detail has no returns member"
+        );
+      }
       const created = await upsertReturn(
         supabase,
         workspaceId,
         connectionId,
         detail,
-        mapping
+        mapping,
+        "rfbs",
+        execution?.runId
       );
       if (created) createdCandidates += 1;
+      fetched += 1;
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "rfbs",
+          lastId,
+          detailIndex: detailIndex + 1,
+          processed: fetched,
+          total: null,
+        },
+        { fetched, createdCandidates }
+      );
     }
 
-    const nextCursor = toStringValue(root.cursor ?? response.cursor);
-    if (!nextCursor || nextCursor === cursor || items.length === 0) break;
-    cursor = nextCursor;
+    if (items.length < POSTING_PAGE_LIMIT) return { fetched, createdCandidates };
+    const nextLastId = returnPageCursor(
+      items,
+      "return_id",
+      "/v2/returns/rfbs/list"
+    );
+    if (nextLastId === lastId) {
+      throw new OzonIncompleteResponseError(
+        "Ozon rFBS returns page repeated its last return identifier"
+      );
+    }
+    lastId = nextLastId;
+    await execution?.saveCheckpoint?.(
+      {
+        phase: "rfbs",
+        lastId,
+        detailIndex: 0,
+        processed: fetched,
+        total: null,
+      },
+      { fetched, createdCandidates }
+    );
   }
 
-  return { fetched, createdCandidates };
+  throw new OzonIncompleteResponseError(
+    "Ozon rFBS returns pagination exceeded the 100-page safety limit"
+  );
 }
 
 async function upsertReturn(
@@ -1316,38 +1621,19 @@ async function upsertReturn(
   workspaceId: string,
   connectionId: string,
   value: unknown,
-  mapping: MappingContext
+  mapping: MappingContext,
+  source: "fbo_fbs" | "rfbs",
+  runId?: string
 ) {
+  const decoded = decodeOzonReturn(value, source);
   const item = toRecord(value);
-  const product = toRecord(item.product ?? item.item ?? {});
-  const returnId =
-    toStringValue(item.id ?? item.return_id ?? item.return_number) ??
-    [
-      toStringValue(item.posting_number),
-      toStringValue(product.offer_id ?? item.offer_id),
-      toStringValue(item.status),
-    ]
-      .filter(Boolean)
-      .join(":");
-
-  if (!returnId) return false;
-
-  const ozonProductId = toStringValue(
-    product.product_id ?? item.product_id ?? product.sku ?? item.sku
-  );
-  const offerId = toStringValue(product.offer_id ?? item.offer_id);
-  const sku = toStringValue(product.sku ?? item.sku);
+  const returnId = decoded.returnId;
+  const ozonProductId = decoded.ozonProductId;
+  const offerId = decoded.offerId;
+  const sku = decoded.sku;
   const localProductId = findLocalProductId(mapping, ozonProductId, [offerId, sku]);
-  const warehouse = toRecord(item.warehouse ?? item.destination_warehouse ?? {});
-  const warehouseName = toStringValue(
-    item.warehouse_name ??
-      item.destination_warehouse_name ??
-      warehouse.warehouse_name ??
-      warehouse.name
-  );
-  const warehouseId = toStringValue(
-    item.warehouse_id ?? warehouse.warehouse_id ?? warehouse.id ?? warehouseName
-  );
+  const warehouseName = decoded.warehouseName;
+  const warehouseId = decoded.warehouseId;
   const localWarehouseId = findLocalWarehouseId(
     mapping,
     warehouseId,
@@ -1358,23 +1644,25 @@ async function upsertReturn(
     workspace_id: workspaceId,
     connection_id: connectionId,
     ozon_return_id: returnId,
-    posting_number: toStringValue(item.posting_number),
-    status: toStringValue(item.status),
-    return_schema: toStringValue(item.schema ?? item.return_schema),
-    returned_at: toIsoString(
-      item.returned_at ??
-        item.returned_to_seller_date_time ??
-        item.accepted_from_customer_at ??
-        item.created_at
-    ),
+    posting_number: decoded.postingNumber,
+    status: decoded.status,
+    return_schema: decoded.schema,
+    logistic_return_date: decoded.logisticReturnDate,
+    logistic_final_moment: decoded.logisticFinalMoment,
+    returned_at: decoded.returnedAt,
     offer_id: offerId,
     sku,
     ozon_product_id: ozonProductId,
-    quantity: toNumberValue(item.quantity ?? product.quantity) ?? 1,
-    price: toNumberValue(item.price ?? product.price),
+    quantity: decoded.quantity,
+    price: decoded.price,
+    currency_code: decoded.currencyCode,
+    ozon_warehouse_id: warehouseId,
+    warehouse_name: warehouseName,
+    local_warehouse_id: localWarehouseId,
     raw_payload: sanitizeOzonPayload(item),
     local_product_id: localProductId,
     synced_at: new Date().toISOString(),
+    ...ozonMirrorProvenance(runId),
   };
 
   const { data: savedReturn, error } = await supabase
@@ -1384,12 +1672,12 @@ async function upsertReturn(
     .single();
 
   if (error || !savedReturn) {
-    throw new Error(error?.message ?? "Failed to save Ozon return");
+    throw ozonDatabaseError(error ?? {}, "upsert:ozon_returns");
   }
 
   const candidate = buildReturnCandidate({
     ...(savedReturn as JsonRecord),
-    product_name: toStringValue(product.name ?? item.name),
+    product_name: decoded.productName,
     warehouse_name: warehouseName,
     ozon_warehouse_id: warehouseId,
     local_warehouse_id: localWarehouseId,
@@ -1398,19 +1686,146 @@ async function upsertReturn(
 
   const candidateRow = await upsertCandidatePreservingReview(supabase, candidate);
 
-  await supabase
+  const { error: linkError } = await supabase
     .from("ozon_returns")
     .update({ operation_candidate_id: candidateRow.id })
     .eq("id", savedReturn.id);
+  if (linkError) {
+    throw ozonDatabaseError(linkError, "update:ozon_returns");
+  }
 
   return true;
 }
 
+interface DecodedOzonReturn {
+  returnId: string;
+  postingNumber: string | null;
+  status: string | null;
+  schema: string | null;
+  logisticReturnDate: string | null;
+  logisticFinalMoment: string | null;
+  returnedAt: string | null;
+  offerId: string | null;
+  sku: string | null;
+  ozonProductId: string | null;
+  productName: string | null;
+  quantity: string | null;
+  price: string | null;
+  currencyCode: string | null;
+  warehouseId: string | null;
+  warehouseName: string | null;
+}
+
+export function decodeOzonReturn(
+  value: unknown,
+  source: "fbo_fbs" | "rfbs"
+): DecodedOzonReturn {
+  const item = toRecord(value);
+  const product = toRecord(item.product ?? item.item);
+  const logistic = toRecord(item.logistic);
+  const visualStatus = toRecord(toRecord(item.visual).status);
+  const state = toRecord(item.state);
+  const returnId = toStringValue(
+    source === "fbo_fbs"
+      ? item.id
+      : item.return_id ?? item.return_number
+  );
+  if (!returnId) {
+    throw new OzonIncompleteResponseError(
+      `Ozon ${source === "fbo_fbs" ? "/v1/returns/list" : "/v2/returns/rfbs/get"} response has no return identifier`
+    );
+  }
+
+  const returnPlace =
+    source === "fbo_fbs"
+      ? toRecord(item.target_place ?? item.place)
+      : toRecord(item.warehouse);
+  const warehouseName = toStringValue(
+    item.warehouse_name ??
+      item.destination_warehouse_name ??
+      returnPlace.name ??
+      returnPlace.warehouse_name
+  );
+  const warehouseId = toStringValue(
+    item.warehouse_id ??
+      returnPlace.warehouse_id ??
+      returnPlace.id ??
+      warehouseName
+  );
+  const price =
+    source === "fbo_fbs"
+      ? toRecord(product.price)
+      : product;
+  const logisticReturnDate =
+    source === "fbo_fbs" ? toIsoString(logistic.return_date) : null;
+  const logisticFinalMoment =
+    source === "fbo_fbs" ? toIsoString(logistic.final_moment) : null;
+
+  return {
+    returnId,
+    postingNumber: toStringValue(item.posting_number),
+    status: toStringValue(
+      source === "fbo_fbs"
+        ? visualStatus.sys_name
+        : state.state ?? state.group_state
+    ),
+    schema:
+      toStringValue(item.schema ?? item.return_schema) ??
+      (source === "rfbs" ? "Rfbs" : null),
+    logisticReturnDate,
+    logisticFinalMoment,
+    returnedAt: logisticFinalMoment ?? logisticReturnDate,
+    offerId: toStringValue(product.offer_id ?? item.offer_id),
+    sku: toStringValue(product.sku ?? item.sku),
+    ozonProductId: toStringValue(
+      product.product_id ?? item.product_id ?? product.sku ?? item.sku
+    ),
+    productName: toStringValue(product.name ?? item.name),
+    quantity: decimalString(product.quantity ?? item.quantity),
+    price:
+      source === "fbo_fbs"
+        ? decimalString(price.price)
+        : decimalString(product.price ?? item.price),
+    currencyCode:
+      source === "fbo_fbs"
+        ? toStringValue(price.currency_code)
+        : toStringValue(product.currency_code ?? item.currency_code),
+    warehouseId,
+    warehouseName,
+  };
+}
+
+function returnPageCursor(
+  items: unknown[],
+  field: "id" | "return_id",
+  endpoint: string
+) {
+  const cursor = toStringValue(toRecord(items.at(-1))[field]);
+  if (!cursor) {
+    throw new OzonIncompleteResponseError(
+      `Ozon ${endpoint} response cannot continue without ${field}`
+    );
+  }
+  return cursor;
+}
+
 function buildReturnCandidate(returnRow: JsonRecord) {
   const status = normalizeStatus(returnRow.status);
-  if (!isReturnedStatus(status)) return null;
+  if (!isReturnReceivedBySellerStatus(status)) return null;
 
-  const operationDate = toDateOnly(returnRow.returned_at);
+  const operationDate = toDateOnly(returnRow.logistic_final_moment);
+  if (
+    !operationDate ||
+    !toStringValue(
+      returnRow.ozon_product_id ?? returnRow.offer_id ?? returnRow.sku
+    ) ||
+    !toStringValue(
+      returnRow.ozon_warehouse_id ?? returnRow.warehouse_name
+    ) ||
+    !positiveDecimal(returnRow.quantity)
+  ) {
+    return null;
+  }
   const operation = {
     type: "return" as const,
     operationDate,
@@ -1428,8 +1843,8 @@ function buildReturnCandidate(returnRow: JsonRecord) {
         warehouseId: toStringValue(returnRow.local_warehouse_id),
         warehouseName: toStringValue(returnRow.warehouse_name),
         ozonWarehouseId: toStringValue(returnRow.ozon_warehouse_id),
-        quantity: toNumberValue(returnRow.quantity) ?? 1,
-        unitPrice: toNumberValue(returnRow.price),
+        quantity: decimalString(returnRow.quantity),
+        unitPrice: decimalString(returnRow.price),
         direction: "in" as const,
       },
     ],
@@ -1460,14 +1875,24 @@ async function syncFinance(
   workspaceId: string,
   connectionId: string,
   dateFrom: string,
-  dateTo: string
+  dateTo: string,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
   const accrualTypes = await fetchFinanceAccrualTypes(client);
-  const rows: JsonRecord[] = [];
+  const savedCheckpoint = toRecord(execution?.checkpoint);
+  let fetched = toInteger(savedCheckpoint.processed) ?? 0;
+  const dates = datesInRange(dateFrom, dateTo);
+  const startDateIndex = toInteger(savedCheckpoint.dateIndex) ?? 0;
 
-  for (const date of datesInRange(dateFrom, dateTo)) {
-    let lastId = "";
+  for (let dateIndex = startDateIndex; dateIndex < dates.length; dateIndex += 1) {
+    const date = dates[dateIndex];
+    let lastId =
+      dateIndex === startDateIndex
+        ? toStringValue(savedCheckpoint.lastId) ?? ""
+        : "";
+    let dateComplete = false;
     for (let page = 1; page <= FINANCE_ACCRUAL_PAGE_LIMIT; page += 1) {
+      execution?.yieldIfNeeded?.();
       const response = await client.request<JsonRecord>(
         "/v1/finance/accrual/by-day",
         {
@@ -1476,39 +1901,79 @@ async function syncFinance(
         }
       );
       const root = unwrapResult(response);
-      const accruals = extractItems(root, ["accruals", "items"]);
+      const accruals = requireItems(
+        root,
+        ["accruals", "items"],
+        "/v1/finance/accrual/by-day"
+      );
 
-      rows.push(
-        ...(accruals.map((item, index) =>
+      const uniqueAccruals = deduplicateFinanceAccruals(accruals);
+      const pageRows = uniqueAccruals.map((item, index) =>
           toFinanceAccrualRow(item, workspaceId, connectionId, {
             accrualTypes,
             date,
             index,
             page,
-          })
-        ) as JsonRecord[])
+          }, execution?.runId)
+        ) as JsonRecord[];
+      await upsertRows(
+        supabase,
+        "ozon_finance_transactions",
+        pageRows,
+        "connection_id,transaction_id"
       );
+      fetched += pageRows.length;
 
       const nextLastId = toStringValue(root.last_id);
-      if (!nextLastId || nextLastId === lastId || accruals.length === 0) break;
+      if (!nextLastId || accruals.length === 0) {
+        await execution?.saveCheckpoint?.(
+          {
+            phase: "accruals",
+            dateIndex: dateIndex + 1,
+            lastId: "",
+            processed: fetched,
+            total: null,
+          },
+          { fetched }
+        );
+        dateComplete = true;
+        break;
+      }
+      if (nextLastId === lastId) {
+        throw new OzonIncompleteResponseError(
+          `Ozon finance accruals for ${date} repeated their last_id`
+        );
+      }
       lastId = nextLastId;
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "accruals",
+          dateIndex,
+          lastId,
+          processed: fetched,
+          total: null,
+        },
+        { fetched }
+      );
+    }
+    if (!dateComplete) {
+      throw new OzonIncompleteResponseError(
+        `Ozon finance accruals for ${date} exceeded the page safety limit`
+      );
     }
   }
 
-  await upsertRows(
-    supabase,
-    "ozon_finance_transactions",
-    rows,
-    "connection_id,transaction_id"
-  );
-
-  return { fetched: rows.length };
+  return { fetched };
 }
 
 async function fetchFinanceAccrualTypes(client: OzonClient) {
   const response = await client.request<JsonRecord>("/v1/finance/accrual/types", {});
   const root = unwrapResult(response);
-  const types = extractItems(root, ["accrual_types", "items"]);
+  const types = requireItems(
+    root,
+    ["accrual_types", "items"],
+    "/v1/finance/accrual/types"
+  );
   const map = new Map<string, JsonRecord>();
   for (const value of types) {
     const item = toRecord(value);
@@ -1527,22 +1992,27 @@ function toFinanceAccrualRow(
     date: string;
     index: number;
     page: number;
-  }
+  },
+  runId?: string
 ) {
   const item = toRecord(value);
   const posting = toRecord(item.posting);
   const nonItemFee = toRecord(item.non_item_fee);
   const typeId = toStringValue(item.type_id ?? nonItemFee.type_id);
   const accrualType = typeId ? context.accrualTypes.get(typeId) ?? null : null;
-  const transactionId =
-    toStringValue(item.unit_number ?? item.id ?? item.operation_id) ??
-    [
-      "accrual",
-      context.date,
-      context.page,
-      context.index,
-      stableHash(item).slice(0, 16),
-    ].join(":");
+  const transactionId = toStringValue(item.accrual_id);
+  if (!transactionId) {
+    throw new OzonIncompleteResponseError(
+      "Ozon finance accrual has no accrual_id"
+    );
+  }
+  const amount = moneyAmount(item.total_amount);
+  const currencyCode = moneyCurrency(item.total_amount);
+  if (amount === null || !currencyCode) {
+    throw new OzonIncompleteResponseError(
+      "Ozon finance accrual has no total_amount Money value"
+    );
+  }
 
   return {
     workspace_id: workspaceId,
@@ -1557,13 +2027,8 @@ function toFinanceAccrualRow(
     posting_number: toStringValue(
       item.posting_number ?? posting.posting_number ?? posting.number
     ),
-    amount:
-      moneyAmount(item.total_amount) ??
-      moneyAmount(nonItemFee.accrued) ??
-      0,
-    currency_code:
-      moneyCurrency(item.total_amount) ??
-      moneyCurrency(nonItemFee.accrued),
+    amount,
+    currency_code: currencyCode,
     items: financeAccrualItems(item),
     services: financeAccrualServices(item),
     raw_payload: sanitizeOzonPayload({
@@ -1571,6 +2036,7 @@ function toFinanceAccrualRow(
       accrual_type: accrualType,
     }),
     synced_at: new Date().toISOString(),
+    ...ozonMirrorProvenance(runId),
   };
 }
 
@@ -1581,76 +2047,132 @@ async function syncLegalEntities(
   connectionId: string,
   mapping: MappingContext,
   dateFrom: string,
-  dateTo: string
+  dateTo: string,
+  runId?: string,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
-  let fetched = 0;
-  let createdCandidates = 0;
-  const rows: JsonRecord[] = [];
+  const checkpoint = toRecord(execution?.checkpoint);
+  let fetched = toInteger(checkpoint.processed) ?? 0;
+  const months = monthsInRange(dateFrom, dateTo);
+  const startMonthIndex =
+    checkpoint.phase === "legal_months"
+      ? toInteger(checkpoint.monthIndex) ?? 0
+      : checkpoint.phase === "unpaid" || checkpoint.phase === "complete"
+        ? months.length
+        : 0;
 
-  for (const month of monthsInRange(dateFrom, dateTo)) {
+  for (
+    let monthIndex = startMonthIndex;
+    monthIndex < months.length;
+    monthIndex += 1
+  ) {
+    execution?.yieldIfNeeded?.();
+    const month = months[monthIndex];
     const response = await client.request<JsonRecord>(
       "/v1/finance/document-b2b-sales/json",
       { date: month }
     );
     const root = unwrapResult(response);
-    const invoices = extractItems(root, ["invoices", "items", "rows"]);
+    const invoices = requireItems(
+      root,
+      ["invoices", "items", "rows"],
+      "/v1/finance/document-b2b-sales/json"
+    );
     fetched += invoices.length;
 
-    for (const invoice of invoices) {
-      const row = toLegalEntitySaleRow(invoice, workspaceId, connectionId, mapping);
-      rows.push(row);
-    }
+    await upsertRows(
+      supabase,
+      "ozon_legal_entity_sales",
+      invoices.map((invoice) => toLegalEntitySaleRow(
+        invoice,
+        workspaceId,
+        connectionId,
+        mapping,
+        runId
+      )),
+      "connection_id,external_id"
+    );
+    await execution?.saveCheckpoint?.(
+      {
+        phase: monthIndex + 1 < months.length ? "legal_months" : "unpaid",
+        monthIndex: monthIndex + 1,
+        cursor: "",
+        pageIndex: 0,
+        processed: fetched,
+        total: null,
+      },
+      { fetched, createdCandidates: 0 }
+    );
   }
 
-  await upsertRows(
-    supabase,
-    "ozon_legal_entity_sales",
-    rows,
-    "connection_id,external_id"
-  );
-
-  for (const row of rows) {
-    const candidate = await buildLegalEntitySaleCandidate(supabase, row, mapping);
-    if (!candidate) continue;
-    const saved = await upsertCandidatePreservingReview(supabase, candidate);
-    await supabase
-      .from("ozon_legal_entity_sales")
-      .update({ operation_candidate_id: saved.id })
-      .eq("connection_id", connectionId)
-      .eq("external_id", row.external_id);
-    createdCandidates += 1;
+  if (checkpoint.phase !== "complete") {
+    fetched += await syncUnpaidLegalProducts(
+      supabase,
+      client,
+      workspaceId,
+      connectionId,
+      mapping,
+      runId,
+      execution,
+      fetched
+    );
   }
 
-  fetched += await syncUnpaidLegalProducts(
-    supabase,
-    client,
-    workspaceId,
-    connectionId,
-    mapping
-  );
-
-  return { fetched, createdCandidates };
+  return { fetched, createdCandidates: 0 };
 }
 
 function toLegalEntitySaleRow(
   value: unknown,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string
 ) {
   const item = toRecord(value);
   const buyer = toRecord(item.buyer_info ?? item.buyer ?? {});
-  const order = toRecord(item.order ?? item.posting ?? {});
+  const info = toRecord(item.info);
+  const operations = asArray(item.operations).map(toRecord);
   const invoiceNumber = toStringValue(
-    item.invoice_number ?? item.number ?? item.document_number
+    item.invoice_number ??
+      info.invoice_number ??
+      info.number ??
+      item.number ??
+      item.document_number
   );
-  const postingNumber = toStringValue(
-    item.posting_number ?? order.posting_number ?? order.number
-  );
+  const postingNumbers = [
+    ...new Set(
+      operations
+        .map((operation) => toStringValue(operation.posting_number))
+        .filter((value): value is string => Boolean(value))
+    ),
+  ];
+  const postingNumber =
+    toStringValue(item.posting_number) ??
+    (postingNumbers.length === 1 ? postingNumbers[0] : null);
   const products = extractInvoiceProducts(item);
+  if (
+    products.length === 0 &&
+    (item.offer_id !== undefined || item.sku !== undefined)
+  ) {
+    products.push({
+      product_id: item.product_id,
+      offer_id: item.offer_id,
+      sku: item.sku,
+      name: item.product_name,
+      quantity: item.quantity,
+      seller_price_per_instance: item.seller_price_per_instance,
+      operations: item.operations,
+    });
+  }
+  const productIdentity = toStringValue(item.sku ?? item.offer_id);
+  if (!invoiceNumber || !productIdentity) {
+    throw new OzonIncompleteResponseError(
+      "Ozon B2B sale has no invoice number or product identifier"
+    );
+  }
   const externalId =
-    toStringValue(item.invoice_id ?? item.id ?? invoiceNumber ?? postingNumber) ??
-    `legal:${stableHash(item).slice(0, 24)}`;
+    [invoiceNumber, productIdentity].join(":");
+  const singleOperation = operations.length === 1 ? operations[0] : null;
 
   return {
     workspace_id: workspaceId,
@@ -1658,21 +2180,30 @@ function toLegalEntitySaleRow(
     external_id: externalId,
     invoice_number: invoiceNumber,
     invoice_date: toDateOnly(
-      item.invoice_date ?? item.date ?? item.sale_date ?? item.created_at
+      item.invoice_date ??
+        info.invoice_date ??
+        info.date ??
+        item.date ??
+        item.sale_date ??
+        item.created_at
     ),
     posting_number: postingNumber,
     buyer_company_name: toStringValue(
       buyer.company_name ??
         buyer.organization_name ??
+        buyer.name ??
         item.buyer_company_name ??
         item.company_name
     ),
     buyer_inn: toStringValue(buyer.inn ?? buyer.buyer_inn ?? item.buyer_inn),
     buyer_kpp: toStringValue(buyer.kpp ?? buyer.buyer_kpp ?? item.buyer_kpp),
-    amount:
-      toNumberValue(item.amount ?? item.total_amount ?? item.price) ??
-      sumProductsAmount(products),
-    currency_code: toStringValue(item.currency_code ?? item.currency),
+    amount: singleOperation
+      ? moneyAmount(singleOperation.amount) ??
+        decimalString(singleOperation.amount)
+      : null,
+    currency_code:
+      (singleOperation ? moneyCurrency(singleOperation.amount) : null) ??
+      toStringValue(item.currency ?? item.currency_code),
     products: products.map((product) => {
       const productRecord = toRecord(product);
       return {
@@ -1689,76 +2220,7 @@ function toLegalEntitySaleRow(
     }),
     raw_payload: sanitizeOzonPayload(item),
     synced_at: new Date().toISOString(),
-  };
-}
-
-async function buildLegalEntitySaleCandidate(
-  supabase: SupabaseClient,
-  row: JsonRecord,
-  mapping: MappingContext
-) {
-  const postingNumber = toStringValue(row.posting_number);
-  if (postingNumber) {
-    const { data, error } = await supabase
-      .from("ozon_postings")
-      .select("id, operation_candidate_id")
-      .eq("connection_id", row.connection_id)
-      .eq("posting_number", postingNumber)
-      .maybeSingle();
-    if (error) throw new Error(error.message);
-    if (data?.operation_candidate_id) return null;
-  }
-
-  const products = asArray(row.products);
-  if (products.length === 0) return null;
-
-  const operation = {
-    type: "sale" as const,
-    operationDate: toDateOnly(row.invoice_date),
-    comment: `Ozon legal-entity sale ${row.invoice_number || row.external_id}`,
-    sourceType: "legal_entity_sale" as const,
-    supportStatus: "commit_candidate" as const,
-    supportReason:
-      "Legal-entity sale has no matching Ozon posting candidate, so it is staged as a fallback sale.",
-    items: products.map((product) => {
-      const item = toRecord(product);
-      const ozonProductId = toStringValue(item.product_id ?? item.sku);
-      const offerId = toStringValue(item.offer_id);
-      const sku = toStringValue(item.sku);
-      return {
-        productId:
-          toStringValue(item.local_product_id) ??
-          findLocalProductId(mapping, ozonProductId, [offerId, sku]),
-        productName: toStringValue(item.name),
-        skuCode: offerId ?? sku,
-        offerId,
-        ozonSku: sku,
-        ozonProductId,
-        warehouseId: null,
-        warehouseName: null,
-        quantity: toNumberValue(item.quantity) ?? 1,
-        unitPrice: toNumberValue(item.seller_price_per_instance ?? item.price),
-        direction: "out" as const,
-      };
-    }),
-  };
-  const normalizedOperation = normalizeOzonCandidateOperation(operation);
-  const validationErrors = validateOzonCandidateOperation(normalizedOperation);
-
-  return {
-    workspace_id: row.workspace_id,
-    connection_id: row.connection_id,
-    provider: "ozon",
-    source_type: "legal_entity_sale",
-    external_event_id: `legal:${row.external_id}`,
-    status: statusFromValidation(validationErrors),
-    operation_type: "sale",
-    operation_date: operation.operationDate,
-    confidence: validationErrors.length === 0 ? 0.8 : 0.45,
-    operation: normalizedOperation,
-    normalized_operation: normalizedOperation,
-    validation_errors: validationErrors,
-    raw_payload: row.raw_payload,
+    ...ozonMirrorProvenance(runId),
   };
 }
 
@@ -1767,67 +2229,132 @@ async function syncUnpaidLegalProducts(
   client: OzonClient,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string,
+  execution?: OzonSyncDomainExecutionContext,
+  baseProcessed = 0
 ) {
-  const rows: JsonRecord[] = [];
-  let cursor = "";
+  const checkpoint = toRecord(execution?.checkpoint);
+  let cursor =
+    checkpoint.phase === "unpaid"
+      ? toStringValue(checkpoint.cursor) ?? ""
+      : "";
+  let pageIndex =
+    checkpoint.phase === "unpaid"
+      ? toInteger(checkpoint.pageIndex) ?? 0
+      : 0;
+  let fetched = 0;
+  let complete = checkpoint.phase === "complete";
 
-  for (let page = 0; page < 50; page += 1) {
+  while (!complete && pageIndex < 50) {
+    execution?.yieldIfNeeded?.();
     const response = await client.request<JsonRecord>(
       "/v1/posting/unpaid-legal/product/list",
       { cursor, limit: 1000 }
     );
     const root = unwrapResult(response);
-    const products = extractItems(root, ["products", "items", "rows"]);
-    rows.push(
-      ...products.map((product) =>
-        toUnpaidLegalProductRow(product, workspaceId, connectionId, mapping)
-      )
+    const products = requireItems(
+      root,
+      ["products", "items", "rows"],
+      "/v1/posting/unpaid-legal/product/list"
     );
+    const rows = products.map((product) =>
+        toUnpaidLegalProductRow(
+          product,
+          workspaceId,
+          connectionId,
+          mapping,
+          runId
+        )
+    );
+    await upsertRows(
+      supabase,
+      "ozon_unpaid_legal_products",
+      rows,
+      "connection_id,external_id"
+    );
+    fetched += rows.length;
+    pageIndex += 1;
     const nextCursor = toStringValue(root.cursor ?? response.cursor);
-    if (!nextCursor || nextCursor === cursor || products.length === 0) break;
+    if (!nextCursor || products.length === 0) {
+      complete = true;
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "complete",
+          cursor: "",
+          pageIndex,
+          processed: baseProcessed + fetched,
+          total: baseProcessed + fetched,
+        },
+        { fetched: baseProcessed + fetched, createdCandidates: 0 }
+      );
+      break;
+    }
+    if (nextCursor === cursor) {
+      throw new OzonIncompleteResponseError(
+        "Ozon unpaid-legal product list repeated its cursor"
+      );
+    }
     cursor = nextCursor;
+    await execution?.saveCheckpoint?.(
+      {
+        phase: "unpaid",
+        cursor,
+        pageIndex,
+        processed: baseProcessed + fetched,
+        total: null,
+      },
+      { fetched: baseProcessed + fetched, createdCandidates: 0 }
+    );
+  }
+  if (!complete) {
+    throw new OzonIncompleteResponseError(
+      "Ozon unpaid-legal product list exceeded the 50-page safety limit"
+    );
   }
 
-  await upsertRows(
-    supabase,
-    "ozon_unpaid_legal_products",
-    rows,
-    "connection_id,external_id"
-  );
-  return rows.length;
+  return fetched;
 }
 
 function toUnpaidLegalProductRow(
   value: unknown,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string
 ) {
   const item = toRecord(value);
   const ozonProductId = toStringValue(item.product_id ?? item.sku);
   const offerId = toStringValue(item.offer_id);
   const sku = toStringValue(item.sku);
   const postingNumber = toStringValue(item.posting_number);
-  const externalId =
-    toStringValue(item.id ?? item.product_id ?? item.sku) ??
-    `unpaid:${stableHash(item).slice(0, 24)}`;
+  const externalIdentity = toStringValue(item.id ?? item.product_id ?? item.sku);
+  if (!externalIdentity) {
+    throw new OzonIncompleteResponseError(
+      "Ozon unpaid-legal product has no documented identifier"
+    );
+  }
 
   return {
     workspace_id: workspaceId,
     connection_id: connectionId,
-    external_id: [postingNumber, externalId].filter(Boolean).join(":"),
+    external_id: [postingNumber, externalIdentity].filter(Boolean).join(":"),
     posting_number: postingNumber,
     ozon_product_id: ozonProductId,
     offer_id: offerId,
     sku,
     name: toStringValue(item.name),
-    quantity: toNumberValue(item.quantity),
-    amount: toNumberValue(item.amount ?? item.price),
-    currency_code: toStringValue(item.currency_code ?? item.currency),
+    quantity: decimalString(item.quantity),
+    amount:
+      moneyAmount(item.amount ?? item.price) ??
+      decimalString(item.amount ?? item.price),
+    currency_code:
+      moneyCurrency(item.amount ?? item.price) ??
+      toStringValue(item.currency_code ?? item.currency),
     raw_payload: sanitizeOzonPayload(item),
     local_product_id: findLocalProductId(mapping, ozonProductId, [offerId, sku]),
     synced_at: new Date().toISOString(),
+    ...ozonMirrorProvenance(runId),
   };
 }
 
@@ -1837,14 +2364,31 @@ async function syncFinanceReports(
   workspaceId: string,
   connectionId: string,
   dateFrom: string,
-  dateTo: string
+  dateTo: string,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
-  const rows: JsonRecord[] = [];
   const months = monthsInRange(dateFrom, dateTo);
-  let skipped = 0;
+  const savedCheckpoint = toRecord(execution?.checkpoint);
+  let fetched = toInteger(savedCheckpoint.processed) ?? 0;
+  const startMonthIndex =
+    savedCheckpoint.phase === "monthly_report"
+      ? toInteger(savedCheckpoint.monthIndex) ?? 0
+      : savedCheckpoint.phase
+        ? months.length
+        : 0;
+  const startReportIndex =
+    savedCheckpoint.phase === "monthly_report"
+      ? toInteger(savedCheckpoint.reportIndex) ?? 0
+      : 0;
+  let skipped = toInteger(savedCheckpoint.skipped) ?? 0;
 
-  for (const month of months) {
-    for (const report of [
+  for (
+    let monthIndex = startMonthIndex;
+    monthIndex < months.length;
+    monthIndex += 1
+  ) {
+    const month = months[monthIndex];
+    const reports = [
       {
         type: "mutual_settlement",
         endpoint: "/v1/finance/mutual-settlement" as const,
@@ -1860,41 +2404,114 @@ async function syncFinanceReports(
         endpoint: "/v1/finance/decompensation" as const,
         payload: { date: month, language: "RU" },
       },
-    ]) {
+    ];
+    for (
+      let reportIndex = monthIndex === startMonthIndex ? startReportIndex : 0;
+      reportIndex < reports.length;
+      reportIndex += 1
+    ) {
+      execution?.yieldIfNeeded?.();
+      const report = reports[reportIndex];
       try {
-        rows.push(
-          ...(await requestReportCode(
-            supabase,
-            client,
-            workspaceId,
-            connectionId,
-            report.type,
-            report.endpoint,
-            report.payload
-          ))
+        const reportRows = await requestReportCode(
+          supabase,
+          client,
+          workspaceId,
+          connectionId,
+          report.type,
+          report.endpoint,
+          report.payload,
+          execution,
+          {
+            monthIndex,
+            reportIndex,
+            processed: fetched,
+            skipped,
+            code:
+              monthIndex === startMonthIndex &&
+              reportIndex === startReportIndex
+                ? toStringValue(savedCheckpoint.code)
+                : null,
+          }
         );
+        fetched += reportRows.length;
       } catch (error) {
         if (!isMissingFinanceDocumentError(error)) throw error;
         skipped += 1;
       }
+      const nextReportIndex = reportIndex + 1;
+      await execution?.saveCheckpoint?.(
+        nextReportIndex < reports.length
+          ? {
+              phase: "monthly_report",
+              monthIndex,
+              reportIndex: nextReportIndex,
+              processed: fetched,
+              skipped,
+              total: null,
+            }
+          : monthIndex + 1 < months.length
+            ? {
+                phase: "monthly_report",
+                monthIndex: monthIndex + 1,
+                reportIndex: 0,
+                processed: fetched,
+                skipped,
+                total: null,
+              }
+            : {
+                phase: "cash_flow",
+                windowIndex: 0,
+                page: 1,
+                processed: fetched,
+                skipped,
+                total: null,
+              },
+        { fetched, skipped }
+      );
     }
   }
 
-  rows.push(
-    ...(await syncCashFlowRows(client, workspaceId, connectionId, dateFrom, dateTo))
-  );
-  rows.push(
-    ...(await syncBuyoutRows(client, workspaceId, connectionId, dateFrom, dateTo))
-  );
+  if (savedCheckpoint.phase !== "buyout" && savedCheckpoint.phase !== "complete") {
+    fetched += await syncCashFlowRows(
+      supabase,
+      client,
+      workspaceId,
+      connectionId,
+      dateFrom,
+      dateTo,
+      execution,
+      fetched,
+      skipped
+    );
+  }
+  if (savedCheckpoint.phase !== "complete") {
+    fetched += await syncBuyoutRows(
+      supabase,
+      client,
+      workspaceId,
+      connectionId,
+      dateFrom,
+      dateTo,
+      execution,
+      fetched,
+      skipped
+    );
+  }
 
+  return { fetched, skipped };
+}
+
+async function persistFinanceReportRows(
+  supabase: SupabaseClient,
+  rows: JsonRecord[]
+) {
   await upsertRows(
     supabase,
     "ozon_finance_reports",
     rows,
     "connection_id,external_id"
   );
-
-  return { fetched: rows.length, skipped };
 }
 
 export function isMissingFinanceDocumentError(error: unknown) {
@@ -1915,6 +2532,7 @@ const MISSING_FINANCE_DOCUMENT_BY_ENDPOINT: Readonly<Record<string, string>> = {
   "/v1/finance/compensation": "compensation document not found",
   "/v1/finance/decompensation": "decompensation document not found",
 };
+const PERSISTENCE_PLACEHOLDER_ID = "00000000-0000-0000-0000-000000000000";
 
 function isExactMissingFinanceDocumentIdentity(
   value: string,
@@ -1937,17 +2555,42 @@ async function requestReportCode(
   connectionId: string,
   reportType: string,
   endpoint: OzonReadOnlyEndpoint,
-  payload: JsonRecord
+  payload: JsonRecord,
+  execution?: OzonSyncDomainExecutionContext,
+  resume?: {
+    monthIndex: number;
+    reportIndex: number;
+    processed: number;
+    skipped: number;
+    code: string | null;
+  }
 ) {
-  const response = await client.request<JsonRecord>(endpoint, payload);
-  const root = unwrapResult(response);
-  const code = toStringValue(root.code ?? response.code);
-  if (!code) return [];
+  let response: JsonRecord = {};
+  let root: JsonRecord = {};
+  let code = resume?.code ?? null;
+  if (!code) {
+    response = await client.request<JsonRecord>(endpoint, payload);
+    root = unwrapResult(response);
+    code = toStringValue(root.code ?? response.code);
+    if (!code) {
+      throw new OzonIncompleteResponseError(
+        "Ozon finance report creation returned no code"
+      );
+    }
+    await execution?.saveCheckpoint?.({
+      phase: "monthly_report",
+      monthIndex: resume?.monthIndex ?? 0,
+      reportIndex: resume?.reportIndex ?? 0,
+      code,
+      processed: resume?.processed ?? 0,
+      skipped: resume?.skipped ?? 0,
+      total: null,
+    });
+  }
 
-  const info = await client
-    .request<JsonRecord>("/v1/report/info", { code })
-    .catch(() => ({}));
+  const info = await client.request<JsonRecord>("/v1/report/info", { code });
   const reportInfo = unwrapResult(info);
+  const reportStatus = normalizeStatus(reportInfo.status ?? root.status);
 
   await upsertRows(
     supabase,
@@ -1958,114 +2601,247 @@ async function requestReportCode(
         connection_id: connectionId,
         report_type: reportType,
         ozon_report_code: code,
-        status: toStringValue(reportInfo.status ?? root.status),
+        status: reportStatus,
         request_payload: sanitizeOzonPayload(payload),
         response_payload: sanitizeOzonPayload(reportInfo),
         file_url: toStringValue(reportInfo.file),
         completed_at: reportInfo.file ? new Date().toISOString() : null,
+        ...ozonMirrorProvenance(execution?.runId),
       },
     ],
     "connection_id,ozon_report_code"
   );
 
-  return [
-    {
-      workspace_id: workspaceId,
-      connection_id: connectionId,
-      external_id: `${reportType}:${code}`,
-      report_type: reportType,
-      period_start: monthStartDate(payload.date),
-      period_end: monthEndDate(payload.date),
-      status: toStringValue(reportInfo.status ?? root.status),
-      ozon_report_code: code,
-      file_url: toStringValue(reportInfo.file),
-      raw_payload: sanitizeOzonPayload({ response, reportInfo }),
-      synced_at: new Date().toISOString(),
-    },
-  ];
+  if (reportStatus === "waiting" || reportStatus === "processing") {
+    throw new OzonReportPendingError(
+      new Date(Date.now() + 60_000).toISOString()
+    );
+  }
+  if (reportStatus && reportStatus !== "success") {
+    throw new OzonInvariantError("Ozon finance report generation failed");
+  }
+  if (!reportStatus || !reportInfo.file) {
+    throw new OzonIncompleteResponseError(
+      "Ozon finance report result is incomplete"
+    );
+  }
+
+  const reportRow = {
+    workspace_id: workspaceId,
+    connection_id: connectionId,
+    external_id: `${reportType}:${code}`,
+    report_type: reportType,
+    period_start: monthStartDate(payload.date),
+    period_end: monthEndDate(payload.date),
+    status: reportStatus,
+    ozon_report_code: code,
+    file_url: toStringValue(reportInfo.file),
+    raw_payload: sanitizeOzonPayload({ response, reportInfo }),
+    synced_at: new Date().toISOString(),
+    ...ozonMirrorProvenance(execution?.runId),
+  };
+  await persistFinanceReportRows(supabase, [reportRow]);
+  return [reportRow];
 }
 
 async function syncCashFlowRows(
+  supabase: SupabaseClient,
   client: OzonClient,
   workspaceId: string,
   connectionId: string,
   dateFrom: string,
-  dateTo: string
+  dateTo: string,
+  execution: OzonSyncDomainExecutionContext | undefined,
+  baseProcessed: number,
+  skipped: number
 ) {
-  const rows: JsonRecord[] = [];
-  for (let page = 1; page <= 100; page += 1) {
+  const windows = splitCashFlowPeriods(dateFrom, dateTo);
+  const checkpoint = toRecord(execution?.checkpoint);
+  const startWindowIndex =
+    checkpoint.phase === "cash_flow"
+      ? toInteger(checkpoint.windowIndex) ?? 0
+      : 0;
+  const startPage =
+    checkpoint.phase === "cash_flow"
+      ? toInteger(checkpoint.page) ?? 1
+      : 1;
+  let persisted = 0;
+  for (
+    let windowIndex = startWindowIndex;
+    windowIndex < windows.length;
+    windowIndex += 1
+  ) {
+    const window = windows[windowIndex];
+    for (
+      let page = windowIndex === startWindowIndex ? startPage : 1;
+      page <= 100;
+      page += 1
+    ) {
+      execution?.yieldIfNeeded?.();
+      const response = await client.request<JsonRecord>(
+        "/v1/finance/cash-flow-statement/list",
+        {
+          date: {
+            from: `${window.from}T00:00:00.000Z`,
+            to: `${window.to}T23:59:59.999Z`,
+          },
+          with_details: true,
+          page,
+          page_size: 1000,
+        }
+      );
+      const root = unwrapResult(response);
+      const flows = requireItems(
+        root,
+        ["cash_flows", "items", "rows"],
+        "/v1/finance/cash-flow-statement/list"
+      );
+      const rows = flows.map((flow) => {
+          const item = toRecord(flow);
+          const period = toRecord(item.period);
+          const id =
+            toStringValue(period.id ?? item.id) ??
+            `cash-flow:${window.from}:${page}:${stableHash(item).slice(0, 16)}`;
+          return {
+            workspace_id: workspaceId,
+            connection_id: connectionId,
+            external_id: id,
+            report_type: "cash_flow",
+            period_start: toDateOnly(period.begin) ?? window.from,
+            period_end: toDateOnly(period.end) ?? window.to,
+            amount: decimalString(item.orders_amount ?? item.amount),
+            currency_code: toStringValue(item.currency_code),
+            raw_payload: sanitizeOzonPayload(item),
+            synced_at: new Date().toISOString(),
+            ...ozonMirrorProvenance(execution?.runId),
+          };
+        });
+      await persistFinanceReportRows(supabase, rows);
+      persisted += rows.length;
+      const pageCount = toInteger(root.page_count);
+      if (pageCount === null || pageCount < 0) {
+        throw new OzonIncompleteResponseError(
+          "Ozon cash-flow report has no valid page_count"
+        );
+      }
+      const pageComplete = pageCount === 0 || page >= pageCount;
+      if (!pageComplete && page === 100) {
+        throw new OzonIncompleteResponseError(
+          "Ozon cash-flow report exceeded the page safety limit"
+        );
+      }
+      const nextCheckpoint = pageComplete
+        ? windowIndex + 1 < windows.length
+          ? {
+              phase: "cash_flow",
+              windowIndex: windowIndex + 1,
+              page: 1,
+              processed: baseProcessed + persisted,
+              skipped,
+              total: null,
+            }
+          : {
+              phase: "buyout",
+              windowIndex: 0,
+              processed: baseProcessed + persisted,
+              skipped,
+              total: null,
+            }
+        : {
+            phase: "cash_flow",
+            windowIndex,
+            page: page + 1,
+            processed: baseProcessed + persisted,
+            skipped,
+            total: null,
+          };
+      await execution?.saveCheckpoint?.(nextCheckpoint, {
+        fetched: baseProcessed + persisted,
+        skipped,
+      });
+      if (pageComplete) break;
+    }
+  }
+  return persisted;
+}
+
+async function syncBuyoutRows(
+  supabase: SupabaseClient,
+  client: OzonClient,
+  workspaceId: string,
+  connectionId: string,
+  dateFrom: string,
+  dateTo: string,
+  execution: OzonSyncDomainExecutionContext | undefined,
+  baseProcessed: number,
+  skipped: number
+) {
+  const windows = splitDateWindows(dateFrom, dateTo, 31);
+  const checkpoint = toRecord(execution?.checkpoint);
+  const startWindowIndex =
+    checkpoint.phase === "buyout"
+      ? toInteger(checkpoint.windowIndex) ?? 0
+      : 0;
+  let persisted = 0;
+  for (
+    let windowIndex = startWindowIndex;
+    windowIndex < windows.length;
+    windowIndex += 1
+  ) {
+    execution?.yieldIfNeeded?.();
+    const window = windows[windowIndex];
     const response = await client.request<JsonRecord>(
-      "/v1/finance/cash-flow-statement/list",
+      "/v1/finance/products/buyout",
       {
-        date: { from: dateFrom, to: dateTo },
-        with_details: true,
-        page,
-        page_size: 1000,
+        date_from: window.from,
+        date_to: window.to,
       }
     );
-    const root = unwrapResult(response);
-    const flows = extractItems(root, ["cash_flows", "items", "rows"]);
-    rows.push(
-      ...flows.map((flow) => {
-        const item = toRecord(flow);
-        const period = toRecord(item.period);
+    const products = requireItems(
+      response,
+      ["products", "items", "rows"],
+      "/v1/finance/products/buyout"
+    );
+    const rows = products.map((product) => {
+        const item = toRecord(product);
         const id =
-          toStringValue(period.id ?? item.id) ??
-          `cash-flow:${page}:${stableHash(item).slice(0, 16)}`;
+          [
+            "buyout",
+            toStringValue(item.posting_number),
+            toStringValue(item.offer_id ?? item.sku),
+            window.from,
+            window.to,
+          ]
+            .filter(Boolean)
+            .join(":") || `buyout:${stableHash(item).slice(0, 24)}`;
         return {
           workspace_id: workspaceId,
           connection_id: connectionId,
           external_id: id,
-          report_type: "cash_flow",
-          period_start: toDateOnly(period.begin),
-          period_end: toDateOnly(period.end),
-          amount: toNumberValue(item.orders_amount ?? item.amount),
-          currency_code: toStringValue(item.currency_code),
+          report_type: "buyout",
+          period_start: window.from,
+          period_end: window.to,
+          amount: decimalString(item.amount ?? item.buyout_price),
+          currency_code: toStringValue(item.currency_code ?? item.currency),
           raw_payload: sanitizeOzonPayload(item),
           synced_at: new Date().toISOString(),
+          ...ozonMirrorProvenance(execution?.runId),
         };
-      })
+      });
+    await persistFinanceReportRows(supabase, rows);
+    persisted += rows.length;
+    await execution?.saveCheckpoint?.(
+      {
+        phase: windowIndex + 1 < windows.length ? "buyout" : "complete",
+        windowIndex: windowIndex + 1,
+        processed: baseProcessed + persisted,
+        skipped,
+        total: null,
+      },
+      { fetched: baseProcessed + persisted, skipped }
     );
-    if (flows.length < 1000) break;
   }
-  return rows;
-}
-
-async function syncBuyoutRows(
-  client: OzonClient,
-  workspaceId: string,
-  connectionId: string,
-  dateFrom: string,
-  dateTo: string
-) {
-  const response = await client.request<JsonRecord>("/v1/finance/products/buyout", {
-    date_from: dateFrom.slice(0, 10),
-    date_to: dateTo.slice(0, 10),
-  });
-  const products = extractItems(response, ["products", "items", "rows"]);
-  return products.map((product) => {
-    const item = toRecord(product);
-    const id =
-      [
-        "buyout",
-        toStringValue(item.posting_number),
-        toStringValue(item.offer_id ?? item.sku),
-      ]
-        .filter(Boolean)
-        .join(":") || `buyout:${stableHash(item).slice(0, 24)}`;
-    return {
-      workspace_id: workspaceId,
-      connection_id: connectionId,
-      external_id: id,
-      report_type: "buyout",
-      period_start: dateFrom.slice(0, 10),
-      period_end: dateTo.slice(0, 10),
-      amount: toNumberValue(item.amount ?? item.buyout_price),
-      currency_code: toStringValue(item.currency_code ?? item.currency),
-      raw_payload: sanitizeOzonPayload(item),
-      synced_at: new Date().toISOString(),
-    };
-  });
+  return persisted;
 }
 
 async function syncRemovals(
@@ -2075,20 +2851,36 @@ async function syncRemovals(
   connectionId: string,
   mapping: MappingContext,
   dateFrom: string,
-  dateTo: string
+  dateTo: string,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
-  let fetched = 0;
+  const checkpoint = toRecord(execution?.checkpoint);
+  let fetched = toInteger(checkpoint.processed) ?? 0;
   let createdCandidates = 0;
-
-  for (const source of [
+  const sources = [
     { type: "from_stock" as const, endpoint: "/v1/removal/from-stock/list" as const },
     {
       type: "from_supply" as const,
       endpoint: "/v1/removal/from-supply/list" as const,
     },
-  ]) {
-    let lastId = "";
+  ];
+  const startSourceIndex =
+    checkpoint.phase === "removals"
+      ? toInteger(checkpoint.sourceIndex) ?? 0
+      : 0;
+
+  for (
+    let sourceIndex = startSourceIndex;
+    sourceIndex < sources.length;
+    sourceIndex += 1
+  ) {
+    const source = sources[sourceIndex];
+    let lastId =
+      sourceIndex === startSourceIndex
+        ? toStringValue(checkpoint.lastId) ?? ""
+        : "";
     for (let page = 0; page < 100; page += 1) {
+      execution?.yieldIfNeeded?.();
       const response = await client.request<JsonRecord>(source.endpoint, {
         date_from: dateFrom.slice(0, 10),
         date_to: dateTo.slice(0, 10),
@@ -2096,11 +2888,11 @@ async function syncRemovals(
         limit: 500,
       });
       const root = unwrapResult(response);
-      const items = extractItems(root, [
-        "returns_summary_report_rows",
-        "rows",
-        "items",
-      ]);
+      const items = requireItems(
+        root,
+        ["returns_summary_report_rows", "rows", "items"],
+        source.endpoint
+      );
       fetched += items.length;
 
       for (const item of items) {
@@ -2109,7 +2901,8 @@ async function syncRemovals(
           source.type,
           workspaceId,
           connectionId,
-          mapping
+          mapping,
+          execution?.runId
         );
         const { data, error } = await supabase
           .from("ozon_removals")
@@ -2117,21 +2910,52 @@ async function syncRemovals(
           .select("*")
           .single();
         if (error || !data) {
-          throw new Error(error?.message ?? "Failed to save Ozon removal");
+          throw ozonDatabaseError(error ?? {}, "upsert:ozon_removals");
         }
         const candidate = buildRemovalCandidate(data as JsonRecord);
         if (!candidate) continue;
         const saved = await upsertCandidatePreservingReview(supabase, candidate);
-        await supabase
+        const { error: linkError } = await supabase
           .from("ozon_removals")
           .update({ operation_candidate_id: saved.id })
           .eq("id", data.id);
+        if (linkError) {
+          throw ozonDatabaseError(linkError, "update:ozon_removals");
+        }
         createdCandidates += 1;
       }
 
       const nextLastId = toStringValue(root.last_id ?? response.last_id);
-      if (!nextLastId || nextLastId === lastId || items.length === 0) break;
+      if (!nextLastId || nextLastId === lastId || items.length === 0) {
+        await execution?.saveCheckpoint?.(
+          {
+            phase:
+              sourceIndex + 1 < sources.length ? "removals" : "complete",
+            sourceIndex: sourceIndex + 1,
+            lastId: "",
+            processed: fetched,
+            total: null,
+          },
+          { fetched, createdCandidates }
+        );
+        break;
+      }
+      if (page === 99) {
+        throw new OzonIncompleteResponseError(
+          "Ozon removals exceeded the page safety limit"
+        );
+      }
       lastId = nextLastId;
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "removals",
+          sourceIndex,
+          lastId,
+          processed: fetched,
+          total: null,
+        },
+        { fetched, createdCandidates }
+      );
     }
   }
 
@@ -2143,7 +2967,8 @@ function toRemovalRow(
   removalType: "from_stock" | "from_supply",
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string
 ) {
   const item = toRecord(value);
   const product = toRecord(item.product ?? item.item ?? {});
@@ -2168,33 +2993,50 @@ function toRemovalRow(
     connection_id: connectionId,
     external_id: `${removalType}:${externalId}`,
     removal_type: removalType,
-    status: toStringValue(item.status),
-    reason: toStringValue(item.reason ?? item.type ?? item.operation_type),
-    event_date: toIsoString(item.date ?? item.created_at ?? item.operation_date),
-    posting_number: toStringValue(item.posting_number),
+    status: toStringValue(item.state ?? item.status),
+    reason: toStringValue(item.stock_type ?? item.reason),
+    event_date: toIsoString(
+      item.utilization_date ??
+        item.given_out_date ??
+        item.delivery_date
+    ),
+    posting_number: toStringValue(
+      item.return_id ?? item.return_number ?? item.box_id
+    ),
     ozon_product_id: ozonProductId,
     offer_id: offerId,
     sku,
     name: toStringValue(item.name ?? product.name),
-    quantity: toNumberValue(item.quantity ?? product.quantity) ?? 0,
+    quantity: decimalString(item.quantity_for_return ?? item.quantity),
     warehouse_name: warehouseName,
     ozon_warehouse_id: warehouseId,
-    amount: toNumberValue(item.amount ?? item.price),
-    currency_code: toStringValue(item.currency_code ?? item.currency),
+    amount:
+      moneyAmount(item.preliminary_delivery_price) ??
+      decimalString(item.preliminary_delivery_price),
+    currency_code:
+      moneyCurrency(item.preliminary_delivery_price) ??
+      toStringValue(item.currency_code ?? item.currency),
+    return_id: toStringValue(item.return_id ?? item.return_number),
+    box_id: toStringValue(item.box_id ?? item.return_box_id),
+    stock_type: toStringValue(item.stock_type),
+    delivery_date: toIsoString(item.delivery_date),
+    given_out_date: toIsoString(item.given_out_date),
+    utilization_date: toIsoString(item.utilization_date),
     raw_payload: sanitizeOzonPayload(item),
     local_product_id: findLocalProductId(mapping, ozonProductId, [offerId, sku]),
     local_warehouse_id: findLocalWarehouseId(mapping, warehouseId, warehouseName),
     synced_at: new Date().toISOString(),
+    ...ozonMirrorProvenance(runId),
   };
 }
 
 function buildRemovalCandidate(row: JsonRecord) {
-  const reason = normalizeStatus(`${row.reason ?? ""} ${row.status ?? ""}`);
-  if (!isDisposalReason(reason)) return null;
+  const utilizationDate = toDateOnly(row.utilization_date);
+  if (!utilizationDate || !positiveDecimal(row.quantity)) return null;
 
   const operation = {
     type: "write_off" as const,
-    operationDate: toDateOnly(row.event_date),
+    operationDate: utilizationDate,
     comment: `Ozon removal/disposal ${row.external_id}`,
     sourceType: "removal" as const,
     supportStatus: "commit_candidate" as const,
@@ -2210,8 +3052,8 @@ function buildRemovalCandidate(row: JsonRecord) {
         warehouseId: toStringValue(row.local_warehouse_id),
         warehouseName: toStringValue(row.warehouse_name),
         ozonWarehouseId: toStringValue(row.ozon_warehouse_id),
-        quantity: toNumberValue(row.quantity),
-        unitPrice: toNumberValue(row.amount),
+        quantity: decimalString(row.quantity),
+        unitPrice: decimalString(row.amount),
         direction: "out" as const,
       },
     ],
@@ -2240,71 +3082,259 @@ async function syncSupplies(
   client: OzonClient,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
-  const orders = await fetchSupplyOrders(client);
-  let createdCandidates = 0;
+  const checkpoint = toRecord(execution?.checkpoint);
+  let phase = checkpoint.phase === "details" ? "details" : "list";
+  let listCursor =
+    phase === "list" ? toStringValue(checkpoint.cursor) ?? "" : "";
+  let nextCursor =
+    phase === "details" ? toStringValue(checkpoint.nextCursor) : null;
+  let pageIndex = toInteger(checkpoint.pageIndex) ?? 0;
+  let pendingOrderIds =
+    phase === "details"
+      ? asArray(checkpoint.pendingOrderIds)
+          .map(toStringValue)
+          .filter((value): value is string => Boolean(value))
+      : [];
+  let detailOffset =
+    phase === "details" ? toInteger(checkpoint.detailOffset) ?? 0 : 0;
+  let fetched = toInteger(checkpoint.processed) ?? 0;
+  let createdCandidates = toInteger(checkpoint.createdCandidates) ?? 0;
 
-  for (const order of orders) {
-    const orderId = toStringValue(
-      toRecord(order).order_id ?? toRecord(order).id ?? toRecord(order).supply_order_id
-    );
-    if (!orderId) continue;
-    const orderRow = toSupplyOrderRow(
-      order,
-      workspaceId,
-      connectionId,
-      mapping
-    );
-    const { data: savedOrder, error } = await supabase
-      .from("ozon_supply_orders")
-      .upsert(orderRow, { onConflict: "connection_id,ozon_supply_order_id" })
-      .select("*")
-      .single();
-    if (error || !savedOrder) {
-      throw new Error(error?.message ?? "Failed to save Ozon supply order");
+  while (pageIndex < 100) {
+    execution?.yieldIfNeeded?.();
+
+    if (phase === "list") {
+      const response = await client.request<JsonRecord>(
+        "/v3/supply-order/list",
+        {
+          filter: {},
+          last_id: listCursor,
+          limit: 100,
+          sort_by: "ORDER_CREATION",
+          sort_dir: "DESC",
+        }
+      );
+      const root = unwrapResult(response);
+      pendingOrderIds = [
+        ...new Set(
+          requireArrayMember(root, "order_ids", "/v3/supply-order/list")
+            .map(toStringValue)
+            .filter((value): value is string => Boolean(value))
+        ),
+      ];
+      nextCursor = toStringValue(root.last_id ?? response.last_id);
+      if (nextCursor && nextCursor === listCursor) {
+        throw new OzonIncompleteResponseError(
+          "Ozon supply-order list repeated its pagination identifier"
+        );
+      }
+      detailOffset = 0;
+      phase = "details";
+      await execution?.saveCheckpoint?.(
+        {
+          phase,
+          cursor: listCursor,
+          nextCursor,
+          pageIndex,
+          pendingOrderIds,
+          detailOffset,
+          processed: fetched,
+          total: null,
+          createdCandidates,
+        },
+        { fetched, createdCandidates }
+      );
     }
 
-    await supabase
-      .from("ozon_supply_order_items")
-      .delete()
-      .eq("supply_order_id", savedOrder.id);
+    while (detailOffset < pendingOrderIds.length) {
+      execution?.yieldIfNeeded?.();
+      const batchOrderIds = pendingOrderIds.slice(
+        detailOffset,
+        detailOffset + 50
+      );
+      const orders = await fetchSupplyOrderDetails(client, batchOrderIds);
 
-    const bundleRows = await fetchSupplyItems(
-      client,
-      savedOrder as JsonRecord,
-      workspaceId,
-      connectionId,
-      mapping
-    );
-    await insertRows(supabase, "ozon_supply_order_items", bundleRows);
-
-    const candidates = buildSupplyTransferCandidates(
-      savedOrder as JsonRecord,
-      bundleRows
-    );
-    for (const candidate of candidates) {
-      const saved = await upsertCandidatePreservingReview(supabase, candidate);
-      await supabase
-        .from("ozon_supply_orders")
-        .update({ operation_candidate_id: saved.id })
-        .eq("id", savedOrder.id);
-      createdCandidates += 1;
+      for (const order of orders) {
+        execution?.yieldIfNeeded?.();
+        createdCandidates += await persistSupplyOrder(
+          supabase,
+          client,
+          workspaceId,
+          connectionId,
+          mapping,
+          order,
+          execution?.runId
+        );
+        fetched += 1;
+      }
+      detailOffset += batchOrderIds.length;
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "details",
+          cursor: listCursor,
+          nextCursor,
+          pageIndex,
+          pendingOrderIds,
+          detailOffset,
+          processed: fetched,
+          total: null,
+          createdCandidates,
+        },
+        { fetched, createdCandidates }
+      );
     }
+
+    pageIndex += 1;
+    if (!nextCursor || pendingOrderIds.length === 0) {
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "complete",
+          pageIndex,
+          processed: fetched,
+          total: fetched,
+          createdCandidates,
+        },
+        { fetched, createdCandidates }
+      );
+      return { fetched, createdCandidates };
+    }
+
+    listCursor = nextCursor;
+    pendingOrderIds = [];
+    detailOffset = 0;
+    phase = "list";
+    await execution?.saveCheckpoint?.(
+      {
+        phase,
+        cursor: listCursor,
+        pageIndex,
+        processed: fetched,
+        total: null,
+        createdCandidates,
+      },
+      { fetched, createdCandidates }
+    );
   }
 
-  return { fetched: orders.length, createdCandidates };
+  throw new OzonIncompleteResponseError(
+    "Ozon supply-order pagination exceeded the 100-page safety limit"
+  );
 }
 
 type OzonRequestClient = Pick<OzonClient, "request"> & {
   executionAbortSignal?: () => AbortSignal | undefined;
 };
 
+async function fetchSupplyOrderDetails(
+  client: OzonRequestClient,
+  batchOrderIds: string[]
+) {
+  const response = await client.request<JsonRecord>("/v3/supply-order/get", {
+    order_ids: batchOrderIds,
+  });
+  const details = requireItems(
+    unwrapResult(response),
+    ["orders", "items"],
+    "/v3/supply-order/get"
+  ).map(toRecord);
+  const detailsById = new Map(
+    details.flatMap((detail) => {
+      const orderId = toStringValue(
+        detail.order_id ?? detail.id ?? detail.supply_order_id
+      );
+      return orderId && isUsableSupplyOrderRecord(detail)
+        ? [[orderId, detail] as const]
+        : [];
+    })
+  );
+  const resolvedOrders = batchOrderIds.map((id) => detailsById.get(id));
+  if (resolvedOrders.some((order) => !order)) {
+    throw new OzonIncompleteResponseError(
+      "Ozon supply-order details were incomplete"
+    );
+  }
+  return resolvedOrders as JsonRecord[];
+}
+
+async function persistSupplyOrder(
+  supabase: SupabaseClient,
+  client: OzonClient,
+  workspaceId: string,
+  connectionId: string,
+  mapping: MappingContext,
+  order: JsonRecord,
+  runId?: string
+) {
+  const orderId = toStringValue(
+    order.order_id ?? order.id ?? order.supply_order_id
+  );
+  if (!orderId) {
+    throw new OzonIncompleteResponseError(
+      "Ozon supply order detail has no order_id"
+    );
+  }
+  const orderRow = toSupplyOrderRow(
+    order,
+    workspaceId,
+    connectionId,
+    mapping,
+    runId
+  );
+  const bundleRows = await fetchSupplyItems(
+    client,
+    { ...orderRow, id: PERSISTENCE_PLACEHOLDER_ID },
+    workspaceId,
+    connectionId,
+    mapping,
+    runId
+  );
+  const { data: savedOrderId, error: replaceError } = await supabase.rpc(
+    "replace_ozon_supply_order_with_items_v2",
+    {
+      p_parent: orderRow,
+      p_rows: bundleRows,
+    }
+  );
+  if (replaceError || typeof savedOrderId !== "string") {
+    throw ozonDatabaseError(
+      replaceError ?? {},
+      "rpc:replace_ozon_supply_order_with_items_v2"
+    );
+  }
+  const { data: savedOrder, error } = await supabase
+    .from("ozon_supply_orders")
+    .select("*")
+    .eq("id", savedOrderId)
+    .single();
+  if (error || !savedOrder) {
+    throw ozonDatabaseError(error ?? {}, "select:ozon_supply_orders");
+  }
+
+  const candidates = buildSupplyTransferCandidates(
+    savedOrder as JsonRecord,
+    bundleRows
+  );
+  for (const candidate of candidates) {
+    const saved = await upsertCandidatePreservingReview(supabase, candidate);
+    const { error: linkError } = await supabase
+      .from("ozon_supply_orders")
+      .update({ operation_candidate_id: saved.id })
+      .eq("id", savedOrder.id);
+    if (linkError) {
+      throw ozonDatabaseError(linkError, "update:ozon_supply_orders");
+    }
+  }
+  return candidates.length;
+}
+
 export async function fetchSupplyOrders(client: OzonRequestClient): Promise<JsonRecord[]> {
   const orderIds = new Set<string>();
-  const legacyFallbacksById = new Map<string, JsonRecord>();
   let lastId = "";
   const seenLastIds = new Set<string>();
+  let listComplete = false;
 
   for (let page = 0; page < 100; page += 1) {
     const response = await client.request<JsonRecord>("/v3/supply-order/list", {
@@ -2317,57 +3347,34 @@ export async function fetchSupplyOrders(client: OzonRequestClient): Promise<Json
     const root = unwrapResult(response);
     const pageOrderIds = new Set<string>();
 
-    for (const value of asArray(root.order_ids)) {
+    for (const value of requireArrayMember(
+      root,
+      "order_ids",
+      "/v3/supply-order/list"
+    )) {
       const orderId = toStringValue(value);
       if (orderId) pageOrderIds.add(orderId);
-    }
-
-    for (const order of extractItems(root, ["orders", "items", "supplies"])) {
-      const record = toRecord(order);
-      const orderId = toStringValue(
-        record.order_id ?? record.id ?? record.supply_order_id
-      );
-      if (!orderId) continue;
-      pageOrderIds.add(orderId);
-      if (isUsableSupplyOrderRecord(record) && !legacyFallbacksById.has(orderId)) {
-        legacyFallbacksById.set(orderId, record);
-      }
     }
 
     for (const orderId of pageOrderIds) orderIds.add(orderId);
 
     const nextLastId = toStringValue(root.last_id ?? response.last_id);
-    if (!nextLastId || pageOrderIds.size === 0 || seenLastIds.has(nextLastId)) break;
+    if (!nextLastId || pageOrderIds.size === 0 || seenLastIds.has(nextLastId)) {
+      listComplete = true;
+      break;
+    }
     seenLastIds.add(nextLastId);
     lastId = nextLastId;
+  }
+  if (!listComplete) {
+    throw new OzonIncompleteResponseError(
+      "Ozon supply-order pagination exceeded the 100-page safety limit"
+    );
   }
 
   const detailedOrders: JsonRecord[] = [];
   for (const batchOrderIds of chunkArray([...orderIds], 50)) {
-    const response = await client.request<JsonRecord>("/v3/supply-order/get", {
-      order_ids: batchOrderIds,
-    });
-    const details = extractItems(unwrapResult(response), ["orders", "items"])
-      .map(toRecord);
-    const detailsById = new Map(
-      details.flatMap((detail) => {
-        const orderId = toStringValue(
-          detail.order_id ?? detail.id ?? detail.supply_order_id
-        );
-        return orderId && isUsableSupplyOrderRecord(detail)
-          ? [[orderId, detail] as const]
-          : [];
-      })
-    );
-    const resolvedOrders = batchOrderIds.map(
-      (id) => detailsById.get(id) ?? legacyFallbacksById.get(id)
-    );
-    if (resolvedOrders.some((order) => !order)) {
-      throw new OzonIncompleteResponseError(
-        "Ozon supply-order details were incomplete"
-      );
-    }
-    detailedOrders.push(...(resolvedOrders as JsonRecord[]));
+    detailedOrders.push(...(await fetchSupplyOrderDetails(client, batchOrderIds)));
   }
 
   return detailedOrders;
@@ -2387,18 +3394,32 @@ function toSupplyOrderRow(
   value: unknown,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string
 ) {
   const item = toRecord(value);
+  const supplies = asArray(item.supplies).map(toRecord);
+  const primarySupply = supplies.length === 1 ? supplies[0] : {};
   const warehouse = toRecord(
-    item.warehouse ?? item.destination_warehouse ?? item.dropoff_warehouse ?? {}
+    primarySupply.storage_warehouse ??
+      item.warehouse ??
+      item.destination_warehouse ??
+      item.dropoff_warehouse ??
+      {}
   );
   const orderId = toStringValue(item.order_id ?? item.id ?? item.supply_order_id);
   const warehouseName = toStringValue(
-    item.warehouse_name ?? warehouse.name ?? warehouse.warehouse_name
+    primarySupply.storage_warehouse_name ??
+      item.warehouse_name ??
+      warehouse.name ??
+      warehouse.warehouse_name
   );
   const warehouseId = toStringValue(
-    item.warehouse_id ?? warehouse.id ?? warehouse.warehouse_id ?? warehouseName
+    primarySupply.storage_warehouse_id ??
+      item.warehouse_id ??
+      warehouse.id ??
+      warehouse.warehouse_id ??
+      warehouseName
   );
 
   return {
@@ -2410,9 +3431,12 @@ function toSupplyOrderRow(
     created_at_ozon: toIsoString(item.created_date ?? item.created_at),
     warehouse_name: warehouseName,
     ozon_warehouse_id: warehouseId,
-    bundle_ids: asArray(item.bundle_ids ?? item.bundles).map((bundle) =>
-      toStringValue(toRecord(bundle).bundle_id ?? toRecord(bundle).id ?? bundle)
-    ),
+    bundle_ids: [
+      ...supplies.map((supply) => toStringValue(supply.bundle_id)),
+      ...asArray(item.bundle_ids ?? item.bundles).map((bundle) =>
+        toStringValue(toRecord(bundle).bundle_id ?? toRecord(bundle).id ?? bundle)
+      ),
+    ].filter((value): value is string => Boolean(value)),
     raw_payload: sanitizeOzonPayload(item),
     local_destination_warehouse_id: findLocalWarehouseId(
       mapping,
@@ -2420,6 +3444,7 @@ function toSupplyOrderRow(
       warehouseName
     ),
     synced_at: new Date().toISOString(),
+    ...ozonMirrorProvenance(runId),
   };
 }
 
@@ -2428,7 +3453,8 @@ async function fetchSupplyItems(
   order: JsonRecord,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string
 ) {
   const bundleIds = asArray(order.bundle_ids)
     .map(toStringValue)
@@ -2436,36 +3462,61 @@ async function fetchSupplyItems(
   const rows: JsonRecord[] = [];
 
   if (bundleIds.length === 0) {
-    rows.push(
-      ...extractItems(order.raw_payload, ["items", "products"]).map((item, index) =>
-        toSupplyItemRow(item, order.id as string, index, workspaceId, connectionId, mapping)
-      )
+    throw new OzonIncompleteResponseError(
+      "Ozon supply order has no documented supplies or bundle identifiers"
     );
-    return rows;
   }
 
   for (const bundleId of bundleIds) {
-    const response = await client
-      .request<JsonRecord>("/v1/supply-order/bundle", {
+    let lastId = "";
+    let bundleComplete = false;
+    for (let page = 0; page < 100; page += 1) {
+      const response = await client.request<JsonRecord>(
+        "/v1/supply-order/bundle",
+        {
         bundle_ids: [bundleId],
+        last_id: lastId,
         limit: 100,
         is_asc: true,
-      })
-      .catch(() => ({}));
-    const items = extractItems(response, ["items", "products", "rows"]);
-    rows.push(
-      ...items.map((item, index) =>
-        toSupplyItemRow(
-          item,
-          order.id as string,
-          index,
-          workspaceId,
-          connectionId,
-          mapping,
-          bundleId
+        }
+      );
+      const root = unwrapResult(response);
+      const items = requireItems(
+        root,
+        ["items", "products", "rows"],
+        "/v1/supply-order/bundle"
+      );
+      rows.push(
+        ...items.map((item) =>
+          toSupplyItemRow(
+            item,
+            order.id as string,
+            workspaceId,
+            connectionId,
+            mapping,
+            bundleId,
+            supplyForBundle(order.raw_payload, bundleId),
+            runId
+          )
         )
-      )
-    );
+      );
+      if (root.has_next !== true) {
+        bundleComplete = true;
+        break;
+      }
+      const nextLastId = toStringValue(root.last_id);
+      if (!nextLastId || nextLastId === lastId) {
+        throw new OzonIncompleteResponseError(
+          "Ozon supply bundle indicates more data without a new last_id"
+        );
+      }
+      lastId = nextLastId;
+    }
+    if (!bundleComplete) {
+      throw new OzonIncompleteResponseError(
+        "Ozon supply bundle pagination exceeded the 100-page safety limit"
+      );
+    }
   }
 
   return rows;
@@ -2474,11 +3525,12 @@ async function fetchSupplyItems(
 function toSupplyItemRow(
   value: unknown,
   supplyOrderId: string,
-  index: number,
   workspaceId: string,
   connectionId: string,
   mapping: MappingContext,
-  bundleId?: string
+  bundleId?: string,
+  supply: JsonRecord = {},
+  runId?: string
 ) {
   const item = toRecord(value);
   const product = toRecord(item.product ?? {});
@@ -2487,35 +3539,87 @@ function toSupplyItemRow(
   );
   const offerId = toStringValue(item.offer_id ?? product.offer_id);
   const sku = toStringValue(item.sku ?? product.sku);
+  const itemIdentity = toStringValue(item.id ?? item.item_id ?? item.sku);
+  if (!itemIdentity) {
+    throw new OzonIncompleteResponseError(
+      "Ozon supply bundle item has no documented identifier"
+    );
+  }
   return {
     workspace_id: workspaceId,
     connection_id: connectionId,
     supply_order_id: supplyOrderId,
-    external_id:
-      toStringValue(item.id ?? item.item_id ?? item.sku) ??
-      `${bundleId || "bundle"}:${index}`,
+    external_id: [
+      bundleId ?? "bundle",
+      itemIdentity,
+    ].join(":"),
     ozon_product_id: ozonProductId,
     offer_id: offerId,
     sku,
     name: toStringValue(item.name ?? product.name),
-    quantity: toNumberValue(item.quantity ?? item.count) ?? 0,
+    quantity: requiredDecimal(
+      item.quantity ?? item.count,
+      "/v1/supply-order/bundle",
+      "items.quantity"
+    ),
+    bundle_id: bundleId ?? null,
+    ozon_supply_id: toStringValue(supply.supply_id ?? supply.id),
+    supply_state: toStringValue(supply.state ?? supply.status),
+    storage_warehouse_name: toStringValue(
+      supply.storage_warehouse_name ??
+        toRecord(supply.storage_warehouse).name
+    ),
+    ozon_storage_warehouse_id: toStringValue(
+      supply.storage_warehouse_id ??
+        toRecord(supply.storage_warehouse).warehouse_id ??
+        toRecord(supply.storage_warehouse).id
+    ),
+    local_destination_warehouse_id: findLocalWarehouseId(
+      mapping,
+      toStringValue(
+        supply.storage_warehouse_id ??
+          toRecord(supply.storage_warehouse).warehouse_id ??
+          toRecord(supply.storage_warehouse).id
+      ),
+      toStringValue(
+        supply.storage_warehouse_name ??
+          toRecord(supply.storage_warehouse).name
+      )
+    ),
+    completed_at_ozon: toIsoString(
+      normalizeStatus(supply.state) === "completed" &&
+        normalizeStatus(supply.order_state) === "completed"
+        ? supply.order_state_updated_date
+        : null
+    ),
     raw_payload: sanitizeOzonPayload(item),
     local_product_id: findLocalProductId(mapping, ozonProductId, [offerId, sku]),
+    ...ozonMirrorProvenance(runId),
   };
 }
 
 function buildSupplyTransferCandidates(order: JsonRecord, items: JsonRecord[]) {
-  const status = normalizeStatus(order.state);
-  if (!isCompletedSupplyStatus(status) || items.length === 0) return [];
+  if (items.length === 0) return [];
 
-  return items.map((item) => {
+  return items.flatMap((item) => {
+    const status = normalizeStatus(item.supply_state);
+    const completedAt = toDateOnly(item.completed_at_ozon);
+    const destinationWarehouseId = toStringValue(
+      item.local_destination_warehouse_id
+    );
+    if (
+      !isCompletedSupplyStatus(status) ||
+      !completedAt ||
+      !positiveDecimal(item.quantity) ||
+      !destinationWarehouseId
+    ) {
+      return [];
+    }
     const productId = toStringValue(item.local_product_id);
-    const quantity = toNumberValue(item.quantity);
+    const quantity = decimalString(item.quantity);
     const operation = {
       type: "transfer" as const,
-      operationDate:
-        toDateOnly(order.created_at_ozon) ??
-        new Date().toISOString().slice(0, 10),
+      operationDate: completedAt,
       comment: `Ozon FBO supply ${order.order_number || order.ozon_supply_order_id}`,
       sourceType: "supply" as const,
       supportStatus: "commit_candidate" as const,
@@ -2541,9 +3645,9 @@ function buildSupplyTransferCandidates(order: JsonRecord, items: JsonRecord[]) {
           offerId: toStringValue(item.offer_id),
           ozonSku: toStringValue(item.sku),
           ozonProductId: toStringValue(item.ozon_product_id),
-          warehouseId: toStringValue(order.local_destination_warehouse_id),
-          warehouseName: toStringValue(order.warehouse_name),
-          ozonWarehouseId: toStringValue(order.ozon_warehouse_id),
+          warehouseId: destinationWarehouseId,
+          warehouseName: toStringValue(item.storage_warehouse_name),
+          ozonWarehouseId: toStringValue(item.ozon_storage_warehouse_id),
           quantity,
           direction: "in" as const,
         },
@@ -2555,7 +3659,7 @@ function buildSupplyTransferCandidates(order: JsonRecord, items: JsonRecord[]) {
       toStringValue(item.external_id ?? item.ozon_product_id ?? item.sku) ??
       stableHash(item).slice(0, 16);
 
-    return {
+    return [{
       workspace_id: order.workspace_id,
       connection_id: order.connection_id,
       provider: "ozon",
@@ -2569,7 +3673,7 @@ function buildSupplyTransferCandidates(order: JsonRecord, items: JsonRecord[]) {
       normalized_operation: normalizedOperation,
       validation_errors: validationErrors,
       raw_payload: order.raw_payload,
-    };
+    }];
   });
 }
 
@@ -2578,58 +3682,111 @@ async function syncStockAnalytics(
   client: OzonClient,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
   const products = await loadOzonProductRefs(supabase, workspaceId, connectionId);
-  const snapshotDate = new Date().toISOString().slice(0, 10);
-  let fetched = 0;
+  const checkpoint = toRecord(execution?.checkpoint);
+  const snapshotDate =
+    toStringValue(checkpoint.snapshotDate) ??
+    new Date().toISOString().slice(0, 10);
+  const chunks = chunkArray(products, 100);
+  const startBatchIndex = toInteger(checkpoint.batchIndex) ?? 0;
+  let fetched = toInteger(checkpoint.processed) ?? 0;
 
-  for (const chunk of chunkArray(products, 100)) {
+  for (
+    let batchIndex = startBatchIndex;
+    batchIndex < chunks.length;
+    batchIndex += 1
+  ) {
+    execution?.yieldIfNeeded?.();
+    const chunk = chunks[batchIndex];
     const skus = chunk
       .map((product) => product.sku)
       .filter((value): value is string => Boolean(value));
     if (skus.length === 0) continue;
 
-    const [stocksResponse, turnoverResponse] = await Promise.all([
-      client.request<JsonRecord>("/v1/analytics/stocks", { skus }).catch(() => ({})),
-      client
-        .request<JsonRecord>("/v1/analytics/turnover/stocks", {
-          sku: skus,
-          limit: skus.length,
-        })
-        .catch(() => ({})),
-    ]);
-
-    const stockRows = extractItems(stocksResponse, ["items", "rows", "stocks"]);
-    fetched += stockRows.length;
-    for (const item of stockRows) {
-      const row = toStockAnalyticsRow(
-        item,
-        workspaceId,
-        connectionId,
-        mapping,
-        snapshotDate
+    const resumeTurnover =
+      checkpoint.phase === "turnover" && batchIndex === startBatchIndex;
+    if (!resumeTurnover) {
+      const stocksResponse = await client.request<JsonRecord>(
+        "/v1/analytics/stocks",
+        { skus }
       );
-      const { data, error } = await supabase
-        .from("ozon_stock_analytics")
-        .upsert(row, { onConflict: "connection_id,external_id,snapshot_date" })
-        .select("*")
-        .single();
-      if (error || !data) {
-        throw new Error(error?.message ?? "Failed to save Ozon stock analytics");
+      const stockRows = requireItems(
+        stocksResponse,
+        ["items", "rows", "stocks"],
+        "/v1/analytics/stocks"
+      );
+      fetched += stockRows.length;
+      for (const item of stockRows) {
+        const row = toStockAnalyticsRow(
+          item,
+          workspaceId,
+          connectionId,
+          mapping,
+          snapshotDate,
+          execution?.runId
+        );
+        const { error } = await supabase
+          .from("ozon_stock_analytics")
+          .upsert(row, { onConflict: "connection_id,external_id,snapshot_date" });
+        if (error) {
+          throw ozonDatabaseError(error, "upsert:ozon_stock_analytics");
+        }
       }
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "turnover",
+          batchIndex,
+          snapshotDate,
+          processed: fetched,
+          total: null,
+        },
+        { fetched, createdCandidates: 0 }
+      );
     }
 
-    const turnoverRows = extractItems(turnoverResponse, ["items", "rows"]);
+    execution?.yieldIfNeeded?.();
+    const turnoverResponse = await client.request<JsonRecord>(
+      "/v1/analytics/turnover/stocks",
+      {
+        sku: skus,
+        limit: skus.length,
+      }
+    );
+
+    const turnoverRows = requireItems(
+      turnoverResponse,
+      ["items", "rows"],
+      "/v1/analytics/turnover/stocks"
+    );
     await upsertRows(
       supabase,
       "ozon_turnover_analytics",
       turnoverRows.map((item) =>
-        toTurnoverAnalyticsRow(item, workspaceId, connectionId, mapping, snapshotDate)
+        toTurnoverAnalyticsRow(
+          item,
+          workspaceId,
+          connectionId,
+          mapping,
+          snapshotDate,
+          execution?.runId
+        )
       ),
       "connection_id,external_id,snapshot_date"
     );
     fetched += turnoverRows.length;
+    await execution?.saveCheckpoint?.(
+      {
+        phase: batchIndex + 1 < chunks.length ? "stocks" : "complete",
+        batchIndex: batchIndex + 1,
+        snapshotDate,
+        processed: fetched,
+        total: null,
+      },
+      { fetched, createdCandidates: 0 }
+    );
   }
 
   return { fetched, createdCandidates: 0 };
@@ -2647,7 +3804,7 @@ async function loadOzonProductRefs(
     )
     .eq("workspace_id", workspaceId)
     .eq("connection_id", connectionId);
-  if (error) throw new Error(error.message);
+  if (error) throw ozonDatabaseError(error, "select:ozon_products");
   return (data || []) as JsonRecord[];
 }
 
@@ -2656,25 +3813,36 @@ function toStockAnalyticsRow(
   workspaceId: string,
   connectionId: string,
   mapping: MappingContext,
-  snapshotDate: string
+  snapshotDate: string,
+  runId?: string
 ) {
   const item = toRecord(value);
   const ozonProductId = toStringValue(item.product_id ?? item.sku);
   const offerId = toStringValue(item.offer_id);
   const sku = toStringValue(item.sku);
-  const warehouseName = toStringValue(
-    item.warehouse_name ?? item.cluster_name ?? item.name
-  );
-  const warehouseId = toStringValue(
-    item.warehouse_id ?? item.cluster_id ?? warehouseName
-  );
+  if (!sku) {
+    throw new OzonIncompleteResponseError(
+      "Ozon analytics stock row has no sku"
+    );
+  }
+  const clusterId = toStringValue(item.cluster_id);
   const externalId =
     [
       toStringValue(item.id ?? item.sku ?? item.product_id),
-      warehouseId,
+      clusterId,
     ]
       .filter(Boolean)
       .join(":") || `stock:${stableHash(item).slice(0, 24)}`;
+  const validStockCount = requiredDecimal(
+    item.valid_stock_count,
+    "/v1/analytics/stocks",
+    "valid_stock_count"
+  );
+  const availableStockCount = requiredDecimal(
+    item.available_stock_count,
+    "/v1/analytics/stocks",
+    "available_stock_count"
+  );
 
   return {
     workspace_id: workspaceId,
@@ -2685,16 +3853,40 @@ function toStockAnalyticsRow(
     offer_id: offerId,
     sku,
     name: toStringValue(item.name ?? item.product_name),
-    warehouse_name: warehouseName,
-    ozon_warehouse_id: warehouseId,
-    cluster_id: toStringValue(item.cluster_id),
-    stock: toNumberValue(item.stock ?? item.current_stock ?? item.available_stock) ?? 0,
-    available_stock: toNumberValue(item.available_stock),
-    reserved_stock: toNumberValue(item.reserved_stock ?? item.reserved),
+    warehouse_name: null,
+    ozon_warehouse_id: null,
+    cluster_id: clusterId,
+    macrolocal_cluster_id: toStringValue(item.macrolocal_cluster_id),
+    stock: validStockCount,
+    available_stock: availableStockCount,
+    reserved_stock: null,
+    valid_stock_count: validStockCount,
+    available_stock_count: availableStockCount,
+    requested_stock_count: decimalString(item.requested_stock_count),
+    transit_stock_count: decimalString(item.transit_stock_count),
+    return_from_customer_stock_count: decimalString(
+      item.return_from_customer_stock_count
+    ),
+    return_to_seller_stock_count: decimalString(
+      item.return_to_seller_stock_count
+    ),
+    stock_defect_stock_count: decimalString(item.stock_defect_stock_count),
+    transit_defect_stock_count: decimalString(item.transit_defect_stock_count),
+    other_stock_count: decimalString(item.other_stock_count),
+    excess_stock_count: decimalString(item.excess_stock_count),
+    expiring_stock_count: decimalString(item.expiring_stock_count),
+    waiting_docs_stock_count: decimalString(item.waiting_docs_stock_count),
+    ads: decimalString(item.ads),
+    ads_cluster: decimalString(item.ads_cluster),
+    idc: decimalString(item.idc),
+    idc_cluster: decimalString(item.idc_cluster),
+    turnover_grade: toStringValue(item.turnover_grade),
+    turnover_grade_cluster: toStringValue(item.turnover_grade_cluster),
     raw_payload: sanitizeOzonPayload(item),
     local_product_id: findLocalProductId(mapping, ozonProductId, [offerId, sku]),
-    local_warehouse_id: findLocalWarehouseId(mapping, warehouseId, warehouseName),
+    local_warehouse_id: null,
     synced_at: new Date().toISOString(),
+    ...ozonMirrorProvenance(runId),
   };
 }
 
@@ -2703,11 +3895,17 @@ function toTurnoverAnalyticsRow(
   workspaceId: string,
   connectionId: string,
   mapping: MappingContext,
-  snapshotDate: string
+  snapshotDate: string,
+  runId?: string
 ) {
   const item = toRecord(value);
   const ozonProductId = toStringValue(item.product_id ?? item.sku);
   const sku = toStringValue(item.sku);
+  if (!sku) {
+    throw new OzonIncompleteResponseError(
+      "Ozon turnover stock row has no sku"
+    );
+  }
   const externalId =
     toStringValue(item.id ?? item.sku ?? item.product_id) ??
     `turnover:${stableHash(item).slice(0, 24)}`;
@@ -2718,15 +3916,19 @@ function toTurnoverAnalyticsRow(
     snapshot_date: snapshotDate,
     ozon_product_id: ozonProductId,
     sku,
+    offer_id: toStringValue(item.offer_id),
     name: toStringValue(item.name ?? item.product_name),
-    current_stock: toNumberValue(item.current_stock ?? item.stock),
-    ads: toNumberValue(item.ads),
-    days_to_stock_out: toNumberValue(
-      item.days_to_stock_out ?? item.turnover_days ?? item.days
-    ),
+    current_stock: decimalString(item.current_stock ?? item.stock),
+    ads: decimalString(item.ads),
+    days_to_stock_out: decimalString(item.idc),
+    idc: decimalString(item.idc),
+    idc_grade: toStringValue(item.idc_grade),
+    turnover: decimalString(item.turnover),
+    turnover_grade: toStringValue(item.turnover_grade),
     raw_payload: sanitizeOzonPayload(item),
     local_product_id: findLocalProductId(mapping, ozonProductId, [sku]),
     synced_at: new Date().toISOString(),
+    ...ozonMirrorProvenance(runId),
   };
 }
 
@@ -2735,25 +3937,38 @@ async function syncDiscountedProducts(
   client: OzonClient,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  execution?: OzonSyncDomainExecutionContext
 ): Promise<OzonSyncStepSummary> {
   const products = await loadOzonProductRefs(supabase, workspaceId, connectionId);
   let fetched = 0;
-  let createdCandidates = 0;
 
   const discountedSkus = new Set(selectDiscountedSkus(products));
+  execution?.yieldIfNeeded?.();
   for (const sku of await discoverDiscountedSkus(client)) {
     discountedSkus.add(sku);
   }
   const items = await fetchDiscountedProducts(client, [...discountedSkus]);
-  fetched = items.length;
+  const checkpoint = toRecord(execution?.checkpoint);
+  const startItemIndex =
+    checkpoint.phase === "items"
+      ? toInteger(checkpoint.itemIndex) ?? 0
+      : 0;
+  fetched = startItemIndex;
 
-  for (const item of items) {
+  for (
+    let itemIndex = startItemIndex;
+    itemIndex < items.length;
+    itemIndex += 1
+  ) {
+    execution?.yieldIfNeeded?.();
+    const item = items[itemIndex];
     const row = toDiscountedProductRow(
       item,
       workspaceId,
       connectionId,
-      mapping
+      mapping,
+      execution?.runId
     );
     const { data, error } = await supabase
       .from("ozon_discounted_products")
@@ -2761,19 +3976,24 @@ async function syncDiscountedProducts(
       .select("*")
       .single();
     if (error || !data) {
-      throw new Error(error?.message ?? "Failed to save discounted product");
+      throw ozonDatabaseError(
+        error ?? {},
+        "upsert:ozon_discounted_products"
+      );
     }
-    const candidate = buildDefectCandidate(data as JsonRecord);
-    if (!candidate) continue;
-    const saved = await upsertCandidatePreservingReview(supabase, candidate);
-    await supabase
-      .from("ozon_discounted_products")
-      .update({ operation_candidate_id: saved.id })
-      .eq("id", data.id);
-    createdCandidates += 1;
+    fetched += 1;
+    await execution?.saveCheckpoint?.(
+      {
+        phase: itemIndex + 1 < items.length ? "items" : "complete",
+        itemIndex: itemIndex + 1,
+        processed: fetched,
+        total: items.length,
+      },
+      { fetched, createdCandidates: 0 }
+    );
   }
 
-  return { fetched, createdCandidates };
+  return { fetched, createdCandidates: 0 };
 }
 
 export function selectDiscountedSkus(products: JsonRecord[]) {
@@ -2806,17 +4026,21 @@ export async function discoverDiscountedSkus(
   runtime: DiscountedReportRuntime = DEFAULT_DISCOUNTED_REPORT_RUNTIME
 ) {
   const listResponse = await client.request<JsonRecord>("/v1/report/list", {
-    page: 0,
+    page: 1,
     page_size: 100,
-    report_type: "SELLER_PRODUCT_DISCOUNTED",
+    report_type: "SELLER_DISCOUNTED",
   });
-  const reports = extractItems(listResponse, ["reports", "items"])
+  const reports = requireItems(
+    listResponse,
+    ["reports", "items"],
+    "/v1/report/list"
+  )
     .map(toRecord)
     .filter((report) => {
       const reportType = toStringValue(report.report_type);
       return (
         !reportType ||
-        reportType.toUpperCase() === "SELLER_PRODUCT_DISCOUNTED"
+        reportType.toUpperCase() === "SELLER_DISCOUNTED"
       );
     })
     .sort(
@@ -2831,7 +4055,9 @@ export async function discoverDiscountedSkus(
       {}
     );
     const createRoot = unwrapResult(createResponse);
-    const code = toStringValue(createRoot.code ?? createResponse.code);
+    const code = toStringValue(
+      createRoot.code ?? createResponse.code ?? createResponse.result
+    );
     if (!code) {
       throw new OzonIncompleteResponseError(
         "Ozon discounted report creation returned no code"
@@ -2850,8 +4076,8 @@ export async function discoverDiscountedSkus(
 
   const status = normalizeStatus(report?.status);
   if (status === "waiting" || status === "processing") {
-    throw new OzonIncompleteResponseError(
-      "Ozon discounted report is still processing"
+    throw new OzonReportPendingError(
+      new Date(runtime.now() + 60_000).toISOString()
     );
   }
   if (status !== "success") {
@@ -2995,9 +4221,7 @@ export async function downloadOzonReportText(
 
       if (!response.ok) {
         await response.body?.cancel();
-        throw new Error(
-          `Ozon report download failed with HTTP ${response.status}`
-        );
+        throw new OzonReportDownloadError(response.status);
       }
 
       return readBoundedOzonReportText(
@@ -3134,7 +4358,11 @@ export async function fetchDiscountedProducts(
       { discounted_skus: chunk }
     );
     items.push(
-      ...(extractItems(response, ["items", "products", "rows"]) as JsonRecord[])
+      ...(requireItems(
+        response,
+        ["items", "products", "rows"],
+        "/v1/product/info/discounted"
+      ) as JsonRecord[])
     );
   }
 
@@ -3145,40 +4373,48 @@ function toDiscountedProductRow(
   value: unknown,
   workspaceId: string,
   connectionId: string,
-  mapping: MappingContext
+  mapping: MappingContext,
+  runId?: string
 ) {
   const item = toRecord(value);
-  const ozonProductId = toStringValue(
-    item.product_id ?? item.ozon_product_id ?? item.sku
-  );
+  const ozonProductId = toStringValue(item.product_id ?? item.ozon_product_id);
   const sku = toStringValue(item.sku);
-  const discountedSku = toStringValue(item.discounted_sku ?? item.discount_sku);
+  const discountedSku = toStringValue(item.discounted_sku);
+  if (!sku || !discountedSku) {
+    throw new OzonIncompleteResponseError(
+      "Ozon discounted product has no sku or discounted_sku"
+    );
+  }
   const offerId = toStringValue(item.offer_id);
-  const warehouseName = toStringValue(item.warehouse_name);
-  const warehouseId = toStringValue(item.warehouse_id ?? warehouseName);
-  const externalId =
-    discountedSku ??
-    toStringValue(item.id ?? item.product_id ?? item.sku) ??
-    `discounted:${stableHash(item).slice(0, 24)}`;
   return {
     workspace_id: workspaceId,
     connection_id: connectionId,
-    external_id: externalId,
+    external_id: discountedSku,
     ozon_product_id: ozonProductId,
     discounted_sku: discountedSku,
     sku,
     offer_id: offerId,
     name: toStringValue(item.name ?? item.product_name),
-    status: toStringValue(
-      item.status ?? item.condition ?? item.condition_estimation
-    ),
+    status: toStringValue(item.status),
+    condition: toStringValue(item.condition),
+    condition_estimation: toStringValue(item.condition_estimation),
+    defects: toStringValue(item.defects),
+    mechanical_damage: toStringValue(item.mechanical_damage),
+    package_damage: toStringValue(item.package_damage),
+    packaging_violation: toStringValue(item.packaging_violation),
+    shortage: toStringValue(item.shortage),
+    repair: toStringValue(item.repair),
+    reason_damaged: toStringValue(item.reason_damaged),
+    comment_reason_damaged: toStringValue(item.comment_reason_damaged),
+    warranty_type: toStringValue(item.warranty_type),
     reason: discountedDamageEvidence(item),
-    quantity: toNumberValue(item.quantity ?? item.stock),
-    discount_percent: toNumberValue(item.discount_percent),
+    quantity: null,
+    discount_percent: decimalString(item.discount_percent),
     raw_payload: sanitizeOzonPayload(item),
     local_product_id: findLocalProductId(mapping, ozonProductId, [offerId, sku]),
-    local_warehouse_id: findLocalWarehouseId(mapping, warehouseId, warehouseName),
+    local_warehouse_id: null,
     synced_at: new Date().toISOString(),
+    ...ozonMirrorProvenance(runId),
   };
 }
 
@@ -3204,47 +4440,10 @@ export function discountedDamageEvidence(item: JsonRecord) {
   return parts.length > 0 ? parts.join("; ") : null;
 }
 
-function buildDefectCandidate(row: JsonRecord) {
-  const reason = normalizeStatus(`${row.reason ?? ""} ${row.status ?? ""}`);
-  if (!isDefectReason(reason)) return null;
-  const operation = {
-    type: "defect" as const,
-    operationDate: new Date().toISOString().slice(0, 10),
-    comment: `Ozon discounted/damaged product ${row.external_id}`,
-    sourceType: "discounted_product" as const,
-    supportStatus: "commit_candidate" as const,
-    supportReason: "Ozon discounted product reason explicitly indicates damage or defect.",
-    items: [
-      {
-        productId: toStringValue(row.local_product_id),
-        productName: toStringValue(row.name ?? row.offer_id ?? row.sku),
-        warehouseId: toStringValue(row.local_warehouse_id),
-        warehouseName: null,
-        skuCode: toStringValue(row.offer_id ?? row.sku),
-        offerId: toStringValue(row.offer_id),
-        ozonSku: toStringValue(row.sku),
-        ozonProductId: toStringValue(row.ozon_product_id),
-        quantity: toNumberValue(row.quantity) ?? 1,
-        direction: "out" as const,
-      },
-    ],
-  };
-  const normalizedOperation = normalizeOzonCandidateOperation(operation);
-  const validationErrors = validateOzonCandidateOperation(normalizedOperation);
+function ozonMirrorProvenance(runId?: string) {
   return {
-    workspace_id: row.workspace_id,
-    connection_id: row.connection_id,
-    provider: "ozon",
-    source_type: "discounted_product",
-    external_event_id: `discounted:${row.external_id}`,
-    status: statusFromValidation(validationErrors),
-    operation_type: "defect",
-    operation_date: operation.operationDate,
-    confidence: validationErrors.length === 0 ? 0.75 : 0.4,
-    operation: normalizedOperation,
-    normalized_operation: normalizedOperation,
-    validation_errors: validationErrors,
-    raw_payload: row.raw_payload,
+    source_contract_version: "seller-api-2026-07-27",
+    ...(runId ? { last_sync_run_id: runId } : {}),
   };
 }
 
@@ -3259,7 +4458,7 @@ async function upsertRows(
     const { error } = await supabase
       .from(table)
       .upsert(chunk, { onConflict });
-    if (error) throw new Error(error.message);
+    if (error) throw ozonDatabaseError(error, `upsert:${table}`);
   }
 }
 
@@ -3267,45 +4466,67 @@ async function upsertCandidatePreservingReview(
   supabase: SupabaseClient,
   candidate: JsonRecord
 ) {
+  const candidateWithEvidence = {
+    ...candidate,
+    evidence_version: 1,
+    evidence_hash: stableHash({
+      provider: candidate.provider,
+      source_type: candidate.source_type,
+      external_event_id: candidate.external_event_id,
+      raw_payload: candidate.raw_payload,
+    }),
+  };
   const { data: existing, error: existingError } = await supabase
     .from("marketplace_operation_candidates")
-    .select("id, status")
+    .select("id, status, evidence_hash")
     .eq("connection_id", candidate.connection_id)
     .eq("source_type", candidate.source_type)
     .eq("external_event_id", candidate.external_event_id)
     .maybeSingle();
 
-  if (existingError) throw new Error(existingError.message);
+  if (existingError) {
+    throw ozonDatabaseError(
+      existingError,
+      "select:marketplace_operation_candidates"
+    );
+  }
 
   if (
     existing &&
     !canSyncUpdateCandidateStatus(existing.status as MarketplaceCandidateStatus)
   ) {
-    const { data, error } = await supabase
-      .from("marketplace_operation_candidates")
-      .update({
-        raw_payload: candidate.raw_payload,
-      })
-      .eq("id", existing.id)
-      .select("id")
-      .single();
-
-    if (error || !data) {
-      throw new Error(error?.message ?? "Failed to preserve Ozon candidate");
+    if (
+      existing.status === "approved" &&
+      existing.evidence_hash !== candidateWithEvidence.evidence_hash
+    ) {
+      const { error: staleError } = await supabase
+        .from("marketplace_operation_candidates")
+        .update({ evidence_version: 0, evidence_hash: null })
+        .eq("id", existing.id)
+        .eq("status", "approved");
+      if (staleError) {
+        throw ozonDatabaseError(
+          staleError,
+          "invalidate:marketplace_operation_candidates"
+        );
+      }
     }
-    return data;
+    return existing;
   }
 
   const { data, error } = await supabase
     .from("marketplace_operation_candidates")
-    .upsert(candidate, {
+    .upsert(candidateWithEvidence, {
       onConflict: "connection_id,source_type,external_event_id",
     })
     .select("id")
     .single();
 
   if (error || !data) {
-    throw new Error(error?.message ?? "Failed to save Ozon candidate");
+    throw ozonDatabaseError(
+      error ?? {},
+      "upsert:marketplace_operation_candidates"
+    );
   }
 
   return data;
@@ -3319,7 +4540,7 @@ async function insertRows(
   for (const chunk of chunkArray(rows, 500)) {
     if (chunk.length === 0) continue;
     const { error } = await supabase.from(table).insert(chunk);
-    if (error) throw new Error(error.message);
+    if (error) throw ozonDatabaseError(error, `insert:${table}`);
   }
 }
 
@@ -3409,7 +4630,7 @@ function externalProductKeys(item: JsonRecord) {
     .map(normalizeKey);
 }
 
-function extractItems(value: unknown, keys: string[]) {
+function requireItems(value: unknown, keys: string[], endpoint: string) {
   if (Array.isArray(value)) return value;
 
   const root = unwrapResult(value);
@@ -3422,7 +4643,9 @@ function extractItems(value: unknown, keys: string[]) {
     if (Array.isArray(nested)) return nested;
   }
 
-  return [];
+  throw new OzonIncompleteResponseError(
+    `Ozon ${endpoint} response has no ${keys.join("/")} array`
+  );
 }
 
 function unwrapResult(value: unknown): JsonRecord {
@@ -3492,7 +4715,6 @@ function isDeliveredStatus(status: string) {
   return [
     "delivered",
     "posting_transferred_to_client",
-    "received",
   ].includes(status);
 }
 
@@ -3500,13 +4722,8 @@ function isCancelledStatus(status: string) {
   return status.includes("cancel");
 }
 
-function isReturnedStatus(status: string) {
-  return (
-    status.includes("return") ||
-    status.includes("accepted") ||
-    status.includes("received") ||
-    status.includes("done")
-  );
+function isReturnReceivedBySellerStatus(status: string) {
+  return status.replace(/[^a-z0-9]/g, "") === "returnedtoseller";
 }
 
 function mappingStatus(value: unknown): ExistingMapping["status"] {
@@ -3521,10 +4738,44 @@ function mappingStatus(value: unknown): ExistingMapping["status"] {
   return "unmapped";
 }
 
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 function stableHash(value: unknown) {
   return createHash("sha256")
-    .update(JSON.stringify(sanitizeOzonPayload(value)))
+    .update(canonicalJson(sanitizeOzonPayload(value)))
     .digest("hex");
+}
+
+function deduplicateFinanceAccruals(rows: unknown[]) {
+  const byId = new Map<string, { row: unknown; hash: string }>();
+  for (const row of rows) {
+    const id = toStringValue(toRecord(row).accrual_id);
+    if (!id) {
+      throw new OzonIncompleteResponseError(
+        "Ozon finance accrual row has no transaction identity"
+      );
+    }
+    const hash = createHash("sha256")
+      .update(canonicalJson(row))
+      .digest("hex");
+    const existing = byId.get(id);
+    if (existing && existing.hash !== hash) {
+      throw new OzonInvariantError(
+        "Ozon returned conflicting payloads for one accrual_id"
+      );
+    }
+    if (!existing) byId.set(id, { row, hash });
+  }
+  return [...byId.values()].map(({ row }) => row);
 }
 
 function datesInRange(dateFrom: string, dateTo: string) {
@@ -3595,36 +4846,8 @@ function extractInvoiceProducts(item: JsonRecord) {
   return [];
 }
 
-function sumProductsAmount(products: unknown[]) {
-  return products.reduce<number>((sum, product) => {
-    const item = toRecord(product);
-    const quantity = toNumberValue(item.quantity ?? item.count) ?? 1;
-    const price =
-      toNumberValue(
-        item.seller_price_per_instance ??
-          item.price ??
-          item.amount ??
-          item.total_amount
-      ) ?? 0;
-    return sum + quantity * price;
-  }, 0);
-}
-
-function isDisposalReason(reason: string) {
-  return [
-    "dispos",
-    "utiliz",
-    "write_off",
-    "write-off",
-    "loss",
-    "lost",
-  ].some((marker) => reason.includes(marker));
-}
-
 function isCompletedSupplyStatus(status: string) {
-  return ["completed", "accepted", "done", "supplied", "closed", "received"].some(
-    (marker) => status.includes(marker)
-  );
+  return status === "completed";
 }
 
 export function isDefectReason(reason: string) {
@@ -3650,11 +4873,6 @@ function normalizeKey(value: string) {
   return value.trim().toLowerCase();
 }
 
-function numericId(value: string) {
-  if (!/^\d+$/.test(value)) return null;
-  return Number(value);
-}
-
 function toRecord(value: unknown): JsonRecord {
   return isRecord(value) ? value : {};
 }
@@ -3667,45 +4885,138 @@ function asArray(value: unknown) {
   return Array.isArray(value) ? value : [];
 }
 
+function stringOrArray(value: unknown) {
+  if (Array.isArray(value)) return value;
+  const text = toStringValue(value);
+  return text ? [text] : [];
+}
+
 function toStringValue(value: unknown) {
   if (typeof value === "string") return value.trim() || null;
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+      throw new OzonInvariantError(
+        "Ozon identifier exceeded JavaScript safe integer precision"
+      );
+    }
+    return String(value);
+  }
   if (typeof value === "bigint") return String(value);
   return null;
 }
 
-function toNumberValue(value: unknown) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const normalized = value.replace(/\s/g, "").replace(",", ".");
-    const parsed = Number(normalized);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
 function moneyAmount(value: unknown) {
-  return toNumberValue(toRecord(value).amount);
+  return decimalString(toRecord(value).amount);
 }
 
 function moneyCurrency(value: unknown) {
   return toStringValue(toRecord(value).currency);
 }
 
+function requiredDecimal(
+  value: unknown,
+  endpoint: string,
+  field: string
+) {
+  const parsed = decimalString(value);
+  if (parsed === null) {
+    throw new OzonIncompleteResponseError(
+      `Ozon ${endpoint} response has no valid ${field}`
+    );
+  }
+  return parsed;
+}
+
+function requiredMoneyAmount(
+  value: unknown,
+  endpoint: string,
+  field: string
+) {
+  const amount = moneyAmount(value);
+  if (amount === null) {
+    throw new OzonIncompleteResponseError(
+      `Ozon ${endpoint} response has no valid ${field}.amount`
+    );
+  }
+  return amount;
+}
+
+function requiredMoneyCurrency(
+  value: unknown,
+  endpoint: string,
+  field: string
+) {
+  const currency = moneyCurrency(value);
+  if (!currency) {
+    throw new OzonIncompleteResponseError(
+      `Ozon ${endpoint} response has no valid ${field}.currency`
+    );
+  }
+  return currency;
+}
+
 function financeAccrualItems(item: JsonRecord) {
+  const itemFeesMember = item.item_fees;
+  const itemFees = Array.isArray(itemFeesMember)
+    ? itemFeesMember
+    : asArray(toRecord(itemFeesMember).fees);
   const postingProducts = asArray(toRecord(item.posting).products);
-  if (postingProducts.length > 0) return postingProducts;
-  return asArray(toRecord(item.item_fees).fees);
+  return [
+    ...postingProducts.map((product) => ({
+      kind: "posting_product",
+      product: sanitizeOzonPayload(product),
+      commissions: sanitizeOzonPayload(
+        asArray(
+          toRecord(product).commissions ??
+            toRecord(product).commission
+        )
+      ),
+    })),
+    ...itemFees.map((fee) => ({
+      kind: "item_fee",
+      fee: sanitizeOzonPayload(fee),
+    })),
+  ];
 }
 
 function financeAccrualServices(item: JsonRecord) {
   const services: unknown[] = [];
-  const nonItemFee = toRecord(item.non_item_fee);
-  if (Object.keys(nonItemFee).length > 0) services.push(nonItemFee);
+  const nonItemFees = Array.isArray(item.non_item_fee)
+    ? item.non_item_fee
+    : Object.keys(toRecord(item.non_item_fee)).length > 0
+      ? [item.non_item_fee]
+      : [];
+  services.push(
+    ...nonItemFees.map((fee) => ({
+      kind: "non_item_fee",
+      fee: sanitizeOzonPayload(fee),
+    }))
+  );
+
+  for (const commission of asArray(item.commissions ?? item.commission)) {
+    services.push({
+      kind: "commission",
+      commission: sanitizeOzonPayload(commission),
+    });
+  }
 
   for (const product of asArray(toRecord(item.posting).products)) {
-    const delivery = toRecord(toRecord(product).delivery);
-    services.push(...asArray(delivery.services));
+    const productRecord = toRecord(product);
+    for (const commission of asArray(
+      productRecord.commissions ?? productRecord.commission
+    )) {
+      services.push({
+        kind: "commission",
+        commission: sanitizeOzonPayload(commission),
+      });
+    }
+    const delivery = toRecord(productRecord.delivery);
+    for (const service of asArray(delivery.services)) {
+      services.push({
+        kind: "delivery_service",
+        service: sanitizeOzonPayload(service),
+      });
+    }
   }
 
   return services;
@@ -3731,13 +5042,132 @@ function chunkArray<T>(items: T[], size: number) {
   return chunks;
 }
 
-function formatError(error: unknown) {
-  if (error instanceof OzonApiError) {
-    const details = [
-      error.code === null ? null : `code=${error.code}`,
-      error.apiMessage,
-    ].filter((detail): detail is string => Boolean(detail));
-    return `${error.endpoint}: ${error.status}${details.length ? ` ${details.join(" ")}` : ""}`;
+export function decimalString(value: unknown) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const normalized = String(value).trim().replace(/\s/g, "").replace(",", ".");
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized)) return null;
+  const negative = normalized.startsWith("-");
+  const unsigned = normalized.replace(/^[+-]/, "");
+  const [integerPart, fractionPart = ""] = unsigned.split(".");
+  const integer = integerPart.replace(/^0+(?=\d)/, "") || "0";
+  const fraction = fractionPart.replace(/0+$/, "");
+  const canonical = fraction ? `${integer}.${fraction}` : integer;
+  return negative && canonical !== "0" ? `-${canonical}` : canonical;
+}
+
+function positiveDecimal(value: unknown) {
+  const parsed = decimalString(value);
+  return parsed !== null && parsed !== "0" && !parsed.startsWith("-");
+}
+
+function toInteger(value: unknown) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function requireArrayMember(
+  value: JsonRecord,
+  key: string,
+  endpoint: string
+) {
+  const member = value[key];
+  if (!Array.isArray(member)) {
+    throw new OzonIncompleteResponseError(
+      `Ozon ${endpoint} response has no ${key} array`
+    );
   }
-  return error instanceof Error ? error.message : String(error);
+  return member;
+}
+
+function supplyForBundle(value: unknown, bundleId: string) {
+  const order = toRecord(value);
+  const supply =
+    asArray(toRecord(value).supplies)
+      .map(toRecord)
+      .find((candidate) => toStringValue(candidate.bundle_id) === bundleId) ?? {};
+  return {
+    ...supply,
+    order_state: order.state,
+    order_state_updated_date: order.state_updated_date,
+  };
+}
+
+export function splitDateWindows(
+  dateFrom: string,
+  dateTo: string,
+  maximumDays: number
+) {
+  const start = new Date(`${dateFrom.slice(0, 10)}T00:00:00.000Z`);
+  const end = new Date(`${dateTo.slice(0, 10)}T00:00:00.000Z`);
+  if (
+    Number.isNaN(start.getTime()) ||
+    Number.isNaN(end.getTime()) ||
+    start > end ||
+    maximumDays < 1
+  ) {
+    return [];
+  }
+  const windows: Array<{ from: string; to: string }> = [];
+  for (let cursor = new Date(start); cursor <= end; ) {
+    const windowEnd = new Date(cursor);
+    windowEnd.setUTCDate(windowEnd.getUTCDate() + maximumDays - 1);
+    if (windowEnd > end) windowEnd.setTime(end.getTime());
+    windows.push({
+      from: cursor.toISOString().slice(0, 10),
+      to: windowEnd.toISOString().slice(0, 10),
+    });
+    cursor = new Date(windowEnd);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return windows;
+}
+
+export function splitCashFlowPeriods(dateFrom: string, dateTo: string) {
+  const start = new Date(`${dateFrom.slice(0, 10)}T00:00:00.000Z`);
+  const end = new Date(`${dateTo.slice(0, 10)}T00:00:00.000Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+    return [];
+  }
+  const periods: Array<{ from: string; to: string }> = [];
+  const month = new Date(
+    Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1)
+  );
+  while (month <= end) {
+    const monthEnd = new Date(
+      Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 0)
+    );
+    for (const [periodStartDay, periodEndDay] of [
+      [1, 15],
+      [16, monthEnd.getUTCDate()],
+    ] as const) {
+      const periodStart = new Date(
+        Date.UTC(month.getUTCFullYear(), month.getUTCMonth(), periodStartDay)
+      );
+      const periodEnd = new Date(
+        Date.UTC(month.getUTCFullYear(), month.getUTCMonth(), periodEndDay)
+      );
+      if (periodEnd >= start && periodStart <= end) {
+        periods.push({
+          from: periodStart.toISOString().slice(0, 10),
+          to: periodEnd.toISOString().slice(0, 10),
+        });
+      }
+    }
+    month.setUTCMonth(month.getUTCMonth() + 1);
+  }
+  return periods;
+}
+
+function ozonDatabaseError(
+  error: { code?: string | null },
+  operation: string
+) {
+  const code = typeof error.code === "string" ? error.code : null;
+  return new OzonDatabaseError(
+    code,
+    operation,
+    code === "21000" ||
+      code?.startsWith("22") === true ||
+      code?.startsWith("23") === true
+  );
 }

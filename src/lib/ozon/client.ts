@@ -11,36 +11,27 @@ const MAX_SAFE_API_MESSAGE_LENGTH = 500;
 
 export const OZON_READ_ONLY_ENDPOINTS = [
   "/v2/warehouse/list",
+  "/v1/warehouse/ozon/list",
   "/v3/product/list",
   "/v3/product/info/list",
   "/v4/product/info/attributes",
   "/v4/product/info/stocks",
   "/v5/product/info/prices",
   "/v1/product/info/discounted",
-  "/v1/product/info/warehouse/stocks",
   "/v4/posting/fbs/list",
-  "/v3/posting/fbs/get",
   "/v3/posting/fbo/list",
-  "/v2/posting/fbo/get",
   "/v1/returns/list",
   "/v2/returns/rfbs/list",
   "/v2/returns/rfbs/get",
   "/v1/posting/unpaid-legal/product/list",
-  "/v1/finance/accrual/postings",
   "/v1/finance/accrual/types",
   "/v1/finance/accrual/by-day",
-  "/v2/finance/realization",
-  "/v1/finance/realization/posting",
-  "/v1/finance/document-b2b-sales",
   "/v1/finance/document-b2b-sales/json",
   "/v1/finance/cash-flow-statement/list",
   "/v1/finance/mutual-settlement",
   "/v1/finance/products/buyout",
   "/v1/finance/compensation",
   "/v1/finance/decompensation",
-  "/v1/report/postings/create",
-  "/v1/report/products/create",
-  "/v2/report/returns/create",
   "/v1/report/discounted/create",
   "/v1/report/info",
   "/v1/report/list",
@@ -51,15 +42,17 @@ export const OZON_READ_ONLY_ENDPOINTS = [
   "/v1/supply-order/bundle",
   "/v1/analytics/stocks",
   "/v1/analytics/turnover/stocks",
-  "/v1/description-category/tree",
-  "/v1/description-category/attribute",
-  "/v1/description-category/attribute/values",
-  "/v1/description-category/attribute/values/search",
 ] as const;
 
 export type OzonReadOnlyEndpoint = (typeof OZON_READ_ONLY_ENDPOINTS)[number];
 
 const READ_ONLY_ENDPOINT_SET = new Set<string>(OZON_READ_ONLY_ENDPOINTS);
+const HTTP_RETRY_UNSAFE_ENDPOINTS = new Set<OzonReadOnlyEndpoint>([
+  "/v1/finance/mutual-settlement",
+  "/v1/finance/compensation",
+  "/v1/finance/decompensation",
+  "/v1/report/discounted/create",
+]);
 
 export interface OzonApiResponseMetadata {
   requestId: string | null;
@@ -78,6 +71,13 @@ export class OzonIncompleteResponseError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "OzonIncompleteResponseError";
+  }
+}
+
+export class OzonReportPendingError extends OzonIncompleteResponseError {
+  constructor(readonly nextActionAt: string) {
+    super("Ozon report is still processing");
+    this.name = "OzonReportPendingError";
   }
 }
 
@@ -114,6 +114,12 @@ interface OzonClientRuntime {
   sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   random: () => number;
   timeoutSignal: (milliseconds: number) => AbortSignal;
+  logAttempt?: (entry: Record<string, unknown>) => void;
+}
+
+interface OzonRequestPacingState {
+  nextRequestStartAt: number;
+  nextTurnoverRequestStartAt: number;
 }
 
 const DEFAULT_RUNTIME: OzonClientRuntime = {
@@ -122,11 +128,18 @@ const DEFAULT_RUNTIME: OzonClientRuntime = {
   sleep: abortableSleep,
   random: Math.random,
   timeoutSignal: (milliseconds) => AbortSignal.timeout(milliseconds),
+  logAttempt: (entry) => console.warn("Ozon API request attempt failed", entry),
 };
+
+const PACING_BY_RUNTIME = new WeakMap<
+  OzonClientRuntime,
+  Map<string, OzonRequestPacingState>
+>();
 
 interface OzonClientExecutionOptions {
   maxAttempts?: number;
   signal?: AbortSignal;
+  deadlineMs?: number;
 }
 
 export class OzonClient {
@@ -134,7 +147,8 @@ export class OzonClient {
   private runtime: OzonClientRuntime;
   private maxAttempts: number;
   private executionSignal: AbortSignal | undefined;
-  private nextRequestStartAt = 0;
+  private deadlineMs: number | undefined;
+  private pacing: OzonRequestPacingState;
 
   constructor(credentials: OzonCredentials);
   constructor(credentials: OzonCredentials, runtime: OzonClientRuntime);
@@ -152,6 +166,8 @@ export class OzonClient {
     this.runtime = runtime;
     this.maxAttempts = normalizeMaxAttempts(options.maxAttempts);
     this.executionSignal = options.signal;
+    this.deadlineMs = options.deadlineMs;
+    this.pacing = pacingStateFor(runtime, credentials.clientId);
   }
 
   async request<T>(
@@ -167,10 +183,11 @@ export class OzonClient {
     throwIfAborted(this.executionSignal);
 
     for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
-      await this.waitForRequestStart();
+      await this.waitForRequestStart(endpoint);
 
       let response: Response;
       let responseBody: unknown;
+      const attemptStartedAt = this.runtime.now();
       const requestSignal = combineAbortSignals(
         this.runtime.timeoutSignal(REQUEST_TIMEOUT_MS),
         this.executionSignal
@@ -192,8 +209,24 @@ export class OzonClient {
         if (this.executionSignal?.aborted) {
           throw abortReason(this.executionSignal);
         }
-        if (attempt === this.maxAttempts - 1) throw error;
-        await this.sleep(this.retryDelayFor(attempt, null));
+        const retryAllowed = !HTTP_RETRY_UNSAFE_ENDPOINTS.has(endpoint);
+        const retryDelayMs = this.retryDelayFor(attempt, null);
+        const willRetry =
+          retryAllowed &&
+          attempt < this.maxAttempts - 1 &&
+          this.retryFitsDeadline(retryDelayMs);
+        this.runtime.logAttempt?.({
+          event: "ozon_api_attempt_failed",
+          endpoint,
+          attempt: attempt + 1,
+          durationMs: Math.max(0, this.runtime.now() - attemptStartedAt),
+          kind: isTimeoutLike(error) ? "timeout" : "transport",
+          willRetry,
+          retryDelayMs,
+        });
+        if (!retryAllowed || attempt === this.maxAttempts - 1) throw error;
+        if (!this.retryFitsDeadline(retryDelayMs)) throw error;
+        await this.sleep(retryDelayMs);
         continue;
       } finally {
         requestSignal.cleanup();
@@ -212,11 +245,41 @@ export class OzonClient {
         retryDelayMs,
         [this.credentials.clientId, this.credentials.apiKey]
       );
+      const retryAllowed = !HTTP_RETRY_UNSAFE_ENDPOINTS.has(endpoint);
+      const willRetry =
+        retryAllowed &&
+        isRetryableStatus(response.status) &&
+        attempt < this.maxAttempts - 1 &&
+        this.retryFitsDeadline(retryDelayMs);
+      this.runtime.logAttempt?.({
+        event: "ozon_api_attempt_failed",
+        endpoint,
+        attempt: attempt + 1,
+        durationMs: Math.max(0, this.runtime.now() - attemptStartedAt),
+        kind:
+          response.status === 408
+            ? "timeout"
+            : response.status === 429
+              ? "rate_limit"
+              : response.status >= 500
+                ? "server"
+                : "client",
+        status: response.status,
+        code: error.code,
+        reason: error.apiMessage,
+        willRetry,
+        retryDelayMs,
+      });
 
-      if (!isRetryableStatus(response.status) || attempt === this.maxAttempts - 1) {
+      if (
+        !retryAllowed ||
+        !isRetryableStatus(response.status) ||
+        attempt === this.maxAttempts - 1
+      ) {
         throw error;
       }
 
+      if (!this.retryFitsDeadline(retryDelayMs)) throw error;
       await this.sleep(retryDelayMs);
     }
 
@@ -227,10 +290,21 @@ export class OzonClient {
     return this.executionSignal;
   }
 
-  private async waitForRequestStart() {
+  private async waitForRequestStart(endpoint: OzonReadOnlyEndpoint) {
     const now = this.runtime.now();
-    const requestStartAt = Math.max(now, this.nextRequestStartAt);
-    this.nextRequestStartAt = requestStartAt + REQUEST_START_PACING_MS;
+    const endpointStartAt =
+      endpoint === "/v1/analytics/turnover/stocks"
+        ? this.pacing.nextTurnoverRequestStartAt
+        : 0;
+    const requestStartAt = Math.max(
+      now,
+      this.pacing.nextRequestStartAt,
+      endpointStartAt
+    );
+    this.pacing.nextRequestStartAt = requestStartAt + REQUEST_START_PACING_MS;
+    if (endpoint === "/v1/analytics/turnover/stocks") {
+      this.pacing.nextTurnoverRequestStartAt = requestStartAt + 60_000;
+    }
 
     if (requestStartAt > now) {
       await this.sleep(requestStartAt - now);
@@ -258,15 +332,46 @@ export class OzonClient {
       )
     );
   }
+
+  private retryFitsDeadline(delayMs: number) {
+    return (
+      this.deadlineMs === undefined ||
+      this.runtime.now() + delayMs < this.deadlineMs
+    );
+  }
+}
+
+function isTimeoutLike(error: unknown) {
+  return (
+    error instanceof DOMException &&
+    (error.name === "TimeoutError" || error.name === "AbortError")
+  );
+}
+
+function pacingStateFor(runtime: OzonClientRuntime, clientId: string) {
+  let clientStates = PACING_BY_RUNTIME.get(runtime);
+  if (!clientStates) {
+    clientStates = new Map();
+    PACING_BY_RUNTIME.set(runtime, clientStates);
+  }
+  const key = clientId.trim();
+  let pacing = clientStates.get(key);
+  if (!pacing) {
+    pacing = { nextRequestStartAt: 0, nextTurnoverRequestStartAt: 0 };
+    clientStates.set(key, pacing);
+  }
+  return pacing;
 }
 
 export function createDurableOzonClient(
   credentials: OzonCredentials,
-  signal: AbortSignal
+  signal: AbortSignal,
+  deadlineMs: number
 ) {
   return new OzonClient(credentials, DEFAULT_RUNTIME, {
-    maxAttempts: 1,
+    maxAttempts: MAX_ATTEMPTS,
     signal,
+    deadlineMs,
   });
 }
 
@@ -344,7 +449,9 @@ function ozonApiBaseUrl() {
 
 export async function validateOzonCredentials(credentials: OzonCredentials) {
   const client = new OzonClient(credentials);
-  return client.request<Record<string, unknown>>("/v2/warehouse/list", {});
+  return client.request<Record<string, unknown>>("/v2/warehouse/list", {
+    limit: 1,
+  });
 }
 
 async function readResponseBody(response: Response) {
@@ -352,10 +459,56 @@ async function readResponseBody(response: Response) {
   if (!text) return {};
 
   try {
-    return JSON.parse(text);
+    return JSON.parse(quoteJsonNumbers(text));
   } catch {
     return { text };
   }
+}
+
+function quoteJsonNumbers(text: string) {
+  let result = "";
+  let index = 0;
+  let inString = false;
+  let escaped = false;
+
+  while (index < text.length) {
+    const character = text[index];
+    if (inString) {
+      result += character;
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      index += 1;
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      result += character;
+      index += 1;
+      continue;
+    }
+
+    if (character === "-" || (character >= "0" && character <= "9")) {
+      const match = text
+        .slice(index)
+        .match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+      if (match) {
+        result += JSON.stringify(match[0]);
+        index += match[0].length;
+        continue;
+      }
+    }
+
+    result += character;
+    index += 1;
+  }
+
+  return result;
 }
 
 function isRetryableStatus(status: number) {
@@ -417,7 +570,13 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
 function firstSafeCode(candidates: Array<Record<string, unknown> | null>) {
   for (const candidate of candidates) {
     const code = candidate?.code;
-    if (typeof code === "string" || typeof code === "number") return code;
+    if (typeof code === "number" && Number.isFinite(code)) return code;
+    if (
+      typeof code === "string" &&
+      /^[A-Za-z0-9._:-]{1,80}$/.test(code)
+    ) {
+      return code;
+    }
   }
   return null;
 }

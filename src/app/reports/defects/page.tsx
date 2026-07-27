@@ -40,7 +40,8 @@ export default function DefectsReportPage() {
 
   const formatNum = (n: number) =>
     n === 0 ? "-" : n.toLocaleString(locale === "ru" ? "ru-RU" : "en-US", { maximumFractionDigits: 2 });
-  const formatMoney = (n: number) => formatCurrency(n, locale, settings.currency);
+  const formatMoney = (n: number | null) =>
+    n === null ? t.unknownCost : formatCurrency(n, locale, settings.currency);
 
   return (
     <div className="p-6">

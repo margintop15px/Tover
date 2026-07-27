@@ -8,31 +8,43 @@ import type {
 
 export const dynamic = "force-dynamic";
 
-type MovementRpcRow = {
-  product_id: string;
-  warehouse_id: string;
-  store_id: string | null;
-  quality_status: string;
-  operation_type: string;
-  direction: string;
-  total_quantity: number;
-  total_cost: number;
+interface MovementRpcRow {
+  group_id: string;
+  group_name: string;
+  sku_code: string | null;
+  quality_status: QualityStatus | null;
+  purchase_in: number | string;
+  purchase_in_cost: number | string | null;
+  sale_out: number | string;
+  sale_out_cost: number | string | null;
+  return_in: number | string;
+  return_in_cost: number | string | null;
+  write_off_out: number | string;
+  write_off_out_cost: number | string | null;
+  transfer_in: number | string;
+  transfer_in_cost: number | string | null;
+  transfer_out: number | string;
+  transfer_out_cost: number | string | null;
+  production_in: number | string;
+  production_in_cost: number | string | null;
+  production_out: number | string;
+  production_out_cost: number | string | null;
+  defect_out: number | string;
+  defect_out_cost: number | string | null;
+  inventory_adjustment_in: number | string;
+  inventory_adjustment_in_cost: number | string | null;
+  net: number | string;
+  net_cost: number | string | null;
   has_negative: boolean;
-};
+}
 
 export async function GET(request: NextRequest) {
   try {
     const { supabase, workspaceId } = await getRouteContext(request);
     const { searchParams } = new URL(request.url);
-
     const from = searchParams.get("from");
     const to = searchParams.get("to");
     const groupBy = searchParams.get("groupBy") || "product";
-    const productId = searchParams.get("productId");
-    const categoryId = searchParams.get("categoryId");
-    const warehouseId = searchParams.get("warehouseId");
-    const storeId = searchParams.get("storeId");
-    const qualityStatus = searchParams.get("qualityStatus");
 
     if (!from || !to) {
       return NextResponse.json(
@@ -41,197 +53,69 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const { data: rpcData, error: rpcError } = await supabase.rpc(
-      "report_product_movement",
-      { p_workspace_id: workspaceId, p_from: from, p_to: to }
+    const { data, error } = await supabase.rpc(
+      "report_product_movement_v2",
+      {
+        p_workspace_id: workspaceId,
+        p_from: from,
+        p_to: to,
+        p_group_by: groupBy,
+        p_product_id: searchParams.get("productId"),
+        p_category_id: searchParams.get("categoryId"),
+        p_warehouse_id: searchParams.get("warehouseId"),
+        p_store_id: searchParams.get("storeId"),
+        p_quality_status: searchParams.get("qualityStatus"),
+      }
     );
-
-    if (rpcError) {
-      return NextResponse.json({ error: rpcError.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const rawRows = (rpcData || []) as MovementRpcRow[];
-    const productIds = [...new Set(rawRows.map((row) => row.product_id))];
-    const warehouseIds = [...new Set(rawRows.map((row) => row.warehouse_id))];
-    const storeIds = [
-      ...new Set(rawRows.map((row) => row.store_id).filter(Boolean)),
-    ] as string[];
-
-    const [productsRes, warehousesRes, storesRes] = await Promise.all([
-      productIds.length > 0
-        ? supabase
-            .from("products")
-            .select("id, name, sku_code, is_defect_copy, category_id, store_id, stores(name)")
-            .in("id", productIds)
-        : { data: [] },
-      warehouseIds.length > 0
-        ? supabase.from("warehouses").select("id, name").in("id", warehouseIds)
-        : { data: [] },
-      storeIds.length > 0
-        ? supabase.from("stores").select("id, name").in("id", storeIds)
-        : { data: [] },
-    ]);
-
-    const products = new Map<
-      string,
-      { name: string; skuCode: string | null; isDefectCopy: boolean; categoryId: string | null; storeId: string | null; storeName: string | null }
-    >();
-    for (const product of productsRes.data || []) {
-      const store = product.stores as unknown as { name: string } | null;
-      products.set(product.id, {
-        name: product.name,
-        skuCode: product.sku_code,
-        isDefectCopy: product.is_defect_copy,
-        categoryId: product.category_id,
-        storeId: product.store_id,
-        storeName: store?.name ?? null,
-      });
-    }
-
-    const warehouses = new Map<string, string>();
-    for (const warehouse of warehousesRes.data || []) warehouses.set(warehouse.id, warehouse.name);
-
-    const stores = new Map<string, string>();
-    for (const store of storesRes.data || []) stores.set(store.id, store.name);
-
-    const groupMap = new Map<string, ProductMovementRow>();
-
-    for (const row of rawRows) {
-      if (row.operation_type === "inventory_adjustment") continue;
-      const product = products.get(row.product_id);
-      if (!product || product.isDefectCopy) continue;
-      const effectiveStoreId = row.store_id || product.storeId;
-
-      if (productId && row.product_id !== productId) continue;
-      if (categoryId && product.categoryId !== categoryId) continue;
-      if (warehouseId && row.warehouse_id !== warehouseId) continue;
-      if (storeId && effectiveStoreId !== storeId) continue;
-      if (qualityStatus && row.quality_status !== qualityStatus) continue;
-
-      const groupId =
-        groupBy === "warehouse"
-          ? row.warehouse_id
-          : groupBy === "store"
-            ? effectiveStoreId || "unassigned"
-            : groupBy === "quality"
-              ? row.quality_status
-              : row.product_id;
-
-      const groupName =
-        groupBy === "warehouse"
-          ? warehouses.get(row.warehouse_id) ?? "Unknown"
-          : groupBy === "store"
-            ? (effectiveStoreId ? stores.get(effectiveStoreId) || product.storeName : null) ?? "No store"
-            : groupBy === "quality"
-              ? row.quality_status
-              : product.name;
-
-      let entry = groupMap.get(groupId);
-      if (!entry) {
-        entry = {
-          groupId,
-          groupName,
-          skuCode: groupBy === "product" ? product.skuCode : null,
-          qualityStatus:
-            groupBy === "quality" ? (row.quality_status as QualityStatus) : null,
-          purchaseIn: 0,
-          purchaseInCost: 0,
-          saleOut: 0,
-          saleOutCost: 0,
-          returnIn: 0,
-          returnInCost: 0,
-          writeOffOut: 0,
-          writeOffOutCost: 0,
-          transferIn: 0,
-          transferInCost: 0,
-          transferOut: 0,
-          transferOutCost: 0,
-          productionIn: 0,
-          productionInCost: 0,
-          productionOut: 0,
-          productionOutCost: 0,
-          defectOut: 0,
-          defectOutCost: 0,
-          inventoryAdjustmentIn: 0,
-          inventoryAdjustmentInCost: 0,
-          net: 0,
-          netCost: 0,
-          hasNegative: false,
-        };
-        groupMap.set(groupId, entry);
-      }
-      if (!entry) continue;
-
-      const qty = Number(row.total_quantity);
-      const cost = Number(row.total_cost);
-      const type = row.operation_type;
-      const dir = row.direction;
-
-      if (type === "purchase" && dir === "in") {
-        entry.purchaseIn += qty;
-        entry.purchaseInCost += cost;
-      } else if (type === "sale" && dir === "out") {
-        entry.saleOut += qty;
-        entry.saleOutCost += cost;
-      } else if (type === "return" && dir === "in") {
-        entry.returnIn += qty;
-        entry.returnInCost += cost;
-      } else if (type === "write_off" && dir === "out") {
-        entry.writeOffOut += qty;
-        entry.writeOffOutCost += cost;
-      } else if (type === "transfer" && dir === "in") {
-        entry.transferIn += qty;
-        entry.transferInCost += cost;
-      } else if (type === "transfer" && dir === "out") {
-        entry.transferOut += qty;
-        entry.transferOutCost += cost;
-      } else if (type === "production" && dir === "in") {
-        entry.productionIn += qty;
-        entry.productionInCost += cost;
-      } else if (type === "production" && dir === "out") {
-        entry.productionOut += qty;
-        entry.productionOutCost += cost;
-      } else if (type === "defect" && dir === "out") {
-        entry.defectOut += qty;
-        entry.defectOutCost += cost;
-      } else if (type === "inventory_adjustment" && dir === "in") {
-        entry.inventoryAdjustmentIn += qty;
-        entry.inventoryAdjustmentInCost += cost;
-      }
-      entry.hasNegative = entry.hasNegative || Boolean(row.has_negative);
-    }
-
-    const rows = Array.from(groupMap.values()).map((row) => ({
-      ...row,
-      net:
-        row.purchaseIn +
-        row.returnIn +
-        row.transferIn +
-        row.productionIn +
-        row.inventoryAdjustmentIn -
-        row.saleOut -
-        row.writeOffOut -
-        row.transferOut -
-        row.productionOut -
-        row.defectOut,
-      netCost:
-        row.purchaseInCost +
-        row.returnInCost +
-        row.transferInCost +
-        row.productionInCost +
-        row.inventoryAdjustmentInCost -
-        row.saleOutCost -
-        row.writeOffOutCost -
-        row.transferOutCost -
-        row.productionOutCost -
-        row.defectOutCost,
-    }));
-
-    rows.sort((a, b) => a.groupName.localeCompare(b.groupName));
+    const rows: ProductMovementRow[] = ((data ?? []) as MovementRpcRow[]).map(
+      (row) => ({
+        groupId: row.group_id,
+        groupName: row.group_name,
+        skuCode: row.sku_code,
+        qualityStatus: row.quality_status,
+        purchaseIn: numericValue(row.purchase_in),
+        purchaseInCost: nullableNumericValue(row.purchase_in_cost),
+        saleOut: numericValue(row.sale_out),
+        saleOutCost: nullableNumericValue(row.sale_out_cost),
+        returnIn: numericValue(row.return_in),
+        returnInCost: nullableNumericValue(row.return_in_cost),
+        writeOffOut: numericValue(row.write_off_out),
+        writeOffOutCost: nullableNumericValue(row.write_off_out_cost),
+        transferIn: numericValue(row.transfer_in),
+        transferInCost: nullableNumericValue(row.transfer_in_cost),
+        transferOut: numericValue(row.transfer_out),
+        transferOutCost: nullableNumericValue(row.transfer_out_cost),
+        productionIn: numericValue(row.production_in),
+        productionInCost: nullableNumericValue(row.production_in_cost),
+        productionOut: numericValue(row.production_out),
+        productionOutCost: nullableNumericValue(row.production_out_cost),
+        defectOut: numericValue(row.defect_out),
+        defectOutCost: nullableNumericValue(row.defect_out_cost),
+        inventoryAdjustmentIn: numericValue(row.inventory_adjustment_in),
+        inventoryAdjustmentInCost: nullableNumericValue(
+          row.inventory_adjustment_in_cost
+        ),
+        net: numericValue(row.net),
+        netCost: nullableNumericValue(row.net_cost),
+        hasNegative: row.has_negative,
+      })
+    );
 
     const report: ProductMovementReport = { from, to, groupBy, rows };
     return NextResponse.json(report);
   } catch (error) {
     return toRouteErrorResponse(error);
   }
+}
+
+function numericValue(value: number | string) {
+  return typeof value === "number" ? value : Number(value);
+}
+
+function nullableNumericValue(value: number | string | null) {
+  return value === null ? null : numericValue(value);
 }

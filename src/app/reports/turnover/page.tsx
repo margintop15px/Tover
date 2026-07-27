@@ -38,7 +38,8 @@ export default function TurnoverReportPage() {
     fetchReport();
   }, [fetchReport]);
 
-  const formatMoney = (n: number) => formatCurrency(n, locale, settings.currency);
+  const formatMoney = (n: number | null) =>
+    n === null ? t.unknownCost : formatCurrency(n, locale, settings.currency);
   const formatNum = (n: number | null) =>
     n == null ? "-" : n.toLocaleString(locale === "ru" ? "ru-RU" : "en-US", { maximumFractionDigits: 2 });
 

@@ -102,7 +102,7 @@ export function buildReportUrl(
     params.set("to", normalizedFilters.dateTo || "");
   }
 
-  if (groupBy && source !== "inventory_balances") {
+  if (groupBy) {
     params.set("groupBy", groupBy);
   }
 

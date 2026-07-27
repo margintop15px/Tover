@@ -78,12 +78,12 @@ test("retrying status and recovery controls are localized in English and Russian
   );
 });
 
-test("active recovery resumes through the normal sync route", () => {
+test("active recovery makes scheduled and failed work immediately eligible", () => {
   const action = getOzonRecoveryAction(summary("retrying"));
   assert.equal(action, "resume");
   assert.deepEqual(getOzonRecoveryRequest(action, "run-1"), {
-    endpoint: "/api/integrations/ozon/sync",
-    body: {},
+    endpoint: "/api/integrations/ozon/sync/retry",
+    body: { runId: "run-1" },
   });
 });
 

@@ -385,6 +385,7 @@ export const ru: TranslationKeys = {
   historicalBalances: "На дату",
   displayUnits: "Единицы",
   displayCost: "Стоимость",
+  unknownCost: "Себестоимость неизвестна",
   total: "Итого",
   hideZeros: "Скрыть нулевые",
   showNegativesOnly: "Только отрицательные",
@@ -668,6 +669,15 @@ export const ru: TranslationKeys = {
   ozonRecoveryInProgress:
     "Синхронизация Ozon восстановится автоматически. Завершённые шаги не будут повторяться.",
   ozonRecoveryNextRetry: "Следующая попытка",
+  ozonRecoveryCurrentStep: "Текущий этап",
+  ozonRecoveryProgress: "Прогресс",
+  ozonSyncDetails: "Детали синхронизации",
+  ozonSyncDetailsSteps: "Этапы",
+  ozonSyncDetailsEvents: "Последние события",
+  ozonSyncExecutionCount: "Запуски",
+  ozonSyncFailureCount: "Ошибки",
+  ozonSyncNextAction: "Следующее действие",
+  ozonSyncNoEvents: "Событий синхронизации пока нет",
   ozonSyncStatusCompleted: "Завершена",
   ozonSyncStatusCompletedWithErrors: "Завершена с ошибками",
   ozonSyncStatusFailed: "Ошибка",
@@ -771,6 +781,14 @@ export const ru: TranslationKeys = {
         "Для перемещения нужна одна позиция списания и одна позиция поступления",
       "Transfer source and destination products must match":
         "Товар списания и поступления в перемещении должен совпадать",
+      "Transfer source and destination quantities must match":
+        "Количество списания и поступления в перемещении должно совпадать",
+      "Transfer source and destination warehouses must differ":
+        "Склады списания и поступления должны различаться",
+      "Defect requires one ordinary-stock source item":
+        "Для брака нужна одна исходящая позиция обычного товара",
+      "Outbound direction is required": "Требуется направление списания",
+      "Inbound direction is required": "Требуется направление поступления",
     };
     return messages[message] || message;
   },

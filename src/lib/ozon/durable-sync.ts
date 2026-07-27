@@ -37,6 +37,9 @@ export interface OzonSyncRunStepRow {
   summary: unknown;
   last_error: unknown;
   next_attempt_at: string | null;
+  attempt_count?: number;
+  failure_count?: number;
+  checkpoint?: unknown;
   updated_at: string;
 }
 
@@ -45,6 +48,14 @@ export interface OzonSyncRecoveryCounts {
   scheduledRetryCount: number;
   failedStepCount: number;
   nextRetryAt: string | null;
+  currentStepKey: OzonSyncDomainKey | null;
+  failureCount: number;
+  nextActionAt: string | null;
+  progress: {
+    phase: string;
+    processed: number;
+    total: number | null;
+  } | null;
 }
 
 export interface OzonSyncResult {
@@ -140,7 +151,7 @@ export function createOzonSyncWorkerRpcOperations(
       input: BeginOrResumeInput
     ): Promise<OzonSyncRunRow> {
       const { data, error } = await client.rpc(
-        "begin_or_resume_ozon_sync_run",
+        "begin_or_resume_ozon_sync_run_v2",
         {
           p_connection_id: input.connectionId,
           p_date_from: input.dateFrom,
@@ -152,7 +163,7 @@ export function createOzonSyncWorkerRpcOperations(
     },
     async retryFailedRun(runId: string): Promise<OzonSyncRunRow> {
       const { data, error } = await client.rpc(
-        "retry_failed_ozon_sync_run_steps",
+        "retry_failed_ozon_sync_run_steps_v2",
         { p_run_id: runId }
       );
       if (error) throw new Error("Failed to retry Ozon sync run");
@@ -372,7 +383,7 @@ export async function loadOzonSyncRunSnapshot(
     client
       .from("marketplace_sync_run_steps")
       .select(
-        "run_id, step_key, step_order, state, summary, last_error, next_attempt_at, updated_at"
+        "run_id, step_key, step_order, state, attempt_count, failure_count, checkpoint, summary, last_error, next_attempt_at, updated_at"
       )
       .eq("run_id", scope.runId)
       .eq("workspace_id", scope.workspaceId)
@@ -401,13 +412,28 @@ function deriveRecoveryCounts(
     isOzonSyncDomainKey(step.step_key)
   );
   const retryDates = persistedSteps
-    .filter((step) => step.state === "retry_scheduled")
+    .filter(
+      (step) =>
+        step.state === "retry_scheduled" || step.state === "pending"
+    )
     .map((step) => step.next_attempt_at)
     .filter(
       (value): value is string =>
         typeof value === "string" && Number.isFinite(Date.parse(value))
     )
     .sort((left, right) => Date.parse(left) - Date.parse(right));
+
+  const current =
+    persistedSteps.find((step) => step.state === "running") ??
+    persistedSteps
+      .filter(
+        (step) =>
+          step.state === "pending" || step.state === "retry_scheduled"
+      )
+      .sort((left, right) => left.step_order - right.step_order)[0] ??
+    null;
+  const progress = publicProgressFrom(current?.checkpoint);
+  const nextActionAt = retryDates[0] ?? null;
 
   return {
     pendingStepCount: persistedSteps.filter((step) => step.state === "pending")
@@ -417,7 +443,35 @@ function deriveRecoveryCounts(
     ).length,
     failedStepCount: persistedSteps.filter((step) => step.state === "failed")
       .length,
-    nextRetryAt: retryDates[0] ?? null,
+    nextRetryAt: nextActionAt,
+    currentStepKey:
+      current && isOzonSyncDomainKey(current.step_key)
+        ? current.step_key
+        : null,
+    failureCount: persistedSteps.reduce(
+      (total, step) =>
+        total +
+        (Number.isInteger(step.failure_count) && Number(step.failure_count) >= 0
+          ? Number(step.failure_count)
+          : 0),
+      0
+    ),
+    nextActionAt,
+    progress,
+  };
+}
+
+function publicProgressFrom(value: unknown) {
+  if (!isRecord(value) || typeof value.phase !== "string") return null;
+  if (!isSafeCount(value.processed)) return null;
+  const total =
+    value.total === null || isSafeCount(value.total)
+      ? (value.total as number | null)
+      : null;
+  return {
+    phase: value.phase.slice(0, 80),
+    processed: value.processed,
+    total,
   };
 }
 

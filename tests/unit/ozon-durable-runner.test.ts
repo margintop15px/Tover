@@ -14,6 +14,7 @@ import {
   type ClaimedOzonSyncStep,
   type DurableOzonRunnerDependencies,
   type FinishOzonSyncStepInput,
+  type YieldOzonSyncStepInput,
 } from "../../src/lib/ozon/durable-runner";
 import * as sync from "../../src/lib/ozon/sync";
 
@@ -54,7 +55,7 @@ test("durable domain registry follows the persisted step order", () => {
   );
 });
 
-test("durable retry schedule uses the claimed attempt count exactly", () => {
+test("durable retry schedule uses the failure count exactly", () => {
   assert.deepEqual(
     [1, 2, 3, 4, 5, 6, 7, 8].map((attempt) => durableRetryDelayMs(attempt)),
     [
@@ -117,6 +118,9 @@ test("error classifier marks transport, timeout, exact retryable Ozon statuses, 
         message: "Ozon sync step failed",
         kind: item.kind,
         ...(item.status === undefined ? {} : { status: item.status }),
+        ...(item.status === undefined
+          ? {}
+          : { endpoint: "/v2/warehouse/list" }),
         ...(item.retryAfterMs === undefined
           ? {}
           : { retryAfterMs: item.retryAfterMs }),
@@ -142,13 +146,13 @@ test("error classifier marks explicit config errors and every other Ozon HTTP st
     cases.map((error) => classifyOzonSyncError(error)),
     [
       permanentClassification(),
-      permanentClassification(400),
-      permanentClassification(401),
-      permanentClassification(403),
-      permanentClassification(404),
-      permanentClassification(409),
-      permanentClassification(422),
-      permanentClassification(499),
+      permanentClassification(400, "/v2/warehouse/list"),
+      permanentClassification(401, "/v2/warehouse/list"),
+      permanentClassification(403, "/v2/warehouse/list"),
+      permanentClassification(404, "/v2/warehouse/list"),
+      permanentClassification(409, "/v2/warehouse/list"),
+      permanentClassification(422, "/v2/warehouse/list"),
+      permanentClassification(499, "/v2/warehouse/list"),
     ]
   );
 });
@@ -239,8 +243,8 @@ test("a finish RPC failure is propagated without a second finish attempt", async
   assert.equal(finishCalls, 1);
 });
 
-test("a transient failure schedules the exact next attempt through the live lease", async () => {
-  const step = claimedStep({ attempt_count: 2 });
+test("a transient failure schedules from failure count, not execution count", async () => {
+  const step = claimedStep({ attempt_count: 9, failure_count: 1 });
   const harness = runnerHarness({
     claims: [step],
     now: () => Date.parse("2026-07-26T10:00:00.000Z"),
@@ -265,6 +269,7 @@ test("a transient failure schedules the exact next attempt through the live leas
         kind: "server",
         status: 503,
         retryable: true,
+        endpoint: "/v2/warehouse/list",
       },
       p_next_attempt_at: "2026-07-26T10:05:00.000Z",
     },
@@ -305,6 +310,7 @@ test("durable step failure log contains only safe typed Ozon API details", async
       connectionId: "connection-1",
       stepKey: "reports",
       attemptCount: 1,
+      failureCount: 0,
       kind: "client",
       retryable: false,
       status: 404,
@@ -324,6 +330,9 @@ test("durable step failure log contains only safe typed Ozon API details", async
         kind: "client",
         status: 404,
         retryable: false,
+        endpoint: "/v1/finance/decompensation",
+        code: "NOT_FOUND",
+        reason: "rpc error: desc = decompensation document not found",
       },
       p_next_attempt_at: null,
     },
@@ -359,6 +368,7 @@ test("durable step failure log never includes unknown error messages or payloads
       connectionId: "connection-1",
       stepKey: "finance",
       attemptCount: 1,
+      failureCount: 1,
       kind: "unknown",
       retryable: true,
     },
@@ -399,6 +409,7 @@ test("durable step failure log preserves the safe stored-credential reason", asy
       connectionId: "connection-1",
       stepKey: "postings",
       attemptCount: 1,
+      failureCount: 0,
       kind: "client",
       retryable: false,
       reason: "Stored Ozon credentials are invalid",
@@ -406,9 +417,9 @@ test("durable step failure log preserves the safe stored-credential reason", asy
   ]);
 });
 
-test("attempt eight turns an otherwise transient failure into terminal failure", async () => {
+test("failure eight turns an otherwise transient failure into terminal failure", async () => {
   const harness = runnerHarness({
-    claims: [claimedStep({ attempt_count: 8 })],
+    claims: [claimedStep({ attempt_count: 12, failure_count: 7 })],
     execute: async () => {
       throw new Error("database unavailable");
     },
@@ -460,7 +471,7 @@ test("manual runner stops claiming when its deadline is reached", async () => {
   assert.deepEqual(harness.executedStepIds, ["step-1"]);
 });
 
-test("claimed execution is aborted before the finish margin and scheduled for retry", async () => {
+test("claimed execution is aborted before the finish margin and yielded without failure", async () => {
   let scheduledAbort: (() => void) | null = null;
   let clearedTimer: unknown = null;
   const step = claimedStep({ attempt_count: 1 });
@@ -494,18 +505,13 @@ test("claimed execution is aborted before the finish margin and scheduled for re
 
   assert.equal(processed, 1);
   assert.equal(clearedTimer, "deadline-timer");
-  assert.deepEqual(harness.finished, [
+  assert.deepEqual(harness.yielded, [
     {
       p_step_id: "step-1",
       p_lease_token: "lease-1",
-      p_state: "retry_scheduled",
+      p_checkpoint: {},
       p_summary: {},
-      p_last_error: {
-        message: "Ozon sync step failed",
-        kind: "timeout",
-        retryable: true,
-      },
-      p_next_attempt_at: "1970-01-01T00:01:01.000Z",
+      p_next_attempt_at: "1970-01-01T00:00:01.000Z",
     },
   ]);
 });
@@ -544,18 +550,13 @@ test("a domain cannot swallow the shared deadline abort and finish completed", a
   );
 
   assert.equal(processed, 1);
-  assert.deepEqual(harness.finished, [
+  assert.deepEqual(harness.yielded, [
     {
       p_step_id: "step-1",
       p_lease_token: "lease-1",
-      p_state: "retry_scheduled",
+      p_checkpoint: {},
       p_summary: {},
-      p_last_error: {
-        message: "Ozon sync step failed",
-        kind: "timeout",
-        retryable: true,
-      },
-      p_next_attempt_at: "1970-01-01T00:01:01.000Z",
+      p_next_attempt_at: "1970-01-01T00:00:01.000Z",
     },
   ]);
 });
@@ -751,7 +752,7 @@ test("worker database boundary uses the scoped claim and lease-aware finish RPC 
       calls.push({ name, parameters });
       return {
         data:
-          name === "claim_ozon_sync_run_step"
+          name === "claim_ozon_sync_run_step_v2"
             ? [claimed]
             : { ...claimed, state: "completed" },
         error: null,
@@ -773,27 +774,28 @@ test("worker database boundary uses the scoped claim and lease-aware finish RPC 
 
   assert.deepEqual(calls, [
     {
-      name: "claim_ozon_sync_run_step",
+      name: "claim_ozon_sync_run_step_v2",
       parameters: { p_run_id: "run-1" },
     },
     {
-      name: "claim_ozon_sync_run_step",
+      name: "claim_ozon_sync_run_step_v2",
       parameters: { p_run_id: null },
     },
     {
-      name: "finish_ozon_sync_run_step",
+      name: "finish_ozon_sync_run_step_v2",
       parameters: finish,
     },
   ]);
 });
 
-function permanentClassification(status?: number) {
+function permanentClassification(status?: number, endpoint?: string) {
   return {
     retryable: false,
     persistedError: {
       message: "Ozon sync step failed",
       kind: "client",
       ...(status === undefined ? {} : { status }),
+      ...(endpoint === undefined ? {} : { endpoint }),
       retryable: false,
     },
   };
@@ -812,6 +814,8 @@ function claimedStep(
     step_order: 1,
     state: "running",
     attempt_count: 1,
+    failure_count: 0,
+    checkpoint: {},
     lease_token: "lease-1",
     lease_expires_at: "2026-07-26T10:10:00.000Z",
     ...overrides,
@@ -833,6 +837,7 @@ function runnerHarness(options: {
   const claimedRunIds: Array<string | null> = [];
   const executedStepIds: string[] = [];
   const finished: FinishOzonSyncStepInput[] = [];
+  const yielded: YieldOzonSyncStepInput[] = [];
 
   const dependencies: DurableOzonRunnerDependencies = {
     claimStep: async (runId) => {
@@ -846,6 +851,9 @@ function runnerHarness(options: {
     finishStep: async (input) => {
       finished.push(input);
     },
+    yieldStep: async (input) => {
+      yielded.push(input);
+    },
     now: options.now ?? (() => Date.parse("2026-07-26T10:00:00.000Z")),
     setTimer: options.setTimer,
     clearTimer: options.clearTimer,
@@ -857,5 +865,6 @@ function runnerHarness(options: {
     dependencies,
     executedStepIds,
     finished,
+    yielded,
   };
 }

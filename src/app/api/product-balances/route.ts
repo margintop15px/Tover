@@ -41,7 +41,8 @@ export async function GET(request: NextRequest) {
         warehouseName: (r.warehouses as { name: string } | null)?.name ?? "",
         qualityStatus: r.quality_status ?? "ordinary",
         quantity: Number(r.quantity),
-        unitCost: Number(r.unit_cost),
+        unitCost: r.unit_cost === null ? null : Number(r.unit_cost),
+        costBasisStatus: r.cost_basis_status ?? "unknown",
       })),
     });
   } catch (error) {

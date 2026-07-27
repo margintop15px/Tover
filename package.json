@@ -12,6 +12,7 @@
     "test:e2e:ui": "npx --yes playwright test --ui",
     "test:e2e:headed": "npx --yes playwright test --headed",
     "test:e2e:debug": "npx --yes playwright test --debug",
+    "ozon:reconcile": "tsx --env-file=.env.local scripts/ozon-reconcile.ts",
     "seed": "tsx --env-file=.env.local scripts/seed.ts"
   },
   "dependencies": {

@@ -1,6 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ValidatedOperation } from "./validate-operation";
-import { getProductBalance } from "./update-balances";
 
 export async function processTransfer(
   supabase: SupabaseClient,
@@ -9,16 +8,6 @@ export async function processTransfer(
 ) {
   const outItem = data.items.find((i) => i.direction === "out")!;
   const inItem = data.items.find((i) => i.direction === "in")!;
-
-  // Read source cost before updating
-  const sourceBalance = await getProductBalance(
-    supabase,
-    workspaceId,
-    outItem.productId,
-    outItem.warehouseId,
-    outItem.qualityStatus || "ordinary"
-  );
-  const unitCost = sourceBalance?.unit_cost ?? 0;
 
   // Insert operation
   const { data: operation, error: opError } = await supabase
@@ -43,7 +32,7 @@ export async function processTransfer(
         product_id: outItem.productId,
         warehouse_id: outItem.warehouseId,
         quantity: outItem.quantity,
-        unit_price: unitCost,
+        unit_price: null,
         direction: "out",
         store_id: outItem.storeId || null,
         quality_status: outItem.qualityStatus || "ordinary",
@@ -53,7 +42,7 @@ export async function processTransfer(
         product_id: inItem.productId,
         warehouse_id: inItem.warehouseId,
         quantity: inItem.quantity,
-        unit_price: unitCost,
+        unit_price: null,
         direction: "in",
         store_id: inItem.storeId || outItem.storeId || null,
         quality_status: inItem.qualityStatus || outItem.qualityStatus || "ordinary",

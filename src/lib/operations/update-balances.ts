@@ -69,7 +69,7 @@ export async function getProductBalance(
   productId: string,
   warehouseId: string,
   qualityStatus: QualityStatus = "ordinary"
-): Promise<{ quantity: number; unit_cost: number } | null> {
+): Promise<{ quantity: number; unit_cost: number | null } | null> {
   const { data } = await supabase
     .from("product_balances")
     .select("quantity, unit_cost")

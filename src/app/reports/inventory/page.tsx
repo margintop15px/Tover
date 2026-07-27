@@ -98,18 +98,23 @@ export default function InventoryBalancesPage() {
   const formatNum = (n: number) => {
     return n.toLocaleString(locale === "ru" ? "ru-RU" : "en-US", { maximumFractionDigits: 2 });
   };
-  const formatValue = (n: number) => {
-    if (display === "cost") return formatCurrency(n, locale, settings.currency);
-    return formatNum(n);
+  const formatCost = (n: number | null) => {
+    if (n === null) return t.unknownCost;
+    return formatCurrency(n, locale, settings.currency);
   };
+  const formatValue = (n: number | null) =>
+    display === "cost" ? formatCost(n) : formatNum(n ?? 0);
 
-  const getCellValue = (row: InventoryBalanceRow, whId: string): number => {
+  const getCellValue = (
+    row: InventoryBalanceRow,
+    whId: string
+  ): number | null => {
     const cell = row.warehouses.find((w) => w.warehouseId === whId);
     if (!cell) return 0;
     return display === "cost" ? cell.totalCost : cell.quantity;
   };
 
-  const getTotalValue = (row: InventoryBalanceRow): number => {
+  const getTotalValue = (row: InventoryBalanceRow): number | null => {
     return display === "cost" ? row.totalCost : row.totalQuantity;
   };
 
@@ -259,7 +264,7 @@ export default function InventoryBalancesPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
             <KpiCard title={t.total + " (" + t.displayUnits + ")"} value={formatNum(report.totals.totalQuantity)} />
             {mode === "current" && (
-              <KpiCard title={t.total + " (" + t.displayCost + ")"} value={formatCurrency(report.totals.totalCost, locale, settings.currency)} />
+              <KpiCard title={t.total + " (" + t.displayCost + ")"} value={formatCost(report.totals.totalCost)} />
             )}
           </div>
 
@@ -299,14 +304,14 @@ export default function InventoryBalancesPage() {
                         const val = getCellValue(row, wh.id);
                         return (
                           <TableCell key={wh.id} className="text-right">
-                            <span className={val < 0 ? "text-destructive font-medium" : ""}>
+                            <span className={val !== null && val < 0 ? "text-destructive font-medium" : ""}>
                               {val === 0 ? "-" : formatValue(val)}
                             </span>
                           </TableCell>
                         );
                       })}
                       <TableCell className="text-right font-bold">
-                        <span className={getTotalValue(row) < 0 ? "text-destructive" : ""}>
+                        <span className={getTotalValue(row) !== null && getTotalValue(row)! < 0 ? "text-destructive" : ""}>
                           {formatValue(getTotalValue(row))}
                         </span>
                       </TableCell>

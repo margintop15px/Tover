@@ -6,11 +6,14 @@ import {
   OzonClient,
   OzonIncompleteResponseError,
   OzonInvariantError,
+  OzonReportPendingError,
 } from "./client";
 import { decryptOzonCredentials } from "./credentials";
 import type { OzonCredentials, OzonSyncStepSummary } from "./types";
 import {
   OZON_SYNC_DOMAIN_REGISTRY,
+  OzonDatabaseError,
+  OzonReportDownloadError,
   executeOzonSyncDomainStep,
   type OzonSyncDomainKey,
 } from "./sync";
@@ -25,6 +28,8 @@ export interface ClaimedOzonSyncStep {
   step_order: number;
   state: "running";
   attempt_count: number;
+  failure_count?: number;
+  checkpoint: Record<string, unknown>;
   lease_token: string;
   lease_expires_at: string;
 }
@@ -36,6 +41,14 @@ export interface FinishOzonSyncStepInput {
   p_summary: OzonSyncStepSummary | Record<string, never>;
   p_last_error: PersistedOzonSyncError | null;
   p_next_attempt_at: string | null;
+}
+
+export interface YieldOzonSyncStepInput {
+  p_step_id: string;
+  p_lease_token: string;
+  p_checkpoint: Record<string, unknown>;
+  p_summary: OzonSyncStepSummary | Record<string, never>;
+  p_next_attempt_at: string;
 }
 
 export type PersistedOzonSyncErrorKind =
@@ -52,6 +65,11 @@ export interface PersistedOzonSyncError {
   status?: number;
   retryAfterMs?: number;
   retryable: boolean;
+  endpoint?: string;
+  code?: string | number;
+  reason?: string;
+  postgresCode?: string;
+  operationName?: string;
 }
 
 export interface ClassifiedOzonSyncError {
@@ -65,6 +83,10 @@ export interface OzonSyncStepFailureLog {
   connectionId: string;
   stepKey: string;
   attemptCount: number;
+  failureCount: number;
+  phase?: string;
+  processed?: number;
+  total?: number | null;
   kind: PersistedOzonSyncErrorKind;
   retryable: boolean;
   status?: number;
@@ -72,6 +94,8 @@ export interface OzonSyncStepFailureLog {
   endpoint?: string;
   code?: string | number;
   reason?: string;
+  postgresCode?: string;
+  operationName?: string;
 }
 
 export interface DurableOzonRunnerDependencies {
@@ -81,6 +105,16 @@ export interface DurableOzonRunnerDependencies {
     context: ClaimedOzonStepExecutionDeadline
   ) => Promise<OzonSyncStepSummary>;
   finishStep: (input: FinishOzonSyncStepInput) => Promise<void>;
+  yieldStep?: (input: YieldOzonSyncStepInput) => Promise<void>;
+  checkpointStep?: (
+    step: ClaimedOzonSyncStep,
+    checkpoint: Record<string, unknown>,
+    summary: OzonSyncStepSummary | Record<string, never>
+  ) => Promise<void>;
+  failConnection?: (
+    step: ClaimedOzonSyncStep,
+    error: PersistedOzonSyncError
+  ) => Promise<void>;
   now: () => number;
   setTimer?: (callback: () => void, milliseconds: number) => unknown;
   clearTimer?: (timer: unknown) => void;
@@ -110,7 +144,8 @@ export interface ClaimedStepExecutorServices {
   ) => OzonCredentials;
   createClient: (
     credentials: OzonCredentials,
-    signal: AbortSignal
+    signal: AbortSignal,
+    deadlineMs: number
   ) => OzonClient;
   executeDomainStep: (
     key: OzonSyncDomainKey,
@@ -120,8 +155,20 @@ export interface ClaimedStepExecutorServices {
       connectionId: string;
       dateFrom: string;
       dateTo: string;
+      runId: string;
+      checkpoint: Record<string, unknown>;
+      saveCheckpoint: (
+        checkpoint: Record<string, unknown>,
+        summary?: OzonSyncStepSummary | Record<string, never>
+      ) => Promise<void>;
+      yieldIfNeeded: () => void;
     }
   ) => Promise<OzonSyncStepSummary>;
+  saveCheckpoint?: (
+    step: ClaimedOzonSyncStep,
+    checkpoint: Record<string, unknown>,
+    summary: OzonSyncStepSummary | Record<string, never>
+  ) => Promise<void>;
 }
 
 export interface OzonWorkerRpcClient {
@@ -135,9 +182,16 @@ export interface OzonWorkerRpcClient {
 }
 
 export class PermanentOzonSyncError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly connectionWide = false) {
     super(message);
     this.name = "PermanentOzonSyncError";
+  }
+}
+
+export class OzonStepYieldError extends Error {
+  constructor() {
+    super("Ozon sync step yielded to its execution budget");
+    this.name = "OzonStepYieldError";
   }
 }
 
@@ -153,8 +207,8 @@ const DURABLE_RETRY_DELAYS_MS = [
 
 export const OZON_STEP_FINISH_MARGIN_MS = 2_000;
 
-export function durableRetryDelayMs(attemptCount: number): number | null {
-  return DURABLE_RETRY_DELAYS_MS[attemptCount - 1] ?? null;
+export function durableRetryDelayMs(failureCount: number): number | null {
+  return DURABLE_RETRY_DELAYS_MS[failureCount - 1] ?? null;
 }
 
 export function classifyOzonSyncError(
@@ -169,7 +223,22 @@ export function classifyOzonSyncError(
   }
 
   if (error instanceof OzonIncompleteResponseError) {
-    return classification("unknown", true);
+    return classification("client", false);
+  }
+
+  if (error instanceof OzonDatabaseError) {
+    const result = classification("unknown", !error.permanent);
+    if (error.code) result.persistedError.postgresCode = error.code;
+    result.persistedError.operationName = error.operation;
+    return result;
+  }
+
+  if (error instanceof OzonReportDownloadError) {
+    return classification(
+      ozonErrorKind(error.status),
+      isTransientOzonStatus(error.status),
+      error.status
+    );
   }
 
   if (error instanceof OzonApiError) {
@@ -180,12 +249,16 @@ export function classifyOzonSyncError(
       error.responseMetadata.itemRetryAfterMs
     );
 
-    return classification(
+    const result = classification(
       kind,
       retryable,
       error.status,
       retryAfterMs
     );
+    result.persistedError.endpoint = error.endpoint;
+    if (error.code !== null) result.persistedError.code = error.code;
+    if (error.apiMessage) result.persistedError.reason = error.apiMessage;
+    return result;
   }
 
   if (isTimeoutError(error)) {
@@ -281,9 +354,46 @@ async function processClaimedStep(
       dependencies
     );
   } catch (error) {
+    if (
+      error instanceof OzonStepYieldError ||
+      error instanceof OzonReportPendingError
+    ) {
+      const nextAttemptAt =
+        error instanceof OzonReportPendingError
+          ? error.nextActionAt
+          : new Date(dependencies.now()).toISOString();
+      if (dependencies.yieldStep) {
+        await dependencies.yieldStep({
+          p_step_id: step.id,
+          p_lease_token: step.lease_token,
+          p_checkpoint: step.checkpoint ?? {},
+          p_summary: {},
+          p_next_attempt_at: nextAttemptAt,
+        });
+      } else {
+        await dependencies.finishStep({
+          p_step_id: step.id,
+          p_lease_token: step.lease_token,
+          p_state: "retry_scheduled",
+          p_summary: {},
+          p_last_error: classification("timeout", true).persistedError,
+          p_next_attempt_at: nextAttemptAt,
+        });
+      }
+      return;
+    }
     const classified = classifyOzonSyncError(error);
+    if (isConnectionWideOzonError(error) && dependencies.failConnection) {
+      dependencies.logStepFailure?.(
+        buildOzonSyncStepFailureLog(step, error, classified)
+      );
+      await dependencies.failConnection(step, classified.persistedError);
+      return;
+    }
+    const failedAttempt =
+      (Number.isInteger(step.failure_count) ? Number(step.failure_count) : 0) + 1;
     const retryDelayMs = classified.retryable
-      ? durableRetryDelayMs(step.attempt_count)
+      ? durableRetryDelayMs(failedAttempt)
       : null;
 
     dependencies.logStepFailure?.(
@@ -324,6 +434,9 @@ function buildOzonSyncStepFailureLog(
     connectionId: step.connection_id,
     stepKey: step.step_key,
     attemptCount: step.attempt_count,
+    failureCount:
+      (Number.isInteger(step.failure_count) ? Number(step.failure_count) : 0) +
+      (classified.retryable ? 1 : 0),
     kind: classified.persistedError.kind,
     retryable: classified.retryable,
     ...(classified.persistedError.status === undefined
@@ -333,11 +446,20 @@ function buildOzonSyncStepFailureLog(
       ? {}
       : { retryAfterMs: classified.persistedError.retryAfterMs }),
   };
+  const progress = safeCheckpointProgress(step.checkpoint);
+  if (progress) {
+    entry.phase = progress.phase;
+    entry.processed = progress.processed;
+    entry.total = progress.total;
+  }
 
   if (error instanceof OzonApiError) {
     entry.endpoint = error.endpoint;
     if (error.code !== null) entry.code = error.code;
     if (error.apiMessage !== null) entry.reason = error.apiMessage;
+  } else if (error instanceof OzonDatabaseError) {
+    if (error.code) entry.postgresCode = error.code;
+    entry.operationName = error.operation;
   } else if (
     error instanceof PermanentOzonSyncError ||
     error instanceof OzonInvariantError ||
@@ -347,6 +469,31 @@ function buildOzonSyncStepFailureLog(
   }
 
   return entry;
+}
+
+function safeCheckpointProgress(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const checkpoint = value as Record<string, unknown>;
+  if (typeof checkpoint.phase !== "string") return null;
+  const processed =
+    typeof checkpoint.processed === "number" &&
+    Number.isInteger(checkpoint.processed) &&
+    checkpoint.processed >= 0
+      ? checkpoint.processed
+      : 0;
+  const total =
+    checkpoint.total === null
+      ? null
+      : typeof checkpoint.total === "number" &&
+          Number.isInteger(checkpoint.total) &&
+          checkpoint.total >= 0
+        ? checkpoint.total
+        : null;
+  return {
+    phase: checkpoint.phase.slice(0, 80),
+    processed,
+    total,
+  };
 }
 
 async function executeClaimedStepUntilDeadline(
@@ -389,10 +536,7 @@ async function executeClaimedStepUntilDeadline(
 }
 
 function stepDeadlineError() {
-  return new DOMException(
-    "Ozon sync step deadline exceeded",
-    "TimeoutError"
-  );
+  return new OzonStepYieldError();
 }
 
 function throwIfStepDeadlineExceeded(signal: AbortSignal) {
@@ -405,7 +549,7 @@ export const durableOzonRunnerTestSeam = {
     return {
       claimStep: async (runId: string | null) => {
         const { data, error } = await client.rpc(
-          "claim_ozon_sync_run_step",
+          "claim_ozon_sync_run_step_v2",
           { p_run_id: runId }
         );
         if (error) throw new Error("Failed to claim Ozon sync step");
@@ -419,10 +563,48 @@ export const durableOzonRunnerTestSeam = {
       },
       finishStep: async (input: FinishOzonSyncStepInput) => {
         const { error } = await client.rpc(
-          "finish_ozon_sync_run_step",
+          "finish_ozon_sync_run_step_v2",
           input as unknown as Record<string, unknown>
         );
         if (error) throw new Error("Failed to finish Ozon sync step");
+      },
+      yieldStep: async (input: YieldOzonSyncStepInput) => {
+        const { error } = await client.rpc(
+          "yield_ozon_sync_run_step_v2",
+          input as unknown as Record<string, unknown>
+        );
+        if (error) throw new Error("Failed to yield Ozon sync step");
+      },
+      checkpointStep: async (
+        step: ClaimedOzonSyncStep,
+        checkpoint: Record<string, unknown>,
+        summary: OzonSyncStepSummary | Record<string, never>
+      ) => {
+        const { error } = await client.rpc(
+          "checkpoint_ozon_sync_run_step_v2",
+          {
+            p_step_id: step.id,
+            p_lease_token: step.lease_token,
+            p_checkpoint: checkpoint,
+            p_summary: summary,
+          }
+        );
+        if (error) throw new Error("Failed to checkpoint Ozon sync step");
+        step.checkpoint = checkpoint;
+      },
+      failConnection: async (
+        step: ClaimedOzonSyncStep,
+        persistedError: PersistedOzonSyncError
+      ) => {
+        const { error } = await client.rpc(
+          "fail_ozon_sync_connection_v2",
+          {
+            p_step_id: step.id,
+            p_lease_token: step.lease_token,
+            p_last_error: persistedError,
+          }
+        );
+        if (error) throw new Error("Failed to terminate Ozon connection sync");
       },
     };
   },
@@ -458,23 +640,37 @@ export const durableOzonRunnerTestSeam = {
         );
       } catch {
         throw new PermanentOzonSyncError(
-          "Stored Ozon credentials are invalid"
+          "Stored Ozon credentials are invalid",
+          true
         );
       }
       if (!credentials.clientId.trim() || !credentials.apiKey.trim()) {
         throw new PermanentOzonSyncError(
-          "Stored Ozon credentials are invalid"
+          "Stored Ozon credentials are invalid",
+          true
         );
       }
 
       throwIfStepDeadlineExceeded(deadline.signal);
-      const client = services.createClient(credentials, deadline.signal);
+      const client = services.createClient(
+        credentials,
+        deadline.signal,
+        deadline.deadlineMs
+      );
       return services.executeDomainStep(step.step_key, {
         client,
         workspaceId: step.workspace_id,
         connectionId: step.connection_id,
         dateFrom: context.dateFrom,
         dateTo: context.dateTo,
+        runId: step.run_id,
+        checkpoint: step.checkpoint ?? {},
+        saveCheckpoint: (checkpoint, summary = {}) =>
+          services.saveCheckpoint?.(step, checkpoint, summary) ??
+          Promise.resolve(),
+        yieldIfNeeded: () => {
+          if (deadline.signal.aborted) throw new OzonStepYieldError();
+        },
       });
     };
   },
@@ -520,6 +716,14 @@ function isValidDateWindow(dateFrom: string, dateTo: string) {
   return Number.isFinite(from) && Number.isFinite(to) && from <= to;
 }
 
+function isConnectionWideOzonError(error: unknown) {
+  return (
+    (error instanceof PermanentOzonSyncError && error.connectionWide) ||
+    (error instanceof OzonApiError &&
+      (error.status === 401 || error.status === 403))
+  );
+}
+
 export async function runOzonSyncRunUntilDeadline(
   runId: string,
   deadlineMs: number
@@ -548,6 +752,7 @@ function createProductionDependencies(): DurableOzonRunnerDependencies {
       loadClaimedStepExecutionContext(supabase, step),
     decryptCredentials: decryptOzonCredentials,
     createClient: createDurableOzonClient,
+    saveCheckpoint: rpcOperations.checkpointStep,
     executeDomainStep: (key, input) =>
       executeOzonSyncDomainStep(key, {
         supabase,
