@@ -1910,9 +1910,7 @@ export function isMissingFinanceDocumentError(error: unknown) {
     );
 }
 
-const MISSING_FINANCE_DOCUMENT_BY_ENDPOINT: Partial<
-  Record<OzonReadOnlyEndpoint, string>
-> = {
+const MISSING_FINANCE_DOCUMENT_BY_ENDPOINT: Readonly<Record<string, string>> = {
   "/v1/finance/mutual-settlement": "finance document not found",
   "/v1/finance/compensation": "compensation document not found",
   "/v1/finance/decompensation": "decompensation document not found",
