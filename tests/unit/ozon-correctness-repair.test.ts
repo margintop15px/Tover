@@ -5,6 +5,7 @@ import test from "node:test";
 import { normalizeOzonCandidateOperation } from "../../src/lib/ozon/candidates";
 import {
   OzonIncompleteResponseError,
+  OzonInvariantError,
 } from "../../src/lib/ozon/client";
 import {
   classifyOzonSyncError,
@@ -12,6 +13,7 @@ import {
 } from "../../src/lib/ozon/durable-runner";
 import {
   canonicalJson,
+  decodeCashFlowReportRows,
   decodeOzonReturn,
   decimalString,
   OzonReportDownloadError,
@@ -88,6 +90,71 @@ test("cash-flow periods use Ozon's complete calendar halves and buyout periods d
     { from: "2026-02-01", to: "2026-03-03" },
     { from: "2026-03-04", to: "2026-03-05" },
   ]);
+});
+
+test("cash-flow rows use period and currency identity and deduplicate exact repeats", () => {
+  const rub = {
+    period: {
+      id: "11567022278500",
+      begin: "2026-07-01T00:00:00.000Z",
+      end: "2026-07-15T23:59:59.999Z",
+    },
+    orders_amount: "1000.2500",
+    currency_code: "RUB",
+  };
+  const rows = decodeCashFlowReportRows(
+    [rub, { ...rub }, { ...rub, currency_code: "USD" }],
+    "workspace-id",
+    "connection-id",
+    "run-id"
+  );
+
+  assert.deepEqual(
+    rows.map((row) => ({
+      external_id: row.external_id,
+      period_start: row.period_start,
+      period_end: row.period_end,
+      amount: row.amount,
+      currency_code: row.currency_code,
+    })),
+    [
+      {
+        external_id: "cash-flow:11567022278500:RUB",
+        period_start: "2026-07-01",
+        period_end: "2026-07-15",
+        amount: "1000.25",
+        currency_code: "RUB",
+      },
+      {
+        external_id: "cash-flow:11567022278500:USD",
+        period_start: "2026-07-01",
+        period_end: "2026-07-15",
+        amount: "1000.25",
+        currency_code: "USD",
+      },
+    ]
+  );
+});
+
+test("cash-flow rows reject conflicting payloads for one period and currency", () => {
+  const period = {
+    id: "11567022278500",
+    begin: "2026-07-01T00:00:00.000Z",
+    end: "2026-07-15T23:59:59.999Z",
+  };
+
+  assert.throws(
+    () =>
+      decodeCashFlowReportRows(
+        [
+          { period, orders_amount: "1000", currency_code: "RUB" },
+          { period, orders_amount: "1001", currency_code: "RUB" },
+        ],
+        "workspace-id",
+        "connection-id"
+      ),
+    OzonInvariantError
+  );
 });
 
 test("turnover arithmetic stays in PostgreSQL and preserves unknown costs", () => {

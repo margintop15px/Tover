@@ -2729,26 +2729,12 @@ async function syncCashFlowRows(
         ["cash_flows", "items", "rows"],
         "/v1/finance/cash-flow-statement/list"
       );
-      const rows = flows.map((flow) => {
-          const item = toRecord(flow);
-          const period = toRecord(item.period);
-          const id =
-            toStringValue(period.id ?? item.id) ??
-            `cash-flow:${window.from}:${page}:${stableHash(item).slice(0, 16)}`;
-          return {
-            workspace_id: workspaceId,
-            connection_id: connectionId,
-            external_id: id,
-            report_type: "cash_flow",
-            period_start: toDateOnly(period.begin) ?? window.from,
-            period_end: toDateOnly(period.end) ?? window.to,
-            amount: decimalString(item.orders_amount ?? item.amount),
-            currency_code: toStringValue(item.currency_code),
-            raw_payload: sanitizeOzonPayload(item),
-            synced_at: new Date().toISOString(),
-            ...ozonMirrorProvenance(execution?.runId),
-          };
-        });
+      const rows = decodeCashFlowReportRows(
+        flows,
+        workspaceId,
+        connectionId,
+        execution?.runId
+      );
       await persistFinanceReportRows(supabase, rows);
       persisted += rows.length;
       const pageCount = toInteger(root.page_count);
@@ -2796,6 +2782,58 @@ async function syncCashFlowRows(
     }
   }
   return persisted;
+}
+
+export function decodeCashFlowReportRows(
+  flows: unknown[],
+  workspaceId: string,
+  connectionId: string,
+  runId?: string
+) {
+  const rows = new Map<string, { hash: string; row: JsonRecord }>();
+
+  for (const flow of flows) {
+    const item = toRecord(flow);
+    const period = toRecord(item.period);
+    const periodId = toStringValue(period.id);
+    const periodStart = toDateOnly(period.begin);
+    const periodEnd = toDateOnly(period.end);
+    const currencyCode = toStringValue(item.currency_code);
+    if (!periodId || !periodStart || !periodEnd || !currencyCode) {
+      throw new OzonIncompleteResponseError(
+        "Ozon cash-flow row has incomplete period or currency evidence"
+      );
+    }
+
+    const externalId = `cash-flow:${periodId}:${currencyCode}`;
+    const hash = stableHash(item);
+    const existing = rows.get(externalId);
+    if (existing && existing.hash !== hash) {
+      throw new OzonInvariantError(
+        "Ozon returned conflicting cash-flow rows for one period and currency"
+      );
+    }
+    if (existing) continue;
+
+    rows.set(externalId, {
+      hash,
+      row: {
+        workspace_id: workspaceId,
+        connection_id: connectionId,
+        external_id: externalId,
+        report_type: "cash_flow",
+        period_start: periodStart,
+        period_end: periodEnd,
+        amount: decimalString(item.orders_amount),
+        currency_code: currencyCode,
+        raw_payload: sanitizeOzonPayload(item),
+        synced_at: new Date().toISOString(),
+        ...ozonMirrorProvenance(runId),
+      },
+    });
+  }
+
+  return [...rows.values()].map(({ row }) => row);
 }
 
 async function syncBuyoutRows(
