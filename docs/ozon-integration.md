@@ -290,6 +290,13 @@ that deadline from its 25-second request budget; Cron recovery uses a
 2 seconds for the lease-aware finish RPC, waits for the domain to unwind after
 cancellation, and then records the timeout as a transient durable failure.
 
+Every caught step failure emits an `ozon_sync_step_failed` entry in the app
+hosting logs. Correlate it with Supabase using `runId`, `connectionId`,
+`stepKey`, and `attemptCount`. The entry includes retry classification and,
+for typed Ozon errors, safe endpoint/status/code/reason fields. It never logs
+credentials, ciphertext, authorization headers, request/response payloads,
+stack traces, arbitrary unknown-error messages, or database error text.
+
 ### 1. Warehouses
 
 Endpoint: `POST /v2/warehouse/list`.
@@ -392,12 +399,17 @@ Report-generating endpoints may return an Ozon report code. Tover stores report
 code, status, file URL, request params, and response payload in `ozon_report_runs`
 and summarizes rows in `ozon_finance_reports`.
 
-Ozon can legitimately return `404` while a monthly settlement document does not
-yet exist. Tover treats only a `404` whose safe code or message exactly
-identifies `finance document not found` (including Ozon's terminal RPC
-`desc = finance document not found` form) as empty data. That report/month is
-counted as skipped, and compensation, decompensation, cash flow, buyout, and
-other months continue. Every other `404` is a permanent error.
+Ozon can legitimately return `404` while a monthly document does not yet
+exist. Tover treats only these endpoint-matched identities as empty data:
+
+- mutual settlement: `finance document not found`;
+- compensation: `compensation document not found`;
+- decompensation: `decompensation document not found`.
+
+The identity must be the exact safe code/message or Ozon's terminal
+`desc = ... document not found` form. That report/month is counted as skipped,
+and the other report types, months, cash flow, and buyouts continue. Mismatched
+identities and every other `404` remain permanent errors.
 
 Buyout reports are seller-side sale evidence, not merchant purchases. They remain
 reporting data.
@@ -857,8 +869,8 @@ available:
   lease ownership, stale-token rejection, persistence/aggregation of
   caller-supplied failed results, selective reset, and run-to-step cascade
   cleanup;
-- an exact missing mutual-settlement document is skipped while remaining report
-  types continue;
+- exact endpoint-matched missing monthly finance documents are skipped while
+  remaining report types continue;
 - sale, return, write-off, transfer, and defect operations become normal Tover
   operations;
 - user decisions survive re-sync;

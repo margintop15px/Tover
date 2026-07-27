@@ -616,7 +616,7 @@ test.describe("Ozon marketplace integration", () => {
     }
   });
 
-  test("skips only a missing current-month mutual settlement report and completes the remaining reports", async ({
+  test("skips endpoint-matched missing monthly documents and completes the remaining reports", async ({
     request,
   }, testInfo) => {
     const adminWorkspace = await getAdminWorkspace();
@@ -644,6 +644,18 @@ test.describe("Ozon marketplace integration", () => {
               },
             },
           ],
+          "/v1/finance/decompensation": [
+            {
+              status: 404,
+              body: {
+                error: {
+                  code: "NOT_FOUND",
+                  message:
+                    "service.CreateDecompensationReport: rpc error: code = NotFound desc = decompensation document not found",
+                },
+              },
+            },
+          ],
         },
         validClientId: VALID_CLIENT_ID,
         validApiKey: VALID_API_KEY,
@@ -654,7 +666,7 @@ test.describe("Ozon marketplace integration", () => {
 
       expect(syncResult.status).toBe("completed");
       expect(syncResult.summary.errors).toEqual([]);
-      expect(syncResult.summary.reports).toMatchObject({ skipped: 1 });
+      expect(syncResult.summary.reports).toMatchObject({ skipped: 2 });
       expect(mock.requestCounts["/v1/finance/mutual-settlement"]).toBe(1);
       expect(mock.requestCounts["/v1/finance/compensation"]).toBe(1);
       expect(mock.requestCounts["/v1/finance/decompensation"]).toBe(1);
@@ -665,7 +677,7 @@ test.describe("Ozon marketplace integration", () => {
         request.get("/api/integrations/ozon"),
         200
       );
-      expect(summary.counts.financeReports).toBe(4);
+      expect(summary.counts.financeReports).toBe(3);
     } finally {
       await mock?.close();
       await resetOzonState(adminWorkspace!, false);

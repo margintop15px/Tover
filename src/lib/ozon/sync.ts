@@ -1900,22 +1900,34 @@ async function syncFinanceReports(
 export function isMissingFinanceDocumentError(error: unknown) {
   if (!(error instanceof OzonApiError) || error.status !== 404) return false;
 
+  const expectedIdentity = MISSING_FINANCE_DOCUMENT_BY_ENDPOINT[error.endpoint];
+  if (!expectedIdentity) return false;
+
   return [error.code, error.apiMessage]
     .filter((value): value is string | number => value !== null)
-    .some((value) => isExactMissingFinanceDocumentIdentity(String(value)));
+    .some((value) =>
+      isExactMissingFinanceDocumentIdentity(String(value), expectedIdentity)
+    );
 }
 
-function isExactMissingFinanceDocumentIdentity(value: string) {
+const MISSING_FINANCE_DOCUMENT_BY_ENDPOINT: Readonly<Record<string, string>> = {
+  "/v1/finance/mutual-settlement": "finance document not found",
+  "/v1/finance/compensation": "compensation document not found",
+  "/v1/finance/decompensation": "decompensation document not found",
+};
+
+function isExactMissingFinanceDocumentIdentity(
+  value: string,
+  expectedIdentity: string
+) {
   const normalized = value
     .trim()
     .toLowerCase()
     .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ");
-  if (normalized === "finance document not found") return true;
+  if (normalized === expectedIdentity) return true;
 
-  return /\bdesc\s*=\s*finance[ _-]+document[ _-]+not[ _-]+found\s*$/i.test(
-    value
-  );
+  return normalized.match(/\bdesc\s*=\s*(.+)$/)?.[1] === expectedIdentity;
 }
 
 async function requestReportCode(

@@ -271,6 +271,141 @@ test("a transient failure schedules the exact next attempt through the live leas
   ]);
 });
 
+test("durable step failure log contains only safe typed Ozon API details", async () => {
+  const logs: Array<Record<string, unknown>> = [];
+  const harness = runnerHarness({
+    claims: [
+      claimedStep({
+        step_key: "reports",
+        step_order: 8,
+        attempt_count: 1,
+      }),
+    ],
+    execute: async () => {
+      throw new OzonApiError("/v1/finance/decompensation", 404, {
+        error: {
+          code: "NOT_FOUND",
+          message:
+            "rpc error: desc = decompensation document not found",
+        },
+      });
+    },
+    logStepFailure: (entry) => logs.push(entry),
+  });
+
+  await durableOzonRunnerTestSeam.recoverOne(
+    TEST_DEADLINE_MS,
+    harness.dependencies
+  );
+
+  assert.deepEqual(logs, [
+    {
+      event: "ozon_sync_step_failed",
+      runId: "run-1",
+      connectionId: "connection-1",
+      stepKey: "reports",
+      attemptCount: 1,
+      kind: "client",
+      retryable: false,
+      status: 404,
+      endpoint: "/v1/finance/decompensation",
+      code: "NOT_FOUND",
+      reason: "rpc error: desc = decompensation document not found",
+    },
+  ]);
+  assert.deepEqual(harness.finished, [
+    {
+      p_step_id: "step-1",
+      p_lease_token: "lease-1",
+      p_state: "failed",
+      p_summary: {},
+      p_last_error: {
+        message: "Ozon sync step failed",
+        kind: "client",
+        status: 404,
+        retryable: false,
+      },
+      p_next_attempt_at: null,
+    },
+  ]);
+});
+
+test("durable step failure log never includes unknown error messages or payloads", async () => {
+  const logs: Array<Record<string, unknown>> = [];
+  const harness = runnerHarness({
+    claims: [claimedStep({ step_key: "finance", step_order: 6 })],
+    execute: async () => {
+      throw Object.assign(
+        new Error("apiKey=secret raw response customer@example.com"),
+        {
+          responseBody: {
+            authorization: "Bearer secret",
+          },
+        }
+      );
+    },
+    logStepFailure: (entry) => logs.push(entry),
+  });
+
+  await durableOzonRunnerTestSeam.recoverOne(
+    TEST_DEADLINE_MS,
+    harness.dependencies
+  );
+
+  assert.deepEqual(logs, [
+    {
+      event: "ozon_sync_step_failed",
+      runId: "run-1",
+      connectionId: "connection-1",
+      stepKey: "finance",
+      attemptCount: 1,
+      kind: "unknown",
+      retryable: true,
+    },
+  ]);
+  const serialized = JSON.stringify(logs);
+  for (const sensitiveValue of [
+    "secret",
+    "raw response",
+    "customer@example.com",
+    "authorization",
+    "responseBody",
+  ]) {
+    assert.equal(serialized.includes(sensitiveValue), false);
+  }
+});
+
+test("durable step failure log preserves the safe stored-credential reason", async () => {
+  const logs: Array<Record<string, unknown>> = [];
+  const harness = runnerHarness({
+    claims: [claimedStep({ step_key: "postings", step_order: 4 })],
+    execute: async () => {
+      throw new PermanentOzonSyncError(
+        "Stored Ozon credentials are invalid"
+      );
+    },
+    logStepFailure: (entry) => logs.push(entry),
+  });
+
+  await durableOzonRunnerTestSeam.recoverOne(
+    TEST_DEADLINE_MS,
+    harness.dependencies
+  );
+
+  assert.deepEqual(logs, [
+    {
+      event: "ozon_sync_step_failed",
+      runId: "run-1",
+      connectionId: "connection-1",
+      stepKey: "postings",
+      attemptCount: 1,
+      kind: "client",
+      retryable: false,
+      reason: "Stored Ozon credentials are invalid",
+    },
+  ]);
+});
+
 test("attempt eight turns an otherwise transient failure into terminal failure", async () => {
   const harness = runnerHarness({
     claims: [claimedStep({ attempt_count: 8 })],
@@ -692,6 +827,7 @@ function runnerHarness(options: {
   now?: () => number;
   setTimer?: (callback: () => void, milliseconds: number) => unknown;
   clearTimer?: (timer: unknown) => void;
+  logStepFailure?: (entry: Record<string, unknown>) => void;
 }) {
   const claims = [...options.claims];
   const claimedRunIds: Array<string | null> = [];
@@ -713,6 +849,7 @@ function runnerHarness(options: {
     now: options.now ?? (() => Date.parse("2026-07-26T10:00:00.000Z")),
     setTimer: options.setTimer,
     clearTimer: options.clearTimer,
+    logStepFailure: options.logStepFailure,
   };
 
   return {
