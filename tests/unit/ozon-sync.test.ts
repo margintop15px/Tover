@@ -102,6 +102,72 @@ test("Ozon warehouse request includes the required location types", () => {
   ]);
 });
 
+test("returns list requests use numeric zero for the first int64 cursor", () => {
+  const dateFrom = "2026-07-01T00:00:00.000Z";
+  const dateTo = "2026-07-27T23:59:59.999Z";
+
+  assert.deepEqual(sync.buildReturnsListRequest("", dateFrom, dateTo), {
+    filter: {
+      logistic_return_date: {
+        time_from: dateFrom,
+        time_to: dateTo,
+      },
+    },
+    limit: 100,
+    last_id: 0,
+  });
+  assert.equal(
+    sync.buildReturnsListRequest("9223372036854775807", dateFrom, dateTo)
+      .last_id,
+    "9223372036854775807"
+  );
+
+  assert.deepEqual(sync.buildRfbsReturnsListRequest("", dateFrom, dateTo), {
+    last_id: 0,
+    limit: 100,
+    filter: {
+      created_at: {
+        from: dateFrom,
+        to: dateTo,
+      },
+    },
+  });
+  assert.equal(
+    sync.buildRfbsReturnsListRequest(
+      "9223372036854775807",
+      dateFrom,
+      dateTo
+    ).last_id,
+    "9223372036854775807"
+  );
+});
+
+test("product stocks accept an empty documented stocks array without inventing a row", () => {
+  assert.deepEqual(
+    sync.decodeProductStockEntries({
+      product_id: "123456789012345678",
+      offer_id: "OFFER-1",
+      stocks: [],
+    }),
+    []
+  );
+  assert.throws(
+    () => sync.decodeProductStockEntries({ product_id: "123" }),
+    OzonIncompleteResponseError
+  );
+});
+
+test("supply list request includes all meaningful documented states", () => {
+  assert.deepEqual(sync.buildSupplyOrderListRequest(""), {
+    filter: { states: [...sync.OZON_SUPPLY_ORDER_STATES] },
+    last_id: "",
+    limit: 100,
+    sort_by: "ORDER_CREATION",
+    sort_dir: "DESC",
+  });
+  assert.equal(sync.OZON_SUPPLY_ORDER_STATES.includes("UNSPECIFIED"), false);
+});
+
 test("fetchProductDetails sends only one identifier family per request", async () => {
   const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
   const client = {
@@ -579,11 +645,23 @@ test("fetchSupplyOrders sends the documented list payload, follows cursor pages,
   assert.deepEqual(requests, [
     {
       endpoint: "/v3/supply-order/list",
-      body: { filter: {}, last_id: "", limit: 100, sort_by: "ORDER_CREATION", sort_dir: "DESC" },
+      body: {
+        filter: { states: [...sync.OZON_SUPPLY_ORDER_STATES] },
+        last_id: "",
+        limit: 100,
+        sort_by: "ORDER_CREATION",
+        sort_dir: "DESC",
+      },
     },
     {
       endpoint: "/v3/supply-order/list",
-      body: { filter: {}, last_id: "next", limit: 100, sort_by: "ORDER_CREATION", sort_dir: "DESC" },
+      body: {
+        filter: { states: [...sync.OZON_SUPPLY_ORDER_STATES] },
+        last_id: "next",
+        limit: 100,
+        sort_by: "ORDER_CREATION",
+        sort_dir: "DESC",
+      },
     },
     { endpoint: "/v3/supply-order/get", body: { order_ids: ["1", "2", "3"] } },
   ]);
@@ -632,7 +710,13 @@ test("fetchSupplyOrders stops when a real order_ids page is empty even if it has
   assert.deepEqual(requests, [
     {
       endpoint: "/v3/supply-order/list",
-      body: { filter: {}, last_id: "", limit: 100, sort_by: "ORDER_CREATION", sort_dir: "DESC" },
+      body: {
+        filter: { states: [...sync.OZON_SUPPLY_ORDER_STATES] },
+        last_id: "",
+        limit: 100,
+        sort_by: "ORDER_CREATION",
+        sort_dir: "DESC",
+      },
     },
   ]);
 });

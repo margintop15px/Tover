@@ -173,6 +173,12 @@ export async function startOzonMockServer(
       return;
     }
 
+    const contractError = requestContractError(path, body);
+    if (contractError) {
+      writeJson(response, 400, { code: 3, message: contractError });
+      return;
+    }
+
     const sequence = responseSequences.get(path);
     const sequenceResponse = sequence?.shift();
     if (sequenceResponse) {
@@ -285,7 +291,7 @@ function responseFor(
           items: [
             stockItem(fixture.autoProduct, fixture.autoWarehouse, 12),
             stockItem(fixture.missingProduct, fixture.autoWarehouse, 3),
-            stockItem(fixture.returnProduct, fixture.returnWarehouse, 1),
+            { ...productRef(fixture.returnProduct), stocks: [] },
           ],
           cursor: "",
         },
@@ -452,8 +458,15 @@ function responseFor(
               ? [
                   {
                     id: `CASH-${fixture.runId}`,
-                    period: { id: `P-${fixture.runId}`, begin: "2099-05-01", end: "2099-05-31" },
+                    period: { id: "0", begin: "2099-05-01", end: "2099-05-15" },
                     orders_amount: "31.50",
+                    currency_code: "RUB",
+                    recipient_phone: "+79990000000",
+                  },
+                  {
+                    id: `CASH-${fixture.runId}-SECOND`,
+                    period: { id: "0", begin: "2099-05-16", end: "2099-05-31" },
+                    orders_amount: "12.75",
                     currency_code: "RUB",
                     recipient_phone: "+79990000000",
                   },
@@ -575,6 +588,32 @@ function responseFor(
     default:
       return { result: { items: [] } };
   }
+}
+
+function requestContractError(
+  path: string,
+  body: Record<string, unknown>
+) {
+  if (
+    (path === "/v1/returns/list" ||
+      path === "/v2/returns/rfbs/list") &&
+    body.last_id !== 0 &&
+    !(
+      typeof body.last_id === "string" &&
+      /^\d+$/.test(body.last_id)
+    )
+  ) {
+    return "last_id must be an int64 value";
+  }
+
+  if (path === "/v3/supply-order/list") {
+    const states = (body.filter as { states?: unknown } | undefined)?.states;
+    if (!Array.isArray(states) || states.length === 0) {
+      return "filter.states must contain at least one item";
+    }
+  }
+
+  return null;
 }
 
 function productRef(product: OzonMockProduct) {
