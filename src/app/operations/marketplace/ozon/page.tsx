@@ -191,12 +191,13 @@ export default function OzonCandidateReviewPage() {
         setItems(data.items || []);
         setSummary(data.summary);
         setPage(data.page);
-        if (selected) {
-          const refreshed = (data.items || []).find(
-            (candidate) => candidate.id === selected.id
+        setSelected((current) => {
+          if (!current) return null;
+          return (
+            (data.items || []).find((candidate) => candidate.id === current.id) ||
+            current
           );
-          if (refreshed) setSelected(refreshed);
-        }
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : t.unexpectedError);
       } finally {
@@ -208,7 +209,6 @@ export default function OzonCandidateReviewPage() {
       mappingState,
       operationType,
       page.offset,
-      selected,
       sourceType,
       status,
       supportStatus,
@@ -236,7 +236,9 @@ export default function OzonCandidateReviewPage() {
     setSuccess("");
     try {
       const updated = await action();
-      if (updated && selected?.id === updated.id) setSelected(updated);
+      if (updated) {
+        setSelected((current) => (current?.id === updated.id ? updated : current));
+      }
       if (message) setSuccess(message);
       await fetchCandidates();
       await fetchReferenceData();

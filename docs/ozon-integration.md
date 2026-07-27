@@ -114,6 +114,9 @@ with a local mock server.
 - `supabase/migrations/022_ozon_evidence_accounting_correctness.sql`: mirror
   provenance, evidence hashes, atomic candidate commits, and nullable inventory
   cost basis.
+- `supabase/migrations/20260727190000_ozon_live_contract_fixes.sql`:
+  seller-relevant warehouse counts and explicit fresh-project service-worker
+  privileges.
 
 ## Verified Seller API Operations
 
@@ -123,7 +126,7 @@ last re-verified against the official Ozon Seller API reference on 2026-07-27:
 
 | Domain | Official operation ID | Decoder contract |
 | --- | --- | --- |
-| Warehouses | `/v2/warehouse/list`, `/v1/warehouse/ozon/list` | cursor/`warehouses`; required FBO/Fresh/returns `warehouse_types` |
+| Warehouses | `/v2/warehouse/list`, `/v1/warehouse/ozon/list` | seller FBS/rFBS cursor list; global Ozon-network lookup with required FBO/Fresh/returns `warehouse_types` |
 | Products | `/v3/product/list`, `/v3/product/info/list`, `/v4/product/info/attributes`, `/v5/product/info/prices` | string IDs; one identifier family per info-list request; nested price; string/array images |
 | Stocks | `/v4/product/info/stocks` | stock `type`, `present`, `reserved`; empty `stocks[]` means no stock rows; no warehouse |
 | Postings | `/v4/posting/fbs/list`, `/v3/posting/fbo/list` | Money product price and schema-specific `analytics_data` warehouse |
@@ -249,8 +252,14 @@ Workers claim one step atomically. A claim increments the attempt count and
 creates a unique ten-minute lease token. Another worker cannot claim work for
 that connection while its lease is live. An expired `running` lease is
 reclaimable; only the current token can finish it, so a stale worker cannot
-overwrite the reclaimed result. A partial unique index permits only one
-`running` or `retrying` run per connection.
+overwrite the reclaimed result. The short database claim transaction is
+serialized before `FOR UPDATE SKIP LOCKED`, preventing concurrent workers from
+selecting different pending rows for the same connection. This lock is released
+before API work starts, so independent connections still execute concurrently.
+A partial unique index remains the final guard and permits only one `running` or
+`retrying` run per connection. Stale-lease RPCs return a deterministic
+prerequisite-state error rather than the retryable PostgreSQL serialization
+code.
 
 Each claimed execution receives one absolute deadline and one shared abort
 signal for all Ozon requests, including request pacing. Manual work derives
@@ -280,8 +289,19 @@ Endpoints: `POST /v2/warehouse/list` and `POST /v1/warehouse/ozon/list`.
 
 The seller list uses `limit <= 200` and cursor pagination. The Ozon warehouse
 list sends the required non-empty `warehouse_types` filter for FBO, Fresh,
-returns, and defect locations. Tover stores Ozon warehouse ID, name,
-fulfillment schema/status, sanitized raw payload, and a local warehouse mapping.
+returns, and defect locations. `/v1/warehouse/ozon/list` is a global Ozon
+network lookup, not the seller's warehouse count. Tover retains those rows as
+reference data, but the integration summary counts only seller FBS/rFBS
+warehouses plus warehouses that are mapped, ignored, or referenced by the
+seller's postings, returns, removals, supplies, or stock analytics. This avoids
+presenting the complete Ozon network as if every location belonged to the
+seller.
+
+Domain steps insert a referenced warehouse when an Ozon response supplies both
+its ID and name. This insert-only enrichment never overwrites an existing
+warehouse's official detail or user mapping. Tover stores Ozon warehouse ID,
+name, fulfillment schema/status, sanitized raw payload, and a local warehouse
+mapping.
 
 Auto-mapping uses local warehouse name. Existing manual/ignored mappings are
 preserved.
@@ -352,9 +372,10 @@ continued with the last row's `return_id`, using the same numeric-zero first
 cursor, and detail responses are unwrapped from their `returns` member. The
 current rFBS detail contract does not prove both quantity and seller-receipt
 time, so those rows remain mirrors. A return candidate is created only when
-Ozon explicitly
-proves seller receipt and supplies the product, positive quantity, event date,
-and a mappable warehouse. `WriteOff` and incomplete states remain mirrored.
+Ozon explicitly proves seller receipt with `ReceivedBySeller` and supplies the
+product, positive quantity, event date, and a mappable warehouse. The legacy
+`ReturnedToSeller` spelling is also accepted for compatibility. `WriteOff` and
+incomplete states remain mirrored.
 
 ### 6. Finance Accruals
 
@@ -497,8 +518,10 @@ Endpoints:
 Tover mirrors `valid_stock_count`, `available_stock_count`,
 `requested_stock_count`, transit, customer/seller returns, defect, other,
 excess, expiring, waiting-document, ADS, and IDC fields without relabeling
-`requested_stock_count` as reserved stock. Turnover requests are paced
-to one start per minute per Client-Id. These rows are
+`requested_stock_count` as reserved stock. Each stock row is identified by its
+documented SKU, cluster, and warehouse ID; the warehouse ID/name is preserved
+and can participate in local mapping. Turnover requests are paced to one start
+per minute per Client-Id. These rows are
 reporting/reconciliation evidence only in the current implementation. They do
 not generate `inventory_adjustment` candidates because daily stock deltas can
 repeat and over-adjust local inventory without a dedicated reconciliation
@@ -518,6 +541,11 @@ The report download accepts only the known Ozon report CDN hosts (or the exact
 configured local mock origin), validates every redirect before following it,
 shares the durable step deadline, and has its own 30-second timeout. It streams
 the response with a hard 10 MiB limit instead of buffering an unbounded file.
+Ozon currently returns this report as XLSX. Tover reads only
+`xl/sharedStrings.xml` and `xl/worksheets/sheet1.xml`, caps their combined
+expanded size at 20 MiB, and resolves the discounted child column from the
+workbook's three-row `FBO Ozon SKU` header. A header-only workbook is a valid
+zero-result report. CSV remains supported for older/local fixtures.
 
 Seller-created discounted products whose mirrored payload explicitly has
 `is_discounted: true` are also included. `has_discounted_item` identifies a
@@ -555,7 +583,10 @@ The count-only query verifies that its decrypted view exists without copying
 secret values into logs. If the `vault` schema is absent, enable Vault from
 Dashboard Integrations before running migration 020. Migrations 021 and 022 add
 checkpoints/events and evidence/cost-basis correctness; apply them before
-deploying the corresponding app.
+deploying the corresponding app. Migration
+`20260727190000_ozon_live_contract_fixes.sql` adds the seller-relevant warehouse
+summary and makes `service_role` access/default privileges explicit so the
+durable worker also works on a fresh project.
 
 Run these statements as the project owner in the SQL Editor, or enable the same
 extensions from Database > Extensions in the hosted Dashboard. `pg_net`
@@ -928,9 +959,10 @@ Each candidate commit is one database transaction:
   flow.
 - Source warehouse mapping for supply transfers is candidate-level user input.
   Once a better local default or mapping model exists, this can become reusable.
-- Async report CSV parsing is represented by report-run metadata and parsed rows
-  where the endpoint returns JSON. File download/parsing can be added for reports
-  that only return a file URL.
+- Discounted-product report files are downloaded with host, redirect, timeout,
+  compressed-size, and expanded-size checks and parsed from Ozon's multi-row
+  XLSX header. Other finance report files remain mirrored by report metadata;
+  adding report-specific file decoders is outside the inventory commit flow.
 
 ## Test Coverage
 

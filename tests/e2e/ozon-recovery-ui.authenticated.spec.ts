@@ -148,8 +148,7 @@ test("routes retry-now and retry-failed actions to the same run", async ({
       pathname: url.pathname,
       body: request.postDataJSON(),
     });
-    state =
-      url.pathname.endsWith("/retry") ? "completed" : "completed_with_errors";
+    state = posts.length === 1 ? "completed_with_errors" : "completed";
     await fulfillJson(route, {
       runId: "run-1",
       status: state,
@@ -173,8 +172,8 @@ test("routes retry-now and retry-failed actions to the same run", async ({
   await expect(page.getByText("Completed", { exact: true })).toBeVisible();
   expect(posts).toEqual([
     {
-      pathname: "/api/integrations/ozon/sync",
-      body: {},
+      pathname: "/api/integrations/ozon/sync/retry",
+      body: { runId: "run-1" },
     },
     {
       pathname: "/api/integrations/ozon/sync/retry",

@@ -97,7 +97,18 @@ async function requestOzonSyncDetails(runId: string, signal?: AbortSignal) {
     signal,
   });
   if (!response.ok) throw new Error();
-  return (await response.json()) as OzonSyncDetails;
+  const data: unknown = await response.json();
+  if (
+    !data ||
+    typeof data !== "object" ||
+    !("steps" in data) ||
+    !Array.isArray(data.steps) ||
+    !("events" in data) ||
+    !Array.isArray(data.events)
+  ) {
+    throw new Error();
+  }
+  return data as OzonSyncDetails;
 }
 
 function safeSyncErrorText(error: SafeSyncError | null) {

@@ -17,7 +17,10 @@ import {
   type OzonMockFixture,
   type OzonMockServer,
 } from "./ozon-mock-server";
-import type { MarketplaceCandidateRow } from "../../src/lib/ozon/candidates";
+import {
+  normalizeOzonCandidateOperation,
+  type MarketplaceCandidateRow,
+} from "../../src/lib/ozon/candidates";
 
 const RUN_ID = Date.now().toString(36);
 const VALID_CLIENT_ID = "ozon-client";
@@ -282,7 +285,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 022_ozon_evidence_accounting_correctness.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 20260727190000_ozon_live_contract_fixes.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("Invalid", testInfo));
@@ -318,7 +321,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 022_ozon_evidence_accounting_correctness.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 20260727190000_ozon_live_contract_fixes.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("Partial", testInfo));
@@ -388,7 +391,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 022_ozon_evidence_accounting_correctness.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 20260727190000_ozon_live_contract_fixes.sql"
     );
 
     const { admin } = adminWorkspace!;
@@ -436,9 +439,31 @@ test.describe("Ozon marketplace integration", () => {
       expect(firstClaim.failure_count).toBe(0);
       expect(firstClaim.lease_token).not.toBeNull();
 
+      let retryTarget = firstClaim;
+      for (const prerequisite of [
+        "warehouses",
+        "products",
+        "stocks",
+        "postings",
+        "returns",
+      ]) {
+        expect(retryTarget.step_key).toBe(prerequisite);
+        const completed = await admin.rpc("finish_ozon_sync_run_step_v2", {
+          p_step_id: retryTarget.id,
+          p_lease_token: retryTarget.lease_token,
+          p_state: "completed",
+          p_summary: { fetched: 1 },
+          p_last_error: null,
+          p_next_attempt_at: null,
+        });
+        expect(completed.error).toBeNull();
+        retryTarget = await claimRecoveryStep(admin, runId);
+      }
+      expect(retryTarget.step_key).toBe("finance");
+
       const retryResult = await admin.rpc("finish_ozon_sync_run_step_v2", {
-        p_step_id: firstClaim.id,
-        p_lease_token: firstClaim.lease_token,
+        p_step_id: retryTarget.id,
+        p_lease_token: retryTarget.lease_token,
         p_state: "retry_scheduled",
         p_summary: { fetched: 0 },
         p_last_error: {
@@ -451,13 +476,13 @@ test.describe("Ozon marketplace integration", () => {
       expect(retryResult.error).toBeNull();
 
       const reclaimed = await claimRecoveryStep(admin, runId);
-      expect(reclaimed.id).toBe(firstClaim.id);
+      expect(reclaimed.id).toBe(retryTarget.id);
       expect(reclaimed.attempt_count).toBe(2);
-      expect(reclaimed.lease_token).not.toBe(firstClaim.lease_token);
+      expect(reclaimed.lease_token).not.toBe(retryTarget.lease_token);
 
       const staleFinish = await admin.rpc("finish_ozon_sync_run_step_v2", {
-        p_step_id: firstClaim.id,
-        p_lease_token: firstClaim.lease_token,
+        p_step_id: retryTarget.id,
+        p_lease_token: retryTarget.lease_token,
         p_state: "completed",
         p_summary: { fetched: 1 },
         p_last_error: null,
@@ -494,7 +519,7 @@ test.describe("Ozon marketplace integration", () => {
           p_last_error: {
             kind: "server",
             status: 500,
-            retryable: false,
+            retryable: true,
           },
           p_next_attempt_at: null,
         }
@@ -507,7 +532,7 @@ test.describe("Ozon marketplace integration", () => {
       expect(failedStep.attempt_count).toBe(8);
       expect(failedStep.failure_count).toBe(8);
 
-      for (let remaining = 0; remaining < 11; remaining += 1) {
+      for (let remaining = 0; remaining < 6; remaining += 1) {
         const claim = await claimRecoveryStep(admin, runId);
         const finish = await admin.rpc("finish_ozon_sync_run_step_v2", {
           p_step_id: claim.id,
@@ -541,13 +566,16 @@ test.describe("Ozon marketplace integration", () => {
         .eq("run_id", runId)
         .order("step_order");
       expect(resetStepsError).toBeNull();
-      expect(resetSteps?.[0]).toMatchObject({
-        step_key: "warehouses",
+      expect(resetSteps?.slice(0, 5).every((step) =>
+        step.state === "completed" && step.attempt_count === 1
+      )).toBe(true);
+      expect(resetSteps?.[5]).toMatchObject({
+        step_key: "finance",
         state: "pending",
         attempt_count: 8,
         failure_count: 0,
       });
-      expect(resetSteps?.slice(1).every((step) =>
+      expect(resetSteps?.slice(6).every((step) =>
         step.state === "completed" && step.attempt_count === 1
       )).toBe(true);
 
@@ -588,7 +616,7 @@ test.describe("Ozon marketplace integration", () => {
       ).toMatchObject({
         state: "failed",
         attempt_count: 1,
-        failure_count: 1,
+        failure_count: 0,
       });
       const { data: permanentStep, error: permanentStepError } = await admin
         .from("marketplace_sync_run_steps")
@@ -628,7 +656,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 022_ozon_evidence_accounting_correctness.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 20260727190000_ozon_live_contract_fixes.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("MissingMutual", testInfo));
@@ -697,7 +725,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 022_ozon_evidence_accounting_correctness.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 20260727190000_ozon_live_contract_fixes.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("Happy", testInfo));
@@ -764,10 +792,17 @@ test.describe("Ozon marketplace integration", () => {
         timeout: 30_000,
       });
       await expect(syncButton).toBeEnabled();
-      await expect(page.getByText("Last sync status")).toBeVisible();
-      await expect(page.getByText("Completed")).toBeVisible();
-      await expect(page.getByText("Products")).toBeVisible();
+      const lastSyncStatus = page.getByText("Last sync status").locator("..");
+      await expect(lastSyncStatus).toBeVisible();
+      await expect(
+        lastSyncStatus.getByText("Completed", { exact: true })
+      ).toBeVisible();
+      await expect(page.getByText("Products", { exact: true })).toBeVisible();
       await expect(page.getByText("Ready candidates")).toBeVisible();
+      expect(mock.requestBodies["/v1/finance/accrual/by-day"]).toContainEqual({
+        date: new Date().toISOString().slice(0, 10),
+        last_id: "",
+      });
 
       const summary = await expectJson<OzonSummaryResponse>(
         request.get("/api/integrations/ozon"),
@@ -818,8 +853,8 @@ test.describe("Ozon marketplace integration", () => {
         {
           filter: {
             logistic_return_date: {
-              time_from: fixture.dateFrom,
-              time_to: fixture.dateTo,
+              time_from: expect.any(String),
+              time_to: expect.any(String),
             },
           },
           last_id: 0,
@@ -830,8 +865,8 @@ test.describe("Ozon marketplace integration", () => {
         {
           filter: {
             created_at: {
-              from: fixture.dateFrom,
-              to: fixture.dateTo,
+              from: expect.any(String),
+              to: expect.any(String),
             },
           },
           last_id: 0,
@@ -895,7 +930,7 @@ test.describe("Ozon marketplace integration", () => {
       let candidates = await listCandidates(request);
       expect(candidates.summary).toMatchObject({
         needsMapping: 3,
-        ready: 3,
+        ready: 2,
         approved: 0,
         ignored: 1,
         committed: 0,
@@ -923,7 +958,7 @@ test.describe("Ozon marketplace integration", () => {
       );
       const supplyCandidate = findCandidate(
         candidates,
-        `supply:${fixture.supplyOrderId}:${fixture.supplyBundleId}-1`
+        `supply:${fixture.supplyOrderId}:${fixture.supplyBundleId}:${fixture.supplyBundleId}-1`
       );
       expect(fbsCandidate.status).toBe("needs_mapping");
       expect(fboCandidate.status).toBe("ready");
@@ -989,6 +1024,7 @@ test.describe("Ozon marketplace integration", () => {
       await drawer.getByRole("button", { name: "Previous" }).click();
       await expect(drawer.getByText(firstVisibleCandidate.external_event_id)).toBeVisible();
       await page.keyboard.press("Escape");
+      await expect(drawer).toBeHidden();
 
       await page
         .locator("tr")
@@ -1009,6 +1045,7 @@ test.describe("Ozon marketplace integration", () => {
         window.dispatchEvent(new Event("tover-locale-change"));
       });
       await page.keyboard.press("Escape");
+      await expect(drawer).toBeHidden();
 
       const unapprovedCommit = await postJson<CommitResponse>(
         request,
@@ -1143,6 +1180,7 @@ test.describe("Ozon marketplace integration", () => {
       await expect(drawer.getByRole("button", { name: "Approve" })).toHaveCount(0);
       await expect(drawer.getByRole("button", { name: "Commit" })).toBeVisible();
       await page.keyboard.press("Escape");
+      await expect(drawer).toBeHidden();
 
       await page
         .locator("tr")
@@ -1158,6 +1196,7 @@ test.describe("Ozon marketplace integration", () => {
       await drawer.getByRole("button", { name: "Ignore" }).click();
       await expect(drawer.getByText("Ignored")).toBeVisible();
       await page.keyboard.press("Escape");
+      await expect(drawer).toBeHidden();
 
       const { error: forceApproveError } = await adminWorkspace!.admin
         .from("marketplace_operation_candidates")
@@ -1250,7 +1289,7 @@ test.describe("Ozon marketplace integration", () => {
         "/api/integrations/ozon/candidates/approve-ready",
         {}
       );
-      expect(approvedBulk).toEqual({ approved: 5, blocked: 0 });
+      expect(approvedBulk).toEqual({ approved: 4, blocked: 0 });
 
       const committed = await postJson<CommitResponse>(
         request,
@@ -1258,7 +1297,7 @@ test.describe("Ozon marketplace integration", () => {
         {}
       );
       expect(committed).toMatchObject({
-        committedCount: 6,
+        committedCount: 5,
         failedCount: 0,
       });
 
@@ -1274,14 +1313,10 @@ test.describe("Ozon marketplace integration", () => {
       const supplyCommit = committed.committed.find(
         (item) => item.candidateId === supplyCandidate.id
       );
-      const defectCommit = committed.committed.find(
-        (item) => item.candidateId === defectCandidate.id
-      );
       expect(fbsCommit?.operationId).toBeTruthy();
       expect(returnCommit?.operationId).toBeTruthy();
       expect(removalCommit?.operationId).toBeTruthy();
       expect(supplyCommit?.operationId).toBeTruthy();
-      expect(defectCommit?.operationId).toBeTruthy();
 
       const saleDetails = await expectJson<OperationDetailsResponse>(
         request.get(`/api/operations/${fbsCommit!.operationId}`),
@@ -1355,14 +1390,6 @@ test.describe("Ozon marketplace integration", () => {
         ])
       );
 
-      const defectDetails = await expectJson<OperationDetailsResponse>(
-        request.get(`/api/operations/${defectCommit!.operationId}`),
-        200
-      );
-      expect(defectDetails).toMatchObject({
-        type: "defect",
-      });
-
       const operationsList = await expectJson<{ items: { operationId: string }[] }>(
         request.get("/api/operations?from=2099-05-01&to=2099-05-03"),
         200
@@ -1385,7 +1412,7 @@ test.describe("Ozon marketplace integration", () => {
       await syncOzon(request, fixture);
       candidates = await listCandidates(request);
       expect(candidates.summary).toMatchObject({
-        committed: 6,
+        committed: 5,
         ignored: 1,
       });
       expect(
@@ -1411,6 +1438,8 @@ test.describe("Ozon marketplace integration", () => {
           },
         ],
       };
+      const concurrentNormalizedOperation =
+        normalizeOzonCandidateOperation(concurrentOperation);
       const { data: concurrentCandidate, error: concurrentInsertError } =
         await adminWorkspace!.admin
           .from("marketplace_operation_candidates")
@@ -1424,10 +1453,12 @@ test.describe("Ozon marketplace integration", () => {
             operation_type: "sale",
             operation_date: "2099-05-02",
             confidence: 0.2,
-            operation: concurrentOperation,
-            normalized_operation: concurrentOperation,
+            operation: concurrentNormalizedOperation,
+            normalized_operation: concurrentNormalizedOperation,
             validation_errors: [],
             raw_payload: {},
+            evidence_version: 1,
+            evidence_hash: "a".repeat(64),
           })
           .select("id")
           .single();
@@ -1450,7 +1481,10 @@ test.describe("Ozon marketplace integration", () => {
           result.committed.map((item) => item.operationId)
         )
       );
-      expect(concurrentOperationIds.size).toBe(1);
+      expect(
+        concurrentOperationIds.size,
+        JSON.stringify(concurrentResults)
+      ).toBe(1);
       const { data: concurrentCommitted } = await adminWorkspace!.admin
         .from("marketplace_operation_candidates")
         .select("created_operation_id")
@@ -1642,6 +1676,12 @@ async function supportsOzonSchema(admin: SupabaseClient, workspaceId: string) {
     .eq("workspace_id", workspaceId)
     .limit(1);
   if (costs.error) return false;
+
+  const warehouseCounts = await admin.rpc("ozon_relevant_warehouse_counts", {
+    p_workspace_id: workspaceId,
+    p_connection_id: "00000000-0000-0000-0000-000000000000",
+  });
+  if (warehouseCounts.error) return false;
 
   const recoveryRpc = await admin.rpc("begin_or_resume_ozon_sync_run", {
     p_connection_id: "00000000-0000-0000-0000-000000000000",

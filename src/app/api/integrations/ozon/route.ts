@@ -189,8 +189,7 @@ async function loadOzonSummary(
   const [
     products,
     unmappedProducts,
-    warehouses,
-    unmappedWarehouses,
+    warehouseCounts,
     postings,
     returnsCount,
     financeTransactions,
@@ -209,10 +208,7 @@ async function loadOzonSummary(
     countRows(supabase, "ozon_products", workspaceId, connectionId, {
       mapping_status: "unmapped",
     }),
-    countRows(supabase, "ozon_warehouses", workspaceId, connectionId),
-    countRows(supabase, "ozon_warehouses", workspaceId, connectionId, {
-      mapping_status: "unmapped",
-    }),
+    loadRelevantWarehouseCounts(supabase, workspaceId, connectionId),
     countRows(supabase, "ozon_postings", workspaceId, connectionId),
     countRows(supabase, "ozon_returns", workspaceId, connectionId),
     countRows(supabase, "ozon_finance_transactions", workspaceId, connectionId),
@@ -270,8 +266,8 @@ async function loadOzonSummary(
     counts: {
       products,
       unmappedProducts,
-      warehouses,
-      unmappedWarehouses,
+      warehouses: warehouseCounts.warehouses,
+      unmappedWarehouses: warehouseCounts.unmappedWarehouses,
       postings,
       returns: returnsCount,
       financeTransactions,
@@ -359,6 +355,45 @@ async function optionalCountRows(
     }
     throw error;
   }
+}
+
+async function loadRelevantWarehouseCounts(
+  supabase: Awaited<ReturnType<typeof getRouteContext>>["supabase"],
+  workspaceId: string,
+  connectionId: string
+) {
+  const { data, error } = await supabase.rpc(
+    "ozon_relevant_warehouse_counts",
+    {
+      p_workspace_id: workspaceId,
+      p_connection_id: connectionId,
+    }
+  );
+  if (!error) {
+    const value = Array.isArray(data) ? data[0] : data;
+    return {
+      warehouses: Number(value?.warehouses ?? 0),
+      unmappedWarehouses: Number(value?.unmapped_warehouses ?? 0),
+    };
+  }
+  if (!["42883", "PGRST202"].includes(error.code ?? "")) {
+    throw new Error(error.message);
+  }
+  return {
+    warehouses: await countRows(
+      supabase,
+      "ozon_warehouses",
+      workspaceId,
+      connectionId
+    ),
+    unmappedWarehouses: await countRows(
+      supabase,
+      "ozon_warehouses",
+      workspaceId,
+      connectionId,
+      { mapping_status: "unmapped" }
+    ),
+  };
 }
 
 function publicConnection(connection: OzonConnectionRecord) {
