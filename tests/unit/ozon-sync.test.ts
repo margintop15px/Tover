@@ -59,6 +59,9 @@ type DownloadOzonReportText = (
     fetch: typeof fetch;
     timeoutSignal: (milliseconds: number) => AbortSignal;
     maxBytes?: number;
+    sleep?: (milliseconds: number) => Promise<void>;
+    now?: () => number;
+    logAttempt?: (entry: Record<string, unknown>) => void;
   }
 ) => Promise<string>;
 
@@ -637,6 +640,59 @@ test("discounted report download accepts Ozon-owned HTTPS subdomains", async () 
   assert.deepEqual(requested, [
     "https://reports.seller.ozon.ru/discounted.csv",
   ]);
+});
+
+test("discounted report download retries safe transport failures before succeeding", async () => {
+  let requests = 0;
+  const sleeps: number[] = [];
+  const attempts: Record<string, unknown>[] = [];
+
+  assert.equal(
+    await downloadOzonReportText(
+      "https://ir.ozone.ru/reports/discounted.csv",
+      undefined,
+      {
+        fetch: async () => {
+          requests += 1;
+          if (requests < 3) throw new TypeError("fetch failed");
+          return new Response("sku\n123\n", { status: 200 });
+        },
+        timeoutSignal: () => new AbortController().signal,
+        sleep: async (milliseconds) => {
+          sleeps.push(milliseconds);
+        },
+        now: () => 1_000,
+        logAttempt: (entry) => {
+          attempts.push(entry);
+        },
+      }
+    ),
+    "sku\n123\n"
+  );
+  assert.equal(requests, 3);
+  assert.deepEqual(sleeps, [500, 1_000]);
+  assert.deepEqual(
+    attempts.map(({ host, attempt, kind, willRetry }) => ({
+      host,
+      attempt,
+      kind,
+      willRetry,
+    })),
+    [
+      {
+        host: "ir.ozone.ru",
+        attempt: 1,
+        kind: "transport",
+        willRetry: true,
+      },
+      {
+        host: "ir.ozone.ru",
+        attempt: 2,
+        kind: "transport",
+        willRetry: true,
+      },
+    ]
+  );
 });
 
 test("discounted report download enforces its byte limit while streaming", async () => {
