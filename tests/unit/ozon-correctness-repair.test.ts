@@ -40,28 +40,28 @@ const migration022 = readFileSync(
 );
 const repairRetryMigration = readFileSync(
   new URL(
-    "../../supabase/migrations/20260727133620_ozon_repair_retry_scheduled_steps.sql",
+    "../../supabase/migrations/023_ozon_repair_retry_scheduled_steps.sql",
     import.meta.url
   ),
   "utf8"
 );
 const liveContractMigration = readFileSync(
   new URL(
-    "../../supabase/migrations/20260727190000_ozon_live_contract_fixes.sql",
+    "../../supabase/migrations/024_ozon_live_contract_fixes.sql",
     import.meta.url
   ),
   "utf8"
 );
 const warehouseIdentityMigration = readFileSync(
   new URL(
-    "../../supabase/migrations/20260727203000_ozon_relevant_warehouse_identity.sql",
+    "../../supabase/migrations/025_ozon_relevant_warehouse_identity.sql",
     import.meta.url
   ),
   "utf8"
 );
 const warehouseCountPerformanceMigration = readFileSync(
   new URL(
-    "../../supabase/migrations/20260727203100_optimize_ozon_relevant_warehouse_counts.sql",
+    "../../supabase/migrations/026_optimize_ozon_relevant_warehouse_counts.sql",
     import.meta.url
   ),
   "utf8"

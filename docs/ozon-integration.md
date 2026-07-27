@@ -114,14 +114,14 @@ with a local mock server.
 - `supabase/migrations/022_ozon_evidence_accounting_correctness.sql`: mirror
   provenance, evidence hashes, atomic candidate commits, and nullable inventory
   cost basis.
-- `supabase/migrations/20260727190000_ozon_live_contract_fixes.sql`:
+- `supabase/migrations/024_ozon_live_contract_fixes.sql`:
   seller-relevant warehouse counts and explicit fresh-project service-worker
   privileges.
-- `supabase/migrations/20260727203000_ozon_relevant_warehouse_identity.sql`:
+- `supabase/migrations/025_ozon_relevant_warehouse_identity.sql`:
   identity-first warehouse relevance so a same-name global location cannot be
   counted as seller evidence, plus the database-linter-correct volatility for
   the safe step-error sanitizer.
-- `supabase/migrations/20260727203100_optimize_ozon_relevant_warehouse_counts.sql`:
+- `supabase/migrations/026_optimize_ozon_relevant_warehouse_counts.sql`:
   materializes the connection-scoped warehouse reference set once so
   authenticated RLS checks stay comfortably inside the Data API statement
   timeout.
@@ -602,7 +602,7 @@ secret values into logs. If the `vault` schema is absent, enable Vault from
 Dashboard Integrations before running migration 020. Migrations 021 and 022 add
 checkpoints/events and evidence/cost-basis correctness; apply them before
 deploying the corresponding app. Migration
-`20260727190000_ozon_live_contract_fixes.sql` adds the seller-relevant warehouse
+`024_ozon_live_contract_fixes.sql` adds the seller-relevant warehouse
 summary and makes `service_role` access/default privileges explicit so the
 durable worker also works on a fresh project.
 
