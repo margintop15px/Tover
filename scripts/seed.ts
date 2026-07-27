@@ -14,7 +14,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 
-const BASE_URL = "http://localhost:3000";
+const BASE_URL = process.env.SEED_BASE_URL || "http://localhost:3000";
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
@@ -173,7 +173,7 @@ async function seed() {
   // Fetch defect warehouse (auto-created with first warehouse)
   const { data: whList } = await api<Paginated<{ id: string; name: string; isDefaultDefect: boolean }>>(
     "GET",
-    "/api/warehouses?limit=50",
+    "/api/warehouses?limit=200",
   );
   const defectWh = whList.items.find((w) => w.isDefaultDefect);
   if (!defectWh) throw new Error("Default defect warehouse not found");
@@ -309,7 +309,7 @@ async function seed() {
     categoryId: cats.cakes.id,
     storeId: stores.online.id,
   }, "product");
-  const carrotCake = await createOrFind<Named>("/api/products", {
+  await createOrFind<Named>("/api/products", {
     name: "Carrot Cake",
     skuCode: "CAK-003",
     categoryId: cats.cakes.id,

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { strFromU8, unzipSync } from "fflate";
 import Papa from "papaparse";
 import {
   canSyncUpdateCandidateStatus,
@@ -64,12 +65,7 @@ interface ExistingMapping {
 const PRODUCT_PAGE_LIMIT = 1000;
 const POSTING_PAGE_LIMIT = 100;
 const FINANCE_ACCRUAL_PAGE_LIMIT = 200;
-export const OZON_WAREHOUSE_TYPES = [
-  "FULL_FILLMENT",
-  "FULL_FILLMENT_RETURNS",
-  "FULL_FILLMENT_DEFECT",
-  "EXPRESS_DARK_STORE",
-] as const;
+const SUPABASE_READ_PAGE_SIZE = 1000;
 export const OZON_SUPPLY_ORDER_STATES = [
   "DATA_FILLING",
   "READY_TO_SUPPLY",
@@ -379,52 +375,57 @@ async function loadMappingContext(
 ): Promise<MappingContext> {
   const [productsResult, warehousesResult, ozonProductsResult, ozonWarehousesResult] =
     await Promise.all([
-      supabase
-        .from("products")
-        .select("id, name, sku_code")
-        .eq("workspace_id", workspaceId)
-        .eq("is_defect_copy", false),
-      supabase
-        .from("warehouses")
-        .select("id, name")
-        .eq("workspace_id", workspaceId),
-      supabase
-        .from("ozon_products")
-        .select("ozon_product_id, local_product_id, mapping_status")
-        .eq("workspace_id", workspaceId)
-        .eq("connection_id", connectionId),
-      supabase
-        .from("ozon_warehouses")
-        .select("ozon_warehouse_id, local_warehouse_id, mapping_status")
-        .eq("workspace_id", workspaceId)
-        .eq("connection_id", connectionId),
+      loadSupabaseRows<LocalProductRef>("select:products", (from, to) =>
+        supabase
+          .from("products")
+          .select("id, name, sku_code")
+          .eq("workspace_id", workspaceId)
+          .eq("is_defect_copy", false)
+          .order("id", { ascending: true })
+          .range(from, to)
+      ),
+      loadSupabaseRows<LocalWarehouseRef>("select:warehouses", (from, to) =>
+        supabase
+          .from("warehouses")
+          .select("id, name")
+          .eq("workspace_id", workspaceId)
+          .order("id", { ascending: true })
+          .range(from, to)
+      ),
+      loadSupabaseRows<JsonRecord>("select:ozon_products", (from, to) =>
+        supabase
+          .from("ozon_products")
+          .select("ozon_product_id, local_product_id, mapping_status")
+          .eq("workspace_id", workspaceId)
+          .eq("connection_id", connectionId)
+          .order("ozon_product_id", { ascending: true })
+          .range(from, to)
+      ),
+      loadSupabaseRows<JsonRecord>("select:ozon_warehouses", (from, to) =>
+        supabase
+          .from("ozon_warehouses")
+          .select("ozon_warehouse_id, local_warehouse_id, mapping_status")
+          .eq("workspace_id", workspaceId)
+          .eq("connection_id", connectionId)
+          .order("ozon_warehouse_id", { ascending: true })
+          .range(from, to)
+      ),
     ]);
 
-  for (const [table, result] of [
-    ["products", productsResult],
-    ["warehouses", warehousesResult],
-    ["ozon_products", ozonProductsResult],
-    ["ozon_warehouses", ozonWarehousesResult],
-  ] as const) {
-    if (result.error) {
-      throw ozonDatabaseError(result.error, `select:${table}`);
-    }
-  }
-
   const productsByExternalKey = new Map<string, LocalProductRef>();
-  for (const product of (productsResult.data || []) as LocalProductRef[]) {
+  for (const product of productsResult) {
     if (product.sku_code) {
       productsByExternalKey.set(normalizeKey(product.sku_code), product);
     }
   }
 
   const warehousesByName = new Map<string, LocalWarehouseRef>();
-  for (const warehouse of (warehousesResult.data || []) as LocalWarehouseRef[]) {
+  for (const warehouse of warehousesResult) {
     warehousesByName.set(normalizeKey(warehouse.name), warehouse);
   }
 
   const ozonProductMappings = new Map<string, ExistingMapping>();
-  for (const product of (ozonProductsResult.data || []) as JsonRecord[]) {
+  for (const product of ozonProductsResult) {
     const id = toStringValue(product.ozon_product_id);
     if (!id) continue;
     ozonProductMappings.set(id, {
@@ -434,7 +435,7 @@ async function loadMappingContext(
   }
 
   const ozonWarehouseMappings = new Map<string, ExistingMapping>();
-  for (const warehouse of (ozonWarehousesResult.data || []) as JsonRecord[]) {
+  for (const warehouse of ozonWarehousesResult) {
     const id = toStringValue(warehouse.ozon_warehouse_id);
     if (!id) continue;
     ozonWarehouseMappings.set(id, {
@@ -471,7 +472,9 @@ async function syncWarehouses(
       ? toInteger(checkpoint.pageIndex) ?? 0
       : 0;
   let marketplaceWarehousesComplete =
-    checkpoint.phase === "ozon" || checkpoint.phase === "complete";
+    checkpoint.phase === "seller_fbo" ||
+    checkpoint.phase === "ozon" ||
+    checkpoint.phase === "complete";
 
   while (!marketplaceWarehousesComplete && pageIndex < 100) {
     execution?.yieldIfNeeded?.();
@@ -505,7 +508,7 @@ async function syncWarehouses(
       marketplaceWarehousesComplete = true;
       await execution?.saveCheckpoint?.(
         {
-          phase: "ozon",
+          phase: "seller_fbo",
           cursor: "",
           pageIndex,
           processed: fetched,
@@ -541,20 +544,20 @@ async function syncWarehouses(
 
   if (checkpoint.phase !== "complete") {
     execution?.yieldIfNeeded?.();
-    const ozonWarehousesResponse = await client.request<JsonRecord>(
-      "/v1/warehouse/ozon/list",
-      { warehouse_types: OZON_WAREHOUSE_TYPES }
+    const sellerWarehousesResponse = await client.request<JsonRecord>(
+      "/v1/warehouse/fbo/seller/list",
+      {}
     );
-    const ozonWarehouses = requireItems(
-      ozonWarehousesResponse,
+    const sellerWarehouses = requireItems(
+      sellerWarehousesResponse,
       ["warehouses", "items"],
-      "/v1/warehouse/ozon/list"
+      "/v1/warehouse/fbo/seller/list"
     );
     await upsertRows(
       supabase,
       "ozon_warehouses",
-      decodeWarehouseRows(
-        ozonWarehouses,
+      decodeSellerWarehouseRows(
+        sellerWarehouses,
         workspaceId,
         connectionId,
         mapping,
@@ -562,7 +565,7 @@ async function syncWarehouses(
       ),
       "connection_id,ozon_warehouse_id"
     );
-    fetched += ozonWarehouses.length;
+    fetched += sellerWarehouses.length;
     await execution?.saveCheckpoint?.(
       {
         phase: "complete",
@@ -574,6 +577,30 @@ async function syncWarehouses(
   }
 
   return { fetched };
+}
+
+function decodeSellerWarehouseRows(
+  warehouses: unknown[],
+  workspaceId: string,
+  connectionId: string,
+  mapping: MappingContext,
+  runId?: string
+) {
+  return decodeWarehouseRows(
+    warehouses.map((value) => {
+      const warehouse = toRecord(value);
+      return {
+        ...warehouse,
+        warehouse_id: warehouse.seller_warehouse_id,
+        name: warehouse.seller_warehouse_name,
+        warehouse_type: "fbo_seller",
+      };
+    }),
+    workspaceId,
+    connectionId,
+    mapping,
+    runId
+  );
 }
 
 function decodeWarehouseRows(
@@ -607,9 +634,7 @@ function toWarehouseRow(
   mapping: MappingContext
 ) {
   const item = toRecord(value);
-  const warehouseId = toStringValue(
-    item.warehouse_id ?? item.id ?? item.delivery_method_id ?? item.name
-  );
+  const warehouseId = toStringValue(item.warehouse_id);
   const name = toStringValue(item.name ?? item.warehouse_name);
   if (!warehouseId || !name) {
     throw new OzonIncompleteResponseError(
@@ -628,14 +653,60 @@ function toWarehouseRow(
     ozon_warehouse_id: warehouseId,
     name,
     fulfillment_schema: toStringValue(
-      item.fulfillment_schema ?? item.warehouse_type ?? item.type
+      item.is_rfbs === true
+        ? "rfbs"
+        : item.is_rfbs === false
+          ? "fbs"
+          : item.fulfillment_schema ?? item.warehouse_type ?? item.type
     ),
-    status: toStringValue(item.status),
+    status:
+      toStringValue(item.status) ??
+      (item.is_active === true
+        ? "active"
+        : item.is_active === false
+          ? "inactive"
+          : null),
     raw_payload: sanitizeOzonPayload(item),
     local_warehouse_id: mappingResult.localId,
     mapping_status: mappingResult.status,
     synced_at: new Date().toISOString(),
   };
+}
+
+async function ensureReferencedWarehouse(
+  supabase: SupabaseClient,
+  workspaceId: string,
+  connectionId: string,
+  mapping: MappingContext,
+  warehouseId: string | null,
+  warehouseName: string | null,
+  fulfillmentSchema: string,
+  runId?: string
+) {
+  if (!warehouseId || !warehouseName) return;
+  const row = {
+    ...toWarehouseRow(
+      {
+        warehouse_id: warehouseId,
+        name: warehouseName,
+        warehouse_type: fulfillmentSchema,
+        status: "referenced",
+      },
+      workspaceId,
+      connectionId,
+      mapping
+    ),
+    ...ozonMirrorProvenance(runId),
+  };
+  const { error } = await supabase
+    .from("ozon_warehouses")
+    .upsert(row, {
+      onConflict: "connection_id,ozon_warehouse_id",
+      ignoreDuplicates: true,
+    });
+  if (error) {
+    throw ozonDatabaseError(error, "upsert:ozon_referenced_warehouse");
+  }
 }
 
 async function syncProducts(
@@ -905,9 +976,7 @@ async function fetchProductAttributes(
 
 function toProductRef(value: unknown): ExternalProductRef | null {
   const item = toRecord(value);
-  const ozonProductId = toStringValue(
-    item.product_id ?? item.id ?? item.sku ?? item.offer_id
-  );
+  const ozonProductId = toStringValue(item.product_id);
   if (!ozonProductId) return null;
 
   return {
@@ -1080,11 +1149,14 @@ function toStockRows(
   runId?: string
 ) {
   const item = toRecord(value);
-  const ozonProductId = toStringValue(
-    item.product_id ?? item.id ?? item.sku ?? item.offer_id
-  );
+  const ozonProductId = toStringValue(item.product_id);
   const offerId = toStringValue(item.offer_id);
   const sku = toStringValue(item.sku);
+  if (!ozonProductId) {
+    throw new OzonIncompleteResponseError(
+      "Ozon product stock row has no product_id"
+    );
+  }
   const stockItems = decodeProductStockEntries(item);
 
   return stockItems.map((stock) => {
@@ -1279,12 +1351,22 @@ async function upsertPosting(
   const warehouseId = toStringValue(
     schema === "fbo"
       ? analyticsData.warehouse_id
-      : analyticsData.warehouse_id ?? warehouseName
+      : analyticsData.warehouse_id
   );
   const localWarehouseId = findLocalWarehouseId(
     mapping,
     warehouseId,
     warehouseName
+  );
+  await ensureReferencedWarehouse(
+    supabase,
+    workspaceId,
+    connectionId,
+    mapping,
+    warehouseId,
+    warehouseName,
+    schema,
+    runId
   );
 
   const postingRow = {
@@ -1713,6 +1795,16 @@ async function upsertReturn(
     warehouseId,
     warehouseName
   );
+  await ensureReferencedWarehouse(
+    supabase,
+    workspaceId,
+    connectionId,
+    mapping,
+    warehouseId,
+    warehouseName,
+    source === "rfbs" ? "rfbs_return" : "return",
+    runId
+  );
 
   const returnRow = {
     workspace_id: workspaceId,
@@ -1823,8 +1915,7 @@ export function decodeOzonReturn(
   const warehouseId = toStringValue(
     item.warehouse_id ??
       returnPlace.warehouse_id ??
-      returnPlace.id ??
-      warehouseName
+      returnPlace.id
   );
   const price =
     source === "fbo_fbs"
@@ -2916,31 +3007,29 @@ async function syncBuyoutRows(
       "/v1/finance/products/buyout"
     );
     const rows = products.map((product) => {
-        const item = toRecord(product);
-        const id =
-          [
-            "buyout",
-            toStringValue(item.posting_number),
-            toStringValue(item.offer_id ?? item.sku),
-            window.from,
-            window.to,
-          ]
-            .filter(Boolean)
-            .join(":") || `buyout:${stableHash(item).slice(0, 24)}`;
-        return {
-          workspace_id: workspaceId,
-          connection_id: connectionId,
-          external_id: id,
-          report_type: "buyout",
-          period_start: window.from,
-          period_end: window.to,
-          amount: decimalString(item.amount ?? item.buyout_price),
-          currency_code: toStringValue(item.currency_code ?? item.currency),
-          raw_payload: sanitizeOzonPayload(item),
-          synced_at: new Date().toISOString(),
-          ...ozonMirrorProvenance(execution?.runId),
-        };
-      });
+      const item = toRecord(product);
+      const postingNumber = toStringValue(item.posting_number);
+      const productIdentity = toStringValue(item.sku ?? item.offer_id);
+      if (!postingNumber || !productIdentity) {
+        throw new OzonIncompleteResponseError(
+          "Ozon buyout row has no posting_number or product identity"
+        );
+      }
+      const id = `buyout:${postingNumber}:${productIdentity}`;
+      return {
+        workspace_id: workspaceId,
+        connection_id: connectionId,
+        external_id: id,
+        report_type: "buyout",
+        period_start: window.from,
+        period_end: window.to,
+        amount: decimalString(item.amount ?? item.buyout_price),
+        currency_code: toStringValue(item.currency_code ?? item.currency),
+        raw_payload: sanitizeOzonPayload(item),
+        synced_at: new Date().toISOString(),
+        ...ozonMirrorProvenance(execution?.runId),
+      };
+    });
     await persistFinanceReportRows(supabase, rows);
     persisted += rows.length;
     await execution?.saveCheckpoint?.(
@@ -3015,6 +3104,16 @@ async function syncRemovals(
           workspaceId,
           connectionId,
           mapping,
+          execution?.runId
+        );
+        await ensureReferencedWarehouse(
+          supabase,
+          workspaceId,
+          connectionId,
+          mapping,
+          toStringValue(row.ozon_warehouse_id),
+          toStringValue(row.warehouse_name),
+          source.type,
           execution?.runId
         );
         const { data, error } = await supabase
@@ -3092,21 +3191,39 @@ function toRemovalRow(
   const offerId = toStringValue(item.offer_id ?? product.offer_id);
   const sku = toStringValue(item.sku ?? product.sku);
   const warehouseName = toStringValue(
-    item.warehouse_name ?? warehouse.name ?? warehouse.warehouse_name
+    item.destination_warehouse_name ??
+      item.clearing_warehouse_name ??
+      item.warehouse_name ??
+      warehouse.name ??
+      warehouse.warehouse_name
   );
   const warehouseId = toStringValue(
-    item.warehouse_id ?? warehouse.id ?? warehouse.warehouse_id ?? warehouseName
+    item.warehouse_id ?? warehouse.id ?? warehouse.warehouse_id
   );
+  const returnId = toStringValue(item.return_id ?? item.return_number);
+  const boxId = toStringValue(item.box_id ?? item.return_box_id);
+  const directExternalId = toStringValue(
+    item.id ?? item.removal_id ?? item.posting_number
+  );
+  if (
+    !directExternalId &&
+    (!returnId || !boxId || !(sku ?? offerId))
+  ) {
+    throw new OzonIncompleteResponseError(
+      "Ozon removal row has no documented identity"
+    );
+  }
   const externalId =
-    toStringValue(item.id ?? item.removal_id ?? item.posting_number) ??
-    `${removalType}:${stableHash(item).slice(0, 24)}`;
+    directExternalId ?? [returnId, boxId, sku ?? offerId].join(":");
 
   return {
     workspace_id: workspaceId,
     connection_id: connectionId,
     external_id: `${removalType}:${externalId}`,
     removal_type: removalType,
-    status: toStringValue(item.state ?? item.status),
+    status: toStringValue(
+      item.return_state ?? item.box_state ?? item.state ?? item.status
+    ),
     reason: toStringValue(item.stock_type ?? item.reason),
     event_date: toIsoString(
       item.utilization_date ??
@@ -3129,8 +3246,8 @@ function toRemovalRow(
     currency_code:
       moneyCurrency(item.preliminary_delivery_price) ??
       toStringValue(item.currency_code ?? item.currency),
-    return_id: toStringValue(item.return_id ?? item.return_number),
-    box_id: toStringValue(item.box_id ?? item.return_box_id),
+    return_id: returnId,
+    box_id: boxId,
     stock_type: toStringValue(item.stock_type),
     delivery_date: toIsoString(item.delivery_date),
     given_out_date: toIsoString(item.given_out_date),
@@ -3390,6 +3507,16 @@ async function persistSupplyOrder(
     mapping,
     runId
   );
+  await ensureReferencedWarehouse(
+    supabase,
+    workspaceId,
+    connectionId,
+    mapping,
+    toStringValue(orderRow.ozon_warehouse_id),
+    toStringValue(orderRow.warehouse_name),
+    "supply",
+    runId
+  );
   const bundleRows = await fetchSupplyItems(
     client,
     { ...orderRow, id: PERSISTENCE_PLACEHOLDER_ID },
@@ -3398,6 +3525,18 @@ async function persistSupplyOrder(
     mapping,
     runId
   );
+  for (const row of bundleRows) {
+    await ensureReferencedWarehouse(
+      supabase,
+      workspaceId,
+      connectionId,
+      mapping,
+      toStringValue(row.ozon_storage_warehouse_id),
+      toStringValue(row.storage_warehouse_name),
+      "supply",
+      runId
+    );
+  }
   const { data: savedOrderId, error: replaceError } = await supabase.rpc(
     "replace_ozon_supply_order_with_items_v2",
     {
@@ -3521,7 +3660,12 @@ function toSupplyOrderRow(
       item.dropoff_warehouse ??
       {}
   );
-  const orderId = toStringValue(item.order_id ?? item.id ?? item.supply_order_id);
+  const orderId = toStringValue(item.order_id);
+  if (!orderId) {
+    throw new OzonIncompleteResponseError(
+      "Ozon supply order has no order_id"
+    );
+  }
   const warehouseName = toStringValue(
     primarySupply.storage_warehouse_name ??
       item.warehouse_name ??
@@ -3531,9 +3675,7 @@ function toSupplyOrderRow(
   const warehouseId = toStringValue(
     primarySupply.storage_warehouse_id ??
       item.warehouse_id ??
-      warehouse.id ??
-      warehouse.warehouse_id ??
-      warehouseName
+      warehouse.warehouse_id
   );
 
   return {
@@ -3588,10 +3730,10 @@ async function fetchSupplyItems(
       const response = await client.request<JsonRecord>(
         "/v1/supply-order/bundle",
         {
-        bundle_ids: [bundleId],
-        last_id: lastId,
-        limit: 100,
-        is_asc: true,
+          bundle_ids: [bundleId],
+          last_id: lastId,
+          limit: 100,
+          is_asc: true,
         }
       );
       const root = unwrapResult(response);
@@ -3685,15 +3827,13 @@ function toSupplyItemRow(
     ),
     ozon_storage_warehouse_id: toStringValue(
       supply.storage_warehouse_id ??
-        toRecord(supply.storage_warehouse).warehouse_id ??
-        toRecord(supply.storage_warehouse).id
+        toRecord(supply.storage_warehouse).warehouse_id
     ),
     local_destination_warehouse_id: findLocalWarehouseId(
       mapping,
       toStringValue(
         supply.storage_warehouse_id ??
-          toRecord(supply.storage_warehouse).warehouse_id ??
-          toRecord(supply.storage_warehouse).id
+          toRecord(supply.storage_warehouse).warehouse_id
       ),
       toStringValue(
         supply.storage_warehouse_name ??
@@ -3769,9 +3909,12 @@ function buildSupplyTransferCandidates(order: JsonRecord, items: JsonRecord[]) {
     };
     const normalizedOperation = normalizeOzonCandidateOperation(operation);
     const validationErrors = validateOzonCandidateOperation(normalizedOperation);
-    const itemExternalId =
-      toStringValue(item.external_id ?? item.ozon_product_id ?? item.sku) ??
-      stableHash(item).slice(0, 16);
+    const itemExternalId = toStringValue(item.external_id);
+    if (!itemExternalId) {
+      throw new OzonInvariantError(
+        "Ozon persisted supply item has no documented identity"
+      );
+    }
 
     return [{
       workspace_id: order.workspace_id,
@@ -3838,6 +3981,16 @@ async function syncStockAnalytics(
           connectionId,
           mapping,
           snapshotDate,
+          execution?.runId
+        );
+        await ensureReferencedWarehouse(
+          supabase,
+          workspaceId,
+          connectionId,
+          mapping,
+          toStringValue(row.ozon_warehouse_id),
+          toStringValue(row.warehouse_name),
+          "fbo",
           execution?.runId
         );
         const { error } = await supabase
@@ -3922,18 +4075,45 @@ async function loadOzonProductRefs(
   workspaceId: string,
   connectionId: string
 ) {
-  const { data, error } = await supabase
-    .from("ozon_products")
-    .select(
-      "ozon_product_id, offer_id, sku, name, price, raw_payload, local_product_id"
-    )
-    .eq("workspace_id", workspaceId)
-    .eq("connection_id", connectionId);
-  if (error) throw ozonDatabaseError(error, "select:ozon_products");
-  return (data || []) as JsonRecord[];
+  return loadSupabaseRows<JsonRecord>(
+    "select:ozon_products",
+    (from, to) =>
+      supabase
+        .from("ozon_products")
+        .select(
+          "ozon_product_id, offer_id, sku, name, price, raw_payload, local_product_id"
+        )
+        .eq("workspace_id", workspaceId)
+        .eq("connection_id", connectionId)
+        .order("ozon_product_id", { ascending: true })
+        .range(from, to)
+  );
 }
 
-function toStockAnalyticsRow(
+export async function loadSupabaseRows<T>(
+  operation: string,
+  loadPage: (
+    from: number,
+    to: number
+  ) => PromiseLike<{
+    data: T[] | null;
+    error: { code?: string | null } | null;
+  }>
+) {
+  const rows: T[] = [];
+  for (let from = 0; ; from += SUPABASE_READ_PAGE_SIZE) {
+    const { data, error } = await loadPage(
+      from,
+      from + SUPABASE_READ_PAGE_SIZE - 1
+    );
+    if (error) throw ozonDatabaseError(error, operation);
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < SUPABASE_READ_PAGE_SIZE) return rows;
+  }
+}
+
+export function toStockAnalyticsRow(
   value: unknown,
   workspaceId: string,
   connectionId: string,
@@ -3942,22 +4122,18 @@ function toStockAnalyticsRow(
   runId?: string
 ) {
   const item = toRecord(value);
-  const ozonProductId = toStringValue(item.product_id ?? item.sku);
   const offerId = toStringValue(item.offer_id);
   const sku = toStringValue(item.sku);
-  if (!sku) {
+  const warehouseId = toStringValue(item.warehouse_id);
+  const warehouseName = toStringValue(item.warehouse_name);
+  if (!sku || !warehouseId || !warehouseName) {
     throw new OzonIncompleteResponseError(
-      "Ozon analytics stock row has no sku"
+      "Ozon analytics stock row has no sku, warehouse_id, or warehouse_name"
     );
   }
   const clusterId = toStringValue(item.cluster_id);
-  const externalId =
-    [
-      toStringValue(item.id ?? item.sku ?? item.product_id),
-      clusterId,
-    ]
-      .filter(Boolean)
-      .join(":") || `stock:${stableHash(item).slice(0, 24)}`;
+  const externalId = ["stock", sku, clusterId ?? "no-cluster", warehouseId]
+    .join(":");
   const validStockCount = requiredDecimal(
     item.valid_stock_count,
     "/v1/analytics/stocks",
@@ -3974,12 +4150,12 @@ function toStockAnalyticsRow(
     connection_id: connectionId,
     external_id: externalId,
     snapshot_date: snapshotDate,
-    ozon_product_id: ozonProductId,
+    ozon_product_id: sku,
     offer_id: offerId,
     sku,
     name: toStringValue(item.name ?? item.product_name),
-    warehouse_name: null,
-    ozon_warehouse_id: null,
+    warehouse_name: warehouseName,
+    ozon_warehouse_id: warehouseId,
     cluster_id: clusterId,
     macrolocal_cluster_id: toStringValue(item.macrolocal_cluster_id),
     stock: validStockCount,
@@ -4008,8 +4184,12 @@ function toStockAnalyticsRow(
     turnover_grade: toStringValue(item.turnover_grade),
     turnover_grade_cluster: toStringValue(item.turnover_grade_cluster),
     raw_payload: sanitizeOzonPayload(item),
-    local_product_id: findLocalProductId(mapping, ozonProductId, [offerId, sku]),
-    local_warehouse_id: null,
+    local_product_id: findLocalProductId(mapping, sku, [offerId]),
+    local_warehouse_id: findLocalWarehouseId(
+      mapping,
+      warehouseId,
+      warehouseName
+    ),
     synced_at: new Date().toISOString(),
     ...ozonMirrorProvenance(runId),
   };
@@ -4024,22 +4204,18 @@ function toTurnoverAnalyticsRow(
   runId?: string
 ) {
   const item = toRecord(value);
-  const ozonProductId = toStringValue(item.product_id ?? item.sku);
   const sku = toStringValue(item.sku);
   if (!sku) {
     throw new OzonIncompleteResponseError(
       "Ozon turnover stock row has no sku"
     );
   }
-  const externalId =
-    toStringValue(item.id ?? item.sku ?? item.product_id) ??
-    `turnover:${stableHash(item).slice(0, 24)}`;
   return {
     workspace_id: workspaceId,
     connection_id: connectionId,
-    external_id: externalId,
+    external_id: sku,
     snapshot_date: snapshotDate,
-    ozon_product_id: ozonProductId,
+    ozon_product_id: sku,
     sku,
     offer_id: toStringValue(item.offer_id),
     name: toStringValue(item.name ?? item.product_name),
@@ -4051,7 +4227,9 @@ function toTurnoverAnalyticsRow(
     turnover: decimalString(item.turnover),
     turnover_grade: toStringValue(item.turnover_grade),
     raw_payload: sanitizeOzonPayload(item),
-    local_product_id: findLocalProductId(mapping, ozonProductId, [sku]),
+    local_product_id: findLocalProductId(mapping, sku, [
+      toStringValue(item.offer_id),
+    ]),
     synced_at: new Date().toISOString(),
     ...ozonMirrorProvenance(runId),
   };
@@ -4138,12 +4316,15 @@ export function selectDiscountedSkus(products: JsonRecord[]) {
 
 interface DiscountedReportRuntime {
   now: () => number;
-  fetchText: (url: string, executionSignal?: AbortSignal) => Promise<string>;
+  fetchReport: (
+    url: string,
+    executionSignal?: AbortSignal
+  ) => Promise<string | Uint8Array>;
 }
 
 const DEFAULT_DISCOUNTED_REPORT_RUNTIME: DiscountedReportRuntime = {
   now: Date.now,
-  fetchText: downloadOzonReportText,
+  fetchReport: downloadOzonReportBytes,
 };
 
 export async function discoverDiscountedSkus(
@@ -4216,8 +4397,8 @@ export async function discoverDiscountedSkus(
     );
   }
 
-  return extractDiscountedSkusFromReportCsv(
-    await runtime.fetchText(fileUrl, client.executionAbortSignal?.())
+  return extractDiscountedSkusFromReport(
+    await runtime.fetchReport(fileUrl, client.executionAbortSignal?.())
   );
 }
 
@@ -4277,6 +4458,189 @@ export function extractDiscountedSkusFromReportCsv(text: string) {
   return [...skus];
 }
 
+export function extractDiscountedSkusFromReport(
+  report: string | Uint8Array
+) {
+  if (typeof report === "string") {
+    return extractDiscountedSkusFromReportCsv(report);
+  }
+  if (report[0] === 0x50 && report[1] === 0x4b) {
+    return extractDiscountedSkusFromReportXlsx(report);
+  }
+  return extractDiscountedSkusFromReportCsv(strFromU8(report));
+}
+
+export function extractDiscountedSkusFromReportXlsx(report: Uint8Array) {
+  let expandedBytes = 0;
+  let files: ReturnType<typeof unzipSync>;
+  try {
+    files = unzipSync(report, {
+      filter(file) {
+        if (
+          file.name !== "xl/sharedStrings.xml" &&
+          file.name !== "xl/worksheets/sheet1.xml"
+        ) {
+          return false;
+        }
+        expandedBytes += file.originalSize;
+        if (expandedBytes > OZON_REPORT_DOWNLOAD_LIMIT_BYTES * 2) {
+          throw new OzonInvariantError(
+            "Ozon discounted report workbook is too large"
+          );
+        }
+        return true;
+      },
+    });
+  } catch (error) {
+    if (error instanceof OzonInvariantError) throw error;
+    throw new OzonInvariantError(
+      "Ozon discounted report workbook is invalid"
+    );
+  }
+  const worksheet = files["xl/worksheets/sheet1.xml"];
+  if (!worksheet) {
+    throw new OzonInvariantError(
+      "Ozon discounted report workbook has no worksheet"
+    );
+  }
+
+  const sharedStrings = files["xl/sharedStrings.xml"]
+    ? parseXlsxSharedStrings(strFromU8(files["xl/sharedStrings.xml"]))
+    : [];
+  const worksheetXml = strFromU8(worksheet);
+  const rows = parseXlsxRows(worksheetXml, sharedStrings);
+  applyXlsxMergedCells(worksheetXml, rows);
+
+  const headerRows = [1, 2, 3];
+  const columns = new Set(
+    headerRows.flatMap((rowNumber) => [
+      ...(rows.get(rowNumber)?.keys() ?? []),
+    ])
+  );
+  const discountedSkuColumn = [...columns].find((column) => {
+    const header = headerRows
+      .map((rowNumber) => rows.get(rowNumber)?.get(column) ?? "")
+      .join(" ");
+    return isDiscountedSkuHeader(header);
+  });
+  if (!discountedSkuColumn) {
+    throw new OzonInvariantError(
+      "Ozon discounted report has no discounted SKU column"
+    );
+  }
+
+  const skus = new Set<string>();
+  for (const [rowNumber, cells] of rows) {
+    if (rowNumber <= 3) continue;
+    const sku = cells.get(discountedSkuColumn)?.trim() ?? "";
+    if (/^\d+$/.test(sku)) skus.add(sku);
+  }
+  return [...skus];
+}
+
+function parseXlsxSharedStrings(xml: string) {
+  return [...xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)].map((match) =>
+    [...match[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)]
+      .map((value) => decodeXmlText(value[1]))
+      .join("")
+  );
+}
+
+function parseXlsxRows(xml: string, sharedStrings: string[]) {
+  const rows = new Map<number, Map<string, string>>();
+  let implicitRowNumber = 0;
+
+  for (const rowMatch of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/g)) {
+    implicitRowNumber += 1;
+    const rowNumber =
+      Number(xlsxAttribute(rowMatch[1], "r")) || implicitRowNumber;
+    const cells = new Map<string, string>();
+    for (const cellMatch of rowMatch[2].matchAll(
+      /<c\b([^>]*)>([\s\S]*?)<\/c>/g
+    )) {
+      const reference = xlsxAttribute(cellMatch[1], "r");
+      const column = reference?.match(/^[A-Z]+/)?.[0];
+      if (!column) continue;
+      const type = xlsxAttribute(cellMatch[1], "t");
+      const rawValue = cellMatch[2].match(/<v\b[^>]*>([\s\S]*?)<\/v>/)?.[1];
+      const inlineValue = [
+        ...cellMatch[2].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g),
+      ]
+        .map((match) => decodeXmlText(match[1]))
+        .join("");
+      const value =
+        type === "s" && rawValue !== undefined
+          ? sharedStrings[Number(rawValue)] ?? ""
+          : inlineValue || decodeXmlText(rawValue ?? "");
+      cells.set(column, value);
+    }
+    rows.set(rowNumber, cells);
+  }
+  return rows;
+}
+
+function applyXlsxMergedCells(
+  xml: string,
+  rows: Map<number, Map<string, string>>
+) {
+  for (const match of xml.matchAll(/<mergeCell\b[^>]*\bref="([^"]+)"/g)) {
+    const [from, to] = match[1].split(":");
+    const fromMatch = from?.match(/^([A-Z]+)(\d+)$/);
+    const toMatch = to?.match(/^([A-Z]+)(\d+)$/);
+    if (!fromMatch || !toMatch) continue;
+    const fromColumn = xlsxColumnNumber(fromMatch[1]);
+    const toColumn = xlsxColumnNumber(toMatch[1]);
+    const fromRow = Number(fromMatch[2]);
+    const toRow = Number(toMatch[2]);
+    const value = rows.get(fromRow)?.get(fromMatch[1]) ?? "";
+    for (let row = fromRow; row <= toRow; row += 1) {
+      const cells = rows.get(row) ?? new Map<string, string>();
+      rows.set(row, cells);
+      for (let column = fromColumn; column <= toColumn; column += 1) {
+        cells.set(xlsxColumnName(column), value);
+      }
+    }
+  }
+}
+
+function xlsxAttribute(attributes: string, name: string) {
+  return attributes.match(
+    new RegExp(`(?:^|\\s)${name}=(?:"([^"]*)"|'([^']*)')`)
+  )?.slice(1).find((value) => value !== undefined);
+}
+
+function xlsxColumnNumber(value: string) {
+  return [...value].reduce(
+    (number, character) => number * 26 + character.charCodeAt(0) - 64,
+    0
+  );
+}
+
+function xlsxColumnName(value: number) {
+  let column = "";
+  for (let number = value; number > 0; number = Math.floor((number - 1) / 26)) {
+    column = String.fromCharCode(((number - 1) % 26) + 65) + column;
+  }
+  return column;
+}
+
+function decodeXmlText(value: string) {
+  return value.replace(
+    /&(?:#(\d+)|#x([0-9a-f]+)|amp|apos|gt|lt|quot);/gi,
+    (entity, decimal: string | undefined, hexadecimal: string | undefined) => {
+      if (decimal) return String.fromCodePoint(Number(decimal));
+      if (hexadecimal) return String.fromCodePoint(Number.parseInt(hexadecimal, 16));
+      return {
+        "&amp;": "&",
+        "&apos;": "'",
+        "&gt;": ">",
+        "&lt;": "<",
+        "&quot;": '"',
+      }[entity.toLowerCase()] ?? entity;
+    }
+  );
+}
+
 function isDiscountedSkuHeader(value: string) {
   const header = value
     .normalize("NFKC")
@@ -4304,6 +4668,16 @@ const DEFAULT_OZON_REPORT_DOWNLOAD_RUNTIME: OzonReportDownloadRuntime = {
 };
 
 export async function downloadOzonReportText(
+  url: string,
+  executionSignal?: AbortSignal,
+  runtime: OzonReportDownloadRuntime = DEFAULT_OZON_REPORT_DOWNLOAD_RUNTIME
+) {
+  return strFromU8(
+    await downloadOzonReportBytes(url, executionSignal, runtime)
+  );
+}
+
+export async function downloadOzonReportBytes(
   url: string,
   executionSignal?: AbortSignal,
   runtime: OzonReportDownloadRuntime = DEFAULT_OZON_REPORT_DOWNLOAD_RUNTIME
@@ -4349,7 +4723,7 @@ export async function downloadOzonReportText(
         throw new OzonReportDownloadError(response.status);
       }
 
-      return readBoundedOzonReportText(
+      return readBoundedOzonReportBytes(
         response,
         runtime.maxBytes ?? OZON_REPORT_DOWNLOAD_LIMIT_BYTES
       );
@@ -4400,7 +4774,7 @@ function isRedirectResponse(status: number) {
   return [301, 302, 303, 307, 308].includes(status);
 }
 
-async function readBoundedOzonReportText(
+async function readBoundedOzonReportBytes(
   response: Response,
   maxBytes: number
 ) {
@@ -4410,12 +4784,11 @@ async function readBoundedOzonReportText(
     throw new OzonInvariantError("Ozon discounted report is too large");
   }
 
-  if (!response.body) return "";
+  if (!response.body) return new Uint8Array();
 
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
   let byteCount = 0;
-  let text = "";
+  const chunks: Uint8Array[] = [];
 
   try {
     while (true) {
@@ -4426,9 +4799,15 @@ async function readBoundedOzonReportText(
         await reader.cancel();
         throw new OzonInvariantError("Ozon discounted report is too large");
       }
-      text += decoder.decode(value, { stream: true });
+      chunks.push(value);
     }
-    return text + decoder.decode();
+    const report = new Uint8Array(byteCount);
+    let offset = 0;
+    for (const chunk of chunks) {
+      report.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return report;
   } finally {
     reader.releaseLock();
   }
@@ -4852,7 +5231,9 @@ function isCancelledStatus(status: string) {
 }
 
 function isReturnReceivedBySellerStatus(status: string) {
-  return status.replace(/[^a-z0-9]/g, "") === "returnedtoseller";
+  return ["receivedbyseller", "returnedtoseller"].includes(
+    status.replace(/[^a-z0-9]/g, "")
+  );
 }
 
 function mappingStatus(value: unknown): ExistingMapping["status"] {

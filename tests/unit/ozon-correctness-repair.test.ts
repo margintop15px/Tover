@@ -19,6 +19,7 @@ import {
   OzonReportDownloadError,
   splitCashFlowPeriods,
   splitDateWindows,
+  toStockAnalyticsRow,
 } from "../../src/lib/ozon/sync";
 import { getReportTableRows } from "../../src/lib/reports/report-display";
 import { buildReportUrl } from "../../src/lib/reports/report-runner";
@@ -40,6 +41,20 @@ const migration022 = readFileSync(
 const repairRetryMigration = readFileSync(
   new URL(
     "../../supabase/migrations/20260727133620_ozon_repair_retry_scheduled_steps.sql",
+    import.meta.url
+  ),
+  "utf8"
+);
+const liveContractMigration = readFileSync(
+  new URL(
+    "../../supabase/migrations/20260727190000_ozon_live_contract_fixes.sql",
+    import.meta.url
+  ),
+  "utf8"
+);
+const warehouseIdentityMigration = readFileSync(
+  new URL(
+    "../../supabase/migrations/20260727203000_ozon_relevant_warehouse_identity.sql",
     import.meta.url
   ),
   "utf8"
@@ -218,7 +233,7 @@ test("return decoders preserve official identifiers, money, and explicit complet
         id: "9223372036854775807",
         posting_number: "FBO-1",
         schema: "FBO",
-        visual: { status: { sys_name: "ReturnedToSeller" } },
+        visual: { status: { sys_name: "ReceivedBySeller" } },
         logistic: {
           return_date: "2026-07-26T10:00:00Z",
           final_moment: "2026-07-27T10:00:00Z",
@@ -238,7 +253,7 @@ test("return decoders preserve official identifiers, money, and explicit complet
     {
       returnId: "9223372036854775807",
       postingNumber: "FBO-1",
-      status: "ReturnedToSeller",
+      status: "ReceivedBySeller",
       schema: "FBO",
       logisticReturnDate: "2026-07-26T10:00:00.000Z",
       logisticFinalMoment: "2026-07-27T10:00:00.000Z",
@@ -272,6 +287,52 @@ test("return decoders preserve official identifiers, money, and explicit complet
   assert.equal(rfbs.quantity, null);
   assert.equal(rfbs.returnedAt, null);
   assert.equal(rfbs.price, "7.1");
+});
+
+test("stock analytics identity includes the official SKU, cluster, and warehouse", () => {
+  const row = toStockAnalyticsRow(
+    {
+      sku: "9223372036854775807",
+      offer_id: "OFFER-1",
+      name: "Product",
+      cluster_id: "100",
+      warehouse_id: "200",
+      warehouse_name: "Ozon warehouse",
+      valid_stock_count: 3,
+      available_stock_count: 2,
+      requested_stock_count: 1,
+    },
+    "workspace-1",
+    "connection-1",
+    {
+      productsByExternalKey: new Map([
+        [
+          "offer-1",
+          { id: "product-1", name: "Product", sku_code: "OFFER-1" },
+        ],
+      ]),
+      warehousesByName: new Map([
+        [
+          "ozon warehouse",
+          { id: "warehouse-1", name: "Ozon warehouse" },
+        ],
+      ]),
+      ozonProductMappings: new Map(),
+      ozonWarehouseMappings: new Map(),
+    },
+    "2026-07-27"
+  );
+
+  assert.equal(row.external_id, "stock:9223372036854775807:100:200");
+  assert.equal(row.ozon_product_id, "9223372036854775807");
+  assert.equal(row.ozon_warehouse_id, "200");
+  assert.equal(row.warehouse_name, "Ozon warehouse");
+  assert.equal(row.valid_stock_count, "3");
+  assert.equal(row.available_stock_count, "2");
+  assert.equal(row.requested_stock_count, "1");
+  assert.equal(row.reserved_stock, null);
+  assert.equal(row.local_product_id, "product-1");
+  assert.equal(row.local_warehouse_id, "warehouse-1");
 });
 
 test("failure count alone controls the durable retry schedule", () => {
@@ -426,5 +487,51 @@ test("migration 022 atomically validates evidence, mappings, and transfer symmet
   assert.match(
     migration022,
     /DROP POLICY IF EXISTS "operation_items_write_admin"[\s\S]*CREATE POLICY "operation_items_insert_admin_v2"[\s\S]*CREATE POLICY "operation_items_update_admin_v2"[\s\S]*CREATE POLICY "operation_items_delete_admin_v2"/
+  );
+});
+
+test("live contract migration hides global warehouse noise and supports fresh service workers", () => {
+  assert.match(
+    liveContractMigration,
+    /CREATE OR REPLACE FUNCTION public\.ozon_relevant_warehouse_counts/
+  );
+  assert.match(
+    liveContractMigration,
+    /ozon_returns[\s\S]*ozon_postings[\s\S]*ozon_removals[\s\S]*ozon_supply_orders[\s\S]*ozon_supply_order_items[\s\S]*ozon_stock_analytics/
+  );
+  assert.match(
+    liveContractMigration,
+    /lower\(COALESCE\(warehouse\.fulfillment_schema, ''\)\) IN \('fbs', 'rfbs'\)/
+  );
+  assert.match(
+    liveContractMigration,
+    /GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO service_role/
+  );
+  assert.match(
+    liveContractMigration,
+    /CREATE OR REPLACE FUNCTION public\.claim_ozon_sync_run_step_v2[\s\S]*pg_advisory_xact_lock[\s\S]*ozon-sync-step-claim/
+  );
+  assert.match(
+    liveContractMigration,
+    /WHEN serialization_failure THEN\s+RAISE EXCEPTION 'Ozon sync step lease is stale' USING ERRCODE = '55000'/
+  );
+});
+
+test("warehouse relevance uses a name fallback only without source identity", () => {
+  assert.match(
+    warehouseIdentityMigration,
+    /IN \(\s*'fbs', 'rfbs', 'fbo_seller'\s*\)/
+  );
+  assert.match(
+    warehouseIdentityMigration,
+    /reference\.ozon_warehouse_id IS NOT NULL[\s\S]*reference\.ozon_warehouse_id = warehouse\.ozon_warehouse_id/
+  );
+  assert.match(
+    warehouseIdentityMigration,
+    /reference\.ozon_warehouse_id IS NULL[\s\S]*lower\(trim\(reference\.warehouse_name\)\) =\s+lower\(trim\(warehouse\.name\)\)/
+  );
+  assert.match(
+    warehouseIdentityMigration,
+    /ALTER FUNCTION public\._sanitize_ozon_sync_step_error\(JSONB\) STABLE/
   );
 });

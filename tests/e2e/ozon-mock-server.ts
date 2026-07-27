@@ -1,4 +1,5 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { strToU8, zipSync } from "fflate";
 
 export interface OzonMockProduct {
   productId: string;
@@ -143,15 +144,12 @@ export async function startOzonMockServer(
 
   const server = http.createServer(async (request, response) => {
     const path = new URL(request.url || "/", url).pathname;
-    if (request.method === "GET" && path === "/reports/discounted.csv") {
-      writeText(
+    if (request.method === "GET" && path === "/reports/discounted.xlsx") {
+      writeBytes(
         response,
         200,
-        [
-          "SKU основного товара;SKU уценённого товара",
-          `${fixture.autoProduct.sku};${fixture.discountedSku}`,
-        ].join("\n"),
-        "text/csv; charset=utf-8"
+        discountedReportWorkbook(fixture),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       );
       return;
     }
@@ -244,8 +242,16 @@ function responseFor(
           cursor: "",
         },
       };
-    case "/v1/warehouse/ozon/list":
-      return { result: { warehouses: [] } };
+    case "/v1/warehouse/fbo/seller/list":
+      return {
+        warehouses: [
+          {
+            seller_warehouse_id: fixture.autoWarehouse.id,
+            seller_warehouse_name: fixture.autoWarehouse.name,
+            is_active: true,
+          },
+        ],
+      };
     case "/v3/product/list":
       return {
         result: {
@@ -321,12 +327,14 @@ function responseFor(
     case "/v1/finance/accrual/by-day":
       return {
         accruals:
-          body.date === "2099-05-02" && !body.last_id
+          (body.date === "2099-05-02" ||
+            body.date === new Date().toISOString().slice(0, 10)) &&
+          !body.last_id
             ? [
                 {
                   accrual_id: fixture.financeTransactionId,
                   accrued_category: "SERVICES",
-                  date: "2099-05-02",
+                  date: body.date,
                   type_id: 101,
                   total_amount: { amount: "-2.50", currency: "RUB" },
                   posting: {
@@ -419,7 +427,7 @@ function responseFor(
               code: `DISCOUNTED-${fixture.runId}`,
               status: "success",
               error: "",
-              file: `${ozonMockBaseUrl()}/reports/discounted.csv`,
+              file: `${ozonMockBaseUrl()}/reports/discounted.xlsx`,
               report_type: "SELLER_DISCOUNTED",
               created_at: new Date().toISOString(),
             },
@@ -436,7 +444,7 @@ function responseFor(
             code: body.code,
             status: "success",
             error: "",
-            file: `${ozonMockBaseUrl()}/reports/discounted.csv`,
+            file: `${ozonMockBaseUrl()}/reports/discounted.xlsx`,
             report_type: "SELLER_DISCOUNTED",
             created_at: new Date().toISOString(),
           },
@@ -748,7 +756,7 @@ function returnsList(fixture: OzonMockFixture) {
       id: fixture.returnId,
       posting_number: fixture.fboPostingNumber,
       schema: "FBO",
-      visual: { status: { sys_name: "ReturnedToSeller" } },
+      visual: { status: { sys_name: "ReceivedBySeller" } },
       logistic: {
         return_date: "2099-05-03T10:00:00.000Z",
         final_moment: "2099-05-03T12:00:00.000Z",
@@ -797,12 +805,44 @@ function writeJson(
   response.end(JSON.stringify(value));
 }
 
-function writeText(
+function writeBytes(
   response: ServerResponse,
   status: number,
-  value: string,
+  value: Uint8Array,
   contentType: string
 ) {
   response.writeHead(status, { "Content-Type": contentType });
   response.end(value);
+}
+
+function discountedReportWorkbook(fixture: OzonMockFixture) {
+  const sharedStrings = [
+    "FBO Ozon SKU",
+    "исходный товар",
+    "уцененный товар",
+    "Для исходного товара",
+    "Для уцененного товара",
+  ];
+  const sharedStringsXml = [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+    ...sharedStrings.map((value) => `<si><t>${value}</t></si>`),
+    "</sst>",
+  ].join("");
+  const worksheetXml = [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+    "<sheetData>",
+    '<row r="1"><c r="B1" t="s"><v>0</v></c><c r="C1" t="inlineStr"><is><t></t></is></c></row>',
+    '<row r="2"><c r="B2" t="s"><v>1</v></c><c r="C2" t="s"><v>2</v></c></row>',
+    '<row r="3"><c r="B3" t="s"><v>3</v></c><c r="C3" t="s"><v>4</v></c></row>',
+    `<row r="4"><c r="B4"><v>${fixture.autoProduct.sku}</v></c><c r="C4"><v>${fixture.discountedSku}</v></c></row>`,
+    "</sheetData>",
+    '<mergeCells count="1"><mergeCell ref="B1:C1"/></mergeCells>',
+    "</worksheet>",
+  ].join("");
+  return zipSync({
+    "xl/sharedStrings.xml": strToU8(sharedStringsXml),
+    "xl/worksheets/sheet1.xml": strToU8(worksheetXml),
+  });
 }

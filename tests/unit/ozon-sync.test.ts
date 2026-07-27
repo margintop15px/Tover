@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { strToU8, zipSync } from "fflate";
 
 import {
   OzonApiError,
   OzonClient,
   OzonIncompleteResponseError,
   OzonInvariantError,
+  OZON_READ_ONLY_ENDPOINTS,
 } from "../../src/lib/ozon/client";
 import * as sync from "../../src/lib/ozon/sync";
 import {
@@ -43,7 +45,10 @@ type DiscoverDiscountedSkus = (
   },
   runtime: {
     now: () => number;
-    fetchText: (url: string, signal?: AbortSignal) => Promise<string>;
+    fetchReport: (
+      url: string,
+      signal?: AbortSignal
+    ) => Promise<string | Uint8Array>;
   } | undefined
 ) => Promise<string[]>;
 
@@ -99,13 +104,38 @@ const isMissingFinanceDocumentError = (sync as unknown as {
   isMissingFinanceDocumentError: (error: unknown) => boolean;
 }).isMissingFinanceDocumentError;
 
-test("Ozon warehouse request includes the required location types", () => {
-  assert.deepEqual(sync.OZON_WAREHOUSE_TYPES, [
-    "FULL_FILLMENT",
-    "FULL_FILLMENT_RETURNS",
-    "FULL_FILLMENT_DEFECT",
-    "EXPRESS_DARK_STORE",
+test("warehouse allowlist uses only seller-account endpoints", () => {
+  const endpoints = new Set<string>(OZON_READ_ONLY_ENDPOINTS);
+  assert.equal(
+    sync.OZON_SYNC_DOMAIN_REGISTRY[0]?.key,
+    "warehouses"
+  );
+  assert.equal(
+    endpoints.has("/v1/warehouse/fbo/seller/list"),
+    true
+  );
+  assert.equal(endpoints.has("/v1/warehouse/ozon/list"), false);
+});
+
+test("Supabase row loading continues beyond the Data API row limit", async () => {
+  const source = Array.from({ length: 2005 }, (_, index) => ({ id: index }));
+  const pages: Array<[number, number]> = [];
+
+  const rows = await sync.loadSupabaseRows("select:test", async (from, to) => {
+    pages.push([from, to]);
+    return {
+      data: source.slice(from, to + 1),
+      error: null,
+    };
+  });
+
+  assert.equal(rows.length, source.length);
+  assert.deepEqual(pages, [
+    [0, 999],
+    [1000, 1999],
+    [2000, 2999],
   ]);
+  assert.deepEqual(rows.at(-1), { id: 2004 });
 });
 
 test("returns list requests use numeric zero for the first int64 cursor", () => {
@@ -337,7 +367,7 @@ test("discoverDiscountedSkus reads authoritative discounted IDs from the latest 
 
   const skus = await discoverDiscountedSkus(client, {
     now: () => Date.parse("2026-07-27T00:05:00.000Z"),
-    fetchText: async (url) => {
+    fetchReport: async (url) => {
       downloadedUrls.push(url);
       return [
         "SKU основного товара;SKU уценённого товара",
@@ -363,6 +393,33 @@ test("discoverDiscountedSkus reads authoritative discounted IDs from the latest 
   assert.deepEqual(skus, ["635548518", "635548519"]);
 });
 
+test("discounted report parser reads Ozon's multi-row XLSX SKU column", () => {
+  assert.deepEqual(
+    sync.extractDiscountedSkusFromReportXlsx(
+      buildDiscountedReportWorkbook(["635548518", "635548519"])
+    ),
+    ["635548518", "635548519"]
+  );
+  assert.deepEqual(
+    sync.extractDiscountedSkusFromReportXlsx(
+      buildDiscountedReportWorkbook([])
+    ),
+    []
+  );
+});
+
+test("discounted report parser rejects a malformed workbook permanently", () => {
+  assert.throws(
+    () =>
+      sync.extractDiscountedSkusFromReportXlsx(
+        new Uint8Array([0x50, 0x4b, 0x03, 0x04])
+      ),
+    (error: unknown) =>
+      error instanceof OzonInvariantError &&
+      error.message === "Ozon discounted report workbook is invalid"
+  );
+});
+
 test("discoverDiscountedSkus passes the durable step deadline to the report download", async () => {
   const controller = new AbortController();
   let downloadSignal: AbortSignal | undefined;
@@ -386,7 +443,7 @@ test("discoverDiscountedSkus passes the durable step deadline to the report down
 
   await discoverDiscountedSkus(client, {
     now: () => Date.parse("2026-07-27T00:05:00.000Z"),
-    fetchText: async (_url, signal) => {
+    fetchReport: async (_url, signal) => {
       downloadSignal = signal;
       return [
         "SKU основного товара;SKU уценённого товара",
@@ -421,7 +478,7 @@ test("discoverDiscountedSkus creates a missing report and exposes processing as 
   await assert.rejects(
     discoverDiscountedSkus(client, {
       now: () => Date.parse("2026-07-27T00:05:00.000Z"),
-      fetchText: async () => {
+      fetchReport: async () => {
         throw new Error("report should not be downloaded while processing");
       },
     }),
@@ -990,3 +1047,39 @@ test("Ozon mock consumes per-path response sequences and records request counts 
     await mock.close();
   }
 });
+
+function buildDiscountedReportWorkbook(skus: string[]) {
+  const sharedStrings = [
+    "FBO Ozon SKU",
+    "исходный товар",
+    "уцененный товар",
+    "Для исходного товара",
+    "Для уцененного товара",
+  ];
+  const sharedStringsXml = [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+    ...sharedStrings.map((value) => `<si><t>${value}</t></si>`),
+    "</sst>",
+  ].join("");
+  const dataRows = skus.map(
+    (sku, index) =>
+      `<row r="${index + 4}"><c r="C${index + 4}"><v>${sku}</v></c></row>`
+  );
+  const worksheetXml = [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+    "<sheetData>",
+    '<row r="1"><c r="B1" t="s"><v>0</v></c><c r="C1" t="inlineStr"><is><t></t></is></c></row>',
+    '<row r="2"><c r="B2" t="s"><v>1</v></c><c r="C2" t="s"><v>2</v></c></row>',
+    '<row r="3"><c r="B3" t="s"><v>3</v></c><c r="C3" t="s"><v>4</v></c></row>',
+    ...dataRows,
+    "</sheetData>",
+    '<mergeCells count="1"><mergeCell ref="B1:C1"/></mergeCells>',
+    "</worksheet>",
+  ].join("");
+  return zipSync({
+    "xl/sharedStrings.xml": strToU8(sharedStringsXml),
+    "xl/worksheets/sheet1.xml": strToU8(worksheetXml),
+  });
+}
