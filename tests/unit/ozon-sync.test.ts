@@ -645,10 +645,27 @@ test("fetchSupplyOrders uses a genuinely detailed legacy list record when its de
   ]);
 });
 
-test("isMissingFinanceDocumentError accepts only a safe 404 finance-document-not-found error", () => {
-  const matching = new OzonApiError("/v1/finance/mutual-settlement", 404, {
-    error: { code: "FINANCE_DOCUMENT_NOT_FOUND", message: "Finance document not found" },
-  });
+test("isMissingFinanceDocumentError accepts only endpoint-matched missing monthly finance documents", () => {
+  const accepted = [
+    new OzonApiError("/v1/finance/mutual-settlement", 404, {
+      error: {
+        code: "NOT_FOUND",
+        message: "rpc error: desc = finance document not found",
+      },
+    }),
+    new OzonApiError("/v1/finance/compensation", 404, {
+      error: {
+        code: "NOT_FOUND",
+        message: "rpc error: desc = compensation document not found",
+      },
+    }),
+    new OzonApiError("/v1/finance/decompensation", 404, {
+      error: {
+        code: "NOT_FOUND",
+        message: "rpc error: desc = decompensation document not found",
+      },
+    }),
+  ];
   const wrongStatus = new OzonApiError("/v1/finance/mutual-settlement", 500, {
     error: { code: "FINANCE_DOCUMENT_NOT_FOUND", message: "Finance document not found" },
   });
@@ -678,8 +695,28 @@ test("isMissingFinanceDocumentError accepts only a safe 404 finance-document-not
   const prefixedCode = new OzonApiError("/v1/finance/mutual-settlement", 404, {
     error: { code: "X_FINANCE_DOCUMENT_NOT_FOUND", message: "not found" },
   });
+  const mismatchedEndpoint = new OzonApiError(
+    "/v1/finance/decompensation",
+    404,
+    {
+      error: {
+        code: "NOT_FOUND",
+        message: "rpc error: desc = compensation document not found",
+      },
+    }
+  );
+  const ordinaryEndpoint = new OzonApiError("/v2/warehouse/list", 404, {
+    error: {
+      code: "NOT_FOUND",
+      message: "rpc error: desc = finance document not found",
+    },
+  });
 
-  assert.equal(isMissingFinanceDocumentError(matching), true);
+  assert.deepEqual(accepted.map(isMissingFinanceDocumentError), [
+    true,
+    true,
+    true,
+  ]);
   assert.equal(isMissingFinanceDocumentError(wrongStatus), false);
   assert.equal(isMissingFinanceDocumentError(wrongMessage), false);
   assert.equal(isMissingFinanceDocumentError(nestedTerminalDescription), true);
@@ -687,6 +724,8 @@ test("isMissingFinanceDocumentError accepts only a safe 404 finance-document-not
   assert.equal(isMissingFinanceDocumentError(suffixedMessage), false);
   assert.equal(isMissingFinanceDocumentError(suffixedDescription), false);
   assert.equal(isMissingFinanceDocumentError(prefixedCode), false);
+  assert.equal(isMissingFinanceDocumentError(mismatchedEndpoint), false);
+  assert.equal(isMissingFinanceDocumentError(ordinaryEndpoint), false);
 });
 
 test("Ozon mock consumes per-path response sequences and records request counts and bodies", async () => {
