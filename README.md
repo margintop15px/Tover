@@ -74,22 +74,22 @@ Notes:
 
 ### 0. Enable required extensions
 
-Fresh projects must enable the extensions used by migration 020 before running
-the migrations:
+Fresh projects must enable the network/Cron extensions used by migration 020
+and verify that Vault is enabled before running the migrations:
 
 ```sql
 create extension if not exists pg_net with schema extensions;
 create extension if not exists pg_cron;
-create extension if not exists supabase_vault with schema vault;
+select count(*) from vault.decrypted_secrets;
 ```
 
-Run this as the project owner in the Supabase SQL Editor, or enable the same
-extensions under Database > Extensions in the hosted Dashboard. `pg_net`
-exposes its request API in the `net` schema, `pg_cron` creates the `cron`
-schema, and `supabase_vault` creates/uses the `vault` schema referenced by the
-recovery migration. `IF NOT EXISTS` makes the SQL safe when a hosted project
-already enabled an extension. A permission error means the project owner or
-database administrator must perform this step.
+Run this as the project owner in the Supabase SQL Editor. Enable `pg_net` and
+`pg_cron` under Database > Extensions; Vault is exposed under Dashboard
+Integrations and may not appear with the literal `supabase_vault` extension
+label. The count-only query verifies `vault.decrypted_secrets` without printing
+secret values. If the `vault` schema is absent, enable Vault before migration
+020. A permission error means the project owner or database administrator must
+perform this step.
 
 ### 1. Run migrations (in order)
 
@@ -104,6 +104,11 @@ Files in `supabase/migrations/`:
 - `013_ozon_candidate_approval_status.sql` — approved Ozon candidate review state for manual commit workflows
 - `020_ozon_sync_recovery.sql` — durable Ozon step state, leases, recovery RPCs,
   and the Supabase Cron scheduling helper
+- `021_ozon_sync_checkpoints_observability.sql` — resumable checkpoints,
+  failure-based retries, safe step events, and recovery indexes
+- `022_ozon_evidence_accounting_correctness.sql` — mirror provenance, strict
+  evidence hashes, atomic Ozon candidate commits, nullable inventory cost, and
+  PostgreSQL `NUMERIC` report aggregation
 
 Option A (Supabase SQL Editor):
 - Run migrations in order: `001` through the latest file in `supabase/migrations/`.
@@ -140,7 +145,7 @@ Authenticated Playwright runs use the same auth model. In local dev, they load `
 
 ### 5. Enable durable Ozon recovery
 
-Apply migration `020_ozon_sync_recovery.sql` before enabling the worker, deploy
+Apply migrations `020`, `021`, and `022` before enabling the worker, deploy
 the app with `OZON_SYNC_RECOVERY_SECRET`, and then create these Supabase Vault
 secrets. The secret value must match the app environment variable; the URL must
 be the deployed internal route:

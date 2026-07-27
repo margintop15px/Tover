@@ -382,6 +382,7 @@ export const en = {
   historicalBalances: "Historical",
   displayUnits: "Units",
   displayCost: "Cost",
+  unknownCost: "Unknown cost",
   total: "Total",
   hideZeros: "Hide zeros",
   showNegativesOnly: "Negatives only",
@@ -663,6 +664,15 @@ export const en = {
   ozonRecoveryInProgress:
     "Ozon sync will recover automatically. Completed steps will not be repeated.",
   ozonRecoveryNextRetry: "Next retry",
+  ozonRecoveryCurrentStep: "Current step",
+  ozonRecoveryProgress: "Progress",
+  ozonSyncDetails: "Sync details",
+  ozonSyncDetailsSteps: "Steps",
+  ozonSyncDetailsEvents: "Recent events",
+  ozonSyncExecutionCount: "Executions",
+  ozonSyncFailureCount: "Failures",
+  ozonSyncNextAction: "Next action",
+  ozonSyncNoEvents: "No sync events yet",
   ozonSyncStatusCompleted: "Completed",
   ozonSyncStatusCompletedWithErrors: "Completed with errors",
   ozonSyncStatusFailed: "Failed",
@@ -766,6 +776,14 @@ export const en = {
         "Transfer requires one source item and one destination item",
       "Transfer source and destination products must match":
         "Transfer source and destination products must match",
+      "Transfer source and destination quantities must match":
+        "Transfer source and destination quantities must match",
+      "Transfer source and destination warehouses must differ":
+        "Transfer source and destination warehouses must differ",
+      "Defect requires one ordinary-stock source item":
+        "Defect requires one ordinary-stock source item",
+      "Outbound direction is required": "Outbound direction is required",
+      "Inbound direction is required": "Inbound direction is required",
     };
     return messages[message] || message;
   },

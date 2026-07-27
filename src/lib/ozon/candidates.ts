@@ -1,7 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { CandidateValidationError } from "@/lib/operation-imports/types";
 import type {
-  CreateOperationRequest,
   OperationType,
   Product,
   Warehouse,
@@ -20,8 +19,8 @@ export interface OzonCandidateItem {
   productName?: string | null;
   warehouseId?: string | null;
   warehouseName?: string | null;
-  quantity?: number | null;
-  unitPrice?: number | null;
+  quantity?: string | number | null;
+  unitPrice?: string | number | null;
   storeId?: string | null;
   direction?: "in" | "out";
   skuCode?: string | null;
@@ -72,6 +71,8 @@ export interface MarketplaceCandidateRow {
   normalized_operation: OzonCandidateOperation;
   validation_errors: CandidateValidationError[];
   raw_payload: Record<string, unknown>;
+  evidence_version: number;
+  evidence_hash: string | null;
   created_operation_id: string | null;
   created_at: string;
   updated_at: string;
@@ -146,8 +147,8 @@ export function normalizeOzonCandidateOperation(
       productName: item.productName || null,
       warehouseId: item.warehouseId || null,
       warehouseName: item.warehouseName || null,
-      quantity: numberOrNull(item.quantity),
-      unitPrice: numberOrNull(item.unitPrice),
+      quantity: decimalStringOrNull(item.quantity),
+      unitPrice: decimalStringOrNull(item.unitPrice),
       storeId: item.storeId || null,
       direction: normalizeItemDirection(type, item.direction),
       skuCode: item.skuCode || item.offerId || item.ozonSku || null,
@@ -212,14 +213,14 @@ export function validateOzonCandidateOperation(
         severity: "error",
       });
     }
-    if (!item.quantity || item.quantity <= 0) {
+    if (!isPositiveDecimal(item.quantity)) {
       errors.push({
         field: `items[${index}].quantity`,
         message: "Quantity must be positive",
         severity: "error",
       });
     }
-    if (item.unitPrice != null && item.unitPrice < 0) {
+    if (isNegativeDecimal(item.unitPrice)) {
       errors.push({
         field: `items[${index}].unitPrice`,
         message: "Price cannot be negative",
@@ -228,11 +229,32 @@ export function validateOzonCandidateOperation(
     }
     if (
       normalized.type === "inventory_adjustment" &&
-      (!item.unitPrice || item.unitPrice <= 0)
+      !isPositiveDecimal(item.unitPrice)
     ) {
       errors.push({
         field: `items[${index}].unitPrice`,
         message: "Unit cost must be positive",
+        severity: "error",
+      });
+    }
+    if (
+      (normalized.type === "sale" || normalized.type === "write_off") &&
+      item.direction !== "out"
+    ) {
+      errors.push({
+        field: `items[${index}].direction`,
+        message: "Outbound direction is required",
+        severity: "error",
+      });
+    }
+    if (
+      (normalized.type === "return" ||
+        normalized.type === "inventory_adjustment") &&
+      item.direction !== "in"
+    ) {
+      errors.push({
+        field: `items[${index}].direction`,
+        message: "Inbound direction is required",
         severity: "error",
       });
     }
@@ -257,7 +279,35 @@ export function validateOzonCandidateOperation(
         message: "Transfer source and destination products must match",
         severity: "error",
       });
+    } else if (outItems[0].quantity !== inItems[0].quantity) {
+      errors.push({
+        field: "items",
+        message: "Transfer source and destination quantities must match",
+        severity: "error",
+      });
+    } else if (
+      outItems[0].warehouseId &&
+      inItems[0].warehouseId &&
+      outItems[0].warehouseId === inItems[0].warehouseId
+    ) {
+      errors.push({
+        field: "items",
+        message: "Transfer source and destination warehouses must differ",
+        severity: "error",
+      });
     }
+  }
+
+  if (
+    normalized.type === "defect" &&
+    (normalized.items?.length !== 1 ||
+      normalized.items[0]?.direction !== "out")
+  ) {
+    errors.push({
+      field: "items",
+      message: "Defect requires one ordinary-stock source item",
+      severity: "error",
+    });
   }
 
   return errors;
@@ -290,57 +340,6 @@ export function candidateSummary(rows: MarketplaceCandidateRow[]) {
     committing: rows.filter((row) => row.status === "committing").length,
     ignored: rows.filter((row) => row.status === "ignored").length,
     committed: rows.filter((row) => row.status === "committed").length,
-  };
-}
-
-export function buildOperationRequest(
-  candidate: MarketplaceCandidateRow
-): CreateOperationRequest {
-  const operation = normalizeOzonCandidateOperation(
-    getOzonCandidateOperation(candidate)
-  );
-  const items = operation.items || [];
-
-  if (operation.type === "transfer") {
-    const source = items.find((item) => item.direction === "out") || items[0];
-    const destination =
-      items.find((item) => item.direction === "in") || items[1] || items[0];
-    return {
-      type: "transfer",
-      operationDate: operation.operationDate || "",
-      comment: operation.comment || undefined,
-      productId: source?.productId || destination?.productId || "",
-      sourceWarehouseId: source?.warehouseId || "",
-      destinationWarehouseId: destination?.warehouseId || "",
-      quantity: source?.quantity || destination?.quantity || 0,
-    };
-  }
-
-  if (operation.type === "defect") {
-    const item = items[0];
-    return {
-      type: "defect",
-      operationDate: operation.operationDate || "",
-      comment: operation.comment || undefined,
-      productId: item?.productId || "",
-      sourceWarehouseId: item?.warehouseId || "",
-      quantity: item?.quantity || 0,
-    };
-  }
-
-  return {
-    type: operation.type || "sale",
-    operationDate: operation.operationDate || "",
-    comment: operation.comment || undefined,
-    items: items.map((item) => ({
-      productId: item.productId || "",
-      warehouseId: item.warehouseId || "",
-      quantity: item.quantity || 0,
-      unitPrice: item.unitPrice ?? undefined,
-      storeId: item.storeId || undefined,
-      direction: item.direction,
-      qualityStatus: "ordinary",
-    })),
   };
 }
 
@@ -640,11 +639,24 @@ function warehouseFromRow(row: WarehouseRow): Warehouse {
   };
 }
 
-function numberOrNull(value: unknown) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value.replace(",", "."));
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
+function decimalStringOrNull(value: unknown) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const normalized = String(value).trim().replace(/\s/g, "").replace(",", ".");
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized)) return null;
+  const negative = normalized.startsWith("-");
+  const unsigned = normalized.replace(/^[+-]/, "");
+  const [integerPart, fractionPart = ""] = unsigned.split(".");
+  const integer = integerPart.replace(/^0+(?=\d)/, "") || "0";
+  const fraction = fractionPart.replace(/0+$/, "");
+  const canonical = fraction ? `${integer}.${fraction}` : integer;
+  return negative && canonical !== "0" ? `-${canonical}` : canonical;
+}
+
+function isPositiveDecimal(value: unknown) {
+  const decimal = decimalStringOrNull(value);
+  return decimal !== null && !decimal.startsWith("-") && decimal !== "0";
+}
+
+function isNegativeDecimal(value: unknown) {
+  return decimalStringOrNull(value)?.startsWith("-") ?? false;
 }

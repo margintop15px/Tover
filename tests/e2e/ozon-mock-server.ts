@@ -221,7 +221,8 @@ function responseFor(
   switch (path) {
     case "/v2/warehouse/list":
       return {
-        result: [
+        result: {
+          warehouses: [
           {
             warehouse_id: fixture.autoWarehouse.id,
             name: fixture.autoWarehouse.name,
@@ -232,8 +233,13 @@ function responseFor(
             name: fixture.returnWarehouse.name,
             status: "active",
           },
-        ],
+          ],
+          has_next: false,
+          cursor: "",
+        },
       };
+    case "/v1/warehouse/ozon/list":
+      return { result: { warehouses: [] } };
     case "/v3/product/list":
       return {
         result: {
@@ -285,13 +291,17 @@ function responseFor(
         },
       };
     case "/v4/posting/fbs/list":
-      return { result: { postings: fbsPostings(fixture) } };
+      return {
+        result: { postings: fbsPostings(fixture), has_next: false, cursor: "" },
+      };
     case "/v3/posting/fbo/list":
-      return { result: { postings: fboPostings(fixture) } };
+      return {
+        result: { postings: fboPostings(fixture), has_next: false, cursor: "" },
+      };
     case "/v1/returns/list":
-      return { result: { returns: returnsList(fixture) } };
+      return { returns: returnsList(fixture), has_next: false };
     case "/v2/returns/rfbs/list":
-      return { result: { returns: [], cursor: "" } };
+      return { returns: [] };
     case "/v1/finance/accrual/types":
       return {
         accrual_types: [
@@ -308,7 +318,7 @@ function responseFor(
           body.date === "2099-05-02" && !body.last_id
             ? [
                 {
-                  unit_number: fixture.financeTransactionId,
+                  accrual_id: fixture.financeTransactionId,
                   accrued_category: "SERVICES",
                   date: "2099-05-02",
                   type_id: 101,
@@ -318,7 +328,7 @@ function responseFor(
                     delivery_schema: "FBO",
                     products: [
                       {
-                        sku: Number(fixture.autoProduct.productId),
+                        sku: fixture.autoProduct.productId,
                         delivery: {
                           services: [
                             {
@@ -341,18 +351,31 @@ function responseFor(
         result: {
           invoices: [
             {
-              invoice_id: fixture.legalInvoiceId,
-              invoice_number: fixture.legalInvoiceId,
-              invoice_date: "2099-05-02",
-              posting_number: fixture.fboPostingNumber,
+              info: {
+                number: fixture.legalInvoiceId,
+                date: "2099-05-02",
+              },
               buyer_info: {
-                company_name: "Mock B2B Company LLC",
+                name: "Mock B2B Company LLC",
                 inn: "1234567890",
                 kpp: "123456789",
                 contact_name: "Secret Buyer",
                 phone: "+79990000000",
               },
-              products: [postingProduct(fixture.autoProduct, 1)],
+              currency: "RUB",
+              offer_id: fixture.autoProduct.offerId,
+              sku: fixture.autoProduct.sku,
+              product_name: fixture.autoProduct.name,
+              operations: [
+                {
+                  posting_number: fixture.fboPostingNumber,
+                  amount: "10.50",
+                  date: "2099-05-02",
+                  price: "10.50",
+                  quantity: "1",
+                  type: "sale",
+                },
+              ],
             },
           ],
         },
@@ -364,7 +387,7 @@ function responseFor(
             {
               id: fixture.unpaidLegalProductId,
               posting_number: fixture.fboPostingNumber,
-              product_id: Number(fixture.autoProduct.productId),
+              product_id: fixture.autoProduct.productId,
               offer_id: fixture.autoProduct.offerId,
               sku: fixture.autoProduct.sku,
               name: fixture.autoProduct.name,
@@ -391,7 +414,7 @@ function responseFor(
               status: "success",
               error: "",
               file: `${ozonMockBaseUrl()}/reports/discounted.csv`,
-              report_type: "SELLER_PRODUCT_DISCOUNTED",
+              report_type: "SELLER_DISCOUNTED",
               created_at: new Date().toISOString(),
             },
           ],
@@ -408,7 +431,7 @@ function responseFor(
             status: "success",
             error: "",
             file: `${ozonMockBaseUrl()}/reports/discounted.csv`,
-            report_type: "SELLER_PRODUCT_DISCOUNTED",
+            report_type: "SELLER_DISCOUNTED",
             created_at: new Date().toISOString(),
           },
         };
@@ -423,6 +446,7 @@ function responseFor(
     case "/v1/finance/cash-flow-statement/list":
       return {
         result: {
+          page_count: 1,
           cash_flows:
             body.page === 1
               ? [
@@ -457,17 +481,17 @@ function responseFor(
           rows: [
             {
               id: fixture.removalId,
-              status: "disposed",
-              reason: "disposal_after_damage",
-              date: "2099-05-04T08:00:00.000Z",
-              product_id: Number(fixture.autoProduct.productId),
+              state: "utilized",
+              stock_type: "DEFECT",
+              utilization_date: "2099-05-04T08:00:00.000Z",
+              product_id: fixture.autoProduct.productId,
               offer_id: fixture.autoProduct.offerId,
               sku: fixture.autoProduct.sku,
               name: fixture.autoProduct.name,
-              quantity: 1,
+              quantity_for_return: "1",
               warehouse_id: fixture.autoWarehouse.id,
               warehouse_name: fixture.autoWarehouse.name,
-              amount: "10.50",
+              preliminary_delivery_price: "10.50",
               buyer_name: "Secret Buyer",
             },
           ],
@@ -490,11 +514,18 @@ function responseFor(
             {
               order_id: fixture.supplyOrderId,
               order_number: fixture.supplyOrderId,
-              status: "completed",
-              created_at: "2099-05-04T09:00:00.000Z",
-              warehouse_id: fixture.autoWarehouse.id,
-              warehouse_name: fixture.autoWarehouse.name,
-              bundle_ids: [fixture.supplyBundleId],
+              state: "completed",
+              created_date: "2099-05-04T09:00:00.000Z",
+              state_updated_date: "2099-05-04T12:00:00.000Z",
+              supplies: [
+                {
+                  supply_id: `${fixture.supplyOrderId}-SUPPLY`,
+                  bundle_id: fixture.supplyBundleId,
+                  state: "completed",
+                  storage_warehouse_id: fixture.autoWarehouse.id,
+                  storage_warehouse_name: fixture.autoWarehouse.name,
+                },
+              ],
             },
           ],
         },
@@ -505,13 +536,15 @@ function responseFor(
           items: [
             {
               id: `${fixture.supplyBundleId}-1`,
-              product_id: Number(fixture.autoProduct.productId),
+              product_id: fixture.autoProduct.productId,
               offer_id: fixture.autoProduct.offerId,
               sku: fixture.autoProduct.sku,
               name: fixture.autoProduct.name,
-              quantity: 1,
+              quantity: "1",
             },
           ],
+          has_next: false,
+          last_id: "",
         },
       };
     case "/v1/analytics/stocks":
@@ -523,7 +556,7 @@ function responseFor(
           items: [
             {
               discounted_sku: fixture.discountedSku,
-              product_id: Number(fixture.autoProduct.productId),
+              product_id: fixture.autoProduct.productId,
               offer_id: fixture.autoProduct.offerId,
               sku: fixture.autoProduct.sku,
               name: fixture.autoProduct.name,
@@ -535,9 +568,6 @@ function responseFor(
               mechanical_damage: "Есть",
               package_damage: "Повреждена упаковка",
               packaging_violation: "Есть",
-              quantity: 1,
-              warehouse_id: fixture.autoWarehouse.id,
-              warehouse_name: fixture.autoWarehouse.name,
             },
           ],
         },
@@ -549,7 +579,7 @@ function responseFor(
 
 function productRef(product: OzonMockProduct) {
   return {
-    product_id: Number(product.productId),
+    product_id: product.productId,
     offer_id: product.offerId,
     sku: product.sku,
   };
@@ -573,10 +603,12 @@ function productInfo(product: OzonMockProduct) {
 function productPrice(product: OzonMockProduct) {
   return {
     ...productRef(product),
-    price: product.price,
-    old_price: product.price,
-    min_price: product.price,
-    currency_code: "RUB",
+    price: {
+      marketing_price: product.price,
+      old_price: product.price,
+      min_price: product.price,
+      currency_code: "RUB",
+    },
   };
 }
 
@@ -589,18 +621,16 @@ function productAttributes(product: OzonMockProduct) {
 
 function stockItem(
   product: OzonMockProduct,
-  warehouse: OzonMockWarehouse,
+  _warehouse: OzonMockWarehouse,
   present: number
 ) {
   return {
     ...productRef(product),
     stocks: [
       {
-        warehouse_id: warehouse.id,
-        warehouse_name: warehouse.name,
+        type: "fbs",
         present,
         reserved: 0,
-        fulfillment_schema: "fbs",
       },
     ],
   };
@@ -614,14 +644,16 @@ function fbsPostings(fixture: OzonMockFixture) {
       status: "delivered",
       in_process_at: "2099-05-01T09:00:00.000Z",
       shipment_date: "2099-05-01T10:00:00.000Z",
-      delivered_at: "2099-05-01T12:00:00.000Z",
       delivery_method: { warehouse: fixture.autoWarehouse.name },
       products: [
         postingProduct(fixture.autoProduct, 2),
         postingProduct(fixture.missingProduct, 1),
       ],
       financial_data: { products: [] },
-      analytics_data: { region: "test" },
+      analytics_data: {
+        region: "test",
+        warehouse: fixture.autoWarehouse.name,
+      },
       buyer_name: "Secret Buyer",
       customer_phone: "+79990000000",
       address_tail: "Secret address",
@@ -648,24 +680,26 @@ function fboPostings(fixture: OzonMockFixture) {
       status: "delivered",
       in_process_at: "2099-05-02T09:00:00.000Z",
       shipment_date: "2099-05-02T10:00:00.000Z",
-      delivered_at: "2099-05-02T12:00:00.000Z",
       delivery_method: { warehouse: fixture.autoWarehouse.name },
       products: [postingProduct(fixture.autoProduct, 1)],
       financial_data: { products: [] },
-      analytics_data: { region: "test" },
+      analytics_data: {
+        region: "test",
+        warehouse_id: fixture.autoWarehouse.id,
+        warehouse_name: fixture.autoWarehouse.name,
+      },
     },
   ];
 }
 
 function postingProduct(product: OzonMockProduct, quantity: number) {
   return {
-    product_id: Number(product.productId),
+    product_id: product.productId,
     offer_id: product.offerId,
     sku: product.sku,
     name: product.name,
     quantity,
-    price: product.price,
-    currency_code: "RUB",
+    price: { amount: product.price, currency: "RUB" },
   };
 }
 
@@ -674,17 +708,23 @@ function returnsList(fixture: OzonMockFixture) {
     {
       id: fixture.returnId,
       posting_number: fixture.fboPostingNumber,
-      status: "returned",
-      returned_at: "2099-05-03T12:00:00.000Z",
-      warehouse_id: fixture.returnWarehouse.id,
-      warehouse_name: fixture.returnWarehouse.name,
+      schema: "FBO",
+      visual: { status: { sys_name: "ReturnedToSeller" } },
+      logistic: {
+        return_date: "2099-05-03T10:00:00.000Z",
+        final_moment: "2099-05-03T12:00:00.000Z",
+      },
+      target_place: {
+        id: fixture.returnWarehouse.id,
+        name: fixture.returnWarehouse.name,
+      },
       product: {
-        product_id: Number(fixture.returnProduct.productId),
+        product_id: fixture.returnProduct.productId,
         offer_id: fixture.returnProduct.offerId,
         sku: fixture.returnProduct.sku,
         name: fixture.returnProduct.name,
         quantity: 1,
-        price: fixture.returnProduct.price,
+        price: { price: fixture.returnProduct.price, currency_code: "RUB" },
       },
       buyer_fio: "Return Secret Buyer",
       phone: "+79990000000",

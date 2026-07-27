@@ -55,7 +55,7 @@ test("worker RPC operations use only the durable begin/resume and failed-step re
       calls.push({ name, parameters });
       return {
         data:
-          name === "begin_or_resume_ozon_sync_run"
+          name === "begin_or_resume_ozon_sync_run_v2"
             ? RUN
             : [{ ...RUN, status: "running" }],
         error: null,
@@ -76,7 +76,7 @@ test("worker RPC operations use only the durable begin/resume and failed-step re
   assert.equal((await worker.retryFailedRun("run-1")).id, "run-1");
   assert.deepEqual(calls, [
     {
-      name: "begin_or_resume_ozon_sync_run",
+      name: "begin_or_resume_ozon_sync_run_v2",
       parameters: {
         p_connection_id: "connection-1",
         p_date_from: "2026-06-01T00:00:00.000Z",
@@ -84,7 +84,7 @@ test("worker RPC operations use only the durable begin/resume and failed-step re
       },
     },
     {
-      name: "retry_failed_ozon_sync_run_steps",
+        name: "retry_failed_ozon_sync_run_steps_v2",
       parameters: { p_run_id: "run-1" },
     },
   ]);
@@ -146,6 +146,10 @@ test("public result derives domain summaries and recovery only from step rows", 
         scheduledRetryCount: 1,
         failedStepCount: 1,
         nextRetryAt: "2026-07-26T11:00:00.000Z",
+        currentStepKey: "warehouses",
+        failureCount: 0,
+        nextActionAt: "2026-07-26T11:00:00.000Z",
+        progress: null,
       },
     }
   );
@@ -218,6 +222,10 @@ test("integration recovery counts persisted states exactly and chooses the earli
       scheduledRetryCount: 2,
       failedStepCount: 1,
       nextRetryAt: "2026-07-26T10:00:00+02:00",
+      currentStepKey: "products",
+      failureCount: 0,
+      nextActionAt: "2026-07-26T10:00:00+02:00",
+      progress: null,
       lastError: "returns: Ozon sync step failed (client, HTTP 400)",
     }
   );

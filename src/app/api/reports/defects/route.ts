@@ -1,9 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
-import { loadReportLookups } from "@/lib/reports/lookups";
 import type { DefectDynamicsReport, DefectDynamicsRow } from "@/types/inventory";
 
 export const dynamic = "force-dynamic";
+
+interface DefectRpcRow {
+  group_id: string;
+  group_name: string;
+  sku_code: string | null;
+  defect_in_quantity: number | string;
+  defect_out_quantity: number | string;
+  defect_balance_delta: number | string;
+  defect_cost: number | string | null;
+  grand_defect_in_quantity: number | string;
+  grand_defect_out_quantity: number | string;
+  grand_defect_cost: number | string | null;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,107 +24,69 @@ export async function GET(request: NextRequest) {
     const from = searchParams.get("from");
     const to = searchParams.get("to");
     const groupBy = searchParams.get("groupBy") || "product";
-    const productId = searchParams.get("productId");
-    const categoryId = searchParams.get("categoryId");
-    const warehouseId = searchParams.get("warehouseId");
-    const storeId = searchParams.get("storeId");
 
     if (!from || !to) {
-      return NextResponse.json({ error: "from and to date parameters are required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "from and to date parameters are required" },
+        { status: 400 }
+      );
     }
 
-    let query = supabase
-      .from("inventory_movements")
-      .select("product_id, warehouse_id, store_id, direction, quantity, total_cost")
-      .eq("workspace_id", workspaceId)
-      .eq("quality_status", "defect")
-      .gte("operation_date", from)
-      .lte("operation_date", to);
-
-    if (productId) query = query.eq("product_id", productId);
-    if (warehouseId) query = query.eq("warehouse_id", warehouseId);
-    if (storeId) query = query.eq("store_id", storeId);
-
-    const { data, error } = await query;
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    const movements = data || [];
-    const lookups = await loadReportLookups(supabase, workspaceId, movements);
-
-    const rowsByGroup = new Map<string, DefectDynamicsRow>();
-
-    for (const movement of movements) {
-      const product = lookups.products.get(movement.product_id);
-      if (!product || product.is_defect_copy) continue;
-      if (categoryId && product.category_id !== categoryId) continue;
-
-      const movementStore = movement.store_id
-        ? lookups.stores.get(movement.store_id)
-        : null;
-      const productStore = product.store_id
-        ? lookups.stores.get(product.store_id)
-        : null;
-      const warehouse = lookups.warehouses.get(movement.warehouse_id);
-      const effectiveStoreId = movement.store_id || product.store_id || "unassigned";
-      const effectiveStoreName = movementStore?.name || productStore?.name || "No store";
-
-      const groupId =
-        groupBy === "warehouse"
-          ? movement.warehouse_id
-          : groupBy === "store"
-            ? effectiveStoreId
-            : movement.product_id;
-      const groupName =
-        groupBy === "warehouse"
-          ? warehouse?.name || "Unknown"
-          : groupBy === "store"
-            ? effectiveStoreName
-            : product.name;
-
-      let row = rowsByGroup.get(groupId);
-      if (!row) {
-        row = {
-          groupId,
-          groupName,
-          skuCode: groupBy === "product" ? product.sku_code : null,
-          defectInQuantity: 0,
-          defectOutQuantity: 0,
-          defectBalanceDelta: 0,
-          defectCost: 0,
-        };
-        rowsByGroup.set(groupId, row);
+    const { data, error } = await supabase.rpc(
+      "report_defect_dynamics_v2",
+      {
+        p_workspace_id: workspaceId,
+        p_from: from,
+        p_to: to,
+        p_group_by: groupBy,
+        p_product_id: searchParams.get("productId"),
+        p_category_id: searchParams.get("categoryId"),
+        p_warehouse_id: searchParams.get("warehouseId"),
+        p_store_id: searchParams.get("storeId"),
       }
-
-      const quantity = Number(movement.quantity);
-      const cost = Number(movement.total_cost);
-      if (movement.direction === "in") {
-        row.defectInQuantity += quantity;
-        row.defectCost += cost;
-      } else {
-        row.defectOutQuantity += quantity;
-        row.defectCost -= cost;
-      }
+    );
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const rows = Array.from(rowsByGroup.values()).map((row) => ({
-      ...row,
-      defectBalanceDelta: row.defectInQuantity - row.defectOutQuantity,
+    const rpcRows = (data ?? []) as DefectRpcRow[];
+    const rows: DefectDynamicsRow[] = rpcRows.map((row) => ({
+      groupId: row.group_id,
+      groupName: row.group_name,
+      skuCode: row.sku_code,
+      defectInQuantity: numericValue(row.defect_in_quantity),
+      defectOutQuantity: numericValue(row.defect_out_quantity),
+      defectBalanceDelta: numericValue(row.defect_balance_delta),
+      defectCost: nullableNumericValue(row.defect_cost),
     }));
-    rows.sort((a, b) => b.defectCost - a.defectCost);
-
+    const totals = rpcRows[0];
     const report: DefectDynamicsReport = {
       from,
       to,
       groupBy,
       rows,
       totals: {
-        defectInQuantity: rows.reduce((sum, row) => sum + row.defectInQuantity, 0),
-        defectOutQuantity: rows.reduce((sum, row) => sum + row.defectOutQuantity, 0),
-        defectCost: rows.reduce((sum, row) => sum + row.defectCost, 0),
+        defectInQuantity: totals
+          ? numericValue(totals.grand_defect_in_quantity)
+          : 0,
+        defectOutQuantity: totals
+          ? numericValue(totals.grand_defect_out_quantity)
+          : 0,
+        defectCost: totals
+          ? nullableNumericValue(totals.grand_defect_cost)
+          : 0,
       },
     };
-
     return NextResponse.json(report);
   } catch (error) {
     return toRouteErrorResponse(error);
   }
+}
+
+function numericValue(value: number | string) {
+  return typeof value === "number" ? value : Number(value);
+}
+
+function nullableNumericValue(value: number | string | null) {
+  return value === null ? null : numericValue(value);
 }

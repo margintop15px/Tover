@@ -302,7 +302,7 @@ async function loadRecentRunSteps(
   const { data, error } = await supabase
     .from("marketplace_sync_run_steps")
     .select(
-      "run_id, step_key, step_order, state, summary, last_error, next_attempt_at, updated_at"
+      "run_id, step_key, step_order, state, attempt_count, failure_count, checkpoint, summary, last_error, next_attempt_at, updated_at"
     )
     .in("run_id", runIds)
     .eq("workspace_id", workspaceId)

@@ -52,6 +52,14 @@ export interface OzonIntegrationSummary {
     scheduledRetryCount: number;
     failedStepCount: number;
     nextRetryAt: string | null;
+    currentStepKey: string | null;
+    failureCount: number;
+    nextActionAt: string | null;
+    progress: {
+      phase: string;
+      processed: number;
+      total: number | null;
+    } | null;
     lastError: string | null;
   } | null;
 }

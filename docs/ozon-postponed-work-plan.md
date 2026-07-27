@@ -103,13 +103,13 @@ Acceptance criteria:
 
 ## 4. Supply Transfer Candidate Improvements
 
-Current state: FBO supplies can generate transfer candidates, but Ozon often
-does not provide a local source warehouse. The user maps the source warehouse per
-candidate. Supply list pagination/date-window behavior is still minimal.
+Current state: FBO supplies can generate transfer candidates, but Ozon does not
+provide the local source warehouse. The user maps the source warehouse per
+candidate. Supply order and bundle pagination follow the current Seller API
+cursor contracts.
 
 Target behavior:
 
-- Use real date windows and pagination/cursors for supply order list endpoints.
 - Persist durable source-warehouse overrides by Ozon supply source evidence, not
   only inside one candidate's normalized operation.
 - Add a reusable mapping/default model for common source warehouse choices.
@@ -117,10 +117,9 @@ Target behavior:
 
 Sequencing:
 
-1. Improve supply list pagination and date-window request shape.
-2. Add source override storage keyed by connection and source identity.
-3. Reapply source override during re-sync before validation.
-4. Add UI affordance for "use this source warehouse for similar supplies".
+1. Add source override storage keyed by connection and source identity.
+2. Reapply source override during re-sync before validation.
+3. Add UI affordance for "use this source warehouse for similar supplies".
 
 Acceptance criteria:
 
@@ -130,29 +129,33 @@ Acceptance criteria:
 
 ## 5. Defect Candidate Improvements
 
-Current state: discounted/damaged product data can generate `defect` candidates
-only when reason/status explicitly indicates physical defect or damage. Event
-dates can be weak when Ozon does not provide a clear date.
+Current state: discounted/damaged product data is reporting-only. The current
+Seller API detail contract does not provide the quantity, warehouse, and
+operation timestamp required for an inventory movement, so Tover never creates
+`defect` candidates from it.
 
 Target behavior:
 
-- Prefer Ozon event/update date over sync date.
-- Store an evidence confidence and reason code for each defect candidate.
+- Identify a future Ozon operation source that explicitly proves quantity,
+  warehouse, and physical-damage event time.
+- Store evidence confidence and reason codes only after that contract exists.
 - Keep generic discounts/markdowns mirror-only.
-- Add clearer UI copy explaining why a row is commit-eligible or reporting-only.
+- Keep UI copy clear that discounted detail is reporting evidence.
 
 Sequencing:
 
-1. Audit actual Ozon discounted product payload variants from real accounts.
-2. Add explicit damage/defect reason mapping table.
-3. Update candidate builder to use event/update date when present.
-4. Add tests for generic markdown, damaged, defective, and ambiguous payloads.
+1. Audit official Seller API changes and real payload variants for complete
+   defect evidence.
+2. Add explicit damage/defect reason mapping only if the source also proves
+   quantity, warehouse, and event time.
+3. Add contract tests for generic markdown, damaged, defective, and ambiguous
+   payloads.
 
 Acceptance criteria:
 
-- Defect candidates only appear for physical-damage evidence.
-- Unknown or generic markdown reasons do not create candidates.
-- Operation dates are source-derived whenever possible.
+- No defect candidate appears from incomplete discounted-product evidence.
+- Unknown or generic markdown reasons remain mirror-only.
+- Any future operation date must be source-derived; sync time is never used.
 
 ## 6. Stock Reconciliation Workflow
 

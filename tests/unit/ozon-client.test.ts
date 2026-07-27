@@ -53,7 +53,7 @@ function testClient(runtime: RuntimeFixture) {
   ) => OzonClient)(credentials, runtime);
 }
 
-function durableTestClient(runtime: RuntimeFixture, signal: AbortSignal) {
+function singleAttemptTestClient(runtime: RuntimeFixture, signal: AbortSignal) {
   return new (OzonClient as unknown as new (
     credentials: typeof credentials,
     runtime: RuntimeFixture,
@@ -73,6 +73,49 @@ test("paces request starts by 25 milliseconds and gives each request a 30 second
   assert.deepEqual(fixture.timeoutCalls, [30_000, 30_000]);
 });
 
+test("shares pacing across Ozon clients for the same Client-Id", async () => {
+  const fixture = createRuntime([
+    jsonResponse({ first: true }),
+    jsonResponse({ second: true }),
+  ]);
+
+  await testClient(fixture.runtime).request("/v2/warehouse/list");
+  await testClient(fixture.runtime).request("/v2/warehouse/list");
+
+  assert.deepEqual(fixture.requestStarts, [0, 25]);
+  assert.deepEqual(fixture.sleeps, [25]);
+});
+
+test("paces turnover stock requests at one start per minute", async () => {
+  const fixture = createRuntime([
+    jsonResponse({ first: true }),
+    jsonResponse({ second: true }),
+  ]);
+  const client = testClient(fixture.runtime);
+
+  await client.request("/v1/analytics/turnover/stocks");
+  await client.request("/v1/analytics/turnover/stocks");
+
+  assert.deepEqual(fixture.requestStarts, [0, 60_000]);
+  assert.deepEqual(fixture.sleeps, [60_000]);
+});
+
+test("preserves Ozon int64 identifiers and decimal values without JavaScript rounding", async () => {
+  const fixture = createRuntime([
+    new Response(
+      '{"id":9223372036854775807,"quantity":1.2300,"nested":{"amount":12345678901234567890.1234},"label":"value 42"}',
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    ),
+  ]);
+
+  assert.deepEqual(await testClient(fixture.runtime).request("/v2/warehouse/list"), {
+    id: "9223372036854775807",
+    quantity: "1.2300",
+    nested: { amount: "12345678901234567890.1234" },
+    label: "value 42",
+  });
+});
+
 test("retries transport errors four times total with approved exponential backoff and jitter", async () => {
   const fixture = createRuntime(
     [new TypeError("network down"), new TypeError("network down"), new TypeError("network down"), jsonResponse({ ok: true })],
@@ -85,12 +128,38 @@ test("retries transport errors four times total with approved exponential backof
   assert.deepEqual(fixture.sleeps, [625, 1_125, 2_125]);
 });
 
-test("durable client performs one HTTP attempt and leaves retry ownership to the step runner", async () => {
+test("does not retry report-creation requests after an ambiguous failure", async () => {
+  const transportFixture = createRuntime([
+    new TypeError("connection reset"),
+    jsonResponse({ code: "duplicate-report" }),
+  ]);
+  await assert.rejects(
+    testClient(transportFixture.runtime).request(
+      "/v1/finance/mutual-settlement"
+    ),
+    TypeError
+  );
+  assert.equal(transportFixture.attempts(), 1);
+
+  const responseFixture = createRuntime([
+    jsonResponse({ code: 13, message: "busy" }, 503),
+    jsonResponse({ code: "duplicate-report" }),
+  ]);
+  await assert.rejects(
+    testClient(responseFixture.runtime).request(
+      "/v1/report/discounted/create"
+    ),
+    (error: unknown) => error instanceof OzonApiError && error.status === 503
+  );
+  assert.equal(responseFixture.attempts(), 1);
+});
+
+test("internal max-attempt override can hand retry ownership to the durable scheduler", async () => {
   const fixture = createRuntime([
     jsonResponse({ error: "retry later" }, 503),
     jsonResponse({ ok: true }),
   ]);
-  const client = durableTestClient(
+  const client = singleAttemptTestClient(
     fixture.runtime,
     new AbortController().signal
   );
@@ -98,6 +167,37 @@ test("durable client performs one HTTP attempt and leaves retry ownership to the
   await assert.rejects(
     client.request("/v2/warehouse/list"),
     (error: unknown) => error instanceof OzonApiError && error.status === 503
+  );
+  assert.equal(fixture.attempts(), 1);
+  assert.deepEqual(fixture.sleeps, []);
+});
+
+test("hands retry metadata to the durable scheduler when the delay exceeds the step budget", async () => {
+  const fixture = createRuntime([
+    jsonResponse({ code: 8, message: "rate limit" }, 429, {
+      "Retry-After": "30",
+    }),
+  ]);
+  const client = new (OzonClient as unknown as new (
+    credentials: typeof credentials,
+    runtime: RuntimeFixture,
+    options: {
+      maxAttempts: number;
+      signal: AbortSignal;
+      deadlineMs: number;
+    }
+  ) => OzonClient)(credentials, fixture.runtime, {
+    maxAttempts: 4,
+    signal: new AbortController().signal,
+    deadlineMs: 10_000,
+  });
+
+  await assert.rejects(
+    client.request("/v1/finance/accrual/types"),
+    (error: unknown) =>
+      error instanceof OzonApiError &&
+      error.status === 429 &&
+      error.retryDelayMs === 30_000
   );
   assert.equal(fixture.attempts(), 1);
   assert.deepEqual(fixture.sleeps, []);
@@ -116,7 +216,7 @@ test("durable client shares one cancellation signal across requests and pacing w
       signal?.throwIfAborted();
     },
   });
-  const client = durableTestClient(fixture.runtime, controller.signal);
+  const client = singleAttemptTestClient(fixture.runtime, controller.signal);
 
   await client.request("/v2/warehouse/list");
 

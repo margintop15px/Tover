@@ -85,7 +85,8 @@ export interface ProductBalanceRow {
   warehouse_id: string;
   quality_status: QualityStatus;
   quantity: number;
-  unit_cost: number;
+  unit_cost: number | null;
+  cost_basis_status: "known" | "transferred" | "unknown";
   created_at: string;
   updated_at: string;
 }
@@ -174,7 +175,8 @@ export interface ProductBalance {
   warehouseName: string;
   qualityStatus: QualityStatus;
   quantity: number;
-  unitCost: number;
+  unitCost: number | null;
+  costBasisStatus: "known" | "transferred" | "unknown";
 }
 
 export interface Operation {
@@ -305,7 +307,7 @@ export interface InventoryBalanceCell {
   warehouseName: string;
   qualityStatus: QualityStatus;
   quantity: number;
-  totalCost: number;
+  totalCost: number | null;
   hasNegative: boolean;
 }
 
@@ -319,7 +321,7 @@ export interface InventoryBalanceRow {
   qualityStatus: QualityStatus;
   warehouses: InventoryBalanceCell[];
   totalQuantity: number;
-  totalCost: number;
+  totalCost: number | null;
   hasNegative: boolean;
 }
 
@@ -327,7 +329,11 @@ export interface InventoryBalancesReport {
   asOfDate: string;
   warehouseColumns: { id: string; name: string }[];
   rows: InventoryBalanceRow[];
-  totals: { totalQuantity: number; totalCost: number; hasNegative: boolean };
+  totals: {
+    totalQuantity: number;
+    totalCost: number | null;
+    hasNegative: boolean;
+  };
 }
 
 export interface ProductMovementRow {
@@ -336,27 +342,27 @@ export interface ProductMovementRow {
   skuCode?: string | null;
   qualityStatus?: QualityStatus | null;
   purchaseIn: number;
-  purchaseInCost: number;
+  purchaseInCost: number | null;
   saleOut: number;
-  saleOutCost: number;
+  saleOutCost: number | null;
   returnIn: number;
-  returnInCost: number;
+  returnInCost: number | null;
   writeOffOut: number;
-  writeOffOutCost: number;
+  writeOffOutCost: number | null;
   transferIn: number;
-  transferInCost: number;
+  transferInCost: number | null;
   transferOut: number;
-  transferOutCost: number;
+  transferOutCost: number | null;
   productionIn: number;
-  productionInCost: number;
+  productionInCost: number | null;
   productionOut: number;
-  productionOutCost: number;
+  productionOutCost: number | null;
   defectOut: number;
-  defectOutCost: number;
+  defectOutCost: number | null;
   inventoryAdjustmentIn: number;
-  inventoryAdjustmentInCost: number;
+  inventoryAdjustmentInCost: number | null;
   net: number;
-  netCost: number;
+  netCost: number | null;
   hasNegative: boolean;
 }
 
@@ -417,7 +423,7 @@ export interface DefectDynamicsRow {
   defectInQuantity: number;
   defectOutQuantity: number;
   defectBalanceDelta: number;
-  defectCost: number;
+  defectCost: number | null;
 }
 
 export interface DefectDynamicsReport {
@@ -428,7 +434,7 @@ export interface DefectDynamicsReport {
   totals: {
     defectInQuantity: number;
     defectOutQuantity: number;
-    defectCost: number;
+    defectCost: number | null;
   };
 }
 
@@ -436,8 +442,8 @@ export interface TurnoverRow {
   groupId: string;
   groupName: string;
   skuCode?: string | null;
-  outflowCost: number;
-  averageInventoryCost: number;
+  outflowCost: number | null;
+  averageInventoryCost: number | null;
   turnoverRatio: number | null;
   turnoverDays: number | null;
 }

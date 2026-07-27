@@ -145,7 +145,9 @@ export function useReportPresentation(
 
   const formatPreviewValue = useCallback(
     (value: unknown, type: PreviewColumnType) => {
-      if (value == null || value === "") return "-";
+      if (value == null || value === "") {
+        return type === "money" ? t.unknownCost : "-";
+      }
 
       if (type === "text") return String(value);
 
@@ -163,7 +165,7 @@ export function useReportPresentation(
       }
       return formatPlainNumber(numeric);
     },
-    [formatPlainNumber, locale, settings.currency]
+    [formatPlainNumber, locale, settings.currency, t.unknownCost]
   );
 
   return {

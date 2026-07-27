@@ -41,7 +41,7 @@ export function getOzonRecoveryRequest(
   action: OzonRecoveryAction,
   runId: string | null
 ) {
-  if (action === "retry_failed") {
+  if (action === "retry_failed" || action === "resume") {
     return {
       endpoint: "/api/integrations/ozon/sync/retry",
       body: { runId },

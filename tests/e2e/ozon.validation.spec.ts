@@ -1,12 +1,10 @@
 import { expect, test } from "@playwright/test";
 import {
-  buildOperationRequest,
   canSyncUpdateCandidateStatus,
   isOzonCandidateCommitSupported,
   normalizeOzonCandidateOperation,
   statusFromValidation,
   validateOzonCandidateOperation,
-  type MarketplaceCandidateRow,
   type OzonCandidateOperation,
 } from "../../src/lib/ozon/candidates";
 import { sanitizeOzonPayload } from "../../src/lib/ozon/sync";
@@ -15,30 +13,8 @@ function validationFields(operation: OzonCandidateOperation) {
   return validateOzonCandidateOperation(operation).map((error) => error.field);
 }
 
-function candidate(operation: OzonCandidateOperation): MarketplaceCandidateRow {
-  return {
-    id: "candidate-id",
-    workspace_id: "workspace-id",
-    connection_id: "connection-id",
-    provider: "ozon",
-    source_type: "posting",
-    external_event_id: "posting-id",
-    status: "ready",
-    operation_type: operation.type || "sale",
-    operation_date: operation.operationDate || null,
-    confidence: 0.95,
-    operation,
-    normalized_operation: normalizeOzonCandidateOperation(operation),
-    validation_errors: [],
-    raw_payload: {},
-    created_operation_id: null,
-    created_at: "2026-01-01T00:00:00.000Z",
-    updated_at: "2026-01-01T00:00:00.000Z",
-  };
-}
-
 test.describe("Ozon candidate validation", () => {
-  test("accepts ready sales and builds normal operation requests", () => {
+  test("accepts ready sales and keeps exact decimal evidence for atomic commit", () => {
     const operation: OzonCandidateOperation = {
       type: "sale",
       operationDate: "2099-05-01",
@@ -56,17 +32,16 @@ test.describe("Ozon candidate validation", () => {
     const errors = validateOzonCandidateOperation(operation);
     expect(errors).toEqual([]);
     expect(statusFromValidation(errors)).toBe("ready");
-    expect(buildOperationRequest(candidate(operation))).toMatchObject({
+    expect(normalizeOzonCandidateOperation(operation)).toMatchObject({
       type: "sale",
       operationDate: "2099-05-01",
       items: [
         {
           productId: "product-1",
           warehouseId: "warehouse-1",
-          quantity: 2,
-          unitPrice: 10.5,
+          quantity: "2",
+          unitPrice: "10.5",
           direction: "out",
-          qualityStatus: "ordinary",
         },
       ],
     });
@@ -129,8 +104,8 @@ test.describe("Ozon candidate validation", () => {
 
     expect(validateOzonCandidateOperation(operation)).toEqual([]);
     expect(operation.items).toMatchObject([
-      { productId: "product-1", direction: "out", quantity: 2 },
-      { productId: "product-2", direction: "out", quantity: 3 },
+      { productId: "product-1", direction: "out", quantity: "2" },
+      { productId: "product-2", direction: "out", quantity: "3" },
     ]);
   });
 
@@ -150,9 +125,9 @@ test.describe("Ozon candidate validation", () => {
     expect(validateOzonCandidateOperation(operation)).toEqual([]);
     expect(operation.items?.[0]).toMatchObject({
       direction: "in",
-      quantity: 1,
+      quantity: "1",
     });
-    expect(buildOperationRequest(candidate(operation)).type).toBe("return");
+    expect(operation.type).toBe("return");
   });
 
   test("accepts write-off and defect candidates as outbound inventory evidence", () => {
@@ -182,11 +157,16 @@ test.describe("Ozon candidate validation", () => {
     expect(validateOzonCandidateOperation(writeOff)).toEqual([]);
     expect(writeOff.items?.[0].direction).toBe("out");
     expect(validateOzonCandidateOperation(defect)).toEqual([]);
-    expect(buildOperationRequest(candidate(defect))).toMatchObject({
+    expect(defect).toMatchObject({
       type: "defect",
-      productId: "product-1",
-      sourceWarehouseId: "warehouse-1",
-      quantity: 1,
+      items: [
+        {
+          productId: "product-1",
+          warehouseId: "warehouse-1",
+          quantity: "1",
+          direction: "out",
+        },
+      ],
     });
   });
 
@@ -211,12 +191,22 @@ test.describe("Ozon candidate validation", () => {
     });
 
     expect(validateOzonCandidateOperation(operation)).toEqual([]);
-    expect(buildOperationRequest(candidate(operation))).toMatchObject({
+    expect(operation).toMatchObject({
       type: "transfer",
-      productId: "product-1",
-      sourceWarehouseId: "source-warehouse",
-      destinationWarehouseId: "destination-warehouse",
-      quantity: 2,
+      items: [
+        {
+          productId: "product-1",
+          warehouseId: "source-warehouse",
+          quantity: "2",
+          direction: "out",
+        },
+        {
+          productId: "product-1",
+          warehouseId: "destination-warehouse",
+          quantity: "2",
+          direction: "in",
+        },
+      ],
     });
 
     expect(

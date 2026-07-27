@@ -50,12 +50,76 @@ async function requestOzonSummary(signal?: AbortSignal) {
   return data as OzonIntegrationSummary;
 }
 
+interface SafeSyncError {
+  message?: string;
+  reason?: string;
+  endpoint?: string;
+  status?: number;
+  code?: string;
+  postgresCode?: string;
+  operationName?: string;
+}
+
+interface OzonSyncDetails {
+  steps: Array<{
+    id: string;
+    stepKey: string;
+    state: string;
+    attemptCount: number;
+    failureCount: number;
+    progress: {
+      phase: string;
+      processed: number;
+      total: number | null;
+    } | null;
+    lastError: SafeSyncError | null;
+    nextActionAt: string | null;
+  }>;
+  events: Array<{
+    id: number;
+    stepKey: string;
+    eventType: string;
+    executionCount: number;
+    failureCount: number;
+    endpoint: string | null;
+    httpStatus: number | null;
+    postgresCode: string | null;
+    operationName: string | null;
+    nextActionAt: string | null;
+    lastError: SafeSyncError | null;
+    createdAt: string;
+  }>;
+}
+
+async function requestOzonSyncDetails(runId: string, signal?: AbortSignal) {
+  const response = await fetch(`/api/integrations/ozon/sync/${runId}`, {
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) throw new Error();
+  return (await response.json()) as OzonSyncDetails;
+}
+
+function safeSyncErrorText(error: SafeSyncError | null) {
+  if (!error) return null;
+  if (error.reason) return error.reason;
+  const metadata = [
+    error.endpoint,
+    error.status,
+    error.code,
+    error.postgresCode,
+    error.operationName,
+  ].filter((value) => value !== null && value !== undefined && value !== "");
+  return metadata.length > 0 ? metadata.join(" · ") : error.message ?? null;
+}
+
 export default function MarketplacesPage() {
   const { t } = useI18n();
   const [ozonSummary, setOzonSummary] =
     useState<OzonIntegrationSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [syncDetails, setSyncDetails] = useState<OzonSyncDetails | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -93,6 +157,25 @@ export default function MarketplacesPage() {
       onSummary: setOzonSummary,
     });
   }, [recoveryActive, syncing]);
+
+  const recoveryRunId = ozonSummary?.recovery?.runId ?? null;
+  useEffect(() => {
+    if (!recoveryRunId) {
+      setSyncDetails(null);
+      return;
+    }
+    const controller = new AbortController();
+    const load = () =>
+      requestOzonSyncDetails(recoveryRunId, controller.signal)
+        .then(setSyncDetails)
+        .catch(() => undefined);
+    void load();
+    const timer = recoveryActive ? window.setInterval(load, 10_000) : null;
+    return () => {
+      controller.abort();
+      if (timer !== null) window.clearInterval(timer);
+    };
+  }, [recoveryActive, recoveryRunId]);
 
   const syncOzonConnection = async () => {
     const action = getOzonRecoveryAction(ozonSummary);
@@ -222,6 +305,20 @@ export default function MarketplacesPage() {
                 {ozonSyncStatusLabel(recovery.status, t)}
               </div>
               <div>{t.ozonRecoveryInProgress}</div>
+              {recovery.currentStepKey && (
+                <div className="mt-1 text-xs">
+                  {t.ozonRecoveryCurrentStep}: {recovery.currentStepKey}
+                </div>
+              )}
+              {recovery.progress && (
+                <div className="mt-1 text-xs">
+                  {t.ozonRecoveryProgress}: {recovery.progress.phase} ·{" "}
+                  {recovery.progress.processed}
+                  {recovery.progress.total === null
+                    ? ""
+                    : ` / ${recovery.progress.total}`}
+                </div>
+              )}
               {recovery.nextRetryAt && (
                 <div className="mt-1 text-xs">
                   {t.ozonRecoveryNextRetry}:{" "}
@@ -271,6 +368,100 @@ export default function MarketplacesPage() {
               )}
             </div>
           </div>
+        )}
+        {syncDetails && (
+          <details className="mt-4 rounded-md border bg-muted/10">
+            <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+              {t.ozonSyncDetails}
+            </summary>
+            <div className="space-y-4 border-t p-3">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t.ozonSyncDetailsSteps}
+                </h3>
+                <div className="mt-2 space-y-2">
+                  {syncDetails.steps.map((step) => {
+                    const stepError = safeSyncErrorText(step.lastError);
+                    return (
+                      <div
+                        key={step.id}
+                        className="rounded-md border bg-background px-3 py-2 text-xs"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-medium">{step.stepKey}</span>
+                          <Badge
+                            variant={
+                              step.state === "failed"
+                                ? "destructive"
+                                : step.state === "completed" ||
+                                    step.state === "skipped"
+                                  ? "default"
+                                  : "secondary"
+                            }
+                          >
+                            {step.state}
+                          </Badge>
+                        </div>
+                        <div className="mt-1 text-muted-foreground">
+                          {t.ozonSyncExecutionCount}: {step.attemptCount} ·{" "}
+                          {t.ozonSyncFailureCount}: {step.failureCount}
+                        </div>
+                        {step.progress && (
+                          <div className="mt-1">
+                            {step.progress.phase}: {step.progress.processed}
+                            {step.progress.total === null
+                              ? ""
+                              : ` / ${step.progress.total}`}
+                          </div>
+                        )}
+                        {step.nextActionAt && (
+                          <div className="mt-1">
+                            {t.ozonSyncNextAction}:{" "}
+                            {formatOzonDateTime(step.nextActionAt)}
+                          </div>
+                        )}
+                        {stepError && (
+                          <div className="mt-1 text-destructive">
+                            {stepError}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t.ozonSyncDetailsEvents}
+                </h3>
+                <div className="mt-2 space-y-1 text-xs">
+                  {syncDetails.events.length === 0 ? (
+                    <div className="text-muted-foreground">
+                      {t.ozonSyncNoEvents}
+                    </div>
+                  ) : (
+                    syncDetails.events.slice(0, 20).map((event) => {
+                      const eventError = safeSyncErrorText(event.lastError);
+                      return (
+                        <div key={event.id} className="rounded border px-2 py-1.5">
+                          <div>
+                            {formatOzonDateTime(event.createdAt)} ·{" "}
+                            <span className="font-medium">{event.stepKey}</span>{" "}
+                            · {event.eventType}
+                          </div>
+                          {eventError && (
+                            <div className="mt-0.5 text-destructive">
+                              {eventError}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          </details>
         )}
 
         {ozonSummary?.setupError ? (

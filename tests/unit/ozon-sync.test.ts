@@ -172,7 +172,7 @@ test("discoverDiscountedSkus reads authoritative discounted IDs from the latest 
           reports: [
             {
               code: "REPORT-DISCOUNTED",
-              report_type: "SELLER_PRODUCT_DISCOUNTED",
+              report_type: "SELLER_DISCOUNTED",
               status: "success",
               created_at: "2026-07-27T00:00:00.000Z",
               file: "https://cdn1.ozone.ru/reports/discounted.csv",
@@ -199,9 +199,9 @@ test("discoverDiscountedSkus reads authoritative discounted IDs from the latest 
     {
       endpoint: "/v1/report/list",
       body: {
-        page: 0,
+        page: 1,
         page_size: 100,
-        report_type: "SELLER_PRODUCT_DISCOUNTED",
+        report_type: "SELLER_DISCOUNTED",
       },
     },
   ]);
@@ -222,7 +222,7 @@ test("discoverDiscountedSkus passes the durable step deadline to the report down
           reports: [
             {
               code: "REPORT-DISCOUNTED",
-              report_type: "SELLER_PRODUCT_DISCOUNTED",
+              report_type: "SELLER_DISCOUNTED",
               status: "success",
               created_at: "2026-07-27T00:00:00.000Z",
               file: "https://cdn1.ozone.ru/reports/discounted.csv",
@@ -254,7 +254,7 @@ test("discoverDiscountedSkus creates a missing report and exposes processing as 
     {
       result: {
         code: "REPORT-NEW",
-        report_type: "SELLER_PRODUCT_DISCOUNTED",
+        report_type: "SELLER_DISCOUNTED",
         status: "processing",
       },
     },
@@ -279,9 +279,9 @@ test("discoverDiscountedSkus creates a missing report and exposes processing as 
     {
       endpoint: "/v1/report/list",
       body: {
-        page: 0,
+        page: 1,
         page_size: 100,
-        report_type: "SELLER_PRODUCT_DISCOUNTED",
+        report_type: "SELLER_DISCOUNTED",
       },
     },
     {
@@ -625,7 +625,7 @@ test("fetchSupplyOrders propagates an entire failed detail batch", async () => {
   );
 });
 
-test("fetchSupplyOrders uses a genuinely detailed legacy list record when its detail is missing", async () => {
+test("fetchSupplyOrders rejects undocumented full orders without order_ids", async () => {
   const client = {
     request: async <T>(endpoint: string) => {
       if (endpoint === "/v3/supply-order/list") {
@@ -640,9 +640,10 @@ test("fetchSupplyOrders uses a genuinely detailed legacy list record when its de
     },
   };
 
-  assert.deepEqual(await fetchSupplyOrders(client), [
-    { order_id: "legacy", order_number: "legacy-order" },
-  ]);
+  await assert.rejects(
+    fetchSupplyOrders(client),
+    /Ozon \/v3\/supply-order\/list response has no order_ids array/
+  );
 });
 
 test("isMissingFinanceDocumentError accepts only endpoint-matched missing monthly finance documents", () => {

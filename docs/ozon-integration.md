@@ -7,13 +7,10 @@ and why some Ozon data remains reporting-only.
 
 Research basis:
 
-- Ozon Seller API reference: https://docs.ozon.ru/api/seller/en/
-- Global Ozon API intro: https://docs.ozon.ru/global/en/api/intro/?country=other
-- Ozon docs note that `POST /v3/finance/transaction/list` is deprecated and is
-  scheduled to be disabled on 2026-07-06. The integration uses finance accrual
-  endpoints instead.
-- Ozon FBS listing moved to `POST /v4/posting/fbs/list`; the older
-  `POST /v3/posting/fbs/list` is intentionally not allowlisted.
+- Ozon Seller API reference: https://docs.ozon.ru/api/seller/
+- Every active request/response contract below was re-verified in the live
+  Seller API reference on 2026-07-27. Paths are recorded beside their decoder
+  tests so future contract audits have an explicit verification date.
 
 ## Product Contract
 
@@ -57,10 +54,10 @@ most 40 starts per second below Ozon's 50-request limit. Every HTTP attempt has
 a 30-second timeout. Safe read requests get at most four total attempts for
 transport/timeouts, HTTP `408`, `425`, `429`, and `500`-`599`. The delays before
 attempts two through four are approximately 500 ms, 1 second, and 2 seconds,
-plus up to 250 ms of jitter. This four-attempt policy is the default for
-validation and other non-durable callers. A durable claimed step uses one HTTP
-attempt per request because the persisted step schedule owns subsequent
-attempts.
+plus up to 250 ms of jitter. Durable requests keep the same four-attempt ceiling,
+but the shared execution signal stops pacing, backoff, or an attempt when the
+remaining step budget is exhausted; the durable scheduler then resumes from
+the checkpoint.
 
 `Retry-After` is accepted as either seconds or an HTTP date.
 `Item-Retry-After` is interpreted as minutes. A server-provided delay overrides
@@ -90,8 +87,8 @@ with a local mock server.
   classification, durable retry scheduling, and lease-aware finish calls.
 - `src/lib/ozon/durable-sync.ts`: begin/resume and retry-failed coordination,
   public run summaries, and recovery counts.
-- `src/lib/ozon/candidates.ts`: candidate normalization, validation, mapping,
-  local product/warehouse creation, and `processOperation` request building.
+- `src/lib/ozon/candidates.ts`: candidate normalization, validation, evidence
+  hashing, mapping, and local product/warehouse creation.
 - `src/app/api/integrations/ozon/*`: connection, validate, sync, candidate
   review, approval, and commit APIs.
 - `src/app/settings/page.tsx`: connection credential management and validation.
@@ -112,6 +109,32 @@ with a local mock server.
 - `supabase/migrations/020_ozon_sync_recovery.sql`: durable sync steps, active
   run constraints, leases, service-role worker RPCs, and Supabase Cron
   scheduling.
+- `supabase/migrations/021_ozon_sync_checkpoints_observability.sql`: checkpoint,
+  failure-count, event timeline, versioned worker RPCs, and covering indexes.
+- `supabase/migrations/022_ozon_evidence_accounting_correctness.sql`: mirror
+  provenance, evidence hashes, atomic candidate commits, and nullable inventory
+  cost basis.
+
+## Verified Seller API Operations
+
+The endpoint path is the operation identifier used by the generated Seller API
+reference and by Tover's endpoint-specific decoder tests. These contracts were
+last re-verified against the official Ozon Seller API reference on 2026-07-27:
+
+| Domain | Official operation ID | Decoder contract |
+| --- | --- | --- |
+| Warehouses | `/v2/warehouse/list`, `/v1/warehouse/ozon/list` | cursor/`warehouses`; Ozon locations |
+| Products | `/v3/product/list`, `/v3/product/info/list`, `/v4/product/info/attributes`, `/v5/product/info/prices` | string IDs, nested price, string/array images |
+| Stocks | `/v4/product/info/stocks` | stock `type`, `present`, `reserved`; no warehouse |
+| Postings | `/v4/posting/fbs/list`, `/v3/posting/fbo/list` | Money product price and schema-specific `analytics_data` warehouse |
+| Returns | `/v1/returns/list`, `/v2/returns/rfbs/list`, `/v2/returns/rfbs/get` | documented nested filters, `last_id`, root/member wrappers |
+| Finance | `/v1/finance/accrual/types`, `/v1/finance/accrual/by-day` | `accrual_id`, Money, item/non-item fees |
+| Legal | `/v1/finance/document-b2b-sales/json`, `/v1/posting/unpaid-legal/product/list` | B2B `buyer_info`/`info`/`operations`; reporting only |
+| Reports | `/v1/finance/mutual-settlement`, `/v1/finance/compensation`, `/v1/finance/decompensation`, `/v1/finance/cash-flow-statement/list`, `/v1/finance/products/buyout`, `/v1/report/info` | monthly codes, half-month cash flow, <=31-day buyout |
+| Removals | `/v1/removal/from-stock/list`, `/v1/removal/from-supply/list` | return/box IDs, stock type, dates, utilization evidence |
+| Supplies | `/v3/supply-order/list`, `/v3/supply-order/get`, `/v1/supply-order/bundle` | `order_ids`, nested `supplies[]`, paginated bundle items |
+| Analytics | `/v1/analytics/stocks`, `/v1/analytics/turnover/stocks` | official named counts; one turnover request/minute |
+| Discounted | `/v1/report/list`, `/v1/report/discounted/create`, `/v1/product/info/discounted` | one-based `SELLER_DISCOUNTED`, direct code, reporting-only detail |
 
 ## Data Model
 
@@ -156,81 +179,16 @@ and addresses.
 
 ## Endpoint Allowlist
 
-The allowlist contains only read-only Seller API paths.
+The allowlist is intentionally identical to the active integration. It contains
+the warehouse, product, stock, posting, return, finance/legal/report, removal,
+supply, analytics, and discounted paths listed in **Verified Seller API
+Operations** above, plus `/v1/report/list`,
+`/v1/report/discounted/create`, and `/v1/product/info/discounted`.
 
-Catalog and stock:
-
-- `POST /v3/product/list`
-- `POST /v3/product/info/list`
-- `POST /v4/product/info/attributes`
-- `POST /v4/product/info/stocks`
-- `POST /v5/product/info/prices`
-- `POST /v1/product/info/warehouse/stocks`
-- `POST /v1/product/info/discounted`
-
-Warehouses:
-
-- `POST /v2/warehouse/list`
-
-Postings:
-
-- `POST /v4/posting/fbs/list`
-- `POST /v3/posting/fbs/get`
-- `POST /v3/posting/fbo/list`
-- `POST /v2/posting/fbo/get`
-
-Returns:
-
-- `POST /v1/returns/list`
-- `POST /v2/returns/rfbs/list`
-- `POST /v2/returns/rfbs/get`
-
-Finance, legal-entity, and reports:
-
-- `POST /v1/finance/accrual/postings`
-- `POST /v1/finance/accrual/types`
-- `POST /v1/finance/accrual/by-day`
-- `POST /v2/finance/realization`
-- `POST /v1/finance/realization/posting`
-- `POST /v1/finance/document-b2b-sales`
-- `POST /v1/finance/document-b2b-sales/json`
-- `POST /v1/finance/cash-flow-statement/list`
-- `POST /v1/finance/mutual-settlement`
-- `POST /v1/finance/products/buyout`
-- `POST /v1/finance/compensation`
-- `POST /v1/finance/decompensation`
-- `POST /v1/posting/unpaid-legal/product/list`
-- `POST /v1/report/postings/create`
-- `POST /v1/report/products/create`
-- `POST /v2/report/returns/create`
-- `POST /v1/report/discounted/create`
-- `POST /v1/report/info`
-- `POST /v1/report/list`
-
-Movement and analytics:
-
-- `POST /v1/removal/from-stock/list`
-- `POST /v1/removal/from-supply/list`
-- `POST /v3/supply-order/list`
-- `POST /v3/supply-order/get`
-- `POST /v1/supply-order/bundle`
-- `POST /v1/analytics/stocks`
-- `POST /v1/analytics/turnover/stocks`
-
-Taxonomy/enrichment:
-
-- `POST /v1/description-category/tree`
-- `POST /v1/description-category/attribute`
-- `POST /v1/description-category/attribute/values`
-- `POST /v1/description-category/attribute/values/search`
-
-Intentionally not allowlisted:
-
-- `POST /v3/posting/fbs/list` because the integration uses v4.
-- `POST /v3/finance/transaction/list` because Ozon marks it deprecated and
-  scheduled for shutdown on 2026-07-06.
-- Any Ozon endpoint that changes price, stock, product content, shipment state,
-  cancellation state, labels, chat, promotions, or campaigns.
+There are no unused taxonomy, legacy posting-detail, realization, generic
+finance-transaction, or generic report-generation endpoints in the allowlist.
+Any Ozon endpoint that changes price, stock, product content, shipment state,
+cancellation state, labels, chat, promotions, or campaigns remains forbidden.
 
 ## Sync Flow
 
@@ -239,7 +197,8 @@ the connection. A new run gets these twelve ordered step rows. Manual execution
 runs sequentially within a bounded request budget; unfinished work remains in
 Supabase instead of being lost with the request. Calling the route while a run
 is active returns the same run and makes scheduled retries immediately
-eligible.
+eligible. It also reactivates failed steps in that same active run; completed
+and skipped steps remain untouched.
 
 The route returns HTTP `202` while the run is `running` or `retrying`, and HTTP
 `200` for terminal states. The response includes `runId`, the accumulated
@@ -273,8 +232,18 @@ Transport/timeouts, Ozon `408`, `425`, `429`, and `500`-`599`, plus database or
 runtime errors not explicitly marked permanent, use durable retries. HTTP `400`,
 `401`, `403`, unknown `404`, and explicit configuration/invariant errors are
 permanent. Failed attempts 1 through 7 are scheduled after exactly 1 minute,
-5 minutes, 15 minutes, 1 hour, 3 hours, 6 hours, and 12 hours. Attempt 8 becomes
-terminal.
+5 minutes, 15 minutes, 1 hour, 3 hours, 6 hours, and 12 hours. The eighth
+actual failure becomes terminal. Claims increment `attempt_count`; only real
+transient failures increment `failure_count`. Permanent failures terminate
+without consuming the retry schedule. Checkpoint yields and
+report-poll waits do not consume the retry schedule.
+
+The HTTP client retries safe retrieval requests at most four times with a
+30-second attempt timeout, paced request starts, jittered backoff, and Ozon
+retry-header support. Report-creation operations are not retried after an
+ambiguous transport or server failure because the report may already have
+been created; the durable runner records the transient failure and resumes
+from the persisted phase instead.
 
 Workers claim one step atomically. A claim increments the attempt count and
 creates a unique ten-minute lease token. Another worker cannot claim work for
@@ -288,7 +257,15 @@ signal for all Ozon requests, including request pacing. Manual work derives
 that deadline from its 25-second request budget; Cron recovery uses a
 100-second worker budget inside the route limit. The runner reserves the final
 2 seconds for the lease-aware finish RPC, waits for the domain to unwind after
-cancellation, and then records the timeout as a transient durable failure.
+cancellation. A budget cancellation saves the latest checkpoint and yields the
+step back to immediately due `pending`; it is not recorded as a failure.
+
+Every successfully committed page, date, report phase, or detail batch can
+extend the same lease through `checkpoint_ozon_sync_run_step_v2`. The lease
+token is validated for checkpoints, yields, and finishes, so stale workers
+cannot overwrite reclaimed progress. `GET /api/integrations/ozon/sync/[runId]`
+returns only safe progress, counts, normalized errors, and the recent
+`marketplace_sync_step_events` timeline.
 
 Every caught step failure emits an `ozon_sync_step_failed` entry in the app
 hosting logs. Correlate it with Supabase using `runId`, `connectionId`,
@@ -299,10 +276,12 @@ stack traces, arbitrary unknown-error messages, or database error text.
 
 ### 1. Warehouses
 
-Endpoint: `POST /v2/warehouse/list`.
+Endpoints: `POST /v2/warehouse/list` and `POST /v1/warehouse/ozon/list`.
 
-Tover stores Ozon warehouse ID, name, fulfillment schema/status, sanitized raw
-payload, and a local warehouse mapping.
+The seller list uses `limit <= 200` and cursor pagination. The Ozon warehouse
+list supplies FBO/Fresh/returns locations. Tover stores Ozon warehouse ID,
+name, fulfillment schema/status, sanitized raw payload, and a local warehouse
+mapping.
 
 Auto-mapping uses local warehouse name. Existing manual/ignored mappings are
 preserved.
@@ -327,9 +306,10 @@ or barcode. Manual/ignored mappings are preserved.
 
 Endpoint: `POST /v4/product/info/stocks`.
 
-Tover inserts point-in-time rows into `ozon_stock_snapshots` with present,
-reserved, warehouse, fulfillment schema, local product mapping, and local
-warehouse mapping. Snapshots are mirrors, not operations.
+Tover inserts point-in-time rows into `ozon_stock_snapshots` by documented
+stock `type`, `present`, and `reserved`. This endpoint does not identify a
+warehouse, so Tover does not invent one or attach a local warehouse mapping.
+Snapshots are mirrors, not operations.
 
 ### 4. Postings
 
@@ -338,8 +318,11 @@ Endpoints:
 - `POST /v4/posting/fbs/list`
 - `POST /v3/posting/fbo/list`
 
-Delivered FBS/FBO postings create `sale` candidates. Each Ozon posting becomes
-one Tover sale candidate and may contain multiple line items.
+Delivered FBS/FBO postings create `sale` candidates only when the response also
+contains the documented `in_process_at` event timestamp. The delivered status
+proves finality; `in_process_at` supplies the source date without inventing a
+completion timestamp that these list contracts do not expose. Each Ozon posting
+becomes one Tover sale candidate and may contain multiple line items.
 
 Canceled postings create ignored audit candidates with a warning. Intermediate
 posting states remain mirrored only.
@@ -352,8 +335,17 @@ Endpoints:
 - `POST /v2/returns/rfbs/list`
 - `POST /v2/returns/rfbs/get`
 
-Final returned/accepted/received/done return states create `return` candidates
-with inbound direction. Other return states remain mirrored.
+`/v1/returns/list` uses `filter.logistic_return_date`, `limit`, and `last_id`;
+the root `returns` member is followed while `has_next` is true. The next
+`last_id` is the last returned row's `id`; Ozon does not return a separate
+cursor. Its product price uses the documented legacy
+`{ price, currency_code }` object. rFBS uses `filter.created_at`; a full page is
+continued with the last row's `return_id`, and detail responses are unwrapped
+from their `returns` member. The current rFBS detail contract does not prove
+both quantity and seller-receipt time, so those rows remain mirrors. A return
+candidate is created only when Ozon explicitly
+proves seller receipt and supplies the product, positive quantity, event date,
+and a mappable warehouse. `WriteOff` and incomplete states remain mirrored.
 
 ### 6. Finance Accruals
 
@@ -362,8 +354,12 @@ Endpoints:
 - `POST /v1/finance/accrual/types`
 - `POST /v1/finance/accrual/by-day`
 
-Tover stores accrual rows, posting references, amounts, currencies, fee items,
-services, and sanitized raw payloads in `ozon_finance_transactions`.
+Tover uses `accrual_id` as the only transaction identity and stores nested
+Money values as exact decimal strings for PostgreSQL `NUMERIC`. Identical
+duplicate IDs inside one response page are coalesced; conflicting payloads for
+one ID are a permanent invariant failure. It stores posting references, item
+and non-item fees, commissions, delivery services, currency, and sanitized
+raw payloads in `ozon_finance_transactions`.
 
 These rows power marketplace profitability and fee analytics. They do not create
 Tover `payment` operations because Tover payments currently model supplier
@@ -377,9 +373,8 @@ Tover stores invoice/report identifiers, invoice date, posting number, company
 identifiers, amount, product rows, sanitized raw payload, and operation candidate
 link.
 
-Legal-entity rows enrich sale analytics. They create fallback `sale` candidates
-only when there is no posting candidate for the same posting number. This avoids
-double-counting B2B sales that already arrived as normal Ozon postings.
+Legal-entity and unpaid-legal rows are reporting-only. They never create sale
+candidates, avoiding duplicate or unsupported inventory operations.
 
 Endpoint `POST /v1/posting/unpaid-legal/product/list` mirrors unpaid legal
 products for reporting only.
@@ -411,8 +406,14 @@ The identity must be the exact safe code/message or Ozon's terminal
 and the other report types, months, cash flow, and buyouts continue. Mismatched
 identities and every other `404` remain permanent errors.
 
-Buyout reports are seller-side sale evidence, not merchant purchases. They remain
-reporting data.
+Cash flow is requested in calendar half-month periods (days 1-15 and 16-month
+end) and follows `page_count`. Buyout windows are non-overlapping and no longer
+than 31 days. Report creation and polling are separate checkpointed phases; a
+waiting/processing code yields the step to a future `pending` action without
+incrementing `failure_count`.
+
+Buyout reports are seller-side sale evidence, not merchant purchases. They
+remain reporting data.
 
 ### 9. Removals and Disposal
 
@@ -421,10 +422,10 @@ Endpoints:
 - `POST /v1/removal/from-stock/list`
 - `POST /v1/removal/from-supply/list`
 
-Tover mirrors removals in `ozon_removals`. Rows generate `write_off` candidates
-only when the reason/status explicitly indicates disposal, utilization, write-off,
-loss, or lost stock. Seller-return/removal rows that do not prove disposal remain
-mirror-only.
+Tover mirrors return/box identifiers, `quantity_for_return`, stock type, state,
+warehouses, delivery/given-out/utilization dates, and preliminary delivery
+price. Only an explicit `utilization_date` can generate a write-off candidate;
+other removal rows remain mirror-only.
 
 ### 10. FBO Supplies
 
@@ -434,10 +435,13 @@ Endpoints:
 - `POST /v3/supply-order/get`
 - `POST /v1/supply-order/bundle`
 
-Completed/accepted/done/supplied/closed/received supply orders create `transfer`
-candidates when bundle items are known. Tover transfer operations support one
-product per operation, so a multi-product Ozon supply becomes one transfer
-candidate per product line.
+Tover reads order-level `supplies[]`, persists supply and bundle identity/state,
+storage warehouse, and completion date separately, and paginates
+`/v1/supply-order/bundle` with `last_id`/`has_next`. Child replacement is one
+database transaction with its parent order update, so a failed child insert
+rolls the parent and child changes back and cannot erase valid bundle rows.
+A transfer candidate requires a completed supply, explicit bundle quantity,
+and destination. The local source warehouse is still a required user mapping.
 
 The list request uses the real Ozon contract:
 
@@ -467,7 +471,11 @@ Endpoints:
 - `POST /v1/analytics/stocks`
 - `POST /v1/analytics/turnover/stocks`
 
-Tover mirrors marketplace stock and turnover analytics. These rows are
+Tover mirrors `valid_stock_count`, `available_stock_count`,
+`requested_stock_count`, transit, customer/seller returns, defect, other,
+excess, expiring, waiting-document, ADS, and IDC fields without relabeling
+`requested_stock_count` as reserved stock. Turnover requests are paced
+to one start per minute per Client-Id. These rows are
 reporting/reconciliation evidence only in the current implementation. They do
 not generate `inventory_adjustment` candidates because daily stock deltas can
 repeat and over-adjust local inventory without a dedicated reconciliation
@@ -478,11 +486,11 @@ workflow.
 Endpoint: `POST /v1/product/info/discounted`.
 
 Tover obtains authoritative discounted SKU identifiers through Ozon's
-`SELLER_PRODUCT_DISCOUNTED` report. It reuses a completed report generated in
+`SELLER_DISCOUNTED` report using one-based pages. It reuses a completed report generated in
 the preceding 10 minutes, resumes a `waiting`/`processing` report through
 `POST /v1/report/info`, or starts one through
-`POST /v1/report/discounted/create`. A processing report raises a transient
-incomplete-response error so the durable runner resumes the same step later.
+`POST /v1/report/discounted/create`. A processing report yields the same step
+to a future action without recording a failure.
 The report download accepts only the known Ozon report CDN hosts (or the exact
 configured local mock origin), validates every redirect before following it,
 shares the durable step deadline, and has its own 30-second timeout. It streams
@@ -502,29 +510,37 @@ validation failures remain visible.
 
 Tover mirrors the returned discounted products. It reads Ozon's damaged-product
 evidence fields, including `reason_damaged`, `comment_reason_damaged`,
-`defects`, mechanical/package damage, condition, and condition estimation. A
-`defect` candidate is generated only when that evidence explicitly proves
-physical defect or damage, including Russian damage descriptions. Generic
-markdowns or discounts remain mirror-only.
+`defects`, mechanical/package damage, condition, and condition estimation.
+Discounted products are always reporting-only. Ozon does not provide sufficient
+quantity, warehouse, or operation-date evidence on this endpoint, so Tover
+never invents those values and never creates a defect candidate.
 
 ## Recovery Worker Operations
 
-On a fresh Supabase project, enable the three dependencies before applying
-migration 020:
+On a fresh Supabase project, enable `pg_net` and `pg_cron`, and verify Vault,
+before applying migration 020:
 
 ```sql
 create extension if not exists pg_net with schema extensions;
 create extension if not exists pg_cron;
-create extension if not exists supabase_vault with schema vault;
+select count(*) from vault.decrypted_secrets;
 ```
+
+In current Supabase Dashboard projects Vault is exposed under Integrations and
+may not appear with the literal `supabase_vault` label in the Extensions page.
+The count-only query verifies that its decrypted view exists without copying
+secret values into logs. If the `vault` schema is absent, enable Vault from
+Dashboard Integrations before running migration 020. Migrations 021 and 022 add
+checkpoints/events and evidence/cost-basis correctness; apply them before
+deploying the corresponding app.
 
 Run these statements as the project owner in the SQL Editor, or enable the same
 extensions from Database > Extensions in the hosted Dashboard. `pg_net`
 exposes `net.http_post` and its response table in the `net` schema; `pg_cron`
-creates the `cron` schema; and `supabase_vault` creates/uses `vault`. The
-`IF NOT EXISTS` form is safe for hosted projects where an extension is already
-enabled. If extension creation is denied, a project owner/database
-administrator must enable it before migration 020 and before scheduling.
+creates the `cron` schema. The `IF NOT EXISTS` form is safe for hosted projects
+where an extension is already enabled. If extension creation is denied, a
+project owner/database administrator must enable it before migration 020 and
+before scheduling.
 
 The Next.js deployment must set:
 
@@ -671,6 +687,9 @@ select
   steps.step_key,
   steps.state,
   steps.attempt_count,
+  steps.failure_count,
+  steps.checkpoint,
+  steps.last_checkpoint_at,
   steps.next_attempt_at,
   steps.lease_expires_at,
   steps.last_error
@@ -689,6 +708,9 @@ select
   step_key,
   state,
   attempt_count,
+  failure_count,
+  checkpoint,
+  last_checkpoint_at,
   next_attempt_at,
   lease_expires_at
 from marketplace_sync_run_steps
@@ -705,6 +727,66 @@ immediately. **Retry failed steps** is available for a terminal partial/failed
 run; it calls `POST /api/integrations/ozon/sync/retry` with that `runId` and
 resets only terminal `failed` steps to `pending`. It reuses the same run and date
 window, while completed/skipped steps remain untouched.
+
+## Inventory Cost Contract
+
+`operation_items.unit_price` is transaction evidence: the invoice/sale price.
+It is not inventory cost.
+
+- Purchases and valued positive adjustments use their explicit unit price as
+  cost.
+- Sales and write-offs use only the cost already present in inventory.
+- Returns reuse an existing known inventory cost; Ozon return price remains
+  transaction evidence.
+- Transfer and defect inbound movements inherit the source movement's cost.
+- If a valid source cost does not exist, movement and balance cost stay `NULL`
+  with `cost_basis_status = 'unknown'`.
+- Weighted average is evaluated in PostgreSQL only when both the existing and
+  incoming cost bases are known. Otherwise the resulting balance cost remains
+  unknown.
+- Inventory, movement, defect, and turnover totals—including report-template
+  grouping—are calculated by versioned PostgreSQL `NUMERIC` RPCs. The API and
+  UI only convert the returned values for display; they do not recompute
+  monetary totals.
+
+New operations use `cost_contract_version = 1`. Existing operations retain
+version `0` until an explicitly approved reconciliation changes them. Migration
+022 expands the schema and reporting functions but does not automatically
+rebuild historical movements or balances.
+
+## Production Reconciliation
+
+`npm run ozon:reconcile -- --connection <uuid> --run <uuid>` is read-only. It
+requires an exact Ozon connection/run pair and reports:
+
+- the twelve step states and live leases;
+- per-table current-contract, current-run, legacy/unverified, and superseded
+  mirror coverage;
+- return completeness and finance `accrual_id` identity/duplicate coverage;
+- stale versus final candidates and their committed operation links;
+- linked inventory movements, legacy cost contracts, unknown costs, and
+  suspected transaction-price/cost matches.
+
+The preview includes a deterministic SHA-256 confirmation digest. It does not
+pretend to calculate historical after-values in JavaScript: exact historical
+after-values require an isolated PostgreSQL ledger replay. Apply mode is
+deliberately limited to the approved twelve-step repair reset:
+
+```bash
+npm run ozon:reconcile -- \
+  --connection <uuid> \
+  --run <uuid> \
+  --apply \
+  --confirm <exact-preview-digest>
+```
+
+Apply refuses a mismatched digest, a noncanonical step registry, or any live
+lease. It does not delete/supersede source mirrors and does not rebuild
+historical operations, movements, or balances. Pause Cron and candidate commits
+operationally before using apply. After the corrected run completes, generate a
+new read-only preview. Soft supersession and any historical cost-contract
+upgrade/rebuild require a separate explicit approval based on an isolated
+PostgreSQL replay; they are not hidden inside the reset command.
 
 ## Candidate Status Preservation
 
@@ -724,12 +806,12 @@ undoing review work.
 
 | Tover operation type | Ozon evidence policy |
 | --- | --- |
-| `sale` | Generated from delivered FBS/FBO postings. Legal-entity sales can create fallback sale candidates only when no posting candidate exists. |
-| `return` | Generated from final Ozon returns and final rFBS return requests that prove inventory returned. |
-| `write_off` | Generated from removal/disposal rows only when the reason clearly proves disposal, write-off, utilization, or loss. |
+| `sale` | Generated only from final delivered FBS/FBO postings with documented `in_process_at`; the list contracts do not expose `delivered_at`. Legal-entity rows remain reporting-only. |
+| `return` | Generated only from returns that explicitly prove seller receipt, quantity, product, event time, and destination warehouse. Current incomplete rFBS rows remain mirrors. |
+| `write_off` | Generated from removal rows only when an explicit `utilization_date` proves disposal. |
 | `transfer` | Generated from completed FBO supply orders, one candidate per product line, after user maps the unknown source warehouse. |
 | `inventory_adjustment` | No Ozon candidate in the current implementation. Ozon stock analytics is mirrored for reconciliation/reporting only. |
-| `defect` | Generated only from discounted/removal evidence that explicitly proves physical defect or damage. |
+| `defect` | No discounted-product candidate. Discounted detail lacks the quantity, warehouse, and event-time evidence required for a defect movement. |
 | `purchase` | No candidate. Ozon buyout or supply data is not merchant purchase evidence from a supplier. |
 | `payment` | No candidate. Ozon finance data is marketplace settlement/payout/accrual data; Tover `payment` is supplier-oriented. |
 | `production` | No candidate. Ozon has no meaningful source event for production. |
@@ -761,9 +843,9 @@ fabricated as operations.
 15. Manager maps existing products/warehouses or creates missing local records.
 16. Manager approves valid candidates.
 17. Manager commits approved candidates.
-18. Tover calls existing `processOperation`, marks candidates committed, stores
-    `created_operation_id`, and shows the created operations in the normal
-    Operations list.
+18. Tover atomically validates current evidence, creates the operation and
+    items, rebuilds inventory effects under a workspace advisory lock, links
+    the commit claim, and marks the candidate committed.
 
 Settings intentionally stays connection-only. It shows credential fields,
 connection status, validation, disconnect, and last validated time. Sync buttons,
@@ -799,19 +881,16 @@ requires candidate evidence to have `supportStatus = "commit_candidate"` and a
 supported Tover operation type. Reporting-only and blocked evidence cannot be
 approved or committed even if its payload looks operation-shaped.
 
-Commit is partial-safe:
+Each candidate commit is one database transaction:
 
 - already committed candidates are skipped;
-- failed candidates remain approved when failure happens before a commit claim;
-- candidates with an active/unresolved claim stay `committing` with a visible
-  recovery error;
-- commit errors are visible in `validation_errors`;
-- successful candidates become committed and store the created operation ID;
-- `marketplace_operation_commit_claims` stores the candidate/source claim and
-  operation link to prevent double-click or concurrent commit duplicates.
-
-The claim guard prioritizes avoiding duplicate inventory operations. Rare crash
-or link-failure cases may require manual recovery instead of automatic retry.
+- the candidate, connection, product, warehouse, store, source uniqueness,
+  evidence version/hash, positive quantities, directions, and transfer
+  symmetry are validated while locked;
+- the operation, items, inventory rebuild, commit claim, and candidate link
+  either all commit or all roll back;
+- a transaction-scoped advisory lock serializes inventory changes per
+  workspace.
 
 ## Current Simplifications and Follow-ups
 
@@ -822,8 +901,6 @@ or link-failure cases may require manual recovery instead of automatic retry.
   reporting views for settlements, legal-entity sales, unpaid legal products,
   removals, supplies, and reconciliation gaps should be added outside the commit
   flow.
-- Ozon taxonomy endpoints are allowlisted for category and attribute enrichment,
-  but taxonomy sync is not required for candidate commit.
 - Source warehouse mapping for supply transfers is candidate-level user input.
   Once a better local default or mapping model exists, this can become reusable.
 - Async report CSV parsing is represented by report-run metadata and parsed rows
@@ -836,7 +913,8 @@ The Ozon tests use `OZON_API_BASE_URL` to point Next.js at a local mock Seller A
 
 Covered by validation tests:
 
-- sale, return, write-off, transfer, defect, and inventory-adjustment validation;
+- sale, return, write-off, transfer, defect, and inventory-adjustment validation
+  at the shared candidate boundary;
 - missing product/warehouse mappings;
 - invalid date, zero/negative quantity, negative price, and missing unit cost;
 - unsupported purchase/payment/production evidence remains outside commit flow;
@@ -869,9 +947,14 @@ available:
   lease ownership, stale-token rejection, persistence/aggregation of
   caller-supplied failed results, selective reset, and run-to-step cascade
   cleanup;
+- migrations 021 and 022 cover failure-count scheduling, cooperative yields,
+  safe events, checkpoint/lease validation, atomic parent-child mirror
+  replacement, evidence hashes, nullable cost basis, and atomic commits;
 - exact endpoint-matched missing monthly finance documents are skipped while
   remaining report types continue;
-- sale, return, write-off, transfer, and defect operations become normal Tover
-  operations;
+- supported sale, return, write-off, and transfer evidence becomes normal Tover
+  operations through one atomic RPC; discounted evidence remains reporting-only;
+- inventory reports preserve unknown cost, and turnover uses the average of
+  opening and closing known inventory cost rather than mislabeled closing cost;
 - user decisions survive re-sync;
 - buyer/contact PII is not persisted in raw Ozon payload mirrors.
