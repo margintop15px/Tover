@@ -59,6 +59,21 @@ export interface ClassifiedOzonSyncError {
   persistedError: PersistedOzonSyncError;
 }
 
+export interface OzonSyncStepFailureLog {
+  event: "ozon_sync_step_failed";
+  runId: string;
+  connectionId: string;
+  stepKey: string;
+  attemptCount: number;
+  kind: PersistedOzonSyncErrorKind;
+  retryable: boolean;
+  status?: number;
+  retryAfterMs?: number;
+  endpoint?: string;
+  code?: string | number;
+  reason?: string;
+}
+
 export interface DurableOzonRunnerDependencies {
   claimStep: (runId: string | null) => Promise<ClaimedOzonSyncStep | null>;
   executeStep: (
@@ -69,6 +84,7 @@ export interface DurableOzonRunnerDependencies {
   now: () => number;
   setTimer?: (callback: () => void, milliseconds: number) => unknown;
   clearTimer?: (timer: unknown) => void;
+  logStepFailure?: (entry: OzonSyncStepFailureLog) => void;
 }
 
 export interface ClaimedOzonStepExecutionDeadline {
@@ -270,6 +286,9 @@ async function processClaimedStep(
       ? durableRetryDelayMs(step.attempt_count)
       : null;
 
+    dependencies.logStepFailure?.(
+      buildOzonSyncStepFailureLog(step, error, classified)
+    );
     await dependencies.finishStep({
       p_step_id: step.id,
       p_lease_token: step.lease_token,
@@ -292,6 +311,42 @@ async function processClaimedStep(
     p_last_error: null,
     p_next_attempt_at: null,
   });
+}
+
+function buildOzonSyncStepFailureLog(
+  step: ClaimedOzonSyncStep,
+  error: unknown,
+  classified: ClassifiedOzonSyncError
+): OzonSyncStepFailureLog {
+  const entry: OzonSyncStepFailureLog = {
+    event: "ozon_sync_step_failed",
+    runId: step.run_id,
+    connectionId: step.connection_id,
+    stepKey: step.step_key,
+    attemptCount: step.attempt_count,
+    kind: classified.persistedError.kind,
+    retryable: classified.retryable,
+    ...(classified.persistedError.status === undefined
+      ? {}
+      : { status: classified.persistedError.status }),
+    ...(classified.persistedError.retryAfterMs === undefined
+      ? {}
+      : { retryAfterMs: classified.persistedError.retryAfterMs }),
+  };
+
+  if (error instanceof OzonApiError) {
+    entry.endpoint = error.endpoint;
+    if (error.code !== null) entry.code = error.code;
+    if (error.apiMessage !== null) entry.reason = error.apiMessage;
+  } else if (
+    error instanceof PermanentOzonSyncError ||
+    error instanceof OzonInvariantError ||
+    error instanceof OzonIncompleteResponseError
+  ) {
+    entry.reason = error.message;
+  }
+
+  return entry;
 }
 
 async function executeClaimedStepUntilDeadline(
@@ -504,6 +559,8 @@ function createProductionDependencies(): DurableOzonRunnerDependencies {
     ...rpcOperations,
     executeStep,
     now: Date.now,
+    logStepFailure: (entry) =>
+      console.error("Ozon sync step execution failed", entry),
   };
 }
 

@@ -290,6 +290,13 @@ that deadline from its 25-second request budget; Cron recovery uses a
 2 seconds for the lease-aware finish RPC, waits for the domain to unwind after
 cancellation, and then records the timeout as a transient durable failure.
 
+Every caught step failure emits an `ozon_sync_step_failed` entry in the app
+hosting logs. Correlate it with Supabase using `runId`, `connectionId`,
+`stepKey`, and `attemptCount`. The entry includes retry classification and,
+for typed Ozon errors, safe endpoint/status/code/reason fields. It never logs
+credentials, ciphertext, authorization headers, request/response payloads,
+stack traces, arbitrary unknown-error messages, or database error text.
+
 ### 1. Warehouses
 
 Endpoint: `POST /v2/warehouse/list`.
