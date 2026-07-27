@@ -100,6 +100,51 @@ test("paces turnover stock requests at one start per minute", async () => {
   assert.deepEqual(fixture.sleeps, [60_000]);
 });
 
+test("cancelled turnover pacing does not postpone the next durable resume", async () => {
+  let now = 0;
+  const requestStarts: number[] = [];
+  const sleeps: number[] = [];
+  let attempts = 0;
+  const responses = [
+    jsonResponse({ first: true }),
+    jsonResponse({ resumed: true }),
+  ];
+  const runtime: RuntimeFixture = {
+    fetch: async () => {
+      requestStarts.push(now);
+      return responses[attempts++];
+    },
+    now: () => now,
+    sleep: async (milliseconds, signal) => {
+      sleeps.push(milliseconds);
+      if (signal) {
+        signal.throwIfAborted();
+        throw new DOMException("step deadline", "TimeoutError");
+      }
+      now += milliseconds;
+    },
+    random: () => 0,
+    timeoutSignal: () => new AbortController().signal,
+  };
+
+  await testClient(runtime).request("/v1/analytics/turnover/stocks");
+
+  const controller = new AbortController();
+  await assert.rejects(
+    singleAttemptTestClient(runtime, controller.signal).request(
+      "/v1/analytics/turnover/stocks"
+    ),
+    (error: unknown) =>
+      error instanceof DOMException && error.name === "TimeoutError"
+  );
+
+  now = 60_000;
+  await testClient(runtime).request("/v1/analytics/turnover/stocks");
+
+  assert.deepEqual(requestStarts, [0, 60_000]);
+  assert.deepEqual(sleeps, [60_000]);
+});
+
 test("preserves Ozon int64 identifiers and decimal values without JavaScript rounding", async () => {
   const fixture = createRuntime([
     new Response(

@@ -7,6 +7,7 @@ import {
   OzonClient,
   OzonIncompleteResponseError,
   OzonInvariantError,
+  OZON_READ_ONLY_ENDPOINTS,
 } from "../../src/lib/ozon/client";
 import * as sync from "../../src/lib/ozon/sync";
 import {
@@ -103,13 +104,38 @@ const isMissingFinanceDocumentError = (sync as unknown as {
   isMissingFinanceDocumentError: (error: unknown) => boolean;
 }).isMissingFinanceDocumentError;
 
-test("Ozon warehouse request includes the required location types", () => {
-  assert.deepEqual(sync.OZON_WAREHOUSE_TYPES, [
-    "FULL_FILLMENT",
-    "FULL_FILLMENT_RETURNS",
-    "FULL_FILLMENT_DEFECT",
-    "EXPRESS_DARK_STORE",
+test("warehouse allowlist uses only seller-account endpoints", () => {
+  const endpoints = new Set<string>(OZON_READ_ONLY_ENDPOINTS);
+  assert.equal(
+    sync.OZON_SYNC_DOMAIN_REGISTRY[0]?.key,
+    "warehouses"
+  );
+  assert.equal(
+    endpoints.has("/v1/warehouse/fbo/seller/list"),
+    true
+  );
+  assert.equal(endpoints.has("/v1/warehouse/ozon/list"), false);
+});
+
+test("Supabase row loading continues beyond the Data API row limit", async () => {
+  const source = Array.from({ length: 2005 }, (_, index) => ({ id: index }));
+  const pages: Array<[number, number]> = [];
+
+  const rows = await sync.loadSupabaseRows("select:test", async (from, to) => {
+    pages.push([from, to]);
+    return {
+      data: source.slice(from, to + 1),
+      error: null,
+    };
+  });
+
+  assert.equal(rows.length, source.length);
+  assert.deepEqual(pages, [
+    [0, 999],
+    [1000, 1999],
+    [2000, 2999],
   ]);
+  assert.deepEqual(rows.at(-1), { id: 2004 });
 });
 
 test("returns list requests use numeric zero for the first int64 cursor", () => {

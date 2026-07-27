@@ -52,6 +52,13 @@ const liveContractMigration = readFileSync(
   ),
   "utf8"
 );
+const warehouseIdentityMigration = readFileSync(
+  new URL(
+    "../../supabase/migrations/20260727203000_ozon_relevant_warehouse_identity.sql",
+    import.meta.url
+  ),
+  "utf8"
+);
 const reconcileScript = readFileSync(
   new URL("../../scripts/ozon-reconcile.ts", import.meta.url),
   "utf8"
@@ -507,5 +514,24 @@ test("live contract migration hides global warehouse noise and supports fresh se
   assert.match(
     liveContractMigration,
     /WHEN serialization_failure THEN\s+RAISE EXCEPTION 'Ozon sync step lease is stale' USING ERRCODE = '55000'/
+  );
+});
+
+test("warehouse relevance uses a name fallback only without source identity", () => {
+  assert.match(
+    warehouseIdentityMigration,
+    /IN \(\s*'fbs', 'rfbs', 'fbo_seller'\s*\)/
+  );
+  assert.match(
+    warehouseIdentityMigration,
+    /reference\.ozon_warehouse_id IS NOT NULL[\s\S]*reference\.ozon_warehouse_id = warehouse\.ozon_warehouse_id/
+  );
+  assert.match(
+    warehouseIdentityMigration,
+    /reference\.ozon_warehouse_id IS NULL[\s\S]*lower\(trim\(reference\.warehouse_name\)\) =\s+lower\(trim\(warehouse\.name\)\)/
+  );
+  assert.match(
+    warehouseIdentityMigration,
+    /ALTER FUNCTION public\._sanitize_ozon_sync_step_error\(JSONB\) STABLE/
   );
 });

@@ -242,8 +242,16 @@ function responseFor(
           cursor: "",
         },
       };
-    case "/v1/warehouse/ozon/list":
-      return { result: { warehouses: [] } };
+    case "/v1/warehouse/fbo/seller/list":
+      return {
+        warehouses: [
+          {
+            seller_warehouse_id: fixture.autoWarehouse.id,
+            seller_warehouse_name: fixture.autoWarehouse.name,
+            is_active: true,
+          },
+        ],
+      };
     case "/v3/product/list":
       return {
         result: {

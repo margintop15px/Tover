@@ -11,7 +11,7 @@ const MAX_SAFE_API_MESSAGE_LENGTH = 500;
 
 export const OZON_READ_ONLY_ENDPOINTS = [
   "/v2/warehouse/list",
-  "/v1/warehouse/ozon/list",
+  "/v1/warehouse/fbo/seller/list",
   "/v3/product/list",
   "/v3/product/info/list",
   "/v4/product/info/attributes",
@@ -292,22 +292,40 @@ export class OzonClient {
 
   private async waitForRequestStart(endpoint: OzonReadOnlyEndpoint) {
     const now = this.runtime.now();
+    const previousRequestStartAt = this.pacing.nextRequestStartAt;
+    const previousTurnoverStartAt = this.pacing.nextTurnoverRequestStartAt;
     const endpointStartAt =
       endpoint === "/v1/analytics/turnover/stocks"
-        ? this.pacing.nextTurnoverRequestStartAt
+        ? previousTurnoverStartAt
         : 0;
     const requestStartAt = Math.max(
       now,
-      this.pacing.nextRequestStartAt,
+      previousRequestStartAt,
       endpointStartAt
     );
-    this.pacing.nextRequestStartAt = requestStartAt + REQUEST_START_PACING_MS;
+    const reservedRequestStartAt =
+      requestStartAt + REQUEST_START_PACING_MS;
+    const reservedTurnoverStartAt = requestStartAt + 60_000;
+    this.pacing.nextRequestStartAt = reservedRequestStartAt;
     if (endpoint === "/v1/analytics/turnover/stocks") {
-      this.pacing.nextTurnoverRequestStartAt = requestStartAt + 60_000;
+      this.pacing.nextTurnoverRequestStartAt = reservedTurnoverStartAt;
     }
 
     if (requestStartAt > now) {
-      await this.sleep(requestStartAt - now);
+      try {
+        await this.sleep(requestStartAt - now);
+      } catch (error) {
+        if (this.pacing.nextRequestStartAt === reservedRequestStartAt) {
+          this.pacing.nextRequestStartAt = previousRequestStartAt;
+        }
+        if (
+          endpoint === "/v1/analytics/turnover/stocks" &&
+          this.pacing.nextTurnoverRequestStartAt === reservedTurnoverStartAt
+        ) {
+          this.pacing.nextTurnoverRequestStartAt = previousTurnoverStartAt;
+        }
+        throw error;
+      }
     }
   }
 

@@ -117,6 +117,10 @@ with a local mock server.
 - `supabase/migrations/20260727190000_ozon_live_contract_fixes.sql`:
   seller-relevant warehouse counts and explicit fresh-project service-worker
   privileges.
+- `supabase/migrations/20260727203000_ozon_relevant_warehouse_identity.sql`:
+  identity-first warehouse relevance so a same-name global location cannot be
+  counted as seller evidence, plus the database-linter-correct volatility for
+  the safe step-error sanitizer.
 
 ## Verified Seller API Operations
 
@@ -126,7 +130,7 @@ last re-verified against the official Ozon Seller API reference on 2026-07-27:
 
 | Domain | Official operation ID | Decoder contract |
 | --- | --- | --- |
-| Warehouses | `/v2/warehouse/list`, `/v1/warehouse/ozon/list` | seller FBS/rFBS cursor list; global Ozon-network lookup with required FBO/Fresh/returns `warehouse_types` |
+| Warehouses | `/v2/warehouse/list`, `/v1/warehouse/fbo/seller/list` (`WarehouseFboSellerList`) | seller FBS/rFBS cursor list and account-scoped seller FBO warehouses; other Ozon locations are added only when the seller's own data references them |
 | Products | `/v3/product/list`, `/v3/product/info/list`, `/v4/product/info/attributes`, `/v5/product/info/prices` | string IDs; one identifier family per info-list request; nested price; string/array images |
 | Stocks | `/v4/product/info/stocks` | stock `type`, `present`, `reserved`; empty `stocks[]` means no stock rows; no warehouse |
 | Postings | `/v4/posting/fbs/list`, `/v3/posting/fbo/list` | Money product price and schema-specific `analytics_data` warehouse |
@@ -285,17 +289,17 @@ stack traces, arbitrary unknown-error messages, or database error text.
 
 ### 1. Warehouses
 
-Endpoints: `POST /v2/warehouse/list` and `POST /v1/warehouse/ozon/list`.
+Endpoints: `POST /v2/warehouse/list` and
+`POST /v1/warehouse/fbo/seller/list`.
 
-The seller list uses `limit <= 200` and cursor pagination. The Ozon warehouse
-list sends the required non-empty `warehouse_types` filter for FBO, Fresh,
-returns, and defect locations. `/v1/warehouse/ozon/list` is a global Ozon
-network lookup, not the seller's warehouse count. Tover retains those rows as
-reference data, but the integration summary counts only seller FBS/rFBS
-warehouses plus warehouses that are mapped, ignored, or referenced by the
-seller's postings, returns, removals, supplies, or stock analytics. This avoids
-presenting the complete Ozon network as if every location belonged to the
-seller.
+The FBS/rFBS seller list uses `limit <= 200` and cursor pagination. The FBO
+seller list uses the account-scoped `WarehouseFboSellerList` contract and has
+no request fields. Tover deliberately does not call
+`/v1/warehouse/ozon/list`: that endpoint returns the global Ozon network, not
+the seller's warehouses. Historical global mirror rows are not deleted during
+rollout; they remain hidden unless the user mapped/ignored them or seller data
+references their exact Ozon ID. Warehouse-name fallback is used only when the
+source contract does not provide an ID.
 
 Domain steps insert a referenced warehouse when an Ozon response supplies both
 its ID and name. This insert-only enrichment never overwrites an existing
@@ -526,6 +530,16 @@ reporting/reconciliation evidence only in the current implementation. They do
 not generate `inventory_adjustment` candidates because daily stock deltas can
 repeat and over-adjust local inventory without a dedicated reconciliation
 workflow.
+
+Ozon may return transient `5xx` responses for this analytics endpoint. They use
+the normal bounded HTTP retry policy and, if all HTTP attempts fail, the durable
+step retry schedule. A live contract run on 2026-07-27 completed nine
+100-SKU-or-smaller batches with the same request contract; an empty
+`/v1/analytics/stocks` response is valid and is not converted into a failure.
+When a request budget expires during the one-minute turnover pacing wait, the
+unused limiter reservation is released before the checkpointed step yields.
+Resuming therefore waits only for the original one-minute window instead of
+postponing the request again.
 
 ### 12. Discounted or Damaged Products
 
