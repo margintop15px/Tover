@@ -130,7 +130,7 @@ last re-verified against the official Ozon Seller API reference on 2026-07-27:
 | Returns | `/v1/returns/list`, `/v2/returns/rfbs/list`, `/v2/returns/rfbs/get` | documented nested filters, `last_id`, root/member wrappers |
 | Finance | `/v1/finance/accrual/types`, `/v1/finance/accrual/by-day` | `accrual_id`, Money, item/non-item fees |
 | Legal | `/v1/finance/document-b2b-sales/json`, `/v1/posting/unpaid-legal/product/list` | B2B `buyer_info`/`info`/`operations`; reporting only |
-| Reports | `/v1/finance/mutual-settlement`, `/v1/finance/compensation`, `/v1/finance/decompensation`, `/v1/finance/cash-flow-statement/list`, `/v1/finance/products/buyout`, `/v1/report/info` | monthly codes, half-month cash flow, <=31-day buyout |
+| Reports | `/v1/finance/mutual-settlement`, `/v1/finance/compensation`, `/v1/finance/decompensation`, `/v1/finance/cash-flow-statement/list`, `/v1/finance/products/buyout`, `/v1/report/info` | monthly codes, half-month cash flow keyed by period/currency, <=31-day buyout |
 | Removals | `/v1/removal/from-stock/list`, `/v1/removal/from-supply/list` | return/box IDs, stock type, dates, utilization evidence |
 | Supplies | `/v3/supply-order/list`, `/v3/supply-order/get`, `/v1/supply-order/bundle` | `order_ids`, nested `supplies[]`, paginated bundle items |
 | Analytics | `/v1/analytics/stocks`, `/v1/analytics/turnover/stocks` | official named counts; one turnover request/minute |
