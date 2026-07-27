@@ -285,7 +285,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 20260727203000_ozon_relevant_warehouse_identity.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 026_optimize_ozon_relevant_warehouse_counts.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("Invalid", testInfo));
@@ -321,7 +321,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 20260727203000_ozon_relevant_warehouse_identity.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 026_optimize_ozon_relevant_warehouse_counts.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("Partial", testInfo));
@@ -391,7 +391,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 20260727203000_ozon_relevant_warehouse_identity.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 026_optimize_ozon_relevant_warehouse_counts.sql"
     );
 
     const { admin } = adminWorkspace!;
@@ -656,7 +656,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 20260727203000_ozon_relevant_warehouse_identity.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 026_optimize_ozon_relevant_warehouse_counts.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("MissingMutual", testInfo));
@@ -725,7 +725,7 @@ test.describe("Ozon marketplace integration", () => {
     test.skip(!adminWorkspace, adminSkipReason());
     requireOzonSchema(
       await supportsOzonSchema(adminWorkspace!.admin, adminWorkspace!.workspaceId),
-      "Local Supabase schema is missing Ozon marketplace migrations through 20260727203000_ozon_relevant_warehouse_identity.sql"
+      "Local Supabase schema is missing Ozon marketplace migrations through 026_optimize_ozon_relevant_warehouse_counts.sql"
     );
 
     const fixture = buildOzonFixture(uniqueName("Happy", testInfo));

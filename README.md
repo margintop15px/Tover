@@ -109,7 +109,7 @@ Files in `supabase/migrations/`:
 - `022_ozon_evidence_accounting_correctness.sql` — mirror provenance, strict
   evidence hashes, atomic Ozon candidate commits, nullable inventory cost, and
   PostgreSQL `NUMERIC` report aggregation
-- `20260727133620_ozon_repair_retry_scheduled_steps.sql` — permits the
+- `023_ozon_repair_retry_scheduled_steps.sql` — permits the
   confirmation-gated, lease-free repair to reset legacy scheduled retries
 
 Option A (Supabase SQL Editor):
