@@ -64,6 +64,12 @@ interface ExistingMapping {
 const PRODUCT_PAGE_LIMIT = 1000;
 const POSTING_PAGE_LIMIT = 100;
 const FINANCE_ACCRUAL_PAGE_LIMIT = 200;
+export const OZON_WAREHOUSE_TYPES = [
+  "FULL_FILLMENT",
+  "FULL_FILLMENT_RETURNS",
+  "FULL_FILLMENT_DEFECT",
+  "EXPRESS_DARK_STORE",
+] as const;
 const DISCOUNTED_REPORT_REUSE_MS = 10 * 60 * 1000;
 const OZON_REPORT_DOWNLOAD_LIMIT_BYTES = 10 * 1024 * 1024;
 const OZON_REPORT_DOWNLOAD_TIMEOUT_MS = 30_000;
@@ -527,7 +533,7 @@ async function syncWarehouses(
     execution?.yieldIfNeeded?.();
     const ozonWarehousesResponse = await client.request<JsonRecord>(
       "/v1/warehouse/ozon/list",
-      {}
+      { warehouse_types: OZON_WAREHOUSE_TYPES }
     );
     const ozonWarehouses = requireItems(
       ozonWarehousesResponse,
@@ -720,29 +726,56 @@ async function syncProducts(
   );
 }
 
-async function fetchProductDetails(client: OzonClient, refs: ExternalProductRef[]) {
+export async function fetchProductDetails(
+  client: OzonClient,
+  refs: ExternalProductRef[]
+) {
   const details: JsonRecord[] = [];
 
   for (const chunk of chunkArray(refs, 100)) {
     const productIds = chunk
       .map((ref) => ref.ozonProductId)
       .filter((value): value is string => /^\d+$/.test(value));
-    const offerIds = chunk
+    const refsWithoutProductId = chunk.filter(
+      (ref) => !/^\d+$/.test(ref.ozonProductId)
+    );
+    const offerIds = refsWithoutProductId
       .map((ref) => ref.offerId)
       .filter((value): value is string => Boolean(value));
+    const skus = refsWithoutProductId
+      .filter((ref) => !ref.offerId)
+      .map((ref) => ref.sku)
+      .filter((value): value is string => Boolean(value));
+    const requestBodies: JsonRecord[] = [];
 
-    const response = await client.request<JsonRecord>("/v3/product/info/list", {
-      product_id: productIds,
-      offer_id: offerIds,
-    });
+    if (productIds.length > 0) {
+      requestBodies.push({ product_id: [...new Set(productIds)] });
+    }
+    if (offerIds.length > 0) {
+      requestBodies.push({ offer_id: [...new Set(offerIds)] });
+    }
+    if (skus.length > 0) {
+      requestBodies.push({ sku: [...new Set(skus)] });
+    }
+    if (requestBodies.length === 0) {
+      throw new OzonIncompleteResponseError(
+        "Ozon product reference has no identifier accepted by the product info endpoint"
+      );
+    }
 
-    details.push(
-      ...(requireItems(
-        response,
-        ["items", "products"],
-        "/v3/product/info/list"
-      ) as JsonRecord[])
-    );
+    for (const requestBody of requestBodies) {
+      const response = await client.request<JsonRecord>(
+        "/v3/product/info/list",
+        requestBody
+      );
+      details.push(
+        ...(requireItems(
+          response,
+          ["items", "products"],
+          "/v3/product/info/list"
+        ) as JsonRecord[])
+      );
+    }
   }
 
   return details;

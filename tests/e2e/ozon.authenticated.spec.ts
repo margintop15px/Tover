@@ -813,8 +813,18 @@ test.describe("Ozon marketplace integration", () => {
         fixture.missingProduct.offerId,
         fixture.returnProduct.offerId,
       ];
+      expect(mock.requestBodies["/v1/warehouse/ozon/list"]).toEqual([
+        {
+          warehouse_types: [
+            "FULL_FILLMENT",
+            "FULL_FILLMENT_RETURNS",
+            "FULL_FILLMENT_DEFECT",
+            "EXPRESS_DARK_STORE",
+          ],
+        },
+      ]);
       expect(mock.requestBodies["/v3/product/info/list"]).toEqual([
-        { product_id: productIds, offer_id: offerIds },
+        { product_id: productIds },
       ]);
       expect(mock.requestBodies["/v4/product/info/attributes"]).toEqual([
         {

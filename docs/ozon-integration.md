@@ -123,8 +123,8 @@ last re-verified against the official Ozon Seller API reference on 2026-07-27:
 
 | Domain | Official operation ID | Decoder contract |
 | --- | --- | --- |
-| Warehouses | `/v2/warehouse/list`, `/v1/warehouse/ozon/list` | cursor/`warehouses`; Ozon locations |
-| Products | `/v3/product/list`, `/v3/product/info/list`, `/v4/product/info/attributes`, `/v5/product/info/prices` | string IDs, nested price, string/array images |
+| Warehouses | `/v2/warehouse/list`, `/v1/warehouse/ozon/list` | cursor/`warehouses`; required FBO/Fresh/returns `warehouse_types` |
+| Products | `/v3/product/list`, `/v3/product/info/list`, `/v4/product/info/attributes`, `/v5/product/info/prices` | string IDs; one identifier family per info-list request; nested price; string/array images |
 | Stocks | `/v4/product/info/stocks` | stock `type`, `present`, `reserved`; no warehouse |
 | Postings | `/v4/posting/fbs/list`, `/v3/posting/fbo/list` | Money product price and schema-specific `analytics_data` warehouse |
 | Returns | `/v1/returns/list`, `/v2/returns/rfbs/list`, `/v2/returns/rfbs/get` | documented nested filters, `last_id`, root/member wrappers |
@@ -279,9 +279,9 @@ stack traces, arbitrary unknown-error messages, or database error text.
 Endpoints: `POST /v2/warehouse/list` and `POST /v1/warehouse/ozon/list`.
 
 The seller list uses `limit <= 200` and cursor pagination. The Ozon warehouse
-list supplies FBO/Fresh/returns locations. Tover stores Ozon warehouse ID,
-name, fulfillment schema/status, sanitized raw payload, and a local warehouse
-mapping.
+list sends the required non-empty `warehouse_types` filter for FBO, Fresh,
+returns, and defect locations. Tover stores Ozon warehouse ID, name,
+fulfillment schema/status, sanitized raw payload, and a local warehouse mapping.
 
 Auto-mapping uses local warehouse name. Existing manual/ignored mappings are
 preserved.
@@ -294,6 +294,10 @@ Endpoints:
 - `POST /v3/product/info/list`
 - `POST /v4/product/info/attributes`
 - `POST /v5/product/info/prices`
+
+`/v3/product/info/list` accepts only one identifier family per request. Tover
+prefers `product_id` and sends separate `offer_id` or `sku` fallback requests
+only for product references without a numeric product ID.
 
 Tover stores Ozon product ID, `offer_id`, SKU, name, barcodes, images, status,
 visibility, category/type identifiers, prices, attributes, sanitized raw payload,
