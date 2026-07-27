@@ -24,6 +24,18 @@ type FetchDiscountedProducts = (
   discountedSkus: string[]
 ) => Promise<unknown[]>;
 
+type FetchProductDetails = (
+  client: {
+    request: <T>(endpoint: string, body: Record<string, unknown>) => Promise<T>;
+  },
+  refs: Array<{
+    ozonProductId: string;
+    offerId: string | null;
+    sku: string | null;
+    raw: Record<string, unknown>;
+  }>
+) => Promise<unknown[]>;
+
 type DiscoverDiscountedSkus = (
   client: {
     request: <T>(endpoint: string, body: Record<string, unknown>) => Promise<T>;
@@ -53,6 +65,10 @@ const fetchDiscountedProducts = (sync as unknown as {
   fetchDiscountedProducts: FetchDiscountedProducts;
 }).fetchDiscountedProducts;
 
+const fetchProductDetails = (sync as unknown as {
+  fetchProductDetails: FetchProductDetails;
+}).fetchProductDetails;
+
 const selectDiscountedSkus = (sync as unknown as {
   selectDiscountedSkus: (products: Record<string, unknown>[]) => string[];
 }).selectDiscountedSkus;
@@ -76,6 +92,70 @@ const isDefectReason = (sync as unknown as {
 const isMissingFinanceDocumentError = (sync as unknown as {
   isMissingFinanceDocumentError: (error: unknown) => boolean;
 }).isMissingFinanceDocumentError;
+
+test("Ozon warehouse request includes the required location types", () => {
+  assert.deepEqual(sync.OZON_WAREHOUSE_TYPES, [
+    "FULL_FILLMENT",
+    "FULL_FILLMENT_RETURNS",
+    "FULL_FILLMENT_DEFECT",
+    "EXPRESS_DARK_STORE",
+  ]);
+});
+
+test("fetchProductDetails sends only one identifier family per request", async () => {
+  const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
+  const client = {
+    request: async <T>(endpoint: string, body: Record<string, unknown>) => {
+      requests.push({ endpoint, body });
+      return {
+        result: {
+          items: [{ identifier: Object.keys(body)[0] }],
+        },
+      } as T;
+    },
+  };
+
+  const details = await fetchProductDetails(client, [
+    {
+      ozonProductId: "123456789012345678",
+      offerId: "covered-by-product-id",
+      sku: "covered-by-product-id",
+      raw: {},
+    },
+    {
+      ozonProductId: "offer-only",
+      offerId: "offer-only",
+      sku: "covered-by-offer-id",
+      raw: {},
+    },
+    {
+      ozonProductId: "sku-only",
+      offerId: null,
+      sku: "sku-only",
+      raw: {},
+    },
+  ]);
+
+  assert.deepEqual(requests, [
+    {
+      endpoint: "/v3/product/info/list",
+      body: { product_id: ["123456789012345678"] },
+    },
+    {
+      endpoint: "/v3/product/info/list",
+      body: { offer_id: ["offer-only"] },
+    },
+    {
+      endpoint: "/v3/product/info/list",
+      body: { sku: ["sku-only"] },
+    },
+  ]);
+  assert.deepEqual(details, [
+    { identifier: "product_id" },
+    { identifier: "offer_id" },
+    { identifier: "sku" },
+  ]);
+});
 
 test("selectDiscountedSkus excludes ordinary products and discounted analog parents", () => {
   const products = [
