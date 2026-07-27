@@ -87,10 +87,7 @@ const DISCOUNTED_REPORT_REUSE_MS = 10 * 60 * 1000;
 const OZON_REPORT_DOWNLOAD_LIMIT_BYTES = 10 * 1024 * 1024;
 const OZON_REPORT_DOWNLOAD_TIMEOUT_MS = 30_000;
 const OZON_REPORT_MAX_REDIRECTS = 5;
-const TRUSTED_OZON_REPORT_HOSTS = new Set([
-  "cdn1.ozone.ru",
-  "cdn2.ozone.ru",
-]);
+const TRUSTED_OZON_REPORT_DOMAINS = ["ozon.ru", "ozone.ru"] as const;
 
 const PII_KEY_PATTERNS = [
   "address",
@@ -3818,9 +3815,7 @@ async function syncStockAnalytics(
   ) {
     execution?.yieldIfNeeded?.();
     const chunk = chunks[batchIndex];
-    const skus = chunk
-      .map((product) => product.sku)
-      .filter((value): value is string => Boolean(value));
+    const skus = selectPositiveAnalyticsSkus(chunk);
     if (skus.length === 0) continue;
 
     const resumeTurnover =
@@ -3907,6 +3902,19 @@ async function syncStockAnalytics(
   }
 
   return { fetched, createdCandidates: 0 };
+}
+
+export function selectPositiveAnalyticsSkus(products: JsonRecord[]) {
+  return [
+    ...new Set(
+      products
+        .map((product) => toStringValue(product.sku))
+        .filter(
+          (value): value is string =>
+            value !== null && /^[1-9]\d*$/.test(value)
+        )
+    ),
+  ];
 }
 
 async function loadOzonProductRefs(
@@ -4359,10 +4367,7 @@ function assertSafeOzonReportUrl(value: string) {
     throw new OzonInvariantError("Ozon discounted report URL is invalid");
   }
 
-  if (
-    url.protocol === "https:" &&
-    TRUSTED_OZON_REPORT_HOSTS.has(url.hostname.toLowerCase())
-  ) {
+  if (url.protocol === "https:" && isOzonOwnedHostname(url.hostname)) {
     return url;
   }
 
@@ -4374,6 +4379,13 @@ function assertSafeOzonReportUrl(value: string) {
     return url;
   }
   throw new OzonInvariantError("Ozon discounted report URL is not trusted");
+}
+
+function isOzonOwnedHostname(value: string) {
+  const hostname = value.toLowerCase();
+  return TRUSTED_OZON_REPORT_DOMAINS.some(
+    (domain) => hostname === domain || hostname.endsWith(`.${domain}`)
+  );
 }
 
 function safeUrlOrigin(value: string) {
