@@ -781,8 +781,10 @@ npm run ozon:reconcile -- \
 ```
 
 Apply refuses a mismatched digest, a noncanonical step registry, or any live
-lease. It does not delete/supersede source mirrors and does not rebuild
-historical operations, movements, or balances. Pause Cron and candidate commits
+lease. Completed, skipped, failed, and retry-scheduled steps can be selected for
+this explicit repair; ordinary recovery still never repeats completed work. The
+repair does not delete/supersede source mirrors and does not rebuild historical
+operations, movements, or balances. Pause Cron and candidate commits
 operationally before using apply. After the corrected run completes, generate a
 new read-only preview. Soft supersession and any historical cost-contract
 upgrade/rebuild require a separate explicit approval based on an isolated
