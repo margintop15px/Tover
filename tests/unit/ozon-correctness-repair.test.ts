@@ -59,6 +59,13 @@ const warehouseIdentityMigration = readFileSync(
   ),
   "utf8"
 );
+const warehouseCountPerformanceMigration = readFileSync(
+  new URL(
+    "../../supabase/migrations/20260727203100_optimize_ozon_relevant_warehouse_counts.sql",
+    import.meta.url
+  ),
+  "utf8"
+);
 const reconcileScript = readFileSync(
   new URL("../../scripts/ozon-reconcile.ts", import.meta.url),
   "utf8"
@@ -533,5 +540,24 @@ test("warehouse relevance uses a name fallback only without source identity", ()
   assert.match(
     warehouseIdentityMigration,
     /ALTER FUNCTION public\._sanitize_ozon_sync_step_error\(JSONB\) STABLE/
+  );
+});
+
+test("warehouse relevance materializes seller references once under RLS", () => {
+  assert.match(
+    warehouseCountPerformanceMigration,
+    /WITH referenced AS MATERIALIZED/
+  );
+  assert.match(
+    warehouseCountPerformanceMigration,
+    /SECURITY INVOKER/
+  );
+  assert.match(
+    warehouseCountPerformanceMigration,
+    /REVOKE ALL ON FUNCTION public\.ozon_relevant_warehouse_counts\(UUID, UUID\)\s+FROM PUBLIC, anon/
+  );
+  assert.match(
+    warehouseCountPerformanceMigration,
+    /GRANT EXECUTE ON FUNCTION public\.ozon_relevant_warehouse_counts\(UUID, UUID\)\s+TO authenticated, service_role/
   );
 });

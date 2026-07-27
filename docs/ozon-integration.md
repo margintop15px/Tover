@@ -121,6 +121,10 @@ with a local mock server.
   identity-first warehouse relevance so a same-name global location cannot be
   counted as seller evidence, plus the database-linter-correct volatility for
   the safe step-error sanitizer.
+- `supabase/migrations/20260727203100_optimize_ozon_relevant_warehouse_counts.sql`:
+  materializes the connection-scoped warehouse reference set once so
+  authenticated RLS checks stay comfortably inside the Data API statement
+  timeout.
 
 ## Verified Seller API Operations
 
