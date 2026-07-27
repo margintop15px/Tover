@@ -81,6 +81,12 @@ const downloadOzonReportText = (sync as unknown as {
   downloadOzonReportText: DownloadOzonReportText;
 }).downloadOzonReportText;
 
+const selectPositiveAnalyticsSkus = (sync as unknown as {
+  selectPositiveAnalyticsSkus: (
+    products: Record<string, unknown>[]
+  ) => string[];
+}).selectPositiveAnalyticsSkus;
+
 const discountedDamageEvidence = (sync as unknown as {
   discountedDamageEvidence: (item: Record<string, unknown>) => string | null;
 }).discountedDamageEvidence;
@@ -535,6 +541,44 @@ test("discounted report download rejects an untrusted redirect before following 
       url: "https://cdn1.ozone.ru/reports/discounted.csv",
       redirect: "manual",
     },
+  ]);
+});
+
+test("analytics requests include only unique positive Ozon SKUs", () => {
+  assert.deepEqual(
+    selectPositiveAnalyticsSkus([
+      { sku: "123" },
+      { sku: 456 },
+      { sku: "123" },
+      { sku: "0" },
+      { sku: 0 },
+      { sku: "-1" },
+      { sku: "offer-id" },
+      { sku: null },
+    ]),
+    ["123", "456"]
+  );
+});
+
+test("discounted report download accepts Ozon-owned HTTPS subdomains", async () => {
+  const requested: string[] = [];
+
+  assert.equal(
+    await downloadOzonReportText(
+      "https://reports.seller.ozon.ru/discounted.csv",
+      undefined,
+      {
+        fetch: async (input) => {
+          requested.push(String(input));
+          return new Response("sku\n123\n", { status: 200 });
+        },
+        timeoutSignal: () => new AbortController().signal,
+      }
+    ),
+    "sku\n123\n"
+  );
+  assert.deepEqual(requested, [
+    "https://reports.seller.ozon.ru/discounted.csv",
   ]);
 });
 
