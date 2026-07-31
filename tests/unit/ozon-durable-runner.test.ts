@@ -310,7 +310,7 @@ test("durable step failure log contains only safe typed Ozon API details", async
       connectionId: "connection-1",
       stepKey: "reports",
       attemptCount: 1,
-      failureCount: 0,
+      failureCount: 1,
       kind: "client",
       retryable: false,
       status: 404,
@@ -409,10 +409,67 @@ test("durable step failure log preserves the safe stored-credential reason", asy
       connectionId: "connection-1",
       stepKey: "postings",
       attemptCount: 1,
-      failureCount: 0,
+      failureCount: 1,
       kind: "client",
       retryable: false,
       reason: "Stored Ozon credentials are invalid",
+    },
+  ]);
+});
+
+test("connection-wide executed failures are counted and bypass step retry", async () => {
+  const step = claimedStep({ failure_count: 2 });
+  const logs: Array<Record<string, unknown>> = [];
+  const failedConnections: Array<{
+    step: ClaimedOzonSyncStep;
+    error: Record<string, unknown>;
+  }> = [];
+  let finishCalls = 0;
+
+  await durableOzonRunnerTestSeam.recoverOne(TEST_DEADLINE_MS, {
+    claimStep: async () => step,
+    executeStep: async () => {
+      throw new OzonApiError("/v2/warehouse/list", 401, {
+        message: "unauthorized",
+      });
+    },
+    finishStep: async () => {
+      finishCalls += 1;
+    },
+    failConnection: async (failedStep, error) => {
+      failedConnections.push({
+        step: failedStep,
+        error: error as unknown as Record<string, unknown>,
+      });
+    },
+    now: () => Date.parse("2026-07-26T10:00:00.000Z"),
+    logStepFailure: (entry) => logs.push(entry),
+  });
+
+  assert.equal(finishCalls, 0);
+  assert.equal(failedConnections.length, 1);
+  assert.equal(failedConnections[0].step.id, step.id);
+  assert.deepEqual(failedConnections[0].error, {
+    message: "Ozon sync step failed",
+    kind: "client",
+    status: 401,
+    retryable: false,
+    endpoint: "/v2/warehouse/list",
+    reason: "unauthorized",
+  });
+  assert.deepEqual(logs, [
+    {
+      event: "ozon_sync_step_failed",
+      runId: "run-1",
+      connectionId: "connection-1",
+      stepKey: "warehouses",
+      attemptCount: 1,
+      failureCount: 3,
+      kind: "client",
+      retryable: false,
+      status: 401,
+      endpoint: "/v2/warehouse/list",
+      reason: "unauthorized",
     },
   ]);
 });

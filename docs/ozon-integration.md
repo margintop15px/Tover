@@ -245,9 +245,11 @@ runtime errors not explicitly marked permanent, use durable retries. HTTP `400`,
 permanent. Failed attempts 1 through 7 are scheduled after exactly 1 minute,
 5 minutes, 15 minutes, 1 hour, 3 hours, 6 hours, and 12 hours. The eighth
 actual failure becomes terminal. Claims increment `attempt_count`; only real
-transient failures increment `failure_count`. Permanent failures terminate
-without consuming the retry schedule. Checkpoint yields and
-report-poll waits do not consume the retry schedule.
+executed failures increment `failure_count`. Permanent failures terminate
+without scheduling a retry. Checkpoint yields and report-poll waits do not
+increment `failure_count`. An operator-triggered retry of a failed step resets
+the current retry-cycle failure count, preserves its checkpoint and summary,
+and records a `retry_requested` event; prior failure events remain unchanged.
 
 The HTTP client retries safe retrieval requests at most four times with a
 30-second attempt timeout, paced request starts, jittered backoff, and Ozon
@@ -527,9 +529,13 @@ Tover mirrors `valid_stock_count`, `available_stock_count`,
 `requested_stock_count`, transit, customer/seller returns, defect, other,
 excess, expiring, waiting-document, ADS, and IDC fields without relabeling
 `requested_stock_count` as reserved stock. Each stock row is identified by its
-documented SKU, cluster, and warehouse ID; the warehouse ID/name is preserved
-and can participate in local mapping. Turnover requests are paced to one start
-per minute per Client-Id. These rows are
+documented SKU, cluster, and warehouse ID. A blank `warehouse_name` is stored
+as `NULL`: it is descriptive metadata, not identity, and no placeholder
+warehouse is invented. ID-based local mapping remains available; name-based
+mapping is only a fallback. SKU, warehouse ID, `valid_stock_count`, and
+`available_stock_count` remain mandatory so an incomplete snapshot cannot be
+reported as successful. Turnover requests are paced to one start per minute
+per Client-Id. These rows are
 reporting/reconciliation evidence only in the current implementation. They do
 not generate `inventory_adjustment` candidates because daily stock deltas can
 repeat and over-adjust local inventory without a dedicated reconciliation

@@ -4127,9 +4127,9 @@ export function toStockAnalyticsRow(
   const sku = toStringValue(item.sku);
   const warehouseId = toStringValue(item.warehouse_id);
   const warehouseName = toStringValue(item.warehouse_name);
-  if (!sku || !warehouseId || !warehouseName) {
+  if (!sku || !warehouseId) {
     throw new OzonIncompleteResponseError(
-      "Ozon analytics stock row has no sku, warehouse_id, or warehouse_name"
+      "Ozon analytics stock row has no sku or warehouse_id"
     );
   }
   const clusterId = toStringValue(item.cluster_id);

@@ -111,6 +111,8 @@ Files in `supabase/migrations/`:
   PostgreSQL `NUMERIC` report aggregation
 - `023_ozon_repair_retry_scheduled_steps.sql` — permits the
   confirmation-gated, lease-free repair to reset legacy scheduled retries
+- `027_ozon_retry_accounting.sql` — counts every executed durable failure and
+  records checkpoint-preserving operator retry requests
 
 Option A (Supabase SQL Editor):
 - Run migrations in order: `001` through the latest file in `supabase/migrations/`.

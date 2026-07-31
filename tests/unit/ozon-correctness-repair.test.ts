@@ -66,6 +66,13 @@ const warehouseCountPerformanceMigration = readFileSync(
   ),
   "utf8"
 );
+const retryAccountingMigration = readFileSync(
+  new URL(
+    "../../supabase/migrations/027_ozon_retry_accounting.sql",
+    import.meta.url
+  ),
+  "utf8"
+);
 const reconcileScript = readFileSync(
   new URL("../../scripts/ozon-reconcile.ts", import.meta.url),
   "utf8"
@@ -342,6 +349,80 @@ test("stock analytics identity includes the official SKU, cluster, and warehouse
   assert.equal(row.local_warehouse_id, "warehouse-1");
 });
 
+test("stock analytics accepts a missing descriptive warehouse name", () => {
+  for (const warehouseName of ["", undefined]) {
+    const row = toStockAnalyticsRow(
+      {
+        sku: "9223372036854775807",
+        warehouse_id: "200",
+        warehouse_name: warehouseName,
+        valid_stock_count: "3",
+        available_stock_count: "2",
+      },
+      "workspace-1",
+      "connection-1",
+      {
+        productsByExternalKey: new Map(),
+        warehousesByName: new Map(),
+        ozonProductMappings: new Map(),
+        ozonWarehouseMappings: new Map([
+          [
+            "200",
+            {
+              localId: "warehouse-1",
+              status: "manual",
+            },
+          ],
+        ]),
+      },
+      "2026-07-28"
+    );
+
+    assert.equal(
+      row.external_id,
+      "stock:9223372036854775807:no-cluster:200"
+    );
+    assert.equal(row.warehouse_name, null);
+    assert.equal(row.local_warehouse_id, "warehouse-1");
+    assert.equal(row.valid_stock_count, "3");
+    assert.equal(row.available_stock_count, "2");
+  }
+});
+
+test("stock analytics still rejects missing identity and required quantities", () => {
+  const mapping = {
+    productsByExternalKey: new Map(),
+    warehousesByName: new Map(),
+    ozonProductMappings: new Map(),
+    ozonWarehouseMappings: new Map(),
+  };
+  const valid = {
+    sku: "100",
+    warehouse_id: "200",
+    valid_stock_count: "3",
+    available_stock_count: "2",
+  };
+
+  for (const row of [
+    { ...valid, sku: "" },
+    { ...valid, warehouse_id: "" },
+    { ...valid, valid_stock_count: undefined },
+    { ...valid, available_stock_count: undefined },
+  ]) {
+    assert.throws(
+      () =>
+        toStockAnalyticsRow(
+          row,
+          "workspace-1",
+          "connection-1",
+          mapping,
+          "2026-07-28"
+        ),
+      OzonIncompleteResponseError
+    );
+  }
+});
+
 test("failure count alone controls the durable retry schedule", () => {
   assert.deepEqual(
     Array.from({ length: 8 }, (_, index) => durableRetryDelayMs(index + 1)),
@@ -411,6 +492,26 @@ test("migration 021 separates execution count, failure count, checkpoints, and y
   assert.match(
     migration021,
     /SET state = 'pending',[\s\S]*lease_token = NULL,[\s\S]*lease_expires_at = NULL/
+  );
+});
+
+test("migration 027 counts executed failures and records retry requests", () => {
+  assert.match(retryAccountingMigration, /'retry_requested'/);
+  assert.match(
+    retryAccountingMigration,
+    /WHEN p_state IN \('retry_scheduled', 'failed'\) THEN 1/
+  );
+  assert.match(
+    retryAccountingMigration,
+    /failure_count = failure_count \+\s+CASE WHEN id = v_step\.id THEN 1 ELSE 0 END/
+  );
+  assert.match(
+    retryAccountingMigration,
+    /CREATE OR REPLACE FUNCTION public\.retry_failed_ozon_sync_run_steps_v2[\s\S]*'retry_requested'/
+  );
+  assert.match(
+    retryAccountingMigration,
+    /Ozon sync step lease is stale' USING ERRCODE = '55000'/
   );
 });
 

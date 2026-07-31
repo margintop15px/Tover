@@ -435,8 +435,7 @@ function buildOzonSyncStepFailureLog(
     stepKey: step.step_key,
     attemptCount: step.attempt_count,
     failureCount:
-      (Number.isInteger(step.failure_count) ? Number(step.failure_count) : 0) +
-      (classified.retryable ? 1 : 0),
+      (Number.isInteger(step.failure_count) ? Number(step.failure_count) : 0) + 1,
     kind: classified.persistedError.kind,
     retryable: classified.retryable,
     ...(classified.persistedError.status === undefined

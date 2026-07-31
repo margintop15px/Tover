@@ -461,11 +461,29 @@ test.describe("Ozon marketplace integration", () => {
       }
       expect(retryTarget.step_key).toBe("finance");
 
+      const financeCheckpoint = {
+        phase: "stocks",
+        processed: 8,
+        total: null,
+        batchIndex: 10,
+        snapshotDate: "2026-07-28",
+      };
+      const checkpointResult = await admin.rpc(
+        "checkpoint_ozon_sync_run_step_v2",
+        {
+          p_step_id: retryTarget.id,
+          p_lease_token: retryTarget.lease_token,
+          p_checkpoint: financeCheckpoint,
+          p_summary: { fetched: 8 },
+        }
+      );
+      expect(checkpointResult.error).toBeNull();
+
       const retryResult = await admin.rpc("finish_ozon_sync_run_step_v2", {
         p_step_id: retryTarget.id,
         p_lease_token: retryTarget.lease_token,
         p_state: "retry_scheduled",
-        p_summary: { fetched: 0 },
+        p_summary: {},
         p_last_error: {
           kind: "server",
           status: 500,
@@ -496,7 +514,7 @@ test.describe("Ozon marketplace integration", () => {
           p_step_id: currentClaim.id,
           p_lease_token: currentClaim.lease_token,
           p_state: "retry_scheduled",
-          p_summary: { fetched: 0 },
+          p_summary: {},
           p_last_error: {
             kind: "server",
             status: 500,
@@ -515,7 +533,7 @@ test.describe("Ozon marketplace integration", () => {
           p_step_id: currentClaim.id,
           p_lease_token: currentClaim.lease_token,
           p_state: "failed",
-          p_summary: { fetched: 0 },
+          p_summary: {},
           p_last_error: {
             kind: "server",
             status: 500,
@@ -562,7 +580,7 @@ test.describe("Ozon marketplace integration", () => {
 
       const { data: resetSteps, error: resetStepsError } = await admin
         .from("marketplace_sync_run_steps")
-        .select("step_key, state, attempt_count, failure_count")
+        .select("step_key, state, attempt_count, failure_count, checkpoint, summary")
         .eq("run_id", runId)
         .order("step_order");
       expect(resetStepsError).toBeNull();
@@ -574,7 +592,23 @@ test.describe("Ozon marketplace integration", () => {
         state: "pending",
         attempt_count: 8,
         failure_count: 0,
+        checkpoint: financeCheckpoint,
+        summary: { fetched: 8 },
       });
+      const { data: retryEvents, error: retryEventsError } = await admin
+        .from("marketplace_sync_step_events")
+        .select("event_type, execution_count, failure_count")
+        .eq("run_id", runId)
+        .eq("step_key", "finance")
+        .eq("event_type", "retry_requested");
+      expect(retryEventsError).toBeNull();
+      expect(retryEvents).toEqual([
+        {
+          event_type: "retry_requested",
+          execution_count: 8,
+          failure_count: 0,
+        },
+      ]);
       expect(resetSteps?.slice(6).every((step) =>
         step.state === "completed" && step.attempt_count === 1
       )).toBe(true);
@@ -616,7 +650,7 @@ test.describe("Ozon marketplace integration", () => {
       ).toMatchObject({
         state: "failed",
         attempt_count: 1,
-        failure_count: 0,
+        failure_count: 1,
       });
       const { data: permanentStep, error: permanentStepError } = await admin
         .from("marketplace_sync_run_steps")
@@ -729,6 +763,8 @@ test.describe("Ozon marketplace integration", () => {
     );
 
     const fixture = buildOzonFixture(uniqueName("Happy", testInfo));
+    fixture.autoProduct.sku = fixture.autoProduct.productId;
+    const analyticsWarehouseId = `${fixture.autoProduct.productId}9`;
     let mock: OzonMockServer | null = null;
 
     try {
@@ -740,6 +776,27 @@ test.describe("Ozon marketplace integration", () => {
       mock = await startOzonMockServer(fixture, {
         validClientId: VALID_CLIENT_ID,
         validApiKey: VALID_API_KEY,
+        responseSequences: {
+          "/v1/analytics/stocks": [
+            {
+              status: 200,
+              body: {
+                items: [
+                  {
+                    sku: fixture.autoProduct.sku,
+                    offer_id: fixture.autoProduct.offerId,
+                    name: fixture.autoProduct.name,
+                    cluster_id: "100",
+                    warehouse_id: analyticsWarehouseId,
+                    warehouse_name: "",
+                    valid_stock_count: "4",
+                    available_stock_count: "3",
+                  },
+                ],
+              },
+            },
+          ],
+        },
       });
 
       const autoProduct = await createProduct(
@@ -821,11 +878,37 @@ test.describe("Ozon marketplace integration", () => {
         financeReports: 6,
         removals: 1,
         supplies: 1,
-        stockAnalytics: 0,
+        stockAnalytics: 1,
         discountedProducts: 1,
         candidatesReady: 2,
         candidatesNeedsMapping: 3,
       });
+      const { data: stockAnalytics, error: stockAnalyticsError } =
+        await adminWorkspace!.admin
+          .from("ozon_stock_analytics")
+          .select(
+            "external_id, sku, warehouse_name, ozon_warehouse_id, valid_stock_count, available_stock_count"
+          )
+          .eq("connection_id", connected.connection!.id)
+          .eq("ozon_warehouse_id", analyticsWarehouseId);
+      expect(stockAnalyticsError).toBeNull();
+      expect(stockAnalytics).toHaveLength(1);
+      expect(stockAnalytics?.[0]).toMatchObject({
+        external_id: `stock:${fixture.autoProduct.sku}:100:${analyticsWarehouseId}`,
+        sku: fixture.autoProduct.sku,
+        warehouse_name: null,
+        ozon_warehouse_id: analyticsWarehouseId,
+        valid_stock_count: 4,
+        available_stock_count: 3,
+      });
+      const { count: placeholderWarehouseCount, error: placeholderWarehouseError } =
+        await adminWorkspace!.admin
+          .from("ozon_warehouses")
+          .select("id", { count: "exact", head: true })
+          .eq("connection_id", connected.connection!.id)
+          .eq("ozon_warehouse_id", analyticsWarehouseId);
+      expect(placeholderWarehouseError).toBeNull();
+      expect(placeholderWarehouseCount).toBe(0);
       expect(mock.requestBodies["/v3/supply-order/list"]).toEqual([
         {
           filter: {
