@@ -23,6 +23,8 @@ export interface OzonConnectionRecord {
     | "failed"
     | null;
   last_sync_error: string | null;
+  last_synced_through?: string | null;
+  next_automatic_sync_at?: string | null;
   created_at: string;
   updated_at: string;
 }

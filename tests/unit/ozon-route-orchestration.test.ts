@@ -27,7 +27,7 @@ test("sync handler authorizes and scopes user reads before service construction,
   const response = await handler(
     request("/api/integrations/ozon/sync", {
       dateFrom: "2026-07-01T00:00:00.000Z",
-      dateTo: "2026-07-31T00:00:00.000Z",
+      dateTo: "2026-07-25T00:00:00.000Z",
     })
   );
 
@@ -37,7 +37,7 @@ test("sync handler authorizes and scopes user reads before service construction,
     "manager",
     "read-connection:workspace-1:ozon",
     "create-service:workspace-1:connection-1",
-    "begin:connection-1:2026-07-01T00:00:00.000Z:2026-07-31T00:00:00.000Z:25000",
+    "begin:connection-1:2026-07-01T00:00:00.000Z:2026-07-25T00:00:00.000Z:25000",
   ]);
 });
 
@@ -235,6 +235,9 @@ test("internal recovery handler forwards configuration and exact header, invokes
       calls.push("env");
       return "configured-secret";
     },
+    enqueueDue: async () => {
+      calls.push("enqueue");
+    },
     recoverOne: async (deadlineMs) => {
       calls.push(`recover:${deadlineMs}`);
       return true;
@@ -251,7 +254,7 @@ test("internal recovery handler forwards configuration and exact header, invokes
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { processed: true });
-  assert.deepEqual(calls, ["env", "recover:101000"]);
+  assert.deepEqual(calls, ["env", "enqueue", "recover:101000"]);
 });
 
 test("internal recovery handler returns fixed 503/401 without recovery for missing config or bad header", async () => {
@@ -270,8 +273,12 @@ test("internal recovery handler returns fixed 503/401 without recovery for missi
     },
   ]) {
     let recoverCalls = 0;
+    let enqueueCalls = 0;
     const handler = createOzonRecoveryPostHandler({
       configuredSecret: () => item.configuredSecret,
+      enqueueDue: async () => {
+        enqueueCalls += 1;
+      },
       recoverOne: async () => {
         recoverCalls += 1;
         return true;
@@ -293,6 +300,7 @@ test("internal recovery handler returns fixed 503/401 without recovery for missi
     assert.equal(response.status, item.status);
     assert.deepEqual(await response.json(), item.body);
     assert.equal(recoverCalls, 0);
+    assert.equal(enqueueCalls, 0);
   }
 });
 

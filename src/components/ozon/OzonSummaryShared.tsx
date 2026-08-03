@@ -21,6 +21,8 @@ export interface OzonIntegrationSummary {
       | "failed"
       | null;
     lastSyncError: string | null;
+    lastSyncedThrough?: string | null;
+    nextAutomaticSyncAt?: string | null;
   } | null;
   counts: {
     products: number;

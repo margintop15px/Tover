@@ -1,7 +1,3 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
 Tover is a multi-tenant marketplace turnover tracker built with Next.js 16 (App Router), React 19, TypeScript, and Supabase (Postgres + Auth). It tracks orders, inventory, sales metrics, and critical stock alerts, supporting CSV data imports and role-based access control.
@@ -130,7 +126,15 @@ Shared components: `Pagination.tsx` (offset-based), `ReportFilterBar.tsx` (flex 
 - `AppShell` (`src/components/AppShell.tsx`) conditionally renders sidebar (hidden on auth pages)
 - `AppSidebar` has collapsible "Master Data" and "Reports" groups, plus Settings link
 
+### Database Safety
+
+- Never perform destructive database operations—including `DELETE`, `TRUNCATE`, `DROP`, resets, or destructive overwrites—without the user's explicit approval. Identify the exact target and impact first.
+
 ### Database Migrations
+
+- New `supabase/migrations/` files must use the next consecutive, zero-padded three-digit prefix: `028_description.sql`.
+- Do not use timestamp-only names, skip sequence numbers, or reuse an existing migration number.
+
 - `001_initial_schema.sql` — orders, order lines, inventory snapshots, payments, imports
 - `002_auth_orgs_rbac.sql` — auth, organizations, memberships, RBAC, RLS policies
 - `003_inventory_system.sql` — inventory entities, operations, balances, indexes, RPCs

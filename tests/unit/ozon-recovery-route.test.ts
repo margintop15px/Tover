@@ -89,6 +89,25 @@ test("valid recovery passes the absolute worker deadline and returns only a mini
   assert.deepEqual(Object.keys(result.body), ["processed"]);
 });
 
+test("valid recovery enqueues due automatic syncs before claiming one step", async () => {
+  const calls: string[] = [];
+  const result = await handleOzonRecoveryRequest({
+    configuredSecret: "configured-secret",
+    providedSecret: "configured-secret",
+    deadlineMs: 101_000,
+    enqueueDue: async () => {
+      calls.push("enqueue");
+    },
+    recoverOne: async () => {
+      calls.push("recover");
+      return true;
+    },
+  });
+
+  assert.deepEqual(result, { status: 200, body: { processed: true } });
+  assert.deepEqual(calls, ["enqueue", "recover"]);
+});
+
 test("internal recovery failures never expose raw errors or credentials", async () => {
   const result = await handleOzonRecoveryRequest({
     configuredSecret: "configured-secret",

@@ -9,6 +9,7 @@ import {
   derivePublicOzonSyncSummary,
   deriveOzonSyncResult,
   durableSyncHttpStatus,
+  enqueueDueOzonSyncRuns,
   parseOzonSyncRunComposite,
   parseOzonSyncWindow,
   resolveOzonSyncWindow,
@@ -55,7 +56,7 @@ test("worker RPC operations use only the durable begin/resume and failed-step re
       calls.push({ name, parameters });
       return {
         data:
-          name === "begin_or_resume_ozon_sync_run_v2"
+          name === "begin_or_resume_ozon_sync_run_v3"
             ? RUN
             : [{ ...RUN, status: "running" }],
         error: null,
@@ -76,7 +77,7 @@ test("worker RPC operations use only the durable begin/resume and failed-step re
   assert.equal((await worker.retryFailedRun("run-1")).id, "run-1");
   assert.deepEqual(calls, [
     {
-      name: "begin_or_resume_ozon_sync_run_v2",
+      name: "begin_or_resume_ozon_sync_run_v3",
       parameters: {
         p_connection_id: "connection-1",
         p_date_from: "2026-06-01T00:00:00.000Z",
@@ -86,6 +87,29 @@ test("worker RPC operations use only the durable begin/resume and failed-step re
     {
         name: "retry_failed_ozon_sync_run_steps_v2",
       parameters: { p_run_id: "run-1" },
+    },
+  ]);
+});
+
+test("automatic enqueue calls the service-only scheduler with an optional connection", async () => {
+  const calls: Array<{ name: string; parameters: Record<string, unknown> }> = [];
+  const client = {
+    rpc: async (name: string, parameters: Record<string, unknown>) => {
+      calls.push({ name, parameters });
+      return { data: [RUN], error: null };
+    },
+  };
+
+  assert.equal(await enqueueDueOzonSyncRuns(client, "connection-1"), 1);
+  assert.equal(await enqueueDueOzonSyncRuns(client), 1);
+  assert.deepEqual(calls, [
+    {
+      name: "enqueue_due_ozon_sync_runs_v1",
+      parameters: { p_connection_id: "connection-1" },
+    },
+    {
+      name: "enqueue_due_ozon_sync_runs_v1",
+      parameters: { p_connection_id: null },
     },
   ]);
 });
@@ -349,16 +373,13 @@ test("manual retry invokes only the failed-step reset for the authorized run and
   ]);
 });
 
-test("sync window preserves explicit dates and otherwise uses the preceding thirty days", () => {
+test("sync window delegates no-bound windows to the durable database resolver", () => {
   assert.deepEqual(
     resolveOzonSyncWindow(
       {},
       Date.parse("2026-07-26T12:00:00.000Z")
     ),
-    {
-      dateFrom: "2026-06-26T12:00:00.000Z",
-      dateTo: "2026-07-26T12:00:00.000Z",
-    }
+    {}
   );
   assert.deepEqual(
     resolveOzonSyncWindow(
@@ -366,7 +387,7 @@ test("sync window preserves explicit dates and otherwise uses the preceding thir
         dateFrom: "2026-07-01T00:00:00.000Z",
         dateTo: "2026-07-05T00:00:00.000Z",
       },
-      0
+      Date.parse("2026-07-26T12:00:00.000Z")
     ),
     {
       dateFrom: "2026-07-01T00:00:00.000Z",
@@ -379,6 +400,7 @@ test("sync window parser rejects malformed, impossible, and reversed instants", 
   for (const options of [
     { dateFrom: "not-a-date" },
     { dateFrom: "" },
+    { dateTo: "2026-07-26T12:00:00.000Z" },
     { dateTo: "2026-02-30T00:00:00.000Z" },
     {
       dateFrom: "2026-07-27T00:00:00.000Z",
@@ -394,19 +416,19 @@ test("sync window parser rejects malformed, impossible, and reversed instants", 
     );
   }
   assert.deepEqual(parseOzonSyncWindow({}, Number.POSITIVE_INFINITY), {
-    ok: false,
-    error: "Invalid Ozon sync date window",
+    ok: true,
+    value: {},
   });
 });
 
-test("sync window parser accepts equal boundaries, date-only inputs, and the default boundary", () => {
+test("sync window parser accepts equal boundaries and date-only explicit windows", () => {
   assert.deepEqual(
     parseOzonSyncWindow(
       {
         dateFrom: "2026-07-26T12:00:00.000Z",
         dateTo: "2026-07-26T12:00:00.000Z",
       },
-      0
+      Date.parse("2026-07-26T12:00:00.000Z")
     ),
     {
       ok: true,
@@ -418,27 +440,21 @@ test("sync window parser accepts equal boundaries, date-only inputs, and the def
   );
   assert.deepEqual(
     parseOzonSyncWindow(
-      { dateFrom: "2026-07-01", dateTo: "2026-07-31" },
-      0
+      { dateFrom: "2026-07-01", dateTo: "2026-07-26" },
+      Date.parse("2026-07-26T12:00:00.000Z")
     ),
     {
       ok: true,
       value: {
         dateFrom: "2026-07-01T00:00:00.000Z",
-        dateTo: "2026-07-31T00:00:00.000Z",
+        dateTo: "2026-07-26T00:00:00.000Z",
       },
     }
   );
-  assert.deepEqual(
-    parseOzonSyncWindow({}, Date.parse("2026-07-26T12:00:00.000Z")),
-    {
-      ok: true,
-      value: {
-        dateFrom: "2026-06-26T12:00:00.000Z",
-        dateTo: "2026-07-26T12:00:00.000Z",
-      },
-    }
-  );
+  assert.deepEqual(parseOzonSyncWindow({}, Date.parse("2026-07-26T12:00:00.000Z")), {
+    ok: true,
+    value: {},
+  });
 });
 
 function step(

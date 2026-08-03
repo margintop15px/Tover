@@ -113,6 +113,8 @@ Files in `supabase/migrations/`:
   confirmation-gated, lease-free repair to reset legacy scheduled retries
 - `027_ozon_retry_accounting.sql` — counts every executed durable failure and
   records checkpoint-preserving operator retry requests
+- `028_ozon_automatic_incremental_sync.sql` — UTC daily Ozon
+  scheduling, completed-run watermarking, safe disable, and mutable-posting refresh
 
 Option A (Supabase SQL Editor):
 - Run migrations in order: `001` through the latest file in `supabase/migrations/`.
@@ -149,7 +151,8 @@ Authenticated Playwright runs use the same auth model. In local dev, they load `
 
 ### 5. Enable durable Ozon recovery
 
-Apply migrations `020`, `021`, and `022` before enabling the worker, deploy
+Apply migrations `020` through `028_ozon_automatic_incremental_sync`
+before enabling the worker, deploy
 the app with `OZON_SYNC_RECOVERY_SECRET`, and then create these Supabase Vault
 secrets. The secret value must match the app environment variable; the URL must
 be the deployed internal route:
@@ -169,9 +172,10 @@ select public.schedule_ozon_sync_recovery();
 ```
 
 The helper idempotently replaces `tover-ozon-sync-recovery` and runs it every
-minute. It reads both Vault values at execution time and calls the protected
-route with a 120-second `pg_net` timeout. Do not place a real deployment URL or
-secret in a migration. See [docs/ozon-integration.md](docs/ozon-integration.md)
+minute. At or after UTC midnight, that route queues each due Ozon account, then
+claims one durable step. It reads both Vault values at execution time and calls
+the protected route with a 120-second `pg_net` timeout. Do not place a real
+deployment URL or secret in a migration. See [docs/ozon-integration.md](docs/ozon-integration.md)
 for pause/resume, monitoring, retry semantics, and failure recovery.
 
 ## Auth + Organization Model

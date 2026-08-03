@@ -118,6 +118,125 @@ test("warehouse allowlist uses only seller-account endpoints", () => {
     true
   );
   assert.equal(endpoints.has("/v1/warehouse/ozon/list"), false);
+  assert.equal(endpoints.has("/v3/posting/fbs/get"), true);
+  assert.equal(endpoints.has("/v2/posting/fbo/get"), true);
+});
+
+test("mutable posting refresh uses documented FBS and FBO identifier batch contracts", () => {
+  assert.deepEqual(
+    sync.buildMutablePostingRefreshRequest(
+      "fbs",
+      ["order-1", "order-2"],
+      "2025-08-03T10:00:00.000Z",
+      "2026-08-03T10:00:00.000Z"
+    ),
+    {
+      cursor: "",
+      filter: {
+        order_numbers: ["order-1", "order-2"],
+        since: "2025-08-03T10:00:00.000Z",
+        to: "2026-08-03T10:00:00.000Z",
+      },
+      limit: 100,
+      sort_dir: "ASC",
+      translit: false,
+      with: { analytics_data: true, financial_data: true },
+    }
+  );
+  assert.deepEqual(
+    sync.buildMutablePostingRefreshRequest(
+      "fbo",
+      ["posting-1"],
+      "2025-08-03T10:00:00.000Z",
+      "2026-08-03T10:00:00.000Z",
+      "next"
+    ).filter,
+    {
+      posting_numbers: ["posting-1"],
+      since: "2025-08-03T10:00:00.000Z",
+      to: "2026-08-03T10:00:00.000Z",
+    }
+  );
+  assert.equal(
+    sync.mutablePostingRefreshDateFrom(
+      [{ in_process_at: "2024-01-01T00:00:00.000Z" }],
+      "2026-08-03T10:00:00.000Z"
+    ),
+    "2025-08-03T10:00:00.000Z"
+  );
+  assert.equal(
+    sync.isMutablePostingWithinListWindow(
+      "2025-08-03T10:00:00.000Z",
+      "2026-08-03T10:00:00.000Z"
+    ),
+    true
+  );
+  assert.equal(
+    sync.isMutablePostingWithinListWindow(
+      "2025-08-02T23:59:59.999Z",
+      "2026-08-03T10:00:00.000Z"
+    ),
+    false
+  );
+  assert.deepEqual(
+    sync.buildMutablePostingGetRequest("fbs", "posting-1"),
+    {
+      posting_number: "posting-1",
+      with: {
+        analytics_data: true,
+        financial_data: true,
+        translit: false,
+      },
+    }
+  );
+  assert.deepEqual(
+    sync.buildMutablePostingGetRequest("fbo", "posting-1"),
+    {
+      posting_number: "posting-1",
+      translit: false,
+      with: { analytics_data: true, financial_data: true },
+    }
+  );
+  assert.deepEqual(
+    sync.normalizeMutablePostingGetResult({
+      products: [
+        {
+          price: "100.50",
+          currency_code: "RUB",
+        },
+      ],
+    }),
+    {
+      products: [
+        {
+              price: { amount: "100.5", currency: "RUB" },
+          currency_code: "RUB",
+        },
+      ],
+    }
+  );
+});
+
+test("mutable posting refresh resumes from stable identifiers when prior batches become terminal", () => {
+  assert.deepEqual(
+    sync.planMutablePostingRefreshBatches(
+      ["001", "002", "003", "004", "005"],
+      2,
+      { lastIdentifier: "002" }
+    ),
+    [["003", "004"], ["005"]]
+  );
+  assert.deepEqual(
+    sync.planMutablePostingRefreshBatches(
+      ["003", "004", "005"],
+      2,
+      {
+        lastIdentifier: "002",
+        batchIdentifiers: ["003", "004"],
+      }
+    ),
+    [["003", "004"], ["005"]]
+  );
 });
 
 test("Supabase row loading continues beyond the Data API row limit", async () => {

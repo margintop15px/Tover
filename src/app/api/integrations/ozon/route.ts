@@ -13,9 +13,11 @@ import {
 import {
   deriveOzonIntegrationRecovery,
   derivePublicOzonSyncSummary,
+  enqueueDueOzonSyncRuns,
   type OzonSyncRunStatus,
   type OzonSyncRunStepRow,
 } from "@/lib/ozon/durable-sync";
+import { createServiceRoleClient } from "@/lib/supabase-server";
 import type { OzonConnectionRecord, OzonCredentials } from "@/lib/ozon/types";
 
 export const dynamic = "force-dynamic";
@@ -74,15 +76,27 @@ export async function POST(request: NextRequest) {
     try {
       const validation = await validateOzonCredentials(credentials);
       const checkedAt = new Date().toISOString();
-      await supabase
+      const { error: connectionUpdateError } = await supabase
         .from("marketplace_connections")
         .update({
           status: "connected",
           health: successfulValidationHealth(validation, checkedAt),
           last_validated_at: checkedAt,
           last_sync_error: null,
+          next_automatic_sync_at: checkedAt,
         })
         .eq("id", connection.id);
+
+      if (connectionUpdateError) throw new Error(connectionUpdateError.message);
+
+      try {
+        await enqueueDueOzonSyncRuns(
+          createServiceRoleClient(),
+          String(connection.id)
+        );
+      } catch (scheduleError) {
+        console.error("Failed to queue initial Ozon sync", scheduleError);
+      }
 
       return NextResponse.json(await loadOzonSummary(supabase, workspaceId));
     } catch (validationError) {
@@ -117,17 +131,10 @@ export async function DELETE(request: NextRequest) {
       requireManager: true,
     });
 
-    const { error } = await supabase
-      .from("marketplace_connections")
-      .update({
-        status: "disabled",
-        credential_ciphertext: {},
-        client_id_hint: null,
-        api_key_hint: null,
-        last_sync_error: null,
-      })
-      .eq("workspace_id", workspaceId)
-      .eq("provider", "ozon");
+    const { error } = await createServiceRoleClient().rpc(
+      "disable_ozon_connection_v1",
+      { p_workspace_id: workspaceId }
+    );
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
@@ -409,6 +416,8 @@ function publicConnection(connection: OzonConnectionRecord) {
     lastSyncAt: connection.last_sync_at,
     lastSyncStatus: connection.last_sync_status,
     lastSyncError: connection.last_sync_error,
+    lastSyncedThrough: connection.last_synced_through ?? null,
+    nextAutomaticSyncAt: connection.next_automatic_sync_at ?? null,
     updatedAt: connection.updated_at,
   };
 }

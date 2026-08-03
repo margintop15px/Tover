@@ -67,8 +67,8 @@ export interface OzonSyncResult {
 
 interface BeginOrResumeInput {
   connectionId: string;
-  dateFrom: string;
-  dateTo: string;
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 export interface OzonDurableSyncCoordinatorDependencies {
@@ -94,7 +94,6 @@ export interface OzonSyncWorkerRpcClient {
 
 export const OZON_MANUAL_SYNC_BUDGET_MS = 25_000;
 
-const DEFAULT_SYNC_DAYS = 30;
 const DOMAIN_KEYS = new Set<string>(
   OZON_SYNC_DOMAIN_REGISTRY.map(({ key }) => key)
 );
@@ -151,11 +150,11 @@ export function createOzonSyncWorkerRpcOperations(
       input: BeginOrResumeInput
     ): Promise<OzonSyncRunRow> {
       const { data, error } = await client.rpc(
-        "begin_or_resume_ozon_sync_run_v2",
+        "begin_or_resume_ozon_sync_run_v3",
         {
           p_connection_id: input.connectionId,
-          p_date_from: input.dateFrom,
-          p_date_to: input.dateTo,
+          p_date_from: input.dateFrom ?? null,
+          p_date_to: input.dateTo ?? null,
         }
       );
       if (error) throw new Error("Failed to begin or resume Ozon sync run");
@@ -189,6 +188,19 @@ export function createServiceRoleOzonSyncCoordinator(
       }),
     now: Date.now,
   });
+}
+
+export async function enqueueDueOzonSyncRuns(
+  client: SupabaseClient | OzonSyncWorkerRpcClient,
+  connectionId?: string
+) {
+  const { data, error } = await (
+    client as unknown as OzonSyncWorkerRpcClient
+  ).rpc("enqueue_due_ozon_sync_runs_v1", {
+      p_connection_id: connectionId ?? null,
+    });
+  if (error) throw new Error("Failed to enqueue Ozon sync runs");
+  return Array.isArray(data) ? data.length : data ? 1 : 0;
 }
 
 export function parseOzonSyncRunComposite(data: unknown): OzonSyncRunRow {
@@ -324,27 +336,31 @@ export function parseOzonSyncWindow(
 ):
   | {
       ok: true;
-      value: { dateFrom: string; dateTo: string };
+      value: { dateFrom?: string; dateTo?: string };
     }
   | {
       ok: false;
       error: "Invalid Ozon sync date window";
     } {
-  const dateToMs = options.dateTo !== undefined
-    ? parseIsoInstant(options.dateTo)
-    : Number.isFinite(nowMs)
-      ? nowMs
-      : null;
-  const dateFromMs = options.dateFrom !== undefined
-    ? parseIsoInstant(options.dateFrom)
-    : dateToMs === null
-      ? null
-      : dateToMs - DEFAULT_SYNC_DAYS * 24 * 60 * 60 * 1000;
+  if (options.dateFrom === undefined && options.dateTo === undefined) {
+    return { ok: true, value: {} };
+  }
+  if (options.dateFrom === undefined || options.dateTo === undefined) {
+    return {
+      ok: false,
+      error: "Invalid Ozon sync date window",
+    };
+  }
+
+  const dateFromMs = parseIsoInstant(options.dateFrom);
+  const dateToMs = parseIsoInstant(options.dateTo);
 
   if (
     dateFromMs === null ||
     dateToMs === null ||
-    dateFromMs > dateToMs
+    dateFromMs > dateToMs ||
+    !Number.isFinite(nowMs) ||
+    dateToMs > nowMs
   ) {
     return {
       ok: false,

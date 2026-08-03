@@ -1219,7 +1219,9 @@ async function syncPostings(
   const startSchemaIndex =
     checkpoint.phase === "postings"
       ? toInteger(checkpoint.schemaIndex) ?? 0
-      : checkpoint.phase === "complete"
+      : checkpoint.phase === "openPostings" ||
+          checkpoint.phase === "olderOpenPostings" ||
+          checkpoint.phase === "complete"
         ? 2
         : 0;
 
@@ -1280,7 +1282,7 @@ async function syncPostings(
         const nextSchemaIndex = schemaIndex + 1;
         await execution?.saveCheckpoint?.(
           {
-            phase: nextSchemaIndex < 2 ? "postings" : "complete",
+            phase: nextSchemaIndex < 2 ? "postings" : "openPostings",
             schemaIndex: nextSchemaIndex,
             cursor: "",
             pageIndex: 0,
@@ -1319,7 +1321,418 @@ async function syncPostings(
     }
   }
 
-  return { fetched, createdCandidates };
+  return refreshOpenPostings(
+    supabase,
+    client,
+    workspaceId,
+    connectionId,
+    mapping,
+    dateTo,
+    runId,
+    execution,
+    { fetched, createdCandidates }
+  );
+}
+
+interface OpenPostingReference {
+  posting_schema: "fbs" | "fbo";
+  posting_number: string;
+  order_id: string | null;
+  status: string | null;
+  in_process_at: string | null;
+  raw_payload: unknown;
+}
+
+export function buildMutablePostingRefreshRequest(
+  schema: "fbs" | "fbo",
+  identifiers: string[],
+  dateFrom: string,
+  dateTo: string,
+  cursor = ""
+) {
+  return {
+    cursor,
+    filter: {
+      ...(schema === "fbs"
+        ? { order_numbers: identifiers }
+        : { posting_numbers: identifiers }),
+      since: dateFrom,
+      to: dateTo,
+    },
+    limit: schema === "fbs" ? POSTING_PAGE_LIMIT : 1_000,
+    sort_dir: "ASC",
+    translit: false,
+    with: {
+      analytics_data: true,
+      financial_data: true,
+    },
+  };
+}
+
+export function mutablePostingRefreshDateFrom(
+  postings: Array<Pick<OpenPostingReference, "in_process_at">>,
+  dateTo: string
+) {
+  const dateToMs = Date.parse(dateTo);
+  const earliestMs = Math.min(
+    ...postings
+      .map(({ in_process_at }) => Date.parse(in_process_at ?? ""))
+      .filter(Number.isFinite)
+  );
+  const oneYearAgo = new Date(dateToMs);
+  oneYearAgo.setUTCFullYear(oneYearAgo.getUTCFullYear() - 1);
+  const fromMs = Math.max(
+    oneYearAgo.getTime(),
+    Number.isFinite(earliestMs) ? earliestMs : dateToMs
+  );
+  return new Date(fromMs).toISOString();
+}
+
+export function isMutablePostingWithinListWindow(
+  inProcessAt: string | null,
+  dateTo: string
+) {
+  const inProcessAtMs = Date.parse(inProcessAt ?? "");
+  const dateToMs = Date.parse(dateTo);
+  if (!Number.isFinite(inProcessAtMs) || !Number.isFinite(dateToMs)) {
+    return false;
+  }
+  const oneYearAgo = new Date(dateToMs);
+  oneYearAgo.setUTCFullYear(oneYearAgo.getUTCFullYear() - 1);
+  return inProcessAtMs >= oneYearAgo.getTime();
+}
+
+export function planMutablePostingRefreshBatches(
+  identifiers: string[],
+  batchSize: number,
+  checkpoint: {
+    lastIdentifier?: string | null;
+    batchIdentifiers?: string[];
+  } = {}
+) {
+  const activeBatch = [...new Set(checkpoint.batchIdentifiers ?? [])]
+    .filter((identifier) => identifier.length > 0)
+    .sort();
+  const resumeAfter =
+    activeBatch.at(-1) ?? checkpoint.lastIdentifier ?? null;
+  const remaining = identifiers.filter(
+    (identifier) => !resumeAfter || identifier > resumeAfter
+  );
+  return activeBatch.length > 0
+    ? [activeBatch, ...chunkArray(remaining, batchSize)]
+    : chunkArray(remaining, batchSize);
+}
+
+export function buildMutablePostingGetRequest(
+  schema: "fbs" | "fbo",
+  postingNumber: string
+) {
+  return schema === "fbs"
+    ? {
+        posting_number: postingNumber,
+        with: {
+          analytics_data: true,
+          financial_data: true,
+          translit: false,
+        },
+      }
+    : {
+        posting_number: postingNumber,
+        translit: false,
+        with: {
+          analytics_data: true,
+          financial_data: true,
+        },
+      };
+}
+
+export function normalizeMutablePostingGetResult(value: unknown) {
+  const posting = toRecord(value);
+  return {
+    ...posting,
+    products: asArray(posting.products).map((value) => {
+      const product = toRecord(value);
+      if (isRecord(product.price)) return product;
+      const amount = decimalString(product.price);
+      const currency = toStringValue(product.currency_code);
+      return amount === null || !currency
+        ? product
+        : {
+            ...product,
+            price: { amount, currency },
+          };
+    }),
+  };
+}
+
+async function refreshOpenPostings(
+  supabase: SupabaseClient,
+  client: OzonClient,
+  workspaceId: string,
+  connectionId: string,
+  mapping: MappingContext,
+  dateTo: string,
+  runId: string | undefined,
+  execution: OzonSyncDomainExecutionContext | undefined,
+  counts: { fetched: number; createdCandidates: number }
+): Promise<OzonSyncStepSummary> {
+  const checkpoint = toRecord(execution?.checkpoint);
+  const references = await loadOpenPostingReferences(supabase, connectionId);
+  const listReferences = references.filter((reference) =>
+    isMutablePostingWithinListWindow(reference.in_process_at, dateTo)
+  );
+  const olderReferences = references.filter(
+    (reference) => !isMutablePostingWithinListWindow(reference.in_process_at, dateTo)
+  );
+  const dateFrom = mutablePostingRefreshDateFrom(listReferences, dateTo);
+  const resume = checkpoint.phase === "openPostings";
+  const startSchemaIndex = resume
+    ? toInteger(checkpoint.openSchemaIndex) ?? 0
+    : checkpoint.phase === "olderOpenPostings"
+      ? 2
+      : 0;
+
+  for (let schemaIndex = startSchemaIndex; schemaIndex < 2; schemaIndex += 1) {
+    const schema = (["fbs", "fbo"] as const)[schemaIndex];
+    const identifiers = [...new Set(
+      listReferences
+        .filter((reference) => reference.posting_schema === schema)
+        .map((reference) => mutablePostingIdentifier(reference))
+        .filter((value): value is string => Boolean(value))
+    )].sort();
+    const resumingSchema = resume && schemaIndex === startSchemaIndex;
+    const lastIdentifier = resumingSchema
+      ? toStringValue(checkpoint.openLastIdentifier)
+      : null;
+    const activeBatch = resumingSchema
+      ? asArray(checkpoint.openBatchIdentifiers)
+          .map(toStringValue)
+          .filter((identifier): identifier is string => Boolean(identifier))
+      : [];
+    const batches = planMutablePostingRefreshBatches(
+      identifiers,
+      schema === "fbs" ? 100 : 1_000,
+      { lastIdentifier, batchIdentifiers: activeBatch }
+    );
+
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+      const endpoint =
+        schema === "fbs" ? "/v4/posting/fbs/list" : "/v3/posting/fbo/list";
+      let cursor =
+        resumingSchema &&
+        batchIndex === 0 &&
+        activeBatch.length > 0
+          ? toStringValue(checkpoint.cursor) ?? ""
+          : "";
+      let pageIndex =
+        resumingSchema &&
+        batchIndex === 0 &&
+        activeBatch.length > 0
+          ? toInteger(checkpoint.pageIndex) ?? 0
+          : 0;
+      let complete = false;
+
+      while (!complete && pageIndex < 200) {
+        execution?.yieldIfNeeded?.();
+        const response = await client.request<JsonRecord>(
+          endpoint,
+          buildMutablePostingRefreshRequest(
+            schema,
+            batches[batchIndex],
+            dateFrom,
+            dateTo,
+            cursor
+          )
+        );
+        const items = requireItems(response, ["postings", "items"], endpoint);
+        counts.fetched += items.length;
+        for (const posting of items) {
+          const result = await upsertPosting(
+            supabase,
+            workspaceId,
+            connectionId,
+            schema,
+            posting,
+            mapping,
+            runId
+          );
+          counts.createdCandidates += result.createdCandidate ? 1 : 0;
+        }
+        pageIndex += 1;
+
+        const root = unwrapResult(response);
+        if (root.has_next !== true) {
+          complete = true;
+          await execution?.saveCheckpoint?.(
+            {
+              phase: "openPostings",
+              openSchemaIndex: schemaIndex,
+              openLastIdentifier: batches[batchIndex].at(-1) ?? lastIdentifier,
+              openBatchIdentifiers: [],
+              cursor: "",
+              pageIndex: 0,
+              processed: counts.fetched,
+              createdCandidates: counts.createdCandidates,
+              total: null,
+            },
+            counts
+          );
+          break;
+        }
+
+        const nextCursor = toStringValue(root.cursor ?? response.cursor);
+        if (!nextCursor || nextCursor === cursor) {
+          throw new OzonIncompleteResponseError(
+            `Ozon ${endpoint} response indicates more postings without a new cursor`
+          );
+        }
+        cursor = nextCursor;
+        await execution?.saveCheckpoint?.(
+          {
+            phase: "openPostings",
+            openSchemaIndex: schemaIndex,
+            openLastIdentifier: lastIdentifier,
+            openBatchIdentifiers: batches[batchIndex],
+            cursor,
+            pageIndex,
+            processed: counts.fetched,
+            createdCandidates: counts.createdCandidates,
+            total: null,
+          },
+          counts
+        );
+      }
+
+      if (!complete) {
+        throw new OzonIncompleteResponseError(
+          `Ozon ${endpoint} exceeded the 200-page safety limit`
+        );
+      }
+    }
+  }
+
+  return refreshOlderOpenPostings(
+    supabase,
+    client,
+    workspaceId,
+    connectionId,
+    mapping,
+    runId,
+    execution,
+    olderReferences,
+    counts
+  );
+}
+
+async function refreshOlderOpenPostings(
+  supabase: SupabaseClient,
+  client: OzonClient,
+  workspaceId: string,
+  connectionId: string,
+  mapping: MappingContext,
+  runId: string | undefined,
+  execution: OzonSyncDomainExecutionContext | undefined,
+  references: OpenPostingReference[],
+  counts: { fetched: number; createdCandidates: number }
+): Promise<OzonSyncStepSummary> {
+  const checkpoint = toRecord(execution?.checkpoint);
+  const resume = checkpoint.phase === "olderOpenPostings";
+  const startSchemaIndex = resume
+    ? toInteger(checkpoint.olderSchemaIndex) ?? 0
+    : 0;
+
+  for (let schemaIndex = startSchemaIndex; schemaIndex < 2; schemaIndex += 1) {
+    const schema = (["fbs", "fbo"] as const)[schemaIndex];
+    const lastPostingNumber =
+      resume && schemaIndex === startSchemaIndex
+        ? toStringValue(checkpoint.olderPostingNumber)
+        : null;
+    const postingNumbers = [...new Set(
+      references
+        .filter((reference) => reference.posting_schema === schema)
+        .map((reference) => reference.posting_number)
+        .filter((postingNumber) => postingNumber > (lastPostingNumber ?? ""))
+    )].sort();
+    const endpoint =
+      schema === "fbs" ? "/v3/posting/fbs/get" : "/v2/posting/fbo/get";
+
+    for (const postingNumber of postingNumbers) {
+      execution?.yieldIfNeeded?.();
+      const response = await client.request<JsonRecord>(
+        endpoint,
+        buildMutablePostingGetRequest(schema, postingNumber)
+      );
+      const posting = normalizeMutablePostingGetResult(unwrapResult(response));
+      const result = await upsertPosting(
+        supabase,
+        workspaceId,
+        connectionId,
+        schema,
+        posting,
+        mapping,
+        runId
+      );
+      counts.fetched += 1;
+      counts.createdCandidates += result.createdCandidate ? 1 : 0;
+      await execution?.saveCheckpoint?.(
+        {
+          phase: "olderOpenPostings",
+          olderSchemaIndex: schemaIndex,
+          olderPostingNumber: postingNumber,
+          processed: counts.fetched,
+          createdCandidates: counts.createdCandidates,
+          total: null,
+        },
+        counts
+      );
+    }
+  }
+
+  await execution?.saveCheckpoint?.(
+    {
+      phase: "complete",
+      processed: counts.fetched,
+      createdCandidates: counts.createdCandidates,
+      total: null,
+    },
+    counts
+  );
+  return counts;
+}
+
+async function loadOpenPostingReferences(
+  supabase: SupabaseClient,
+  connectionId: string
+) {
+  const references: OpenPostingReference[] = [];
+  for (let page = 0; ; page += 1) {
+    const { data, error } = await supabase
+      .from("ozon_postings")
+      .select("posting_schema, posting_number, order_id, status, in_process_at, raw_payload")
+      .eq("connection_id", connectionId)
+      .order("in_process_at", { ascending: true })
+      .range(page * 1_000, page * 1_000 + 999);
+    if (error) throw ozonDatabaseError(error, "select:ozon_postings");
+    const rows = (data ?? []) as OpenPostingReference[];
+    references.push(
+      ...rows.filter((row) =>
+        row.posting_schema === "fbs" || row.posting_schema === "fbo"
+          ? !isDeliveredStatus(normalizeStatus(row.status)) &&
+            !isCancelledStatus(normalizeStatus(row.status))
+          : false
+      )
+    );
+    if (rows.length < 1_000) break;
+  }
+  return references;
+}
+
+function mutablePostingIdentifier(reference: OpenPostingReference) {
+  if (reference.posting_schema === "fbo") return reference.posting_number;
+  const raw = toRecord(reference.raw_payload);
+  return toStringValue(
+    raw.order_number ?? raw.orderNumber ?? reference.order_id ?? reference.posting_number
+  );
 }
 
 async function upsertPosting(

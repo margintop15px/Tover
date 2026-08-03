@@ -152,7 +152,8 @@ last re-verified against the official Ozon Seller API reference on 2026-07-27:
 Core tables:
 
 - `marketplace_connections`: one Ozon connection per workspace, encrypted
-  credentials, health, last sync status, and last sync metadata.
+  credentials, health, last sync status, `last_synced_through`, and the next
+  UTC automatic-sync time.
 - `marketplace_sync_runs`: every sync run, date window, status, summary, and
   error.
 - `marketplace_sync_run_steps`: the twelve ordered domain steps, attempt count,
@@ -217,9 +218,28 @@ successful step summaries, and safe recovery counts. Completed or validly
 skipped steps are never claimed again, so resuming a run does not repeat their
 Ozon requests.
 
-The default date window is the last 30 days. The caller can pass `dateFrom` and
-`dateTo` for backfills. The selected window is stored on the run and reused by
-automatic and manual recovery.
+When a connection is first validated, Tover queues a run from the first moment
+of the current UTC month through the activation time. After a fully completed
+run, `last_synced_through` advances to that run's `date_to`. Both scheduled and
+manual fresh runs then use that watermark through the current database time.
+Explicit backfills require both `dateFrom` and `dateTo`, neither may be in the
+future. They do not advance the watermark, because an arbitrary historical
+window may leave a coverage gap. Failed or partial runs never advance the
+watermark, so their missing coverage is replayed safely by the next fresh run.
+
+The existing one-minute recovery Cron also queues due accounts. The next due
+time is the following `00:00 UTC`; a missed Cron tick or a still-active run is
+retried on a later tick. Disabling Ozon clears the due time, credentials, and
+unfinished leases while retaining mirrors, watermark, candidates, committed
+operations, and reports. Reconnecting starts an immediate catch-up from the
+retained watermark.
+
+Postings are additionally refreshed by identifier while they remain
+non-terminal: FBS uses documented `order_numbers` batches of 100 and FBO uses
+`posting_numbers` batches of 1,000. This keeps status/shipment changes fresh
+even when an order's original date is older than the incremental window. The
+list APIs permit at most one year per date range, so older non-terminal records
+fall back to their documented per-posting lookup endpoints.
 
 Step states are:
 
@@ -628,10 +648,11 @@ OZON_SYNC_RECOVERY_SECRET=replace-with-a-separate-long-random-secret
 
 Supabase Cron calls
 `POST /api/internal/integrations/ozon/recover`. The route requires the same
-value in `x-tover-recovery-secret`, uses the service-role Supabase client, and
-claims at most one due step per invocation. It returns only whether a step was
-processed. Missing server configuration returns `503`; a bad secret returns
-`401`. The app route has a 110-second execution budget, inside the migration's
+value in `x-tover-recovery-secret`, uses the service-role Supabase client,
+queues every due automatic Ozon run, and claims at most one due step per
+invocation. It returns only whether a step was processed. Missing server
+configuration returns `503`; a bad secret returns `401`. The app route has a
+110-second execution budget, inside the migration's
 120-second `pg_net` timeout. Claimed work receives a 100-second absolute
 deadline, with an additional finish margin inside that worker budget.
 
@@ -806,6 +827,15 @@ run; it calls `POST /api/integrations/ozon/sync/retry` with that `runId` and
 resets only terminal `failed` steps to `pending`. It reuses the same run and date
 window, while completed/skipped steps remain untouched.
 
+## Historical Inventory Reports
+
+The Inventory **Historical** mode is a ledger-as-of report: it recalculates the
+state from committed Tover operations with an effective date on or before the
+selected date. Syncing Ozon only creates mirrors and reviewable candidates; it
+does not change an inventory report until a manager approves and commits the
+candidate. Later corrections can therefore change a past report result. This is
+not an immutable snapshot of what Ozon or Tover displayed at that past moment.
+
 ## Inventory Cost Contract
 
 `operation_items.unit_price` is transaction evidence: the invoice/sale price.
@@ -904,8 +934,9 @@ fabricated as operations.
 1. Manager opens Settings > Integrations > Ozon.
 2. Manager enters Client ID and API key.
 3. Tover validates credentials with `POST /v2/warehouse/list`.
-4. Manager opens Operations > Marketplaces.
-5. Manager clicks Sync now for Ozon.
+4. Tover queues the initial month-to-date sync; Operations > Marketplaces shows
+   its progress and the next automatic UTC sync.
+5. The manager can click Sync now when new data is known to be available.
 6. Tover mirrors Ozon products, warehouses, stocks, postings, returns, finance,
    legal-entity rows, removals, supplies, analytics, and discounted products.
 7. If a transient step fails, Operations > Marketplaces shows automatic

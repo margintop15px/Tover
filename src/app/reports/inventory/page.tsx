@@ -166,6 +166,9 @@ export default function InventoryBalancesPage() {
               onChange={(e) => setHistoricalDate(e.target.value)}
               className="w-40"
             />
+            <p className="max-w-xl text-xs text-muted-foreground">
+              {t.historicalBalancesExplanation}
+            </p>
           </div>
         )}
       </div>

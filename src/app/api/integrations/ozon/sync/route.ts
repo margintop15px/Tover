@@ -38,8 +38,8 @@ export interface OzonSyncPostOperations {
   }) => {
     beginOrResume: (input: {
       connectionId: string;
-      dateFrom: string;
-      dateTo: string;
+      dateFrom?: string;
+      dateTo?: string;
       budgetMs: number;
     }) => Promise<OzonSyncResult>;
   };

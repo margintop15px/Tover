@@ -492,6 +492,18 @@ export default function MarketplacesPage() {
               </div>
               <div>
                 <dt className="text-muted-foreground">
+                  {t.ozonDataSyncedThrough}
+                </dt>
+                <dd>{formatOzonDateTime(connection.lastSyncedThrough ?? null)}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">
+                  {t.ozonNextAutomaticSync}
+                </dt>
+                <dd>{formatOzonDateTime(connection.nextAutomaticSyncAt ?? null)}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">
                   {t.ozonLastSyncStatus}
                 </dt>
                 <dd>

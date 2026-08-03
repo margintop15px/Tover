@@ -4,6 +4,7 @@ interface RecoveryRequestInput {
   configuredSecret: string | undefined;
   providedSecret: string | undefined;
   deadlineMs: number;
+  enqueueDue?: () => Promise<unknown>;
   recoverOne: (deadlineMs: number) => Promise<boolean>;
 }
 
@@ -41,6 +42,7 @@ export async function handleOzonRecoveryRequest(
   }
 
   try {
+    await input.enqueueDue?.();
     return {
       status: 200,
       body: { processed: await input.recoverOne(input.deadlineMs) },
