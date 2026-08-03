@@ -1359,7 +1359,7 @@ export function buildMutablePostingRefreshRequest(
       since: dateFrom,
       to: dateTo,
     },
-    limit: schema === "fbs" ? POSTING_PAGE_LIMIT : 1_000,
+    limit: POSTING_PAGE_LIMIT,
     sort_dir: "ASC",
     translit: false,
     with: {

@@ -150,11 +150,18 @@ test("mutable posting refresh uses documented FBS and FBO identifier batch contr
       "2025-08-03T10:00:00.000Z",
       "2026-08-03T10:00:00.000Z",
       "next"
-    ).filter,
+    ),
     {
-      posting_numbers: ["posting-1"],
-      since: "2025-08-03T10:00:00.000Z",
-      to: "2026-08-03T10:00:00.000Z",
+      cursor: "next",
+      filter: {
+        posting_numbers: ["posting-1"],
+        since: "2025-08-03T10:00:00.000Z",
+        to: "2026-08-03T10:00:00.000Z",
+      },
+      limit: 100,
+      sort_dir: "ASC",
+      translit: false,
+      with: { analytics_data: true, financial_data: true },
     }
   );
   assert.equal(
