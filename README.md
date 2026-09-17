@@ -133,6 +133,16 @@ In Auth settings:
 - Site URL: `http://localhost:3000`
 - Additional redirect URLs: `http://localhost:3000/auth/callback`
 
+For a deployed app, add its exact origin plus `/auth/callback` as well, and set
+the Site URL to that app's origin. Password recovery also uses
+`/auth/callback?next=/reset-password`; allow that URL too.
+
+Team invitation emails (`type=invite`) establish a session and open the existing
+password setup screen before entering the app. Signup confirmation emails
+(`type=signup`, with a `pkce_` token) are a separate flow: automatic sign-in
+requires the same browser and origin where signup started. After confirming in
+a different browser, the user can log in with the password chosen during signup.
+
 ### 3. Create first organization
 
 - Go to `/signup`

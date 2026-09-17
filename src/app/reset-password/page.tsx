@@ -2,12 +2,10 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
 import { useI18n } from "@/i18n/context";
 
 export default function ResetPasswordPage() {
-  const router = useRouter();
   const { t } = useI18n();
 
   const [password, setPassword] = useState("");
@@ -64,8 +62,7 @@ export default function ResetPasswordPage() {
       }
 
       setSuccess(t.passwordUpdated);
-      router.push("/");
-      router.refresh();
+      window.location.replace("/");
     } finally {
       setLoading(false);
     }
@@ -76,7 +73,9 @@ export default function ResetPasswordPage() {
       <div className="w-full rounded-lg border border-border bg-card p-6 shadow-sm">
         <h1 className="text-2xl font-semibold">{t.setNewPasswordTitle}</h1>
 
-        {hasSession === false ? (
+        {hasSession === null ? (
+          <p className="mt-4 text-sm text-muted-foreground">{t.loading}</p>
+        ) : hasSession === false ? (
           <div className="mt-4 space-y-3 text-sm">
             <p className="text-red-600">
               {t.recoverySessionExpired}

@@ -25,7 +25,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       typeof window === "undefined"
         ? pathname
         : `${window.location.pathname}${window.location.search}`;
-    router.replace(`/login?next=${encodeURIComponent(next)}`);
+    // Keep email-link credentials until the public callback can consume them.
+    const hash = typeof window === "undefined" ? "" : window.location.hash;
+    router.replace(`/login?next=${encodeURIComponent(next)}${hash}`);
     router.refresh();
   }, [pathname, router]);
 

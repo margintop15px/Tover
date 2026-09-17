@@ -1,18 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { getSafeNextPath } from "@/lib/auth-redirect";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
 import { useI18n } from "@/i18n/context";
-
-function getSafeNextPath(path: string | null): string {
-  if (!path || !path.startsWith("/")) {
-    return "/";
-  }
-
-  return path;
-}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -22,6 +15,23 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const fragment = new URLSearchParams(url.hash.slice(1));
+    const next = new URL(getSafeNextPath(url.searchParams.get("next")), url.origin);
+    const code = url.searchParams.get("code") || next.searchParams.get("code");
+    if (code || fragment.has("access_token") || fragment.has("refresh_token") ||
+        fragment.has("error") || fragment.has("error_description")) {
+      // Supabase may fall back to the site root, which middleware sends here.
+      const callback = new URL("/auth/callback", url.origin);
+      callback.hash = url.hash;
+      if (code) callback.searchParams.set("code", code);
+      next.searchParams.delete("code");
+      callback.searchParams.set("next", next.pathname + next.search);
+      window.location.replace(callback.pathname + callback.search + callback.hash);
+    }
+  }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
