@@ -143,6 +143,16 @@ password setup screen before entering the app. Signup confirmation emails
 requires the same browser and origin where signup started. After confirming in
 a different browser, the user can log in with the password chosen during signup.
 
+Migration `029_secure_workspace_invitations.sql` prevents signup metadata from
+granting membership in an existing workspace. After Auth verifies the user's
+email, the existing `accept_my_organization_invites()` call accepts only pending,
+unexpired invitations matching that email and takes the workspace and role from
+the invitation record. The migration does not remove existing memberships;
+review any suspicious earlier grants separately.
+
+Run the database regression test with `bash scripts/test-auth-security.sh`.
+It requires Docker and uses a disposable PostgreSQL container without networking.
+
 ### 3. Create first organization
 
 - Go to `/signup`
