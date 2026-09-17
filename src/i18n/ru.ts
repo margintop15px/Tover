@@ -526,6 +526,7 @@ export const ru: TranslationKeys = {
   sendingInvite: "Отправка...",
   sendInvite: "Отправить приглашение",
   invitationSent: "Приглашение отправлено.",
+  existingUserInvitationSent: "Ссылка для входа отправлена. После входа пользователь сможет выбрать это рабочее пространство.",
   failedToLoad: "Не удалось загрузить аккаунт",
   failedToSendInvite: "Не удалось отправить приглашение",
 

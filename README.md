@@ -138,7 +138,15 @@ the Site URL to that app's origin. Password recovery also uses
 `/auth/callback?next=/reset-password`; allow that URL too.
 
 Team invitation emails (`type=invite`) establish a session and open the existing
-password setup screen before entering the app. Signup confirmation emails
+password setup screen before entering the app. If the email already belongs to
+a confirmed account, the invitation stays pending and a fresh magic sign-in link
+is sent instead (`shouldCreateUser: false`). These links use the implicit flow so
+the recipient can open them in another browser. The existing Magic Link email
+template must contain `{{ .ConfirmationURL }}`. After signing in, the verified-email
+invitation acceptance adds the workspace to their switcher. No account deletion
+or password reset is required.
+
+Signup confirmation emails
 (`type=signup`, with a `pkce_` token) are a separate flow: automatic sign-in
 requires the same browser and origin where signup started. After confirming in
 a different browser, the user can log in with the password chosen during signup.

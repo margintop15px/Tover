@@ -52,6 +52,9 @@ export function createServiceRoleClient(): SupabaseClient {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
+      // Admin-triggered email links are opened on another person's browser.
+      flowType: "implicit",
+      detectSessionInUrl: false,
     },
   });
 }

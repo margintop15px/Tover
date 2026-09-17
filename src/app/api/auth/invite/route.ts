@@ -64,19 +64,32 @@ export async function POST(request: NextRequest) {
       }
     );
 
-    if (inviteEmailError) {
+    let delivery: "invite" | "magiclink" = "invite";
+    let deliveryError = inviteEmailError;
+    if (inviteEmailError?.code === "email_exists") {
+      // Auth accounts are global; workspace membership comes from the pending
+      // invitation after the recipient signs in with their verified email.
+      delivery = "magiclink";
+      const { error } = await serviceRoleClient.auth.signInWithOtp({
+        email,
+        options: { shouldCreateUser: false, emailRedirectTo: redirectTo },
+      });
+      deliveryError = error;
+    }
+
+    if (deliveryError) {
       await supabase
         .from("organization_invites")
         .update({ status: "revoked" })
         .eq("id", inviteRecord.id);
 
       return NextResponse.json(
-        { error: inviteEmailError.message },
-        { status: 500 }
+        { error: deliveryError.message },
+        { status: deliveryError.status === 429 ? 429 : 500 }
       );
     }
 
-    return NextResponse.json({ ok: true, inviteId: inviteRecord.id });
+    return NextResponse.json({ ok: true, inviteId: inviteRecord.id, delivery });
   } catch (error) {
     return toRouteErrorResponse(error);
   }

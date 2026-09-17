@@ -10,7 +10,7 @@ const alpha = "20000000-0000-4000-8000-000000000001";
 const beta = "20000000-0000-4000-8000-000000000002";
 const longName = "Beta workspace with a very long name that must fit inside the sidebar";
 let mode = "normal";
-let log: { path: string; method: string; body: Record<string, unknown>; workspace: string | null }[] = [];
+let log: { path: string; method: string; body: Record<string, unknown>; workspace: string | null; redirectTo?: string | null }[] = [];
 let categories: Record<string, unknown>[] = [];
 
 createServer(async (request, response) => {
@@ -22,6 +22,7 @@ createServer(async (request, response) => {
   const json = (data: unknown, status = 200) => {
     response.writeHead(status, {
       "Content-Type": "application/json", "Access-Control-Allow-Origin": "*",
+      "X-Supabase-Api-Version": "2024-01-01",
       "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
       "Content-Range": "0-0/1",
     });
@@ -35,8 +36,17 @@ createServer(async (request, response) => {
   if (url.pathname === "/auth/v1/user") return json(user);
   if (url.pathname === "/auth/v1/logout") return json({});
   if (url.pathname === "/auth/v1/invite") {
-    log.push({ path: url.pathname, method: request.method!, body, workspace: null });
+    log.push({ path: url.pathname, method: request.method!, body, workspace: null, redirectTo: url.searchParams.get("redirect_to") });
+    if (mode === "existing" || mode === "otp_failure") {
+      return json({ code: "email_exists", msg: "A user with this email address has already been registered" }, 422);
+    }
+    if (mode === "email_failure") return json({ code: "unexpected_failure", msg: "Email delivery unavailable" }, 500);
     return json({ ...user, id: "10000000-0000-4000-8000-000000000002", email: body.email });
+  }
+  if (url.pathname === "/auth/v1/otp") {
+    log.push({ path: url.pathname, method: request.method!, body, workspace: null, redirectTo: url.searchParams.get("redirect_to") });
+    if (mode === "otp_failure") return json({ code: "over_email_send_rate_limit", msg: "Please wait before requesting another email" }, 429);
+    return json({});
   }
   if (!url.pathname.startsWith("/rest/v1/")) return json({ error: "Unknown mock route" }, 404);
   const table = url.pathname.slice("/rest/v1/".length);

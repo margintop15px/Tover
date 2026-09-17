@@ -523,6 +523,7 @@ export const en = {
   sendingInvite: "Sending...",
   sendInvite: "Send invite",
   invitationSent: "Invitation sent.",
+  existingUserInvitationSent: "Sign-in link sent. After signing in, they can select this workspace.",
   failedToLoad: "Failed to load account",
   failedToSendInvite: "Failed to send invite",
 

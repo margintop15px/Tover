@@ -41,16 +41,18 @@ export default function InviteForm() {
         body: JSON.stringify({ email: inviteEmail, role }),
       });
 
-      const data = (await response.json()) as { error?: string };
+      const data = (await response.json()) as { error?: string; delivery?: "invite" | "magiclink" };
 
       if (!response.ok) {
         setError(data.error || t.failedToSendInvite);
         return;
       }
 
-      setSuccess(t.invitationSent);
+      setSuccess(data.delivery === "magiclink" ? t.existingUserInvitationSent : t.invitationSent);
       setInviteEmail("");
       setRole("member");
+    } catch {
+      setError(t.failedToSendInvite);
     } finally {
       setInviting(false);
     }

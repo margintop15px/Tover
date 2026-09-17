@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: "workspace-switch.spec.ts",
+  testMatch: ["workspace-switch.spec.ts", "workspace-invites.spec.ts"],
   workers: 1,
   timeout: 60_000,
   expect: { timeout: 15_000 },
