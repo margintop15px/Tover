@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useState } from "react";
 import { Upload } from "lucide-react";
 import { useI18n } from "@/i18n/context";
@@ -46,7 +48,7 @@ export default function UploadCard({
     formData.append("import_type", importType);
 
     try {
-      const res = await fetch("/api/imports", {
+      const res = await workspaceFetch("/api/imports", {
         method: "POST",
         body: formData,
       });

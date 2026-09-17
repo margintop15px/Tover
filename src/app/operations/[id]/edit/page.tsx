@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useI18n } from "@/i18n/context";
@@ -120,8 +122,8 @@ function EditOperationPageContent() {
       setLoading(true);
       try {
         const [operationRes, suppliersRes] = await Promise.all([
-          fetch(`/api/operations/${id}`),
-          fetch("/api/suppliers?limit=200"),
+          workspaceFetch(`/api/operations/${id}`),
+          workspaceFetch("/api/suppliers?limit=200"),
         ]);
         const operationData = await operationRes.json();
         const suppliersData = await suppliersRes.json();
@@ -165,7 +167,7 @@ function EditOperationPageContent() {
           : undefined;
       }
 
-      const res = await fetch(`/api/operations/${operation.id}`, {
+      const res = await workspaceFetch(`/api/operations/${operation.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

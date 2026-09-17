@@ -3,6 +3,12 @@ import type { TranslationKeys } from "./en";
 export const ru: TranslationKeys = {
   // App
   appName: "Tover",
+  workspaceLabel: "Рабочее пространство",
+  workspaceSwitching: "Переключение рабочего пространства…",
+  workspaceSwitchFailed: "Не удалось переключить рабочее пространство. Попробуйте ещё раз.",
+  workspaceLoadFailed: "Не удалось загрузить рабочие пространства.",
+  workspaceAccessRequired: "У вас пока нет доступа к рабочему пространству. Попросите администратора отправить приглашение.",
+  workspaceRetry: "Попробовать ещё раз",
 
   // Date range
   from: "С",
@@ -509,7 +515,7 @@ export const ru: TranslationKeys = {
   teamTitle: "Команда",
   backToDashboard: "Вернуться на панель",
   organizationAccess: "Доступ к организации",
-  organizationAccessSubtitle: "Выберите организацию и пригласите пользователей.",
+  organizationAccessSubtitle: "Пригласите пользователей в текущее рабочее пространство.",
   organization: "Организация",
   userEmail: "Email пользователя",
   roleLabel: "Роль",

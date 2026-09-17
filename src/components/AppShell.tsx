@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import AppSidebar from "@/components/AppSidebar";
 import { WorkspaceSettingsProvider } from "@/contexts/WorkspaceSettingsContext";
+import { WorkspaceProvider } from "@/contexts/WorkspaceContext";
 import { useI18n } from "@/i18n/context";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
 
@@ -68,16 +69,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }, [bypassShell, pathname, redirectToLogin]);
 
   if (bypassShell) return <>{children}</>;
+  if (!verifiedAuth?.authorized) return <div className="p-6 text-muted-foreground">{t.loading}</div>;
 
   return (
-    <WorkspaceSettingsProvider>
-      <AppSidebar>
-        {!verifiedAuth?.authorized || verifiedAuth.pathname !== pathname ? (
-          <div className="p-6 text-muted-foreground">{t.loading}</div>
-        ) : (
-          children
-        )}
-      </AppSidebar>
-    </WorkspaceSettingsProvider>
+    <WorkspaceProvider>
+      <WorkspaceSettingsProvider>
+        <AppSidebar>
+          {verifiedAuth.pathname !== pathname ? (
+            <div className="p-6 text-muted-foreground">{t.loading}</div>
+          ) : (
+            children
+          )}
+        </AppSidebar>
+      </WorkspaceSettingsProvider>
+    </WorkspaceProvider>
   );
 }

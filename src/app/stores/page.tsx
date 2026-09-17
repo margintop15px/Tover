@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
 import { Button } from "@/components/ui/button";
@@ -40,7 +42,7 @@ export default function StoresPage() {
   const fetchItems = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/stores?limit=200");
+      const res = await workspaceFetch("/api/stores?limit=200");
       const data = await res.json();
       setItems(data.items || []);
     } finally {
@@ -50,7 +52,7 @@ export default function StoresPage() {
 
   useEffect(() => {
     fetchItems();
-    fetch("/api/warehouses?limit=200")
+    workspaceFetch("/api/warehouses?limit=200")
       .then((res) => res.json())
       .then((data) => {
         setWarehouses(
@@ -86,7 +88,7 @@ export default function StoresPage() {
     setError("");
     try {
       const url = editing ? `/api/stores/${editing.id}` : "/api/stores";
-      const res = await fetch(url, {
+      const res = await workspaceFetch(url, {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -111,7 +113,7 @@ export default function StoresPage() {
 
   const handleDelete = async (item: Store) => {
     if (!confirm(t.confirmDelete)) return;
-    await fetch(`/api/stores/${item.id}`, { method: "DELETE" });
+    await workspaceFetch(`/api/stores/${item.id}`, { method: "DELETE" });
     fetchItems();
   };
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -207,9 +209,9 @@ function OperationsPageContent() {
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/products?limit=500").then((r) => r.json()),
-      fetch("/api/warehouses").then((r) => r.json()),
-      fetch("/api/suppliers").then((r) => r.json()),
+      workspaceFetch("/api/products?limit=500").then((r) => r.json()),
+      workspaceFetch("/api/warehouses").then((r) => r.json()),
+      workspaceFetch("/api/suppliers").then((r) => r.json()),
     ]).then(([prodData, whData, supData]) => {
       setProducts(
         (prodData.items || []).map((p: { id: string; name: string }) => ({
@@ -235,7 +237,7 @@ function OperationsPageContent() {
   useEffect(() => {
     let cancelled = false;
 
-    fetch("/api/integrations/ozon/candidates?limit=1", { cache: "no-store" })
+    workspaceFetch("/api/integrations/ozon/candidates?limit=1", { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) return null;
         return (await response.json()) as OzonCandidateSummaryResponse;
@@ -399,7 +401,7 @@ function OperationsPageContent() {
     setDetailsLoading(true);
     setDetails(null);
     try {
-      const res = await fetch(`/api/operations/${operationId}`);
+      const res = await workspaceFetch(`/api/operations/${operationId}`);
       if (!res.ok) throw new Error("Failed to load operation");
       setDetails(await res.json());
     } finally {
@@ -434,7 +436,7 @@ function OperationsPageContent() {
         params.set("sortDir", sortDir);
       }
 
-      const res = await fetch(`/api/operations?${params}`);
+      const res = await workspaceFetch(`/api/operations?${params}`);
       const data = await res.json();
       setItems(data.items || []);
       setTotal(data.page?.totalEstimate ?? null);

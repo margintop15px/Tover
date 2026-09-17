@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useI18n } from "@/i18n/context";
@@ -15,7 +17,7 @@ export default function ReportTemplatesPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/report-templates")
+    workspaceFetch("/api/report-templates")
       .then((res) => res.json())
       .then((data) => setItems(data.items || []))
       .finally(() => setLoading(false));
@@ -23,7 +25,7 @@ export default function ReportTemplatesPage() {
 
   const deleteTemplate = async (item: ReportTemplate) => {
     if (!window.confirm(t.confirmDelete)) return;
-    const response = await fetch(`/api/report-templates/${item.id}`, {
+    const response = await workspaceFetch(`/api/report-templates/${item.id}`, {
       method: "DELETE",
     });
     if (response.ok) {

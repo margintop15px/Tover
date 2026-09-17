@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createUserServerClient } from "@/lib/supabase-server";
+import { initialWorkspaceId, workspaceCookieName, workspaceCookieOptions } from "@/lib/workspace";
+import type { AuthMeResponse } from "@/types/auth";
 
 interface MembershipRow {
   organization_id: string;
   role_id: string;
   status: string;
-  organizations: Array<{
-    name: string;
-  }> | null;
+  organizations: { name: string } | Array<{ name: string }> | null;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const supabase = await createUserServerClient();
     const {
@@ -35,7 +35,8 @@ export async function GET() {
         .select("organization_id, role_id, status, organizations(name)")
         .eq("user_id", user.id)
         .eq("status", "active")
-        .order("created_at", { ascending: true }),
+        .order("created_at", { ascending: true })
+        .order("organization_id", { ascending: true }),
     ]);
 
     if (membershipsResult.error) {
@@ -46,21 +47,34 @@ export async function GET() {
     }
 
     const memberships = (membershipsResult.data || []) as MembershipRow[];
+    const cookieName = workspaceCookieName(user.id);
+    const savedId = request.cookies.get(cookieName)?.value;
+    const activeWorkspaceId = initialWorkspaceId(memberships, savedId);
 
-    return NextResponse.json({
+    const payload: AuthMeResponse = {
       user: {
         id: user.id,
-        email: user.email,
+        email: user.email ?? null,
       },
       profile: {
         displayName: profileResult.data?.display_name || null,
       },
       memberships: memberships.map((item) => ({
         organizationId: item.organization_id,
-        organizationName: item.organizations?.[0]?.name || "",
+        organizationName: (Array.isArray(item.organizations) ? item.organizations[0] : item.organizations)?.name || "",
         role: item.role_id,
       })),
-    });
+      activeWorkspaceId,
+    };
+    const response = NextResponse.json(payload, { headers: { "Cache-Control": "private, no-store" } });
+    if (activeWorkspaceId && activeWorkspaceId !== savedId) {
+      response.cookies.set(cookieName, activeWorkspaceId, workspaceCookieOptions(
+        request.nextUrl.protocol === "https:" || request.headers.get("x-forwarded-proto") === "https"
+      ));
+    } else if (!activeWorkspaceId && savedId) {
+      response.cookies.delete(cookieName);
+    }
+    return response;
   } catch (error) {
     console.error("Auth me error:", error);
     return NextResponse.json(

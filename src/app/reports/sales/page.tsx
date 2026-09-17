@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
 import { Input } from "@/components/ui/input";
@@ -24,7 +26,7 @@ export default function SalesVolumePage() {
     setLoading(true);
     try {
       const params = new URLSearchParams({ from: dateFrom, to: dateTo, groupBy });
-      const res = await fetch(`/api/reports/sales-volume?${params}`);
+      const res = await workspaceFetch(`/api/reports/sales-volume?${params}`);
       setReport(await res.json());
     } finally {
       setLoading(false);

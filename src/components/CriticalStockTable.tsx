@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
 import { Badge } from "@/components/ui/badge";
@@ -24,7 +26,7 @@ export default function CriticalStockTable() {
   async function fetchCriticalStock() {
     setLoading(true);
     try {
-      const res = await fetch("/api/metrics/critical-stock?days=14&lookback=7");
+      const res = await workspaceFetch("/api/metrics/critical-stock?days=14&lookback=7");
       const data = await res.json();
       setItems(data.items || []);
     } catch {

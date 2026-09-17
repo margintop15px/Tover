@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
@@ -34,7 +36,7 @@ export default function OrderDetailPage() {
     async function fetchLines() {
       setLoading(true);
       try {
-        const res = await fetch(`/api/orders/${orderId}/lines`);
+        const res = await workspaceFetch(`/api/orders/${orderId}/lines`);
         const data = await res.json();
         setLines(data.items || []);
       } catch {

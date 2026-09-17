@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
 import { Input } from "@/components/ui/input";
@@ -45,9 +47,9 @@ export default function ProductMovementPage() {
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/products?limit=500").then((r) => r.json()),
-      fetch("/api/warehouses").then((r) => r.json()),
-      fetch("/api/stores?limit=500").then((r) => r.json()),
+      workspaceFetch("/api/products?limit=500").then((r) => r.json()),
+      workspaceFetch("/api/warehouses").then((r) => r.json()),
+      workspaceFetch("/api/stores?limit=500").then((r) => r.json()),
     ]).then(([prodData, whData, stData]) => {
       setProducts((prodData.items || []).map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
       setWarehouses((whData.items || []).map((w: { id: string; name: string }) => ({ id: w.id, name: w.name })));
@@ -68,7 +70,7 @@ export default function ProductMovementPage() {
       if (filterWarehouseId) params.set("warehouseId", filterWarehouseId);
       if (filterStoreId) params.set("storeId", filterStoreId);
       if (filterQualityStatus) params.set("qualityStatus", filterQualityStatus);
-      const res = await fetch(`/api/reports/product-movement?${params}`);
+      const res = await workspaceFetch(`/api/reports/product-movement?${params}`);
       const data = await res.json();
       setReport(data);
     } finally {

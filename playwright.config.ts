@@ -36,7 +36,7 @@ export default defineConfig({
     },
     {
       name: "chromium-public",
-      testIgnore: [/auth\.setup\.ts/, /authenticated\.spec\.ts/],
+      testIgnore: [/auth\.setup\.ts/, /authenticated\.spec\.ts/, /workspace-switch\.spec\.ts/],
       use: {
         ...devices["Desktop Chrome"],
       },

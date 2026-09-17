@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/i18n/context";
@@ -270,10 +272,10 @@ export default function NewOperationPage() {
       setRefLoading(true);
       try {
         const [prodRes, whRes, supRes, storeRes] = await Promise.all([
-          fetch("/api/products?limit=500"),
-          fetch("/api/warehouses?limit=200"),
-          fetch("/api/suppliers?limit=200"),
-          fetch("/api/stores?limit=200"),
+          workspaceFetch("/api/products?limit=500"),
+          workspaceFetch("/api/warehouses?limit=200"),
+          workspaceFetch("/api/suppliers?limit=200"),
+          workspaceFetch("/api/stores?limit=200"),
         ]);
         const [prodData, whData, supData, storeData] = await Promise.all([
           prodRes.json(),
@@ -390,7 +392,7 @@ export default function NewOperationPage() {
           break;
       }
 
-      const res = await fetch("/api/operations", {
+      const res = await workspaceFetch("/api/operations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

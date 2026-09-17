@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -128,11 +130,11 @@ export default function ReportTemplateForm({
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/products?limit=500").then((res) => res.json()),
-      fetch("/api/categories?limit=500").then((res) => res.json()),
-      fetch("/api/warehouses?limit=500").then((res) => res.json()),
-      fetch("/api/stores?limit=500").then((res) => res.json()),
-      fetch("/api/suppliers?limit=500").then((res) => res.json()),
+      workspaceFetch("/api/products?limit=500").then((res) => res.json()),
+      workspaceFetch("/api/categories?limit=500").then((res) => res.json()),
+      workspaceFetch("/api/warehouses?limit=500").then((res) => res.json()),
+      workspaceFetch("/api/stores?limit=500").then((res) => res.json()),
+      workspaceFetch("/api/suppliers?limit=500").then((res) => res.json()),
     ]).then(([productData, categoryData, warehouseData, storeData, supplierData]) => {
       setProducts((productData.items || []).map((item: SelectOption) => ({ id: item.id, name: item.name })));
       setCategories((categoryData.items || []).map((item: SelectOption) => ({ id: item.id, name: item.name })));
@@ -147,7 +149,7 @@ export default function ReportTemplateForm({
 
     let cancelled = false;
     setInitialLoading(true);
-    fetch(`/api/report-templates/${templateId}`)
+    workspaceFetch(`/api/report-templates/${templateId}`)
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || t.unexpectedError);
@@ -256,7 +258,7 @@ export default function ReportTemplateForm({
       setPreviewLoading(true);
       setPreviewError("");
       try {
-        const response = await fetch(buildPreviewUrl(), {
+        const response = await workspaceFetch(buildPreviewUrl(), {
           signal: controller.signal,
         });
         const data = await response.json();
@@ -281,7 +283,7 @@ export default function ReportTemplateForm({
     if (!name.trim() || missingPreviewReason) return;
     setSaving(true);
     try {
-      const response = await fetch(
+      const response = await workspaceFetch(
         templateId ? `/api/report-templates/${templateId}` : "/api/report-templates",
         {
           method: templateId ? "PATCH" : "POST",

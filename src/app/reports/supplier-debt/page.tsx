@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
 import { useWorkspaceSettings } from "@/contexts/WorkspaceSettingsContext";
@@ -79,7 +81,7 @@ export default function SupplierDebtPage() {
         periodTo,
       });
       if (debtType) params.set("debtType", debtType);
-      const res = await fetch(`/api/reports/supplier-debt?${params}`);
+      const res = await workspaceFetch(`/api/reports/supplier-debt?${params}`);
       const data = await res.json();
       setReport(data);
     } finally {
@@ -98,7 +100,7 @@ export default function SupplierDebtPage() {
         limit: String(DRILL_PAGE_SIZE),
         offset: String(off),
       });
-      const res = await fetch(`/api/reports/supplier-debt/${supplierId}?${params}`);
+      const res = await workspaceFetch(`/api/reports/supplier-debt/${supplierId}?${params}`);
       const data = await res.json();
       setDrillItems(data.items || []);
       setDrillTotal(data.page?.totalEstimate ?? null);

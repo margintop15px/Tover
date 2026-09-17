@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
 import { Button } from "@/components/ui/button";
@@ -31,7 +33,7 @@ export default function CategoriesPage() {
   const fetchItems = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/categories?limit=200");
+      const res = await workspaceFetch("/api/categories?limit=200");
       const data = await res.json();
       setItems(data.items || []);
     } finally {
@@ -67,7 +69,7 @@ export default function CategoriesPage() {
       const url = editing
         ? `/api/categories/${editing.id}`
         : "/api/categories";
-      const res = await fetch(url, {
+      const res = await workspaceFetch(url, {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim(), isImportDefault }),
@@ -88,7 +90,7 @@ export default function CategoriesPage() {
 
   const handleDelete = async (item: Category) => {
     if (!confirm(t.confirmDelete)) return;
-    await fetch(`/api/categories/${item.id}`, { method: "DELETE" });
+    await workspaceFetch(`/api/categories/${item.id}`, { method: "DELETE" });
     fetchItems();
   };
 

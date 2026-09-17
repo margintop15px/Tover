@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
@@ -332,11 +334,11 @@ export default function OperationImportPage() {
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/products?limit=5000").then((res) => res.json()),
-      fetch("/api/warehouses?limit=1000").then((res) => res.json()),
-      fetch("/api/suppliers?limit=1000").then((res) => res.json()),
-      fetch("/api/categories?limit=1000").then((res) => res.json()),
-      fetch("/api/stores?limit=1000").then((res) => res.json()),
+      workspaceFetch("/api/products?limit=5000").then((res) => res.json()),
+      workspaceFetch("/api/warehouses?limit=1000").then((res) => res.json()),
+      workspaceFetch("/api/suppliers?limit=1000").then((res) => res.json()),
+      workspaceFetch("/api/categories?limit=1000").then((res) => res.json()),
+      workspaceFetch("/api/stores?limit=1000").then((res) => res.json()),
     ]).then(([productData, warehouseData, supplierData, categoryData, storeData]) => {
       setProducts(productData.items || []);
       setWarehouses(warehouseData.items || []);
@@ -350,7 +352,7 @@ export default function OperationImportPage() {
     async (offset: number) => {
       setLoadingDocuments(true);
       try {
-        const res = await fetch(
+        const res = await workspaceFetch(
           `/api/operation-imports?limit=${DOCUMENTS_PER_PAGE}&offset=${offset}`
         );
         const data = (await res.json()) as ImportListResponse & {
@@ -398,12 +400,12 @@ export default function OperationImportPage() {
         offset: String(page.offset),
       });
       const res = options.reprocess
-        ? await fetch(`/api/operation-imports/${id}/reprocess`, {
+        ? await workspaceFetch(`/api/operation-imports/${id}/reprocess`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(page),
           })
-        : await fetch(`/api/operation-imports/${id}?${params.toString()}`);
+        : await workspaceFetch(`/api/operation-imports/${id}?${params.toString()}`);
       const data = (await res.json()) as ImportJobResponse & {
         error?: string;
       };
@@ -483,7 +485,7 @@ export default function OperationImportPage() {
     formData.append("file", file);
 
     try {
-      const res = await fetch("/api/operation-imports", {
+      const res = await workspaceFetch("/api/operation-imports", {
         method: "POST",
         body: formData,
       });
@@ -546,7 +548,7 @@ export default function OperationImportPage() {
     );
 
     try {
-      const res = await fetch(`/api/operation-imports/${job.id}`, {
+      const res = await workspaceFetch(`/api/operation-imports/${job.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ candidateId: candidate.id, operation }),
@@ -590,7 +592,7 @@ export default function OperationImportPage() {
     setError(null);
     try {
       const product = kind === "product" ? (item as Product) : null;
-      const res = await fetch(`/api/operation-imports/${job.id}/reprocess`, {
+      const res = await workspaceFetch(`/api/operation-imports/${job.id}/reprocess`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -656,7 +658,7 @@ export default function OperationImportPage() {
     );
 
     try {
-      const res = await fetch(`/api/operation-imports/${job.id}`, {
+      const res = await workspaceFetch(`/api/operation-imports/${job.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ candidateUpdates: updates }),
@@ -694,7 +696,7 @@ export default function OperationImportPage() {
     setSavingCandidateId(candidate.id);
     setError(null);
     try {
-      const res = await fetch(`/api/operation-imports/${job.id}`, {
+      const res = await workspaceFetch(`/api/operation-imports/${job.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approveCandidateId: candidate.id }),
@@ -715,7 +717,7 @@ export default function OperationImportPage() {
     setApproving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/operation-imports/${job.id}`, {
+      const res = await workspaceFetch(`/api/operation-imports/${job.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approveAll: true }),
@@ -737,7 +739,7 @@ export default function OperationImportPage() {
     setCommitting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/operation-imports/${job.id}/commit`, {
+      const res = await workspaceFetch(`/api/operation-imports/${job.id}/commit`, {
         method: "POST",
       });
       const data = await res.json();
@@ -2001,7 +2003,7 @@ function CreateEntityDialog({
                 storeId: storeId || undefined,
               };
 
-      const res = await fetch(url, {
+      const res = await workspaceFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

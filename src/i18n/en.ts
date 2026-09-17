@@ -1,6 +1,12 @@
 export const en = {
   // App
   appName: "Tover",
+  workspaceLabel: "Workspace",
+  workspaceSwitching: "Switching workspace…",
+  workspaceSwitchFailed: "Could not switch workspace. Please try again.",
+  workspaceLoadFailed: "Could not load your workspaces.",
+  workspaceAccessRequired: "You do not have access to a workspace yet. Ask a workspace admin for an invitation.",
+  workspaceRetry: "Try again",
 
   // Date range
   from: "From",
@@ -506,7 +512,7 @@ export const en = {
   teamTitle: "Team",
   backToDashboard: "Back to dashboard",
   organizationAccess: "Organization access",
-  organizationAccessSubtitle: "Select an organization and invite users.",
+  organizationAccessSubtitle: "Invite users to the current workspace.",
   organization: "Organization",
   userEmail: "User email",
   roleLabel: "Role",

@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import {
   createContext,
   useCallback,
@@ -40,7 +42,7 @@ export function WorkspaceSettingsProvider({
 
   const fetchSettings = useCallback(async () => {
     try {
-      const res = await fetch("/api/settings", { cache: "no-store" });
+      const res = await workspaceFetch("/api/settings", { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         setSettings(data);

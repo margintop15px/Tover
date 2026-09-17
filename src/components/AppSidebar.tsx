@@ -35,6 +35,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
+import WorkspaceSwitcher from "@/components/WorkspaceSwitcher";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 
@@ -174,6 +175,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         </Link>
       </div>
 
+      <WorkspaceSwitcher />
       <Separator />
 
       {/* Nav */}
@@ -275,7 +277,7 @@ export default function AppSidebar({ children }: { children: React.ReactNode }) 
       <Sheet open={open} onOpenChange={setOpen}>
         <div className="sticky top-0 z-40 flex h-14 items-center border-b bg-card px-4 md:hidden">
           <SheetTrigger asChild>
-            <Button variant="ghost" size="sm">
+            <Button variant="ghost" size="sm" aria-label={t.navigation}>
               <Menu className="h-5 w-5" />
             </Button>
           </SheetTrigger>

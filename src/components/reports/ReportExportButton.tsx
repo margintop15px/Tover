@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useState } from "react";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -29,7 +31,7 @@ export default function ReportExportButton({
   const exportCsv = async () => {
     setExporting(true);
     try {
-      const response = await fetch("/api/reports/export", {
+      const response = await workspaceFetch("/api/reports/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

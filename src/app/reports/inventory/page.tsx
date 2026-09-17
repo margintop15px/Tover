@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
 import { useWorkspaceSettings } from "@/contexts/WorkspaceSettingsContext";
@@ -61,9 +63,9 @@ export default function InventoryBalancesPage() {
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/categories").then((r) => r.json()),
-      fetch("/api/warehouses").then((r) => r.json()),
-      fetch("/api/stores").then((r) => r.json()),
+      workspaceFetch("/api/categories").then((r) => r.json()),
+      workspaceFetch("/api/warehouses").then((r) => r.json()),
+      workspaceFetch("/api/stores").then((r) => r.json()),
     ]).then(([catData, whData, stData]) => {
       setCategories((catData.items || []).map((c: { id: string; name: string }) => ({ id: c.id, name: c.name })));
       setWarehouses((whData.items || []).map((w: { id: string; name: string }) => ({ id: w.id, name: w.name })));
@@ -83,7 +85,7 @@ export default function InventoryBalancesPage() {
       if (search) params.set("search", search);
       if (hideZeros) params.set("hideZeros", "true");
       if (negativesOnly) params.set("negativesOnly", "true");
-      const res = await fetch(`/api/reports/inventory-balances?${params}`);
+      const res = await workspaceFetch(`/api/reports/inventory-balances?${params}`);
       const data = await res.json();
       setReport(data);
     } finally {

@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
 import { useWorkspaceSettings } from "@/contexts/WorkspaceSettingsContext";
@@ -27,7 +29,7 @@ export default function TurnoverReportPage() {
     setLoading(true);
     try {
       const params = new URLSearchParams({ from: dateFrom, to: dateTo, groupBy });
-      const res = await fetch(`/api/reports/turnover?${params}`);
+      const res = await workspaceFetch(`/api/reports/turnover?${params}`);
       setReport(await res.json());
     } finally {
       setLoading(false);

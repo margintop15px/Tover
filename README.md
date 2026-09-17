@@ -159,6 +159,20 @@ It requires Docker and uses a disposable PostgreSQL container without networking
 - Enter full name, organization name, email, password
 - Confirm email (if email confirmations are enabled)
 
+#### Switching workspaces
+
+Accounts with multiple memberships can switch workspaces in the sidebar (or the
+mobile navigation menu). The selection is remembered for 30 days per account in
+this browser. Switching immediately opens `/operations` in all app tabs and
+discards unsaved forms and filters. Invitations use the selected workspace.
+Each API request validates membership; stale tabs receive `409 WORKSPACE_CHANGED`
+and reload without retrying writes. Existing explicit `workspaceId` API overrides
+remain supported.
+
+Run `npm run test:workspace` for isolated browser/API coverage using a local mock
+Supabase service. It does not connect to a Supabase project. Selection and request
+helper checks also run with `node --import tsx --test tests/unit/workspace.test.ts`.
+
 ### 4. Seed demo data (optional)
 
 Populate the database with sample inventory data (categories, warehouses, suppliers, products, operations):

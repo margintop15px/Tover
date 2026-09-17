@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -148,8 +150,8 @@ function SettingsPageContent() {
   // Load reference data for Products tab
   const fetchReferenceData = useCallback(async () => {
     const [catRes, storeRes] = await Promise.all([
-      fetch("/api/categories?limit=200"),
-      fetch("/api/stores?limit=200"),
+      workspaceFetch("/api/categories?limit=200"),
+      workspaceFetch("/api/stores?limit=200"),
     ]);
     const catData = await catRes.json();
     const storeData = await storeRes.json();
@@ -164,7 +166,7 @@ function SettingsPageContent() {
   const fetchOzonSummary = useCallback(async (showLoading = true) => {
     if (showLoading) setOzonLoading(true);
     try {
-      const res = await fetch(`/api/integrations/ozon?t=${Date.now()}`, {
+      const res = await workspaceFetch(`/api/integrations/ozon?t=${Date.now()}`, {
         cache: "no-store",
       });
       const data = await res.json();
@@ -185,7 +187,7 @@ function SettingsPageContent() {
   const fetchResetSummary = useCallback(async () => {
     setResetSummaryLoading(true);
     try {
-      const res = await fetch(`/api/settings/reset-data?t=${Date.now()}`, {
+      const res = await workspaceFetch(`/api/settings/reset-data?t=${Date.now()}`, {
         cache: "no-store",
       });
       const data = await res.json();
@@ -208,7 +210,7 @@ function SettingsPageContent() {
     setError("");
     setSuccess("");
     try {
-      const res = await fetch("/api/settings", {
+      const res = await workspaceFetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ currency }),
@@ -242,7 +244,7 @@ function SettingsPageContent() {
         payload.defaultStoreId = defaultStoreId || undefined;
       }
 
-      const res = await fetch("/api/settings", {
+      const res = await workspaceFetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -281,7 +283,7 @@ function SettingsPageContent() {
     setResetError("");
     setResetSuccess("");
     try {
-      const res = await fetch("/api/settings/reset-data", {
+      const res = await workspaceFetch("/api/settings/reset-data", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirmation: resetConfirmation }),
@@ -310,7 +312,7 @@ function SettingsPageContent() {
     setOzonError("");
     setOzonSuccess("");
     try {
-      const res = await fetch("/api/integrations/ozon", {
+      const res = await workspaceFetch("/api/integrations/ozon", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -339,7 +341,7 @@ function SettingsPageContent() {
     setOzonError("");
     setOzonSuccess("");
     try {
-      const res = await fetch("/api/integrations/ozon/validate", {
+      const res = await workspaceFetch("/api/integrations/ozon/validate", {
         method: "POST",
       });
       const data = await res.json();
@@ -360,7 +362,7 @@ function SettingsPageContent() {
     setOzonError("");
     setOzonSuccess("");
     try {
-      const res = await fetch("/api/integrations/ozon", {
+      const res = await workspaceFetch("/api/integrations/ozon", {
         method: "DELETE",
       });
       const data = await res.json();

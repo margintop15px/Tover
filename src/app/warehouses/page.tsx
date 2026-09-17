@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
 import { Button } from "@/components/ui/button";
@@ -41,7 +43,7 @@ export default function WarehousesPage() {
   const fetchItems = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/warehouses?limit=200");
+      const res = await workspaceFetch("/api/warehouses?limit=200");
       const data = await res.json();
       setItems(data.items || []);
     } finally {
@@ -81,7 +83,7 @@ export default function WarehousesPage() {
       const url = editing
         ? `/api/warehouses/${editing.id}`
         : "/api/warehouses";
-      const res = await fetch(url, {
+      const res = await workspaceFetch(url, {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -113,7 +115,7 @@ export default function WarehousesPage() {
       return;
     }
     if (!confirm(t.confirmDelete)) return;
-    await fetch(`/api/warehouses/${item.id}`, { method: "DELETE" });
+    await workspaceFetch(`/api/warehouses/${item.id}`, { method: "DELETE" });
     fetchItems();
   };
 

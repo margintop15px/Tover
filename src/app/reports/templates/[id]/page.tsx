@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -59,7 +61,7 @@ function SavedReportPageContent() {
     setLoadingReport(true);
     setError("");
     try {
-      const response = await fetch(buildReportUrlForTemplate(nextTemplate));
+      const response = await workspaceFetch(buildReportUrlForTemplate(nextTemplate));
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || t.unexpectedError);
       setReport(data);
@@ -74,7 +76,7 @@ function SavedReportPageContent() {
   useEffect(() => {
     let cancelled = false;
     setLoadingTemplate(true);
-    fetch(`/api/report-templates/${params.id}`)
+    workspaceFetch(`/api/report-templates/${params.id}`)
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || t.reportNotFound);

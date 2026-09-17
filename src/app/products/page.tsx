@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
 import { useWorkspaceSettings } from "@/contexts/WorkspaceSettingsContext";
@@ -46,8 +48,8 @@ export default function ProductsPage() {
 
   const fetchReferenceData = useCallback(async () => {
     const [catRes, storeRes] = await Promise.all([
-      fetch("/api/categories?limit=200"),
-      fetch("/api/stores?limit=200"),
+      workspaceFetch("/api/categories?limit=200"),
+      workspaceFetch("/api/stores?limit=200"),
     ]);
     const catData = await catRes.json();
     const storeData = await storeRes.json();
@@ -62,7 +64,7 @@ export default function ProductsPage() {
       if (search) params.set("search", search);
       if (filterCategory) params.set("categoryId", filterCategory);
       if (filterStore) params.set("storeId", filterStore);
-      const res = await fetch(`/api/products?${params}`);
+      const res = await workspaceFetch(`/api/products?${params}`);
       const data = await res.json();
       setItems(data.items || []);
     } finally {
@@ -106,7 +108,7 @@ export default function ProductsPage() {
       const url = editing
         ? `/api/products/${editing.id}`
         : "/api/products";
-      const res = await fetch(url, {
+      const res = await workspaceFetch(url, {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -136,7 +138,7 @@ export default function ProductsPage() {
 
   const handleDelete = async (item: Product) => {
     if (!confirm(t.confirmDelete)) return;
-    await fetch(`/api/products/${item.id}`, { method: "DELETE" });
+    await workspaceFetch(`/api/products/${item.id}`, { method: "DELETE" });
     fetchItems();
   };
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -154,8 +156,8 @@ export default function OzonCandidateReviewPage() {
 
   const fetchReferenceData = useCallback(async () => {
     const [productRes, warehouseRes] = await Promise.all([
-      fetch("/api/products?limit=5000"),
-      fetch("/api/warehouses?limit=1000"),
+      workspaceFetch("/api/products?limit=5000"),
+      workspaceFetch("/api/warehouses?limit=1000"),
     ]);
     const [productData, warehouseData] = await Promise.all([
       productRes.json(),
@@ -182,7 +184,7 @@ export default function OzonCandidateReviewPage() {
         if (from) params.set("from", from);
         if (to) params.set("to", to);
 
-        const res = await fetch(`/api/integrations/ozon/candidates?${params}`);
+        const res = await workspaceFetch(`/api/integrations/ozon/candidates?${params}`);
         const data = (await res.json()) as CandidateListResponse & {
           error?: string;
         };
@@ -253,7 +255,7 @@ export default function OzonCandidateReviewPage() {
     candidate: MarketplaceCandidateRow,
     body: Record<string, unknown>
   ) => {
-    const res = await fetch(`/api/integrations/ozon/candidates/${candidate.id}`, {
+    const res = await workspaceFetch(`/api/integrations/ozon/candidates/${candidate.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -268,7 +270,7 @@ export default function OzonCandidateReviewPage() {
     path: string,
     body: Record<string, unknown> = {}
   ) => {
-    const res = await fetch(
+    const res = await workspaceFetch(
       `/api/integrations/ozon/candidates/${candidate.id}/${path}`,
       {
         method: "POST",
@@ -283,7 +285,7 @@ export default function OzonCandidateReviewPage() {
 
   const approveReady = async () => {
     await runAction("approve-ready", async () => {
-      const res = await fetch("/api/integrations/ozon/candidates/approve-ready", {
+      const res = await workspaceFetch("/api/integrations/ozon/candidates/approve-ready", {
         method: "POST",
       });
       const data = await res.json();
@@ -295,7 +297,7 @@ export default function OzonCandidateReviewPage() {
 
   const commitApproved = async (candidateIds?: string[]) => {
     await runAction(candidateIds?.[0] || "commit-approved", async () => {
-      const res = await fetch("/api/integrations/ozon/candidates/commit", {
+      const res = await workspaceFetch("/api/integrations/ozon/candidates/commit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(candidateIds ? { candidateIds } : {}),

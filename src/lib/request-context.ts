@@ -2,13 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as Sentry from "@sentry/nextjs";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { createUserServerClient } from "@/lib/supabase-server";
-
-const MANAGER_ROLES = new Set(["owner", "admin"]);
-
-interface MembershipRow {
-  organization_id: string;
-  role_id: string;
-}
+import { resolveWorkspaceMembership, workspaceCookieName, WorkspaceAccessError, WORKSPACE_HEADER } from "@/lib/workspace";
 
 export interface RouteContext {
   supabase: SupabaseClient;
@@ -56,35 +50,20 @@ export async function getRouteContext(
     .from("organization_memberships")
     .select("organization_id, role_id")
     .eq("user_id", user.id)
-    .eq("status", "active");
+    .eq("status", "active")
+    .order("created_at", { ascending: true })
+    .order("organization_id", { ascending: true });
 
   if (error) {
     throw new RouteAuthError(500, error.message);
   }
 
-  const memberships = (data || []) as MembershipRow[];
-
-  if (memberships.length === 0) {
-    throw new RouteAuthError(403, "No active organization membership");
-  }
-
-  let membership = memberships[0];
-
-  if (requestedWorkspaceId) {
-    const requestedMembership = memberships.find(
-      (item) => item.organization_id === requestedWorkspaceId
-    );
-
-    if (!requestedMembership) {
-      throw new RouteAuthError(403, "Organization access denied");
-    }
-
-    membership = requestedMembership;
-  }
-
-  if (options.requireManager && !MANAGER_ROLES.has(membership.role_id)) {
-    throw new RouteAuthError(403, "Insufficient permissions");
-  }
+  const membership = resolveWorkspaceMembership(data || [], {
+    savedId: request.cookies.get(workspaceCookieName(user.id))?.value,
+    requestedId: requestedWorkspaceId,
+    pageWorkspaceId: request.headers.get(WORKSPACE_HEADER),
+    requireManager: options.requireManager,
+  });
 
   return {
     supabase,
@@ -95,6 +74,9 @@ export async function getRouteContext(
 }
 
 export function toRouteErrorResponse(error: unknown): NextResponse {
+  if (error instanceof WorkspaceAccessError) {
+    return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+  }
   if (error instanceof RouteAuthError) {
     return NextResponse.json({ error: error.message }, { status: error.status });
   }

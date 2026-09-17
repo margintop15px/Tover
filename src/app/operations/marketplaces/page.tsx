@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceFetch } from "@/lib/workspace-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
@@ -27,7 +29,7 @@ import {
 } from "@/components/ozon/OzonRecoveryUi";
 
 async function requestOzonSummary(signal?: AbortSignal) {
-  const response = await fetch(`/api/integrations/ozon?t=${Date.now()}`, {
+  const response = await workspaceFetch(`/api/integrations/ozon?t=${Date.now()}`, {
     cache: "no-store",
     signal,
   });
@@ -92,7 +94,7 @@ interface OzonSyncDetails {
 }
 
 async function requestOzonSyncDetails(runId: string, signal?: AbortSignal) {
-  const response = await fetch(`/api/integrations/ozon/sync/${runId}`, {
+  const response = await workspaceFetch(`/api/integrations/ozon/sync/${runId}`, {
     cache: "no-store",
     signal,
   });
@@ -199,7 +201,7 @@ export default function MarketplacesPage() {
     setSuccess("");
 
     try {
-      const res = await fetch(request.endpoint, {
+      const res = await workspaceFetch(request.endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request.body),
