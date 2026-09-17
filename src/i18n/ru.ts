@@ -531,6 +531,8 @@ export const ru: TranslationKeys = {
   failedToSendInvite: "Не удалось отправить приглашение",
 
   // --- Operations form ---
+  operationSaveUnconfirmed:
+    "Не удалось подтвердить сохранение операции. Проверьте список операций перед повторной попыткой.",
   items: "Позиции",
   sourceMaterials: "Исходные материалы",
   outputProduct: "Готовый продукт",

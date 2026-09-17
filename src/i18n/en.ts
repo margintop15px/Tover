@@ -528,6 +528,8 @@ export const en = {
   failedToSendInvite: "Failed to send invite",
 
   // --- Operations form ---
+  operationSaveUnconfirmed:
+    "Could not confirm whether the operation was saved. Check the operations list before trying again.",
   items: "Items",
   sourceMaterials: "Source Materials",
   outputProduct: "Output Product",

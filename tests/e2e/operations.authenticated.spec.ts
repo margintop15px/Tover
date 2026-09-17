@@ -144,10 +144,7 @@ test.describe("operations API", () => {
   }, testInfo) => {
     const supportsInventoryAdjustment =
       await supportsInventoryAdjustmentOperations();
-    test.skip(
-      supportsInventoryAdjustment === false && !process.env.CI,
-      inventoryAdjustmentSchemaSkipReason()
-    );
+    expect(supportsInventoryAdjustment, inventoryAdjustmentSchemaSkipReason()).not.toBe(false);
 
     const product = await createProduct(
       request,
@@ -199,15 +196,6 @@ test.describe("operations API", () => {
       },
     });
     const createdBodyText = await createdResponse.text();
-    if (
-      createdResponse.status() === 500 &&
-      createdBodyText.includes("operations_type_check")
-    ) {
-      test.skip(
-        !process.env.CI,
-        inventoryAdjustmentSchemaSkipReason()
-      );
-    }
     expect(createdResponse.status(), createdBodyText).toBe(201);
     const created = JSON.parse(createdBodyText) as { id: string };
 

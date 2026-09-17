@@ -1,4 +1,6 @@
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
+import { en } from "../../src/i18n/en";
+import { ru } from "../../src/i18n/ru";
 
 const appUrl = "http://127.0.0.1:3410";
 const mockUrl = "http://127.0.0.1:3411";
@@ -27,6 +29,56 @@ test.beforeEach(async ({ context, request, baseURL }) => {
   expect(baseURL).toBe(appUrl);
   expect((await request.post(`${mockUrl}/__test`, { data: {} })).ok()).toBeTruthy();
   await signIn(context);
+});
+
+for (const scenario of [
+  { name: "network failure", locale: "en", t: en, failure: "network", message: en.operationSaveUnconfirmed },
+  { name: "network failure in Russian", locale: "ru", t: ru, failure: "network", message: ru.operationSaveUnconfirmed },
+  { name: "non-JSON server failure", locale: "en", t: en, failure: "html", message: en.operationSaveUnconfirmed },
+  { name: "HTTP 500", locale: "en", t: en, failure: "server", message: "Operation could not be created" },
+  { name: "validation failure", locale: "en", t: en, failure: "validation", message: "items: At least one item is required" },
+]) {
+  test(`operation submission handles ${scenario.name} without losing input or retrying`, async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.addInitScript((locale) => localStorage.setItem("tover-locale", locale), scenario.locale);
+    let submissions = 0;
+    await page.route("**/api/operations", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      submissions++;
+      expect(route.request().postDataJSON()).toMatchObject({ type: "inventory_adjustment", comment: "Keep this draft" });
+      if (scenario.failure === "network") return route.abort("failed");
+      if (scenario.failure === "html") return route.fulfill({ status: 502, contentType: "text/html", body: "<h1>Bad Gateway</h1>" });
+      if (scenario.failure === "validation") return route.fulfill({ status: 400, json: { errors: [{ field: "items", message: "At least one item is required" }] } });
+      return route.fulfill({ status: 500, json: { error: scenario.message } });
+    });
+
+    await page.goto("/operations/new");
+    await page.getByRole("tab", { name: scenario.t.operationGroupAdjustments, exact: true }).click();
+    await page.locator("textarea").fill("Keep this draft");
+    const save = page.getByRole("button", { name: scenario.t.save, exact: true });
+    await save.click();
+
+    await expect(page.getByRole("alert").filter({ hasText: scenario.message })).toHaveText(scenario.message);
+    await expect(save).toBeEnabled();
+    await expect(page.locator("textarea")).toHaveValue("Keep this draft");
+    await expect(page).toHaveURL(`${appUrl}/operations/new`);
+    expect(submissions).toBe(1);
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+test("operation submission navigates to the list after success", async ({ page }) => {
+  let submissions = 0;
+  await page.route("**/api/operations", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    submissions++;
+    return route.fulfill({ status: 201, json: { id: "test-operation" } });
+  });
+  await page.goto("/operations/new");
+  await page.getByRole("button", { name: en.save, exact: true }).click();
+  await expect(page).toHaveURL(`${appUrl}/operations`);
+  expect(submissions).toBe(1);
 });
 
 test("switches all tabs, clears deep links, persists selection, and refreshes settings", async ({ page, context }) => {

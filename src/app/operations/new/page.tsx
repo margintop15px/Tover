@@ -414,6 +414,8 @@ export default function NewOperationPage() {
       }
 
       router.push("/operations");
+    } catch {
+      setErrors([t.operationSaveUnconfirmed]);
     } finally {
       setSaving(false);
     }
@@ -959,7 +961,7 @@ export default function NewOperationPage() {
 
         {/* Errors */}
         {errors.length > 0 && (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-3">
+          <div role="alert" className="rounded-md border border-destructive bg-destructive/10 p-3">
             {errors.map((err, i) => (
               <p key={i} className="text-sm text-destructive">
                 {err}
