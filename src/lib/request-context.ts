@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { createUserServerClient } from "@/lib/supabase-server";
 
@@ -99,6 +100,7 @@ export function toRouteErrorResponse(error: unknown): NextResponse {
   }
 
   console.error("Route context error:", error);
+  Sentry.captureException(error, { tags: { handled_by: "toRouteErrorResponse" } });
   if (process.env.NODE_ENV !== "production") {
     return NextResponse.json(
       {

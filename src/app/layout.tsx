@@ -6,6 +6,8 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Tover - Inventory Management",
   description: "Inventory management, warehouse operations, and sales tracking",
+  // Use Tover's translations; browser translation can replace React-owned nodes.
+  other: { google: "notranslate" },
 };
 
 export default function RootLayout({
@@ -14,7 +16,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" translate="no">
       <body className="antialiased">
         <I18nProvider>
           <AppShell>{children}</AppShell>
