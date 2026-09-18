@@ -65,3 +65,29 @@ it does not prove connectivity, quotas, project settings, or source-map upload.
 
 Browser events are sent directly to Sentry. Network filters or extensions can
 block delivery; this setup does not guarantee receipt from every browser.
+
+## Recoverable request failures
+
+The affected Operations and Settings flows catch request failures at the UI
+boundary. `reportRequestFailure` still captures them as handled exceptions with
+fixed `action` and `handled_by=request_ui` tags. Do not add drafts, credentials,
+file contents or response bodies to these tags. Existing event scrubbing applies.
+
+Failed reads show a localized retry action and retain previously loaded data.
+The initial workspace-settings request gates the page until valid settings are
+available. A refresh failure keeps the page mounted and shows a warning.
+Ambiguous writes retain input and never automatically repeat the mutation.
+Malformed multipart uploads return 400 before any import storage access;
+unexpected errors retain the existing server-error path.
+
+Run `npm run test:workspace` for the isolated browser/API regressions and
+`npm run test:unit` for reporting/privacy coverage. Browser tests have Sentry
+DSNs disabled and cannot verify production event delivery.
+
+For release verification, build with `SENTRY_RELEASE` set to the deployed commit
+SHA; the installed Next.js SDK injects it into both browser and server options.
+A local configuration check is insufficient to certify uploaded source maps.
+Record separate staging browser/server event links and their mapped source
+frames before closing the production issues. A drop in unhandled events alone
+is not proof of transport recovery: also inspect handled failures and read
+recovery after deployment.

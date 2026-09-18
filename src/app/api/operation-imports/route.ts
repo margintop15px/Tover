@@ -29,10 +29,19 @@ export async function POST(request: NextRequest) {
       requireManager: true,
     });
 
-    const formData = await request.formData();
-    const file = formData.get("file") as File | null;
+    if (request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "multipart/form-data") {
+      return NextResponse.json({ error: "Expected a multipart file upload" }, { status: 400 });
+    }
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      return NextResponse.json({ error: "Invalid or incomplete file upload" }, { status: 400 });
+    }
+    const file = formData.get("file");
 
-    if (!file) {
+    if (!(file instanceof File)) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 

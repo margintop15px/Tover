@@ -1,6 +1,9 @@
 "use client";
 
 import { workspaceFetch } from "@/lib/workspace-fetch";
+import { readJsonResponse, reportRequestFailure } from "@/lib/api-response";
+import { LoadError } from "@/components/LoadError";
+import { useI18n } from "@/i18n/context";
 
 import {
   createContext,
@@ -14,7 +17,7 @@ import type { WorkspaceSettingsResponse } from "@/types/inventory";
 interface WorkspaceSettingsContextValue {
   settings: WorkspaceSettingsResponse;
   loading: boolean;
-  refetch: () => void;
+  refetch: () => Promise<void>;
 }
 
 const DEFAULT_SETTINGS: WorkspaceSettingsResponse = {
@@ -28,7 +31,7 @@ const DEFAULT_SETTINGS: WorkspaceSettingsResponse = {
 const WorkspaceSettingsContext = createContext<WorkspaceSettingsContextValue>({
   settings: DEFAULT_SETTINGS,
   loading: true,
-  refetch: () => {},
+  refetch: async () => {},
 });
 
 export function WorkspaceSettingsProvider({
@@ -36,17 +39,27 @@ export function WorkspaceSettingsProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const { t } = useI18n();
   const [settings, setSettings] =
     useState<WorkspaceSettingsResponse>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   const fetchSettings = useCallback(async () => {
+    setLoading(true);
     try {
       const res = await workspaceFetch("/api/settings", { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        setSettings(data);
+      const data = await readJsonResponse<WorkspaceSettingsResponse>(res);
+      if (!/^[A-Z]{3}$/.test(data.currency) || typeof data.categoryRequired !== "boolean" || typeof data.storeRequired !== "boolean") {
+        throw new Error("Invalid workspace settings response");
       }
+      setSettings(data);
+      setLoaded(true);
+      setFailed(false);
+    } catch (error) {
+      reportRequestFailure(error, "load_workspace_settings");
+      setFailed(true);
     } finally {
       setLoading(false);
     }
@@ -56,10 +69,17 @@ export function WorkspaceSettingsProvider({
     fetchSettings();
   }, [fetchSettings]);
 
+  if (!loaded) {
+    return <div className="p-6">{failed
+      ? <LoadError message={t.settingsLoadFailed} onRetry={fetchSettings} loading={loading} />
+      : <p className="text-muted-foreground">{t.loading}</p>}</div>;
+  }
+
   return (
     <WorkspaceSettingsContext.Provider
       value={{ settings, loading, refetch: fetchSettings }}
     >
+      {failed && <div className="px-6"><LoadError message={t.settingsRefreshFailed} onRetry={fetchSettings} loading={loading} /></div>}
       {children}
     </WorkspaceSettingsContext.Provider>
   );

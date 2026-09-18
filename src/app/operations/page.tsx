@@ -1,8 +1,10 @@
 "use client";
 
 import { workspaceFetch } from "@/lib/workspace-fetch";
+import { readJsonResponse, reportRequestFailure } from "@/lib/api-response";
+import { LoadError } from "@/components/LoadError";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useI18n } from "@/i18n/context";
@@ -168,6 +170,14 @@ function OperationsPageContent() {
   const searchParams = useSearchParams();
   const [items, setItems] = useState<OperationListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [itemsLoaded, setItemsLoaded] = useState(false);
+  const [referenceFailed, setReferenceFailed] = useState(false);
+  const [referenceLoading, setReferenceLoading] = useState(false);
+  const listRequest = useRef(0);
+  const detailRequest = useRef(0);
+  const [detailId, setDetailId] = useState("");
+  const [detailsFailed, setDetailsFailed] = useState(false);
   const [total, setTotal] = useState<number | null>(null);
   const [offset, setOffset] = useState(() =>
     parseOffset(searchParams.get("offset"))
@@ -207,32 +217,31 @@ function OperationsPageContent() {
   const [suppliers, setSuppliers] = useState<SelectOption[]>([]);
   const [pendingOzonCandidates, setPendingOzonCandidates] = useState(0);
 
-  useEffect(() => {
-    Promise.all([
-      workspaceFetch("/api/products?limit=500").then((r) => r.json()),
-      workspaceFetch("/api/warehouses").then((r) => r.json()),
-      workspaceFetch("/api/suppliers").then((r) => r.json()),
-    ]).then(([prodData, whData, supData]) => {
-      setProducts(
-        (prodData.items || []).map((p: { id: string; name: string }) => ({
-          id: p.id,
-          name: p.name,
-        }))
+  const fetchReferenceData = useCallback(async () => {
+    setReferenceLoading(true);
+    try {
+      const [prodData, whData, supData] = await Promise.all(
+        ["/api/products?limit=500", "/api/warehouses", "/api/suppliers"].map(async (url) => {
+          const data = await readJsonResponse<{ items: SelectOption[] }>(await workspaceFetch(url));
+          if (!Array.isArray(data.items)) throw new Error("Invalid reference data response");
+          return data;
+        })
       );
-      setWarehouses(
-        (whData.items || []).map((w: { id: string; name: string }) => ({
-          id: w.id,
-          name: w.name,
-        }))
-      );
-      setSuppliers(
-        (supData.items || []).map((s: { id: string; name: string }) => ({
-          id: s.id,
-          name: s.name,
-        }))
-      );
-    });
+      setProducts(prodData.items);
+      setWarehouses(whData.items);
+      setSuppliers(supData.items);
+      setReferenceFailed(false);
+    } catch (error) {
+      reportRequestFailure(error, "load_operation_references");
+      setReferenceFailed(true);
+    } finally {
+      setReferenceLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void fetchReferenceData();
+  }, [fetchReferenceData]);
 
   useEffect(() => {
     let cancelled = false;
@@ -397,15 +406,21 @@ function OperationsPageContent() {
   ]);
 
   const openDetails = async (operationId: string) => {
+    const request = ++detailRequest.current;
     setDetailsOpen(true);
     setDetailsLoading(true);
-    setDetails(null);
+    setDetailsFailed(false);
+    setDetailId(operationId);
+    if (details?.id !== operationId) setDetails(null);
     try {
-      const res = await workspaceFetch(`/api/operations/${operationId}`);
-      if (!res.ok) throw new Error("Failed to load operation");
-      setDetails(await res.json());
+      const data = await readJsonResponse<OperationDetails>(await workspaceFetch(`/api/operations/${operationId}`));
+      if (!data.id || !Array.isArray(data.items)) throw new Error("Invalid operation details response");
+      if (request === detailRequest.current) setDetails(data);
+    } catch (error) {
+      reportRequestFailure(error, "load_operation_details");
+      if (request === detailRequest.current) setDetailsFailed(true);
     } finally {
-      setDetailsLoading(false);
+      if (request === detailRequest.current) setDetailsLoading(false);
     }
   };
 
@@ -418,6 +433,7 @@ function OperationsPageContent() {
   };
 
   const fetchItems = useCallback(async () => {
+    const request = ++listRequest.current;
     setLoading(true);
     try {
       const params = new URLSearchParams({
@@ -437,11 +453,18 @@ function OperationsPageContent() {
       }
 
       const res = await workspaceFetch(`/api/operations?${params}`);
-      const data = await res.json();
-      setItems(data.items || []);
+      const data = await readJsonResponse<{ items: OperationListItem[]; page?: { totalEstimate?: number | null } }>(res);
+      if (!Array.isArray(data.items)) throw new Error("Invalid operations response");
+      if (request !== listRequest.current) return;
+      setItems(data.items);
       setTotal(data.page?.totalEstimate ?? null);
+      setItemsLoaded(true);
+      setLoadFailed(false);
+    } catch (error) {
+      reportRequestFailure(error, "load_operations");
+      if (request === listRequest.current) setLoadFailed(true);
     } finally {
-      setLoading(false);
+      if (request === listRequest.current) setLoading(false);
     }
   }, [
     offset,
@@ -594,9 +617,11 @@ function OperationsPageContent() {
         </div>
       )}
 
+      {referenceFailed && <LoadError onRetry={fetchReferenceData} loading={referenceLoading} />}
+      {loadFailed && <LoadError onRetry={fetchItems} loading={loading} />}
       {loading ? (
         <p className="text-muted-foreground">{t.loading}</p>
-      ) : (
+      ) : (!loadFailed || itemsLoaded) && (
         <>
           <DataTable<OperationListItem>
             tableId="operations-unified"
@@ -830,12 +855,13 @@ function OperationsPageContent() {
                   {typeLabel(details.type)} · {formatDate(details.operationDate)}
                 </>
               ) : (
-                t.loading
+                detailsFailed ? t.dataLoadFailed : t.loading
               )}
             </SheetDescription>
           </SheetHeader>
 
           <div className="space-y-5 px-4">
+            {detailsFailed && <LoadError onRetry={() => void openDetails(detailId)} loading={detailsLoading} />}
             {detailsLoading ? (
               <p className="text-sm text-muted-foreground">{t.loading}</p>
             ) : details ? (
@@ -896,7 +922,7 @@ function OperationsPageContent() {
                   )}
                 </div>
               </>
-            ) : (
+            ) : !detailsFailed && (
               <p className="text-sm text-muted-foreground">{t.noData}</p>
             )}
           </div>

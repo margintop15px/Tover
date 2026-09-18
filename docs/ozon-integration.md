@@ -501,7 +501,9 @@ storage warehouse, and completion date separately, and paginates
 database transaction with its parent order update, so a failed child insert
 rolls the parent and child changes back and cannot erase valid bundle rows.
 A transfer candidate requires a completed supply, explicit bundle quantity,
-and destination. The local source warehouse is still a required user mapping.
+and destination evidence. An Ozon destination ID or name is sufficient to
+stage it as `needs_mapping`; a missing local warehouse mapping must not hide
+the candidate. Both local warehouses must be mapped before approval or commit.
 
 The list request uses the real Ozon contract:
 

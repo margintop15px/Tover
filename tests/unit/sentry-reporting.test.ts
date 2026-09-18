@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as Sentry from "@sentry/nextjs";
 import { sanitizeErrorEvent, sentryOptions } from "../../src/lib/sentry-options";
+import { reportRequestFailure } from "../../src/lib/api-response";
 import { RouteAuthError, toRouteErrorResponse } from "../../src/lib/request-context";
 
 test("error reports retain stack traces but exclude auth URLs and request data", () => {
@@ -60,8 +61,39 @@ test("unexpected route exceptions reach Sentry; expected auth failures do not", 
     assert.equal(events.length, 1);
     assert.equal(events[0].exception?.values?.[0].value, "Unexpected route failure");
     assert.equal(events[0].tags?.handled_by, "toRouteErrorResponse");
+    reportRequestFailure(new TypeError("Failed to fetch"), "load_operations");
+    await Sentry.flush(2000);
+    assert.equal(events.length, 2);
+    assert.equal(events[1].tags?.handled_by, "request_ui");
+    assert.equal(events[1].tags?.action, "load_operations");
+    assert.equal(events[1].exception?.values?.[0].mechanism?.handled, true);
   } finally {
     console.error = originalConsoleError;
     await Sentry.close(2000);
+    Sentry.getCurrentScope().setClient(undefined);
+  }
+});
+
+test("a blocked Sentry transport does not throw from handled request reporting or retry the upload", async () => {
+  let attempts = 0;
+  Sentry.init({
+    ...sentryOptions,
+    dsn: "https://public@sentry.invalid/1",
+    defaultIntegrations: false,
+    sendClientReports: false,
+    transport: (options) => Sentry.createTransport(options, async () => {
+      attempts++;
+      throw new TypeError("Failed to fetch");
+    }),
+  });
+  try {
+    assert.doesNotThrow(() => reportRequestFailure(new Error("Candidate read failed"), "ozon_candidates_read"));
+    await Sentry.flush(2000);
+    assert.equal(attempts, 1, "the test must exercise a real envelope send");
+    await Sentry.flush(2000);
+    assert.equal(attempts, 1, "flushing must not repeat a blocked upload");
+  } finally {
+    await Sentry.close(2000);
+    Sentry.getCurrentScope().setClient(undefined);
   }
 });

@@ -1,6 +1,8 @@
 "use client";
 
 import { workspaceFetch } from "@/lib/workspace-fetch";
+import { readJsonResponse, reportRequestFailure } from "@/lib/api-response";
+import { LoadError } from "@/components/LoadError";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
@@ -43,7 +45,7 @@ import {
   ozonStatusLabel,
   type OzonIntegrationSummary,
 } from "@/components/ozon/OzonSummaryShared";
-import type { Category, Store } from "@/types/inventory";
+import type { Category, Store, WorkspaceSettingsResponse } from "@/types/inventory";
 
 const CURRENCIES = [
   "EUR",
@@ -111,6 +113,10 @@ function SettingsPageContent() {
   );
   const [categories, setCategories] = useState<Category[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  const [referenceFailed, setReferenceFailed] = useState(false);
+  const [referenceLoading, setReferenceLoading] = useState(false);
+  const [ozonLoadFailed, setOzonLoadFailed] = useState(false);
+  const [resetLoadFailed, setResetLoadFailed] = useState(false);
 
   // Integrations tab state
   const [ozonSummary, setOzonSummary] =
@@ -149,14 +155,22 @@ function SettingsPageContent() {
 
   // Load reference data for Products tab
   const fetchReferenceData = useCallback(async () => {
-    const [catRes, storeRes] = await Promise.all([
-      workspaceFetch("/api/categories?limit=200"),
-      workspaceFetch("/api/stores?limit=200"),
-    ]);
-    const catData = await catRes.json();
-    const storeData = await storeRes.json();
-    setCategories(catData.items || []);
-    setStores(storeData.items || []);
+    setReferenceLoading(true);
+    try {
+      const [catData, storeData] = await Promise.all([
+        workspaceFetch("/api/categories?limit=200").then(readJsonResponse<{ items: Category[] }>),
+        workspaceFetch("/api/stores?limit=200").then(readJsonResponse<{ items: Store[] }>),
+      ]);
+      if (!Array.isArray(catData.items) || !Array.isArray(storeData.items)) throw new Error("Invalid settings reference data response");
+      setCategories(catData.items);
+      setStores(storeData.items);
+      setReferenceFailed(false);
+    } catch (error) {
+      reportRequestFailure(error, "load_settings_references");
+      setReferenceFailed(true);
+    } finally {
+      setReferenceLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -169,16 +183,17 @@ function SettingsPageContent() {
       const res = await workspaceFetch(`/api/integrations/ozon?t=${Date.now()}`, {
         cache: "no-store",
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setOzonError(data.error || t.unexpectedError);
-        return;
-      }
+      const data = await readJsonResponse<OzonIntegrationSummary>(res);
+      if (!("connection" in data) || !data.counts) throw new Error("Invalid Ozon summary response");
       setOzonSummary(data);
+      setOzonLoadFailed(false);
+    } catch (error) {
+      reportRequestFailure(error, "load_settings_ozon");
+      setOzonLoadFailed(true);
     } finally {
       if (showLoading) setOzonLoading(false);
     }
-  }, [t.unexpectedError]);
+  }, []);
 
   useEffect(() => {
     fetchOzonSummary();
@@ -190,16 +205,17 @@ function SettingsPageContent() {
       const res = await workspaceFetch(`/api/settings/reset-data?t=${Date.now()}`, {
         cache: "no-store",
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setResetError(data.error || t.unexpectedError);
-        return;
-      }
+      const data = await readJsonResponse<ResetDataSummary>(res);
+      if (!data.groups || typeof data.canReset !== "boolean" || typeof data.total !== "number") throw new Error("Invalid reset summary response");
       setResetSummary(data);
+      setResetLoadFailed(false);
+    } catch (error) {
+      reportRequestFailure(error, "load_reset_summary");
+      setResetLoadFailed(true);
     } finally {
       setResetSummaryLoading(false);
     }
-  }, [t.unexpectedError]);
+  }, []);
 
   useEffect(() => {
     fetchResetSummary();
@@ -220,8 +236,13 @@ function SettingsPageContent() {
         setError(data.error || t.unexpectedError);
         return;
       }
-      refetch();
+      const saved = await readJsonResponse<WorkspaceSettingsResponse>(res);
+      if (typeof saved.currency !== "string") throw new Error("Invalid saved settings response");
+      await refetch();
       setSuccess(t.settingsSaved);
+    } catch (error) {
+      reportRequestFailure(error, "save_general_settings");
+      setError(t.actionUnconfirmed);
     } finally {
       setSaving(false);
     }
@@ -255,8 +276,13 @@ function SettingsPageContent() {
         setError(data.error || t.unexpectedError);
         return;
       }
-      refetch();
+      const saved = await readJsonResponse<WorkspaceSettingsResponse>(res);
+      if (typeof saved.currency !== "string") throw new Error("Invalid saved settings response");
+      await refetch();
       setSuccess(t.settingsSaved);
+    } catch (error) {
+      reportRequestFailure(error, "save_product_settings");
+      setError(t.actionUnconfirmed);
     } finally {
       setSaving(false);
     }
@@ -293,6 +319,7 @@ function SettingsPageContent() {
         setResetError(data.error || t.unexpectedError);
         return;
       }
+      if (data.ok !== true) throw new Error("Invalid reset response");
       setResetDialogOpen(false);
       setResetConfirmation("");
       setResetSuccess(t.resetAccountDataSuccess);
@@ -302,6 +329,9 @@ function SettingsPageContent() {
         fetchOzonSummary(false),
         refetch(),
       ]);
+    } catch (error) {
+      reportRequestFailure(error, "reset_account_data");
+      setResetError(t.actionUnconfirmed);
     } finally {
       setResettingAccountData(false);
     }
@@ -321,16 +351,18 @@ function SettingsPageContent() {
         }),
       });
       const data = await res.json();
-      if (data.connection || data.counts) {
-        setOzonSummary(data);
-      }
       if (!res.ok) {
         setOzonError(data.error || t.unexpectedError);
         return;
       }
+      if (!("connection" in data) || !data.counts) throw new Error("Invalid Ozon connection response");
+      setOzonSummary(data);
       setOzonClientId("");
       setOzonApiKey("");
       setOzonSuccess(t.ozonConnectedMessage);
+    } catch (error) {
+      reportRequestFailure(error, "save_ozon_connection");
+      setOzonError(t.actionUnconfirmed);
     } finally {
       setOzonSaving(false);
     }
@@ -350,8 +382,12 @@ function SettingsPageContent() {
         await fetchOzonSummary();
         return;
       }
+      if (data.ok !== true) throw new Error("Invalid Ozon validation response");
       setOzonSuccess(t.ozonValidatedMessage);
       await fetchOzonSummary();
+    } catch (error) {
+      reportRequestFailure(error, "validate_ozon_connection");
+      setOzonError(t.actionUnconfirmed);
     } finally {
       setOzonValidating(false);
     }
@@ -366,14 +402,16 @@ function SettingsPageContent() {
         method: "DELETE",
       });
       const data = await res.json();
-      if (data.connection || data.counts) {
-        setOzonSummary(data);
-      }
       if (!res.ok) {
         setOzonError(data.error || t.unexpectedError);
         return;
       }
+      if (!("connection" in data) || !data.counts) throw new Error("Invalid Ozon connection response");
+      setOzonSummary(data);
       setOzonSuccess(t.ozonDisconnectedMessage);
+    } catch (error) {
+      reportRequestFailure(error, "disconnect_ozon_connection");
+      setOzonError(t.actionUnconfirmed);
     } finally {
       setOzonDisconnecting(false);
     }
@@ -436,7 +474,7 @@ function SettingsPageContent() {
             </p>
           </Field>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           {success && <p className="text-sm text-emerald-700">{success}</p>}
 
           <Button onClick={saveGeneral} disabled={saving}>
@@ -456,13 +494,14 @@ function SettingsPageContent() {
               <Button
                 variant="destructive"
                 onClick={openResetDialog}
-                disabled={!resetSummary?.canReset || resetSummaryLoading}
+                disabled={!resetSummary?.canReset || resetSummaryLoading || resetLoadFailed}
               >
                 <Trash2 className="h-4 w-4" />
                 {t.removeAllAccountData}
               </Button>
             </div>
 
+            {resetLoadFailed && !resetDialogOpen && <LoadError onRetry={fetchResetSummary} loading={resetSummaryLoading} />}
             {resetSummaryLoading ? (
               <p className="mt-3 text-sm text-muted-foreground">{t.loading}</p>
             ) : resetSummary ? (
@@ -494,7 +533,7 @@ function SettingsPageContent() {
             ) : null}
 
             {resetError && !resetDialogOpen && (
-              <p className="mt-3 text-sm text-destructive">{resetError}</p>
+              <p role="alert" className="mt-3 text-sm text-destructive">{resetError}</p>
             )}
             {resetSuccess && (
               <p className="mt-3 text-sm text-emerald-700">{resetSuccess}</p>
@@ -564,8 +603,9 @@ function SettingsPageContent() {
                 />
               </Field>
 
+              {resetLoadFailed && <LoadError onRetry={fetchResetSummary} loading={resetSummaryLoading} />}
               {resetError && (
-                <p className="text-sm text-destructive">{resetError}</p>
+                <p role="alert" className="text-sm text-destructive">{resetError}</p>
               )}
 
               <DialogFooter>
@@ -580,7 +620,7 @@ function SettingsPageContent() {
                   variant="destructive"
                   onClick={resetAccountData}
                   disabled={
-                    resetConfirmation !== "RESET" || resettingAccountData
+                    resetConfirmation !== "RESET" || resettingAccountData || resetSummaryLoading || resetLoadFailed
                   }
                 >
                   <Trash2 className="h-4 w-4" />
@@ -595,6 +635,7 @@ function SettingsPageContent() {
 
         {/* Products tab */}
         <TabsContent value="products" className="mt-6 max-w-lg space-y-6">
+          {referenceFailed && <LoadError onRetry={fetchReferenceData} loading={referenceLoading} />}
           {/* Category required */}
           <div className="space-y-3 rounded-lg border p-4">
             <div className="flex items-center justify-between">
@@ -677,10 +718,10 @@ function SettingsPageContent() {
             )}
           </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           {success && <p className="text-sm text-emerald-700">{success}</p>}
 
-          <Button onClick={saveProducts} disabled={saving}>
+          <Button onClick={saveProducts} disabled={saving || referenceFailed || referenceLoading}>
             {saving ? t.saving : t.save}
           </Button>
         </TabsContent>
@@ -782,7 +823,7 @@ function SettingsPageContent() {
             </div>
 
             {ozonError && (
-              <div className="mt-4 flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <div role="alert" className="mt-4 flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 <AlertTriangle className="h-4 w-4" />
                 {ozonError}
               </div>
@@ -793,13 +834,14 @@ function SettingsPageContent() {
                 {ozonSuccess}
               </div>
             )}
+            {ozonLoadFailed && <LoadError onRetry={() => void fetchOzonSummary()} loading={ozonLoading} />}
             {ozonSummary?.setupError ? (
               <p className="mt-3 text-sm text-destructive">
                 {t.ozonSetupRequired}
               </p>
             ) : ozonLoading ? (
               <p className="mt-3 text-sm text-muted-foreground">{t.loading}</p>
-            ) : !ozonSummary?.connection ? (
+            ) : !ozonLoadFailed && !ozonSummary?.connection ? (
               <p className="mt-4 text-sm text-muted-foreground">
                 {t.ozonNoConnection}
               </p>

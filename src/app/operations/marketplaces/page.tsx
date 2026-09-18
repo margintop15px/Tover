@@ -1,6 +1,8 @@
 "use client";
 
 import { workspaceFetch } from "@/lib/workspace-fetch";
+import { readJsonResponse, reportRequestFailure } from "@/lib/api-response";
+import { LoadError } from "@/components/LoadError";
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
@@ -33,23 +35,9 @@ async function requestOzonSummary(signal?: AbortSignal) {
     cache: "no-store",
     signal,
   });
-  let data: unknown;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error();
-  }
-  if (!response.ok) {
-    const message =
-      data &&
-      typeof data === "object" &&
-      "error" in data &&
-      typeof data.error === "string"
-        ? data.error
-        : "";
-    throw new Error(message);
-  }
-  return data as OzonIntegrationSummary;
+  const data = await readJsonResponse<OzonIntegrationSummary>(response);
+  if (!("connection" in data) || !data.counts) throw new Error("Invalid Ozon summary response");
+  return data;
 }
 
 interface SafeSyncError {
@@ -131,6 +119,7 @@ export default function MarketplacesPage() {
   const [ozonSummary, setOzonSummary] =
     useState<OzonIntegrationSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncDetails, setSyncDetails] = useState<OzonSyncDetails | null>(null);
   const [error, setError] = useState("");
@@ -142,19 +131,17 @@ export default function MarketplacesPage() {
       try {
         const data = await requestOzonSummary();
         setOzonSummary(data);
+        setLoadFailed(false);
       } catch (fetchError) {
         if (showError) {
-          setError(
-            fetchError instanceof Error && fetchError.message
-              ? fetchError.message
-              : t.ozonSummaryLoadFailed
-          );
+          reportRequestFailure(fetchError, "load_marketplace_summary");
+          setLoadFailed(true);
         }
       } finally {
         if (showLoading) setLoading(false);
       }
     },
-    [t.ozonSummaryLoadFailed]
+    []
   );
 
   useEffect(() => {
@@ -344,6 +331,7 @@ export default function MarketplacesPage() {
             </div>
           </div>
         )}
+        {loadFailed && <LoadError onRetry={() => void fetchOzonSummary()} loading={loading} />}
         {error && (
           <div className="mt-4 flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <AlertTriangle className="h-4 w-4" />
@@ -545,7 +533,7 @@ export default function MarketplacesPage() {
               <OzonMetric label={t.ozonUnmappedWarehouses} value={ozonSummary.counts.unmappedWarehouses} />
             </div>
           </>
-        ) : (
+        ) : !loadFailed && (
           <div className="mt-5 rounded-md border bg-muted/20 p-4">
             <p className="text-sm text-muted-foreground">{t.ozonNoConnection}</p>
             <Button className="mt-3" asChild>

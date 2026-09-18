@@ -1,8 +1,10 @@
 "use client";
 
 import { workspaceFetch } from "@/lib/workspace-fetch";
+import { readJsonResponse, reportRequestFailure } from "@/lib/api-response";
+import { LoadError } from "@/components/LoadError";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -143,7 +145,12 @@ export default function OzonCandidateReviewPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouses, setWarehouses] = useState<WarehouseType[]>([]);
   const [selected, setSelected] = useState<MarketplaceCandidateRow | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [referenceFailed, setReferenceFailed] = useState(false);
+  const [referenceLoading, setReferenceLoading] = useState(false);
+  const listRequest = useRef(0);
+  const requestedOffset = useRef(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -155,22 +162,32 @@ export default function OzonCandidateReviewPage() {
     selectedIndex >= 0 ? t.ozonCandidatePosition(selectedIndex + 1, items.length) : null;
 
   const fetchReferenceData = useCallback(async () => {
-    const [productRes, warehouseRes] = await Promise.all([
-      workspaceFetch("/api/products?limit=5000"),
-      workspaceFetch("/api/warehouses?limit=1000"),
-    ]);
-    const [productData, warehouseData] = await Promise.all([
-      productRes.json(),
-      warehouseRes.json(),
-    ]);
-    setProducts(productData.items || []);
-    setWarehouses(warehouseData.items || []);
+    setReferenceLoading(true);
+    setReferenceFailed(false);
+    try {
+      const [productData, warehouseData] = await Promise.all([
+        workspaceFetch("/api/products?limit=5000").then(readJsonResponse<{ items: Product[] }>),
+        workspaceFetch("/api/warehouses?limit=1000").then(readJsonResponse<{ items: WarehouseType[] }>),
+      ]);
+      if (!Array.isArray(productData.items) || !Array.isArray(warehouseData.items)) {
+        throw new Error("Invalid Ozon reference response");
+      }
+      setProducts(productData.items);
+      setWarehouses(warehouseData.items);
+    } catch (err) {
+      reportRequestFailure(err, "ozon_candidates_references");
+      setReferenceFailed(true);
+    } finally {
+      setReferenceLoading(false);
+    }
   }, []);
 
   const fetchCandidates = useCallback(
     async (nextOffset = page.offset) => {
+      const request = ++listRequest.current;
+      requestedOffset.current = nextOffset;
       setLoading(true);
-      setError("");
+      setLoadFailed(false);
       try {
         const params = new URLSearchParams({
           limit: String(PAGE_SIZE),
@@ -185,25 +202,29 @@ export default function OzonCandidateReviewPage() {
         if (to) params.set("to", to);
 
         const res = await workspaceFetch(`/api/integrations/ozon/candidates?${params}`);
-        const data = (await res.json()) as CandidateListResponse & {
-          error?: string;
-        };
-        if (!res.ok) throw new Error(data.error || t.unexpectedError);
+        const data = await readJsonResponse<CandidateListResponse>(res);
+        if (!Array.isArray(data.items) || !data.summary ||
+          !Number.isFinite(data.page?.total) || !Number.isFinite(data.page?.offset) ||
+          !Number.isFinite(data.page?.limit) || data.page.limit <= 0) {
+          throw new Error("Invalid Ozon candidate response");
+        }
+        if (request !== listRequest.current) return;
 
-        setItems(data.items || []);
+        setItems(data.items);
         setSummary(data.summary);
         setPage(data.page);
         setSelected((current) => {
           if (!current) return null;
           return (
-            (data.items || []).find((candidate) => candidate.id === current.id) ||
+            data.items.find((candidate) => candidate.id === current.id) ||
             current
           );
         });
       } catch (err) {
-        setError(err instanceof Error ? err.message : t.unexpectedError);
+        reportRequestFailure(err, "ozon_candidates_read");
+        if (request === listRequest.current) setLoadFailed(true);
       } finally {
-        setLoading(false);
+        if (request === listRequest.current) setLoading(false);
       }
     },
     [
@@ -214,7 +235,6 @@ export default function OzonCandidateReviewPage() {
       sourceType,
       status,
       supportStatus,
-      t.unexpectedError,
       to,
     ]
   );
@@ -338,11 +358,13 @@ export default function OzonCandidateReviewPage() {
       </div>
 
       {error && (
-        <div className="mb-4 flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div role="alert" className="mb-4 flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <AlertTriangle className="h-4 w-4" />
           {error}
         </div>
       )}
+      {loadFailed && <LoadError onRetry={() => fetchCandidates(requestedOffset.current)} loading={loading} />}
+      {referenceFailed && <LoadError onRetry={fetchReferenceData} loading={referenceLoading} />}
       {success && (
         <div className="mb-4 flex items-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
           <Check className="h-4 w-4" />
@@ -580,9 +602,10 @@ export default function OzonCandidateReviewPage() {
         </Table>
       </div>
 
-      {items.length === 0 && !loading && (
+      {items.length === 0 && !loading && !loadFailed && (
         <div className="rounded-md border border-t-0 p-8 text-center text-sm text-muted-foreground">
-          {t.ozonNoCandidates}
+          <p>{t.ozonNoCandidates}</p>
+          <p className="mt-2">{t.ozonNoCandidatesHint}</p>
         </div>
       )}
 
@@ -795,6 +818,11 @@ function CandidateSheet({
 
                     <Field>
                       <FieldLabel>{t.warehouse}</FieldLabel>
+                      {(item.warehouseName || item.ozonWarehouseId) && (
+                        <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                          Ozon: {item.warehouseName || item.ozonWarehouseId}
+                        </p>
+                      )}
                       <Select
                         value={item.warehouseId || "__none"}
                         disabled={readOnly}

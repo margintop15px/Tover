@@ -1,6 +1,8 @@
 "use client";
 
 import { workspaceFetch } from "@/lib/workspace-fetch";
+import { readJsonResponse, reportRequestFailure } from "@/lib/api-response";
+import { LoadError } from "@/components/LoadError";
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -208,6 +210,8 @@ export default function NewOperationPage() {
   const [prodOutputStoreId, setProdOutputStoreId] = useState("");
 
   const [saving, setSaving] = useState(false);
+  const [referenceFailed, setReferenceFailed] = useState(false);
+  const [referenceLoaded, setReferenceLoaded] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
 
   const typeLabel = useCallback(
@@ -267,35 +271,44 @@ export default function NewOperationPage() {
     if (nextConfig) setType(nextConfig.types[0]);
   };
 
-  useEffect(() => {
-    async function load() {
-      setRefLoading(true);
-      try {
-        const [prodRes, whRes, supRes, storeRes] = await Promise.all([
-          workspaceFetch("/api/products?limit=500"),
-          workspaceFetch("/api/warehouses?limit=200"),
-          workspaceFetch("/api/suppliers?limit=200"),
-          workspaceFetch("/api/stores?limit=200"),
-        ]);
-        const [prodData, whData, supData, storeData] = await Promise.all([
-          prodRes.json(),
-          whRes.json(),
-          supRes.json(),
-          storeRes.json(),
-        ]);
-        setRef({
-          products: prodData.items || [],
-          warehouses: whData.items || [],
-          suppliers: supData.items || [],
-          stores: storeData.items || [],
-          categories: [],
-        });
-      } finally {
-        setRefLoading(false);
+  const loadReferenceData = useCallback(async () => {
+    setRefLoading(true);
+    try {
+      const [prodRes, whRes, supRes, storeRes] = await Promise.all([
+        workspaceFetch("/api/products?limit=500"),
+        workspaceFetch("/api/warehouses?limit=200"),
+        workspaceFetch("/api/suppliers?limit=200"),
+        workspaceFetch("/api/stores?limit=200"),
+      ]);
+      const [prodData, whData, supData, storeData] = await Promise.all([
+        readJsonResponse<{ items: RefData["products"] }>(prodRes),
+        readJsonResponse<{ items: RefData["warehouses"] }>(whRes),
+        readJsonResponse<{ items: RefData["suppliers"] }>(supRes),
+        readJsonResponse<{ items: RefData["stores"] }>(storeRes),
+      ]);
+      if (![prodData, whData, supData, storeData].every((data) => Array.isArray(data.items))) {
+        throw new Error("Invalid operation reference data response");
       }
+      setRef({
+        products: prodData.items || [],
+        warehouses: whData.items || [],
+        suppliers: supData.items || [],
+        stores: storeData.items || [],
+        categories: [],
+      });
+      setReferenceLoaded(true);
+      setReferenceFailed(false);
+    } catch (error) {
+      reportRequestFailure(error, "load_new_operation_references");
+      setReferenceFailed(true);
+    } finally {
+      setRefLoading(false);
     }
-    load();
   }, []);
+
+  useEffect(() => {
+    void loadReferenceData();
+  }, [loadReferenceData]);
 
   const updateItem = (
     index: number,
@@ -421,8 +434,10 @@ export default function NewOperationPage() {
     }
   };
 
-  if (refLoading) {
-    return <div className="p-6 text-muted-foreground">{t.loading}</div>;
+  if (!referenceLoaded) {
+    return <div className="p-6">{referenceFailed
+      ? <LoadError onRetry={loadReferenceData} loading={refLoading} />
+      : <p className="text-muted-foreground">{t.loading}</p>}</div>;
   }
 
   const needsSupplier = type === "purchase" || type === "payment";

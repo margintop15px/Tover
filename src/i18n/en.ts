@@ -7,6 +7,10 @@ export const en = {
   workspaceLoadFailed: "Could not load your workspaces.",
   workspaceAccessRequired: "You do not have access to a workspace yet. Ask a workspace admin to send or renew your invitation. Expired or canceled invitations do not grant access.",
   workspaceRetry: "Try again",
+  dataLoadFailed: "Could not load this data. Previously loaded data may be out of date.",
+  settingsLoadFailed: "Could not load workspace settings. Try again to continue.",
+  settingsRefreshFailed: "Could not refresh workspace settings. Previously loaded settings are still shown.",
+  actionUnconfirmed: "Could not confirm whether the change was saved. Refresh the current state before trying again.",
 
   // Date range
   from: "From",
@@ -785,6 +789,7 @@ export const en = {
   ozonSourceEvent: "Ozon event",
   ozonItems: "Items",
   ozonNoCandidates: "No Ozon candidates found",
+  ozonNoCandidatesHint: "Synced records do not always create candidates. Only eligible events appear here. Check the sync status and selected filters.",
   ozonReviewDetails: "Candidate details",
   ozonCandidatePosition: (current: number, total: number) => `${current} / ${total}`,
   ozonCreateProduct: "Create product",

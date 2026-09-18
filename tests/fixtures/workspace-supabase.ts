@@ -12,6 +12,9 @@ const longName = "Beta workspace with a very long name that must fit inside the 
 let mode = "normal";
 let log: { path: string; method: string; body: Record<string, unknown>; workspace: string | null; redirectTo?: string | null }[] = [];
 let categories: Record<string, unknown>[] = [];
+let operationImports: Record<string, unknown>[] = [];
+let importCandidates: Record<string, unknown>[] = [];
+let marketplaceCandidates: Record<string, unknown>[] = [];
 interface Invite { id: string; email: string; role: string; status: string; createdAt: string; expiresAt: string; lastRequestedAt: string }
 let invites: Invite[] = [];
 let recoveryRequestedAt: string | null = null;
@@ -43,7 +46,7 @@ createServer(async (request, response) => {
   };
   if (request.method === "OPTIONS") return json({});
   if (url.pathname === "/__test") {
-    if (request.method === "POST") { mode = body.mode ?? "normal"; log = []; categories = []; invites = []; recoveryRequestedAt = null; if (mode.startsWith("team") || mode === "cancel_during_send") seedTeam(); }
+    if (request.method === "POST") { mode = body.mode ?? "normal"; log = []; categories = []; operationImports = []; importCandidates = []; marketplaceCandidates = body.marketplaceCandidates ?? []; invites = []; recoveryRequestedAt = null; if (mode.startsWith("team") || mode === "cancel_during_send") seedTeam(); }
     return json({ mode, log, invites, recoveryRequestedAt });
   }
   if (url.pathname === "/auth/v1/user") return json(user);
@@ -130,6 +133,47 @@ createServer(async (request, response) => {
     currency: workspace === beta ? "USD" : "EUR", category_required: false, store_required: false,
     default_category_id: null, default_store_id: null,
   }]);
+  if (table === "marketplace_operation_candidates") {
+    const rows = marketplaceCandidates.filter((item) => item.workspace_id === workspace && ["id", "status", "provider"].every((column) => {
+      const filter = url.searchParams.get(column);
+      if (!filter) return true;
+      if (filter.startsWith("eq.")) return item[column] === filter.slice(3);
+      if (filter.startsWith("in.(")) return filter.slice(4, -1).split(",").map((value) => value.replace(/^"|"$/g, "")).includes(String(item[column]));
+      throw new Error(`Unsupported candidate test filter: ${filter}`);
+    }));
+    if (request.method === "PATCH") rows.forEach((row) => Object.assign(row, body));
+    const offset = Number(url.searchParams.get("offset") || 0);
+    const limit = Number(url.searchParams.get("limit") || rows.length);
+    const single = request.headers.accept?.includes("application/vnd.pgrst.object+json");
+    return json(single ? rows[0] ?? null : rows.slice(offset, offset + limit));
+  }
+  if (table === "operation_imports") {
+    if (mode === "import_storage_failure") return json({ message: "Mock import storage unavailable" }, 500);
+    const id = url.searchParams.get("id")?.replace(/^eq\./, "");
+    if (request.method === "POST") {
+      const row = { ...body, id: crypto.randomUUID(), created_at: new Date().toISOString() };
+      operationImports.push(row);
+      return json(row, 201);
+    }
+    if (request.method === "PATCH") {
+      const row = operationImports.find((item) => item.id === id);
+      Object.assign(row ?? {}, body);
+      return json(row);
+    }
+    const hash = url.searchParams.get("file_hash")?.replace(/^eq\./, "");
+    const rows = operationImports.filter((item) => item.workspace_id === workspace && (!id || item.id === id) && (!hash || item.file_hash === hash));
+    return json(id ? rows[0] : rows);
+  }
+  if (table === "operation_import_candidates") {
+    if (request.method === "POST") {
+      const rows = Array.isArray(body) ? body : [body];
+      importCandidates.push(...rows.map((row) => ({ ...row, id: crypto.randomUUID() })));
+      return json([]);
+    }
+    const importId = url.searchParams.get("import_id")?.replace(/^eq\./, "");
+    const status = url.searchParams.get("status")?.replace(/^eq\./, "");
+    return json(importCandidates.filter((item) => item.import_id === importId && (!status || item.status === status)));
+  }
   if (table === "categories") {
     if (request.method === "POST") {
       const row = { ...body, id: crypto.randomUUID(), created_at: new Date().toISOString() };

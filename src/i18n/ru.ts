@@ -9,6 +9,10 @@ export const ru: TranslationKeys = {
   workspaceLoadFailed: "Не удалось загрузить рабочие пространства.",
   workspaceAccessRequired: "У вас пока нет доступа к рабочему пространству. Попросите администратора отправить или обновить приглашение. Истёкшие и отменённые приглашения не дают доступа.",
   workspaceRetry: "Попробовать ещё раз",
+  dataLoadFailed: "Не удалось загрузить данные. Ранее загруженные данные могут быть устаревшими.",
+  settingsLoadFailed: "Не удалось загрузить настройки рабочего пространства. Повторите попытку, чтобы продолжить.",
+  settingsRefreshFailed: "Не удалось обновить настройки рабочего пространства. Показаны ранее загруженные настройки.",
+  actionUnconfirmed: "Не удалось подтвердить, сохранились ли изменения. Обновите текущее состояние перед повторной попыткой.",
 
   // Date range
   from: "С",
@@ -790,6 +794,7 @@ export const ru: TranslationKeys = {
   ozonSourceEvent: "Событие Ozon",
   ozonItems: "Позиции",
   ozonNoCandidates: "Кандидаты Ozon не найдены",
+  ozonNoCandidatesHint: "Не все загруженные данные создают кандидатов. Здесь отображаются только подходящие события. Проверьте статус синхронизации и выбранные фильтры.",
   ozonReviewDetails: "Детали кандидата",
   ozonCandidatePosition: (current: number, total: number) => `${current} / ${total}`,
   ozonCreateProduct: "Создать товар",

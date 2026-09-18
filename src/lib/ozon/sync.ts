@@ -4266,7 +4266,7 @@ function toSupplyItemRow(
   };
 }
 
-function buildSupplyTransferCandidates(order: JsonRecord, items: JsonRecord[]) {
+export function buildSupplyTransferCandidates(order: JsonRecord, items: JsonRecord[]) {
   if (items.length === 0) return [];
 
   return items.flatMap((item) => {
@@ -4275,11 +4275,13 @@ function buildSupplyTransferCandidates(order: JsonRecord, items: JsonRecord[]) {
     const destinationWarehouseId = toStringValue(
       item.local_destination_warehouse_id
     );
+    const destinationOzonId = toStringValue(item.ozon_storage_warehouse_id);
+    const destinationName = toStringValue(item.storage_warehouse_name);
     if (
       !isCompletedSupplyStatus(status) ||
       !completedAt ||
       !positiveDecimal(item.quantity) ||
-      !destinationWarehouseId
+      !(destinationWarehouseId || destinationOzonId || destinationName)
     ) {
       return [];
     }
@@ -4314,8 +4316,8 @@ function buildSupplyTransferCandidates(order: JsonRecord, items: JsonRecord[]) {
           ozonSku: toStringValue(item.sku),
           ozonProductId: toStringValue(item.ozon_product_id),
           warehouseId: destinationWarehouseId,
-          warehouseName: toStringValue(item.storage_warehouse_name),
-          ozonWarehouseId: toStringValue(item.ozon_storage_warehouse_id),
+          warehouseName: destinationName,
+          ozonWarehouseId: destinationOzonId,
           quantity,
           direction: "in" as const,
         },
