@@ -7,6 +7,7 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 15_000 },
   reporter: "list",
+  outputDir: "test-results/workspace",
   use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:3410", trace: "retain-on-failure" },
   webServer: [
     {

@@ -59,6 +59,8 @@ export default function SignupPage() {
       }
 
       setSuccess(t.checkEmailConfirm);
+    } catch {
+      setError(t.authNetworkError);
     } finally {
       setLoading(false);
     }
@@ -163,6 +165,8 @@ export default function SignupPage() {
             {t.logIn}
           </Link>
         </div>
+        <p className="mt-4 text-sm text-muted-foreground">{t.invitedRecoveryHelp}</p>
+        <Link className="mt-2 block text-sm underline" href="/forgot-password">{t.resetOrSetPassword}</Link>
       </div>
     </main>
   );

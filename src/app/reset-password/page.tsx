@@ -11,6 +11,7 @@ export default function ResetPasswordPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [hasSession, setHasSession] = useState<boolean | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -20,15 +21,14 @@ export default function ResetPasswordPage() {
 
     async function loadSession() {
       const supabase = createBrowserSupabaseClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!active) {
-        return;
+      try {
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        if (!active) return;
+        setHasSession(Boolean(user) && !userError);
+        setEmail(user?.email || null);
+      } catch {
+        if (active) { setHasSession(false); setError(t.authNetworkError); }
       }
-
-      setHasSession(Boolean(session));
     }
 
     void loadSession();
@@ -36,10 +36,11 @@ export default function ResetPasswordPage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [t]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (loading || !hasSession) return;
 
     if (password !== confirmPassword) {
       setError(t.passwordsMismatch);
@@ -57,12 +58,17 @@ export default function ResetPasswordPage() {
       });
 
       if (updateError) {
+        if (updateError.status === 401 || updateError.status === 403 || updateError.code === "session_not_found") {
+          setHasSession(false);
+        }
         setError(updateError.message);
         return;
       }
 
       setSuccess(t.passwordUpdated);
       window.location.replace("/");
+    } catch {
+      setError(t.passwordUpdateUnconfirmed);
     } finally {
       setLoading(false);
     }
@@ -72,12 +78,13 @@ export default function ResetPasswordPage() {
     <main className="mx-auto flex min-h-screen w-full max-w-md items-center px-6 py-10">
       <div className="w-full rounded-lg border border-border bg-card p-6 shadow-sm">
         <h1 className="text-2xl font-semibold">{t.setNewPasswordTitle}</h1>
+        {email && <p className="mt-2 text-sm [overflow-wrap:anywhere]">{email}</p>}
 
         {hasSession === null ? (
           <p className="mt-4 text-sm text-muted-foreground">{t.loading}</p>
         ) : hasSession === false ? (
           <div className="mt-4 space-y-3 text-sm">
-            <p className="text-red-600">
+            <p role="alert" className="text-red-600">
               {t.recoverySessionExpired}
             </p>
             <Link className="underline" href="/forgot-password">
@@ -119,7 +126,7 @@ export default function ResetPasswordPage() {
               />
             </div>
 
-            {error ? <p className="text-sm text-red-600">{error}</p> : null}
+            {error ? <p role="alert" className="text-sm text-red-600">{error}</p> : null}
             {success ? <p className="text-sm text-emerald-700">{success}</p> : null}
 
             <button
@@ -131,6 +138,8 @@ export default function ResetPasswordPage() {
             </button>
           </form>
         )}
+        {hasSession && <Link className="mt-4 block text-sm underline" href="/forgot-password">{t.requestPasswordReset}</Link>}
+        <Link className="mt-4 block text-sm underline" href="/login">{t.backToLogin}</Link>
       </div>
     </main>
   );

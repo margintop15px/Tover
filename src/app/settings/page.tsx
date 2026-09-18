@@ -37,7 +37,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import InviteForm from "@/components/InviteForm";
+import TeamPanel from "@/components/TeamPanel";
 import {
   formatOzonDateTime,
   ozonStatusLabel,
@@ -408,7 +408,7 @@ function SettingsPageContent() {
       <h1 className="mb-6 text-2xl font-bold">{t.settings}</h1>
 
       <Tabs defaultValue={defaultTab} onValueChange={clearMessages}>
-        <TabsList>
+        <TabsList className="h-auto max-w-full flex-wrap">
           <TabsTrigger value="general">{t.settingsGeneral}</TabsTrigger>
           <TabsTrigger value="products">{t.settingsProducts}</TabsTrigger>
           <TabsTrigger value="integrations">{t.settingsIntegrations}</TabsTrigger>
@@ -819,8 +819,8 @@ function SettingsPageContent() {
         </TabsContent>
 
         {/* Team tab */}
-        <TabsContent value="team" className="mt-6 max-w-lg">
-          <InviteForm />
+        <TabsContent value="team" className="mt-6 min-w-0">
+          <TeamPanel />
         </TabsContent>
       </Tabs>
     </div>

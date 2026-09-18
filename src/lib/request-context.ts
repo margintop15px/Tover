@@ -40,8 +40,8 @@ export async function getRouteContext(
     throw new RouteAuthError(401, "Unauthorized");
   }
 
-  // Best-effort sync of pending invites for existing accounts.
-  await supabase.rpc("accept_my_organization_invites");
+  const { error: inviteError } = await supabase.rpc("accept_my_organization_invites");
+  if (inviteError) throw new RouteAuthError(503, "Could not load your workspaces. Please try again.");
 
   const searchParams = new URL(request.url).searchParams;
   const requestedWorkspaceId = options.workspaceId ?? searchParams.get("workspaceId");

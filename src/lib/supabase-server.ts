@@ -47,8 +47,10 @@ export async function createUserServerClient(): Promise<SupabaseClient> {
   });
 }
 
-export function createServiceRoleClient(): SupabaseClient {
+export function createServiceRoleClient(fetchTimeoutMs?: number): SupabaseClient {
   return createClient(getSupabaseUrl(), getServiceRoleKey(), {
+    ...(fetchTimeoutMs ? { global: { fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+      fetch(input, { ...init, signal: AbortSignal.timeout(fetchTimeoutMs) }) } } : {}),
     auth: {
       autoRefreshToken: false,
       persistSession: false,

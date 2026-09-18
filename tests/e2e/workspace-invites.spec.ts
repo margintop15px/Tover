@@ -1,4 +1,6 @@
 import { test, expect, type BrowserContext } from "@playwright/test";
+import { en } from "../../src/i18n/en";
+import { ru } from "../../src/i18n/ru";
 
 const appUrl = "http://127.0.0.1:3410";
 const mockUrl = "http://127.0.0.1:3411";
@@ -33,6 +35,114 @@ test.beforeEach(async ({ request, context, baseURL }) => {
   await signIn(context);
 });
 
+const legacyId = "10000000-0000-4000-8000-000000000002";
+const pendingId = "30000000-0000-4000-8000-000000000001";
+const expiredId = "30000000-0000-4000-8000-000000000002";
+
+test("team recovery targets the stored member address and preserves the manager session", async ({ page, context, request }) => {
+  await request.post(`${mockUrl}/__test`, { data: { mode: "team" } });
+  await page.goto("/settings?tab=team");
+  await expect(page.getByText("Legacy recipient", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Invitations (2)" })).toBeVisible();
+  const before = (await context.cookies()).find((cookie) => cookie.name === "sb-127-auth-token")?.value;
+  await page.getByRole("button", { name: en.teamSendRecovery }).click();
+  await expect(page.getByRole("status").filter({ hasText: en.recoveryEmailSent })).toBeVisible();
+  await expect(page.getByRole("button", { name: en.teamSendRecovery })).toBeDisabled();
+  const { log } = await (await request.get(`${mockUrl}/__test`)).json();
+  expect(log.filter((entry: LogEntry) => entry.path === "/auth/v1/recover")).toHaveLength(1);
+  const recovery = log.find((entry: LogEntry) => entry.path === "/auth/v1/recover");
+  expect(recovery.body).toMatchObject({ email: "legacy@example.test" });
+  expect(recovery.body.code_challenge).toBeFalsy();
+  expect(recovery.redirectTo).toBe(`${appUrl}/auth/callback?next=/reset-password`);
+  expect((await context.cookies()).find((cookie) => cookie.name === "sb-127-auth-token")?.value).toBe(before);
+  expect((await context.request.post(`/api/auth/members/${legacyId}/recovery`, { data: { email: "attacker@example.test" } })).status()).toBe(429);
+});
+
+test("resend renews expired invitations, cancel withdraws the group, and conflicts guide recovery", async ({ page, context, request }) => {
+  await request.post(`${mockUrl}/__test`, { data: { mode: "team" } });
+  await page.goto("/settings?tab=team");
+  await page.getByLabel("User email", { exact: true }).fill("legacy@example.test");
+  await page.getByRole("button", { name: "Send invite", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: en.teamMemberExists })).toBeVisible();
+  await expect(page.getByRole("link", { name: en.teamMembers, exact: true })).toHaveAttribute("href", "#team-members");
+  await page.getByLabel("User email", { exact: true }).fill("pending@example.test");
+  await page.getByRole("button", { name: "Send invite", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: en.teamInviteExists })).toBeVisible();
+  const expired = page.locator("article").filter({ hasText: "expired@example.test" });
+  await expired.getByRole("button", { name: en.teamResend, exact: true }).click();
+  await expect(expired.getByRole("button", { name: en.teamResend, exact: true })).toBeDisabled();
+  await expect(expired.getByText("Pending", { exact: true })).toBeVisible();
+  await expired.getByRole("button", { name: en.teamCancelInvitation }).click();
+  await expect(expired).toHaveCount(0);
+  const state = await (await request.get(`${mockUrl}/__test`)).json();
+  expect(state.invites.filter((invite: { email: string }) => invite.email === "expired@example.test").every((invite: { status: string; role: string }) => invite.status === "revoked" && invite.role === "admin")).toBe(true);
+  expect((await context.request.post(`/api/auth/invites/${expiredId}/resend`)).status()).toBe(409);
+});
+
+for (const mode of ["team_failure", "team_timeout", "cancel_during_send"]) {
+  test(`${mode} does not lose old invitations or restore canceled access`, async ({ context, request }) => {
+    await request.post(`${mockUrl}/__test`, { data: { mode } });
+    const response = await context.request.post(`/api/auth/invites/${pendingId}/resend`);
+    expect(response.status()).toBe(mode === "cancel_during_send" ? 409 : 502);
+    expect((await response.json()).code).toBe(mode === "team_timeout" ? "DELIVERY_UNCONFIRMED" : mode === "team_failure" ? "DELIVERY_FAILED" : "INVITE_CHANGED");
+    const state = await (await request.get(`${mockUrl}/__test`)).json();
+    const sameEmail = state.invites.filter((invite: { email: string }) => invite.email === "pending@example.test");
+    expect(sameEmail).toHaveLength(2);
+    expect(sameEmail.map((invite: { status: string }) => invite.status)).toEqual(
+      mode === "team_failure" ? ["pending", "revoked"] : mode === "team_timeout" ? ["pending", "pending"] : ["revoked", "revoked"],
+    );
+    expect(state.log.filter((entry: LogEntry) => entry.path === "/auth/v1/invite")).toHaveLength(1);
+  });
+}
+
+test("new endpoints reject foreign records, members, and stale workspace snapshots", async ({ context, request }) => {
+  await request.post(`${mockUrl}/__test`, { data: { mode: "team" } });
+  const paths = [`/api/auth/invites/${pendingId}/resend`, `/api/auth/invites/${pendingId}/cancel`, `/api/auth/members/${legacyId}/recovery`];
+  expect((await context.request.post(`/api/auth/members/${foreign}/recovery`)).status()).toBe(404);
+  expect((await context.request.post(`/api/auth/invites/${foreign}/resend`)).status()).toBe(404);
+  await context.request.post("/api/auth/workspace", { data: { workspaceId: beta } });
+  expect((await context.request.get("/api/auth/team")).status()).toBe(403);
+  for (const path of paths) {
+    expect((await context.request.post(path)).status()).toBe(403);
+    expect((await context.request.post(path, { headers: { "x-tover-workspace-id": alpha } })).status()).toBe(409);
+  }
+  const state = await (await request.get(`${mockUrl}/__test`)).json();
+  expect(state.log.some((entry: LogEntry) => ["/auth/v1/invite", "/auth/v1/recover"].includes(entry.path))).toBe(false);
+});
+
+test("simultaneous resends reserve only one email and reconciliation failures stay retryable", async ({ context, request, page }) => {
+  await request.post(`${mockUrl}/__test`, { data: { mode: "team" } });
+  const responses = await Promise.all([1, 2].map(() => context.request.post(`/api/auth/invites/${pendingId}/resend`)));
+  expect(responses.map((response) => response.status()).sort()).toEqual([200, 429]);
+  await request.post(`${mockUrl}/__test`, { data: { mode: "reconcile_failure" } });
+  await page.goto("/settings?tab=team");
+  await expect(page.getByRole("alert").filter({ hasText: en.workspaceLoadFailed })).toHaveText(en.workspaceLoadFailed);
+  await request.post(`${mockUrl}/__test`, { data: { mode: "team" } });
+  await page.getByRole("button", { name: en.workspaceRetry }).click();
+  await expect(page.getByText("Legacy recipient", { exact: true })).toBeVisible();
+});
+
+for (const locale of ["en", "ru"] as const) {
+  test(`team layout and actions fit mobile and desktop in ${locale}`, async ({ page, request }) => {
+    await request.post(`${mockUrl}/__test`, { data: { mode: "team" } });
+    await page.addInitScript((value) => localStorage.setItem("tover-locale", value), locale);
+    const t = locale === "en" ? en : ru;
+    await page.goto("/settings?tab=team");
+    for (const width of [320, 375, 768, 1200]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(page.getByRole("button", { name: t.teamSendRecovery })).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+      for (const button of await page.locator("article button").all()) {
+        const box = await button.boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+      }
+      await page.screenshot({ path: `test-results/team-${locale}-${width}.png`, fullPage: true });
+    }
+  });
+}
+
 test("existing account receives a fresh cross-browser link and keeps the workspace invitation pending", async ({ page, context, request }) => {
   await request.post(`${mockUrl}/__test`, { data: { mode: "existing" } });
   await page.goto("/settings?tab=team");
@@ -41,8 +151,8 @@ test("existing account receives a fresh cross-browser link and keeps the workspa
   await page.getByRole("button", { name: "Send invite", exact: true }).click();
   await expect(page.getByText("Sign-in link sent. After signing in, they can select this workspace.", { exact: true })).toBeVisible();
   const { log }: { log: LogEntry[] } = await (await request.get(`${mockUrl}/__test`)).json();
-  expect(log.filter((entry) => entry.path === "/rest/v1/organization_invites").map((entry) => entry.body)).toEqual([
-    expect.objectContaining({ email: "existing@example.test", organization_id: alpha, role_id: "member", status: "pending" }),
+  expect(log.filter((entry) => entry.path === "/rest/v1/rpc/manage_workspace_invitation").map((entry) => entry.body)).toEqual([
+    expect.objectContaining({ p_email: "existing@example.test", p_workspace_id: alpha, p_role: "member", p_action: "create" }),
   ]);
   const otp = log.find((entry) => entry.path === "/auth/v1/otp")!;
   expect(otp.body).toMatchObject({ email: "existing@example.test", create_user: false, code_challenge: null, code_challenge_method: null });
@@ -63,14 +173,14 @@ test("new or unconfirmed accounts keep the original invite email flow", async ({
   const { log }: { log: LogEntry[] } = await (await request.get(`${mockUrl}/__test`)).json();
   expect(log.filter((entry) => entry.path === "/auth/v1/invite")).toHaveLength(1);
   expect(log.some((entry) => entry.path === "/auth/v1/otp")).toBeFalsy();
-  expect(log.find((entry) => entry.path === "/rest/v1/organization_invites")?.body).toMatchObject({ organization_id: alpha, role_id: "admin" });
+  expect(log.find((entry) => entry.path === "/rest/v1/rpc/manage_workspace_invitation")?.body).toMatchObject({ p_workspace_id: alpha, p_role: "admin" });
 });
 
 for (const mode of ["email_failure", "otp_failure"]) {
   test(`${mode} reports failure and revokes only the newly created invitation`, async ({ context, request }) => {
     await request.post(`${mockUrl}/__test`, { data: { mode } });
     const response = await context.request.post("/api/auth/invite", { data: { email: "existing@example.test" } });
-    expect(response.status()).toBe(mode === "otp_failure" ? 429 : 500);
+    expect(response.status()).toBe(mode === "otp_failure" ? 429 : 502);
     expect(await response.json()).toMatchObject({ error: expect.any(String) });
     const { log }: { log: LogEntry[] } = await (await request.get(`${mockUrl}/__test`)).json();
     expect(log.filter((entry) => entry.path === "/rest/v1/organization_invites" && entry.method === "PATCH").map((entry) => entry.body)).toEqual([{ status: "revoked" }]);

@@ -5,10 +5,12 @@ import { workspaceFetch } from "@/lib/workspace-fetch";
 import { FormEvent, useState } from "react";
 import { useWorkspace } from "@/contexts/WorkspaceContext";
 import { useI18n } from "@/i18n/context";
+import { useEmailCooldown } from "@/hooks/use-email-cooldown";
+import { teamErrorMessage } from "@/lib/team-error-message";
 
 const MANAGER_ROLES = new Set(["owner", "admin"]);
 
-export default function InviteForm() {
+export default function InviteForm({ onChange }: { onChange?: () => void }) {
   const { t } = useI18n();
 
   const { me } = useWorkspace();
@@ -17,6 +19,10 @@ export default function InviteForm() {
   const [inviting, setInviting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<"members" | "invitations" | null>(null);
+  const cooldown = useEmailCooldown();
+  const emailKey = inviteEmail.trim().toLowerCase();
+  const remaining = cooldown.remaining(emailKey);
 
   const activeMembership = me.memberships.find(
     (item) => item.organizationId === me.activeWorkspaceId
@@ -28,11 +34,13 @@ export default function InviteForm() {
 
   async function handleInvite(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canInvite) return;
+    if (!canInvite || inviting || remaining > 0) return;
 
     setInviting(true);
     setError(null);
     setSuccess(null);
+    setConflict(null);
+    cooldown.start(emailKey);
 
     try {
       const response = await workspaceFetch("/api/auth/invite", {
@@ -41,10 +49,13 @@ export default function InviteForm() {
         body: JSON.stringify({ email: inviteEmail, role }),
       });
 
-      const data = (await response.json()) as { error?: string; delivery?: "invite" | "magiclink" };
+      const data = (await response.json()) as { code?: string; retryAfter?: number; delivery?: "invite" | "magiclink" };
+      if (data.retryAfter) cooldown.start(emailKey, Math.max(60, data.retryAfter));
 
       if (!response.ok) {
-        setError(data.error || t.failedToSendInvite);
+        setError(teamErrorMessage(data.code, t));
+        if (data.code === "MEMBER_EXISTS") setConflict("members");
+        if (data.code === "INVITE_EXISTS") setConflict("invitations");
         return;
       }
 
@@ -52,9 +63,10 @@ export default function InviteForm() {
       setInviteEmail("");
       setRole("member");
     } catch {
-      setError(t.failedToSendInvite);
+      setError(t.emailDeliveryUnconfirmed);
     } finally {
       setInviting(false);
+      onChange?.();
     }
   }
 
@@ -111,18 +123,22 @@ export default function InviteForm() {
           </p>
         ) : null}
 
-        {error ? <p className="text-sm text-red-600">{error}</p> : null}
+        {error ? <p role="alert" className="text-sm text-red-600">{error}</p> : null}
+        {conflict && <a className="block text-sm underline" href={`#team-${conflict}`}>
+          {conflict === "members" ? t.teamMembers : t.teamInvitations}
+        </a>}
         {success ? (
-          <p className="text-sm text-emerald-700">{success}</p>
+          <p role="status" className="text-sm text-emerald-700">{success}</p>
         ) : null}
 
         <button
           type="submit"
-          disabled={!canInvite || inviting}
+          disabled={!canInvite || inviting || remaining > 0}
           className="h-10 rounded-md bg-foreground px-4 text-sm font-medium text-background disabled:opacity-60"
         >
           {inviting ? t.sendingInvite : t.sendInvite}
         </button>
+        {remaining > 0 && <p className="text-sm text-muted-foreground">{t.emailCooldown(remaining)}</p>}
       </form>
     </section>
   );

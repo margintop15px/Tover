@@ -22,7 +22,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    await supabase.rpc("accept_my_organization_invites");
+    const { error: inviteError } = await supabase.rpc("accept_my_organization_invites");
+    if (inviteError) {
+      return NextResponse.json({ error: "Could not load your workspaces. Please try again." }, { status: 503 });
+    }
 
     const [profileResult, membershipsResult] = await Promise.all([
       supabase

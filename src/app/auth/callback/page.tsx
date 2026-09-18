@@ -5,8 +5,10 @@ import { useEffect, useRef, useState } from "react";
 import { isAuthError } from "@supabase/supabase-js";
 import { getSafeNextPath } from "@/lib/auth-redirect";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
+import { useI18n } from "@/i18n/context";
+import type { TranslationKeys } from "@/i18n/en";
 
-async function completeAuth(): Promise<string> {
+async function completeAuth(t: TranslationKeys): Promise<string> {
   const url = new URL(window.location.href);
   const fragment = new URLSearchParams(url.hash.slice(1));
   const code = url.searchParams.get("code");
@@ -27,7 +29,7 @@ async function completeAuth(): Promise<string> {
   const supabase = createBrowserSupabaseClient();
   if (accessToken || refreshToken) {
     if (!accessToken || !refreshToken) {
-      throw new Error("This sign-in link is incomplete. Please request a new link.");
+      throw new Error(t.authLinkIncomplete);
     }
     const { error } = await supabase.auth.setSession({
       access_token: accessToken,
@@ -38,15 +40,17 @@ async function completeAuth(): Promise<string> {
     const { error } = await supabase.auth.exchangeCodeForSession(code);
     if (error) {
       if (isAuthError(error) && error.code === "pkce_code_verifier_not_found") {
-        throw new Error("Open this confirmation link in the same browser where you signed up, or log in with the email and password you chose.");
+        throw new Error(t.authSameBrowser);
       }
       throw error;
     }
+  } else {
+    throw new Error(t.authLinkIncomplete);
   }
 
   const { data: { session }, error } = await supabase.auth.getSession();
   if (error) throw error;
-  if (!session) throw new Error("Could not establish a session. Please try logging in again.");
+  if (!session) throw new Error(t.authSessionFailed);
 
   return type === "invite" || type === "recovery"
     ? "/reset-password"
@@ -54,6 +58,7 @@ async function completeAuth(): Promise<string> {
 }
 
 export default function AuthCallbackPage() {
+  const { t } = useI18n();
   const completion = useRef<Promise<string> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -61,31 +66,32 @@ export default function AuthCallbackPage() {
     let active = true;
 
     // React Strict Mode replays effects; an auth code must only be exchanged once.
-    completion.current ??= completeAuth();
+    completion.current ??= completeAuth(t);
     void completion.current.then((nextPath) => {
       // A fresh request ensures middleware receives the newly saved session cookies.
       if (active) window.location.replace(nextPath);
     }).catch((cause: unknown) => {
-      if (active) setError(cause instanceof Error ? cause.message : "Could not complete sign in.");
+      if (active) setError(cause instanceof Error ? cause.message : t.authSessionFailed);
     });
 
     return () => {
       active = false;
     };
-  }, []);
+  }, [t]);
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md items-center px-6 py-10">
       <div className="w-full rounded-lg border border-border bg-card p-6 shadow-sm">
-        <h1 className="text-2xl font-semibold">Completing sign in</h1>
+        <h1 className="text-2xl font-semibold">{t.authCompleting}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Finalizing your authentication session.
+          {t.authFinalizing}
         </p>
 
         {error ? (
           <div className="mt-4 space-y-3 text-sm">
             <p role="alert" className="text-red-600">{error}</p>
-            <Link className="underline" href="/login">Back to login</Link>
+            <Link className="block underline" href="/forgot-password">{t.resetOrSetPassword}</Link>
+            <Link className="block underline" href="/login">{t.backToLogin}</Link>
           </div>
         ) : null}
       </div>

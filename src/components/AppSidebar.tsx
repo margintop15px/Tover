@@ -265,7 +265,7 @@ export default function AppSidebar({ children }: { children: React.ReactNode }) 
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-screen flex-col md:flex-row">
       {/* Desktop sidebar */}
       <aside className="hidden w-60 shrink-0 border-r bg-card md:block">
         <div className="sticky top-0 h-screen">
@@ -290,7 +290,7 @@ export default function AppSidebar({ children }: { children: React.ReactNode }) 
       </Sheet>
 
       {/* Main content */}
-      <main className="flex-1 overflow-x-hidden">{children}</main>
+      <main className="min-w-0 flex-1 overflow-x-hidden">{children}</main>
     </div>
   );
 }

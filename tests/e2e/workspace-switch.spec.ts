@@ -128,7 +128,7 @@ test("validates real API routing, roles, overrides, unknown membership and stale
   }
   const { log } = await (await request.get(`${mockUrl}/__test`)).json();
   expect(log.filter((entry: { path: string; method: string }) => entry.path === "/rest/v1/categories" && entry.method === "POST")).toHaveLength(1);
-  expect(log.find((entry: { path: string; method: string }) => entry.path === "/rest/v1/organization_invites" && entry.method === "POST").body.organization_id).toBe(alpha);
+  expect(log.find((entry: { path: string; method: string }) => entry.path === "/rest/v1/rpc/manage_workspace_invitation" && entry.method === "POST").body.p_workspace_id).toBe(alpha);
   expect(log.find((entry: { path: string; method: string }) => entry.path === "/rest/v1/imports" && entry.method === "POST").body.workspace_id).toBe(alpha);
   for (const path of ["operations", "operation_imports", "marketplace_connections"]) {
     expect(log.some((entry: { path: string; workspace: string }) => entry.path === `/rest/v1/${path}` && entry.workspace === beta), path).toBeTruthy();

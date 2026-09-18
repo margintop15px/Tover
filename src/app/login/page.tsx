@@ -56,6 +56,8 @@ export default function LoginPage() {
 
       router.push(nextPath);
       router.refresh();
+    } catch {
+      setError(t.authNetworkError);
     } finally {
       setLoading(false);
     }
@@ -109,9 +111,9 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div className="mt-4 flex items-center justify-between text-sm">
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
           <Link className="underline" href="/forgot-password">
-            {t.forgotPassword}
+            {t.resetOrSetPassword}
           </Link>
           <Link className="underline" href="/signup">
             {t.createAccount}
