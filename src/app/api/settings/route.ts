@@ -52,11 +52,13 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json();
 
     // Fetch current settings for comparison
-    const { data: current } = await supabase
+    const { data: current, error: currentError } = await supabase
       .from("workspace_settings")
       .select("*")
       .eq("workspace_id", workspaceId)
       .maybeSingle();
+
+    if (currentError) throw new Error(currentError.message);
 
     const currentCategoryRequired = current?.category_required ?? false;
     const currentStoreRequired = current?.store_required ?? false;
@@ -83,99 +85,52 @@ export async function PATCH(request: NextRequest) {
       upsert.currency = currency;
     }
 
-    // Validate and apply category_required
-    if (body.categoryRequired !== undefined) {
-      const enabling = body.categoryRequired === true && !currentCategoryRequired;
+    const defaults = [
+      { field: "category", table: "categories", requiredKey: "categoryRequired", defaultKey: "defaultCategoryId" },
+      { field: "store", table: "stores", requiredKey: "storeRequired", defaultKey: "defaultStoreId" },
+    ] as const;
 
-      if (enabling) {
-        if (!body.defaultCategoryId) {
-          return NextResponse.json(
-            { error: "Default category is required when enabling category requirement" },
-            { status: 400 }
-          );
+    // Validate the complete next state before performing any writes or backfills.
+    for (const { field, table, requiredKey, defaultKey } of defaults) {
+      if (body[requiredKey] !== undefined) {
+        if (typeof body[requiredKey] !== "boolean") {
+          return NextResponse.json({ error: `${requiredKey} must be a boolean` }, { status: 400 });
         }
-        // Verify category belongs to workspace
-        const { data: cat } = await supabase
-          .from("categories")
+        upsert[`${field}_required`] = body[requiredKey];
+      }
+      if (body[defaultKey] !== undefined) {
+        if (body[defaultKey] !== null && typeof body[defaultKey] !== "string") {
+          return NextResponse.json({ error: `${defaultKey} must be an ID or null` }, { status: 400 });
+        }
+        upsert[`default_${field}_id`] = body[defaultKey] || null;
+      }
+      const defaultId = upsert[`default_${field}_id`];
+      if (upsert[`${field}_required`] && !defaultId) {
+        return NextResponse.json({ error: `Default ${field} is required when ${field} is required` }, { status: 400 });
+      }
+      if (defaultId) {
+        const { data: entity, error: lookupError } = await supabase
+          .from(table)
           .select("id")
-          .eq("id", body.defaultCategoryId)
+          .eq("id", defaultId)
           .eq("workspace_id", workspaceId)
           .maybeSingle();
-
-        if (!cat) {
-          return NextResponse.json(
-            { error: "Default category not found in this workspace" },
-            { status: 400 }
-          );
+        if (lookupError) throw new Error(lookupError.message);
+        if (!entity) {
+          return NextResponse.json({ error: `Default ${field} not found in this workspace` }, { status: 400 });
         }
-
-        // Backfill products with NULL category_id
-        const { error: backfillError } = await supabase
-          .from("products")
-          .update({ category_id: body.defaultCategoryId })
-          .eq("workspace_id", workspaceId)
-          .is("category_id", null)
-          .eq("is_defect_copy", false);
-
-        if (backfillError) {
-          return NextResponse.json(
-            { error: "Failed to backfill products: " + backfillError.message },
-            { status: 500 }
-          );
-        }
-      }
-
-      upsert.category_required = body.categoryRequired;
-      if (body.defaultCategoryId !== undefined) {
-        upsert.default_category_id = body.defaultCategoryId || null;
       }
     }
 
-    // Validate and apply store_required
-    if (body.storeRequired !== undefined) {
-      const enabling = body.storeRequired === true && !currentStoreRequired;
-
-      if (enabling) {
-        if (!body.defaultStoreId) {
-          return NextResponse.json(
-            { error: "Default store is required when enabling store requirement" },
-            { status: 400 }
-          );
-        }
-        // Verify store belongs to workspace
-        const { data: store } = await supabase
-          .from("stores")
-          .select("id")
-          .eq("id", body.defaultStoreId)
-          .eq("workspace_id", workspaceId)
-          .maybeSingle();
-
-        if (!store) {
-          return NextResponse.json(
-            { error: "Default store not found in this workspace" },
-            { status: 400 }
-          );
-        }
-
-        // Backfill products with NULL store_id
+    for (const { field } of defaults) {
+      if (upsert[`${field}_required`] && !current?.[`${field}_required`]) {
         const { error: backfillError } = await supabase
           .from("products")
-          .update({ store_id: body.defaultStoreId })
+          .update({ [`${field}_id`]: upsert[`default_${field}_id`] })
           .eq("workspace_id", workspaceId)
-          .is("store_id", null)
+          .is(`${field}_id`, null)
           .eq("is_defect_copy", false);
-
-        if (backfillError) {
-          return NextResponse.json(
-            { error: "Failed to backfill products: " + backfillError.message },
-            { status: 500 }
-          );
-        }
-      }
-
-      upsert.store_required = body.storeRequired;
-      if (body.defaultStoreId !== undefined) {
-        upsert.default_store_id = body.defaultStoreId || null;
+        if (backfillError) throw new Error(backfillError.message);
       }
     }
 

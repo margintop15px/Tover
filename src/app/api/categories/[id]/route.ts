@@ -129,6 +129,19 @@ export async function DELETE(
     });
     const { id } = await params;
 
+    const { data: settings, error: settingsError } = await supabase
+      .from("workspace_settings")
+      .select("category_required, default_category_id")
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+    if (settingsError) throw new Error(settingsError.message);
+    if (settings?.category_required && settings.default_category_id === id) {
+      return NextResponse.json(
+        { error: "Choose another default category in Settings before deleting this category", code: "REQUIRED_PRODUCT_DEFAULT" },
+        { status: 409 }
+      );
+    }
+
     const { error } = await supabase
       .from("categories")
       .delete()

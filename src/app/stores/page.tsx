@@ -1,6 +1,7 @@
 "use client";
 
 import { workspaceFetch } from "@/lib/workspace-fetch";
+import { reportRequestFailure } from "@/lib/api-response";
 
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
@@ -113,8 +114,19 @@ export default function StoresPage() {
 
   const handleDelete = async (item: Store) => {
     if (!confirm(t.confirmDelete)) return;
-    await workspaceFetch(`/api/stores/${item.id}`, { method: "DELETE" });
-    fetchItems();
+    setError("");
+    try {
+      const res = await workspaceFetch(`/api/stores/${item.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.code === "REQUIRED_PRODUCT_DEFAULT" ? t.defaultStoreDeleteBlocked : data.error || t.unexpectedError);
+        return;
+      }
+      await fetchItems();
+    } catch (error) {
+      reportRequestFailure(error, "delete_store");
+      setError(t.actionUnconfirmed);
+    }
   };
 
   return (
@@ -126,6 +138,8 @@ export default function StoresPage() {
           {t.newStore}
         </Button>
       </div>
+
+      {error && !dialogOpen && <p role="alert" className="mb-4 text-sm text-destructive">{error}</p>}
 
       {loading ? (
         <p className="text-muted-foreground">{t.loading}</p>

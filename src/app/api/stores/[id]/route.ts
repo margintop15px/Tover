@@ -156,6 +156,19 @@ export async function DELETE(
     });
     const { id } = await params;
 
+    const { data: settings, error: settingsError } = await supabase
+      .from("workspace_settings")
+      .select("store_required, default_store_id")
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+    if (settingsError) throw new Error(settingsError.message);
+    if (settings?.store_required && settings.default_store_id === id) {
+      return NextResponse.json(
+        { error: "Choose another default store in Settings before deleting this store", code: "REQUIRED_PRODUCT_DEFAULT" },
+        { status: 409 }
+      );
+    }
+
     const { error } = await supabase
       .from("stores")
       .delete()

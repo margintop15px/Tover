@@ -1,10 +1,17 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+
 import type { CandidateValidationError } from "@/lib/operation-imports/types";
 import type {
   OperationType,
   Product,
   Warehouse,
 } from "@/types/inventory";
+
+export class OzonProductDefaultsError extends Error {
+  constructor(readonly field: "category" | "store") {
+    super(`Choose a default ${field} in Settings before creating Ozon products`);
+  }
+}
 
 export type MarketplaceCandidateStatus =
   | "needs_mapping"
@@ -543,10 +550,10 @@ async function findOrCreateProduct(
 
   const settings = await loadWorkspaceSettings(supabase, workspaceId);
   if (settings.category_required && !settings.default_category_id) {
-    throw new Error("Default category is required before creating Ozon products");
+    throw new OzonProductDefaultsError("category");
   }
   if (settings.store_required && !settings.default_store_id) {
-    throw new Error("Default store is required before creating Ozon products");
+    throw new OzonProductDefaultsError("store");
   }
 
   const { data, error } = await supabase

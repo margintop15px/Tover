@@ -4,7 +4,7 @@ import { workspaceFetch } from "@/lib/workspace-fetch";
 import { readJsonResponse, reportRequestFailure } from "@/lib/api-response";
 import { LoadError } from "@/components/LoadError";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -153,6 +153,7 @@ export default function OzonCandidateReviewPage() {
   const requestedOffset = useRef(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [needsProductDefaults, setNeedsProductDefaults] = useState(false);
   const [success, setSuccess] = useState("");
   const selectedIndex = useMemo(
     () => (selected ? items.findIndex((item) => item.id === selected.id) : -1),
@@ -255,6 +256,7 @@ export default function OzonCandidateReviewPage() {
   ) => {
     setBusy(key);
     setError("");
+    setNeedsProductDefaults(false);
     setSuccess("");
     try {
       const updated = await action();
@@ -299,6 +301,10 @@ export default function OzonCandidateReviewPage() {
       }
     );
     const data = await res.json();
+    if (!res.ok && data.code === "OZON_PRODUCT_DEFAULTS_REQUIRED") {
+      setNeedsProductDefaults(true);
+      throw new Error(data.field === "store" ? t.ozonDefaultStoreRequired : t.ozonDefaultCategoryRequired);
+    }
     if (!res.ok) throw new Error(data.error || t.unexpectedError);
     return data.candidate as MarketplaceCandidateRow;
   };
@@ -343,6 +349,20 @@ export default function OzonCandidateReviewPage() {
     [summary, t]
   );
 
+  const errorNotice = error ? (
+    <div role="alert" className="mb-4 flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      <AlertTriangle className="h-4 w-4 shrink-0" />
+      <div className="min-w-0 break-words">
+        {error}
+        {needsProductDefaults && (
+          <Link href="/settings?tab=products" className="mt-1 block underline">
+            {t.ozonOpenProductSettings}
+          </Link>
+        )}
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div className="p-6">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -357,12 +377,7 @@ export default function OzonCandidateReviewPage() {
         </Link>
       </div>
 
-      {error && (
-        <div role="alert" className="mb-4 flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <AlertTriangle className="h-4 w-4" />
-          {error}
-        </div>
-      )}
+      {!selected && errorNotice}
       {loadFailed && <LoadError onRetry={() => fetchCandidates(requestedOffset.current)} loading={loading} />}
       {referenceFailed && <LoadError onRetry={fetchReferenceData} loading={referenceLoading} />}
       {success && (
@@ -626,11 +641,14 @@ export default function OzonCandidateReviewPage() {
         products={products}
         warehouses={warehouses}
         busy={busy}
-        onClose={() => setSelected(null)}
+        errorNotice={errorNotice}
+        onClose={() => { setSelected(null); setError(""); }}
         onPrevious={() => {
+          setError("");
           if (selectedIndex > 0) setSelected(items[selectedIndex - 1]);
         }}
         onNext={() => {
+          setError("");
           if (selectedIndex >= 0 && selectedIndex < items.length - 1) {
             setSelected(items[selectedIndex + 1]);
           }
@@ -667,6 +685,7 @@ function CandidateSheet({
   products,
   warehouses,
   busy,
+  errorNotice,
   onClose,
   onPrevious,
   onNext,
@@ -683,6 +702,7 @@ function CandidateSheet({
   products: Product[];
   warehouses: WarehouseType[];
   busy: string | null;
+  errorNotice: ReactNode;
   onClose: () => void;
   onPrevious: () => void;
   onNext: () => void;
@@ -718,6 +738,7 @@ function CandidateSheet({
           </div>
         </SheetHeader>
 
+        {errorNotice && <div className="shrink-0 px-6 pt-4">{errorNotice}</div>}
         {candidate && (
           <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
             <div className="grid gap-4 sm:grid-cols-2">

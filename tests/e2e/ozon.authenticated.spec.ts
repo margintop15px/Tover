@@ -1293,7 +1293,8 @@ test.describe("Ozon marketplace integration", () => {
         `/api/integrations/ozon/candidates/${fbsCandidate.id}/create-product`,
         { data: { itemIndex: 1 } }
       );
-      expect(blockedCreate.status(), await blockedCreate.text()).toBe(500);
+      expect(blockedCreate.status()).toBe(409);
+      expect(await blockedCreate.json()).toMatchObject({ code: "OZON_PRODUCT_DEFAULTS_REQUIRED", field: "category" });
       await resetWorkspaceSettings(adminWorkspace!, false);
 
       const fbsMapped = await postJson<{ candidate: MarketplaceCandidateRow }>(

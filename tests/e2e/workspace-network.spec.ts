@@ -108,6 +108,7 @@ for (const locale of ["en", "ru"] as const) {
 
 for (const scenario of [
   { name: "operations list", path: "/operations", url: /\/api\/operations\?/, json: { items: [operation], page: { totalEstimate: 1 } }, kind: "http" },
+  { name: "operations list network", path: "/operations", url: /\/api\/operations\?/, json: { items: [operation], page: { totalEstimate: 1 } }, kind: "network" },
   { name: "operations references", path: "/operations", url: /\/api\/warehouses(?:\?|$)/, json: { items: [] }, kind: "network" },
   { name: "new operation references", path: "/operations/new", url: /\/api\/warehouses(?:\?|$)/, json: { items: [] }, kind: "html" },
   { name: "settings references", path: "/settings?tab=products", url: /\/api\/categories\?/, json: { items: [] }, kind: "shape" },
@@ -411,5 +412,142 @@ for (const locale of ["en", "ru"] as const) {
     await alert.getByRole("button", { name: t.workspaceRetry }).click();
     await expect(row).toHaveCount(0);
     await expect(page.getByText(t.ozonNoCandidatesHint)).toBeVisible();
+  });
+}
+
+for (const field of ["store", "category"] as const) {
+  const table = field === "store" ? "stores" : "categories";
+  const requiredKey = `${field}Required`;
+  const defaultKey = field === "store" ? "defaultStoreId" : "defaultCategoryId";
+  const originalId = "40000000-0000-4000-8000-000000000001";
+  const replacementId = "40000000-0000-4000-8000-000000000002";
+  const foreignId = "40000000-0000-4000-8000-000000000003";
+
+  test(`required ${field} defaults cannot be cleared, moved across workspaces, or deleted`, async ({ context, request, page }) => {
+    await request.post(`${mockUrl}/__test`, { data: {
+      [table]: [
+        { id: originalId, workspace_id: alpha, name: "Original default" },
+        { id: replacementId, workspace_id: alpha, name: "Replacement default" },
+        { id: foreignId, workspace_id: "20000000-0000-4000-8000-000000000002", name: "Foreign default" },
+      ],
+    } });
+    const headers = { "x-workspace-id": alpha };
+    const patch = (data: object) => context.request.patch("/api/settings", { headers, data });
+    expect((await patch({ [requiredKey]: true, [defaultKey]: originalId })).status()).toBe(200);
+    for (const data of [
+      { [requiredKey]: true, [defaultKey]: null },
+      { [defaultKey]: null },
+      { [defaultKey]: foreignId },
+      { [requiredKey]: "false" },
+    ]) {
+      expect((await patch(data)).status()).toBe(400);
+      expect(await (await context.request.get("/api/settings", { headers })).json()).toMatchObject({ [requiredKey]: true, [defaultKey]: originalId });
+    }
+    const blocked = await context.request.delete(`/api/${table}/${originalId}`, { headers });
+    expect(blocked.status()).toBe(409);
+    await page.goto(`/${table}`);
+    const row = page.getByRole("row").filter({ hasText: "Original default" });
+    page.once("dialog", (dialog) => dialog.accept());
+    await row.getByRole("button").last().click();
+    await expect(page.locator("p[role=alert]")).toContainText(field === "store" ? en.defaultStoreDeleteBlocked : en.defaultCategoryDeleteBlocked);
+    await expect(row).toBeVisible();
+    const errors = collectErrors(page);
+    await page.route(`**/api/${table}/${originalId}`, (route) => route.abort("failed"));
+    page.once("dialog", (dialog) => dialog.accept());
+    await row.getByRole("button").last().click();
+    await expect(page.locator("p[role=alert]")).toContainText(en.actionUnconfirmed);
+    await expect(row).toBeVisible();
+    expect(errors).toEqual([]);
+    const before = await (await request.get(`${mockUrl}/__test`)).json();
+    expect(before.log.filter((entry: { method: string }) => entry.method === "DELETE")).toEqual([]);
+    // Replacing a default independently of the required flag must work.
+    expect((await patch({ [defaultKey]: replacementId })).status()).toBe(200);
+    expect((await context.request.delete(`/api/${table}/${originalId}`, { headers })).status()).toBe(200);
+    expect((await patch({ [requiredKey]: false, [defaultKey]: null })).status()).toBe(200);
+    expect((await context.request.delete(`/api/${table}/${replacementId}`, { headers })).status()).toBe(200);
+  });
+
+  test(`Ozon missing default ${field} is a recoverable conflict without product writes`, async ({ context, request }) => {
+    const legacy = { currency: "EUR", category_required: false, store_required: false, default_category_id: null, default_store_id: null, [`${field}_required`]: true };
+    await request.post(`${mockUrl}/__test`, { data: {
+      settings: { [alpha]: legacy },
+      [table]: [{ id: replacementId, workspace_id: alpha, name: "Default" }],
+      marketplaceCandidates: candidates.items,
+    } });
+    const headers = { "x-workspace-id": alpha };
+    const create = () => context.request.post("/api/integrations/ozon/candidates/candidate-1/create-product", { headers, data: { itemIndex: 0 } });
+    const blocked = await create();
+    expect(blocked.status()).toBe(409);
+    expect(await blocked.json()).toMatchObject({ code: "OZON_PRODUCT_DEFAULTS_REQUIRED", field });
+    const before = await (await request.get(`${mockUrl}/__test`)).json();
+    expect(before.products).toEqual([]);
+    expect(before.marketplaceCandidates).toEqual(candidates.items);
+    expect(before.log.filter((entry: { method: string; path: string }) => entry.path === "/rest/v1/products" && entry.method !== "GET")).toEqual([]);
+    expect((await context.request.patch("/api/settings", { headers, data: { [defaultKey]: replacementId } })).status()).toBe(200);
+    expect((await create()).status()).toBe(200);
+    const after = await (await request.get(`${mockUrl}/__test`)).json();
+    expect(after.products).toHaveLength(1);
+    expect(after.products[0][`${field}_id`]).toBe(replacementId);
+    expect(after.marketplaceCandidates[0].normalized_operation.items[0].productId).toBe(after.products[0].id);
+  });
+}
+
+test("invalid combined defaults are rejected before backfills; settings storage failures remain 500", async ({ context, request }) => {
+  const headers = { "x-workspace-id": alpha };
+  const categoryId = "40000000-0000-4000-8000-000000000001";
+  await request.post(`${mockUrl}/__test`, { data: { categories: [{ id: categoryId, workspace_id: alpha, name: "Category" }] } });
+  const rejected = await context.request.patch("/api/settings", { headers, data: { categoryRequired: true, defaultCategoryId: categoryId, storeRequired: true } });
+  expect(rejected.status()).toBe(400);
+  const before = await (await request.get(`${mockUrl}/__test`)).json();
+  expect(before.log.filter((entry: { method: string }) => entry.method !== "GET" && entry.method !== "POST")).toEqual([]);
+  expect(before.log.filter((entry: { path: string; method: string }) => entry.path === "/rest/v1/workspace_settings" && entry.method === "POST")).toEqual([]);
+  await request.post(`${mockUrl}/__test`, { data: { mode: "settings_storage_failure", marketplaceCandidates: candidates.items } });
+  expect((await context.request.patch("/api/settings", { headers, data: { currency: "USD" } })).status()).toBe(500);
+  expect((await context.request.delete(`/api/stores/${categoryId}`, { headers })).status()).toBe(500);
+  expect((await context.request.post("/api/integrations/ozon/candidates/candidate-1/create-product", { headers, data: { itemIndex: 0 } })).status()).toBe(500);
+});
+
+for (const locale of ["en", "ru"] as const) {
+  test(`Ozon default-store error is visible in the drawer and settings repairs it (${locale}, mobile)`, async ({ page, request }) => {
+    const t = locale === "ru" ? ru : en;
+    const errors = collectErrors(page);
+    await page.setViewportSize({ width: 320, height: 812 });
+    await page.addInitScript((value) => localStorage.setItem("tover-locale", value), locale);
+    const defaultId = "40000000-0000-4000-8000-000000000001";
+    await request.post(`${mockUrl}/__test`, { data: {
+      settings: { [alpha]: { currency: "EUR", category_required: false, store_required: true, default_category_id: null, default_store_id: null } },
+      stores: [{ id: defaultId, workspace_id: alpha, name: "Default store" }],
+      marketplaceCandidates: candidates.items,
+    } });
+    await page.goto("/operations/marketplace/ozon");
+    const review = () => page.getByRole("row").filter({ hasText: "Unmapped supply product" }).getByRole("button", { name: t.review, exact: true }).click();
+    await review();
+    const drawer = page.getByRole("dialog");
+    await drawer.getByRole("button", { name: t.ozonCreateProduct, exact: true }).first().click();
+    const alert = drawer.getByRole("alert");
+    await expect(alert).toContainText(t.ozonDefaultStoreRequired);
+    await expect(alert).toBeInViewport();
+    await expect(drawer.getByRole("button", { name: t.ozonCreateProduct, exact: true }).first()).toBeEnabled();
+    expect(await drawer.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: `test-results/ozon-default-store-${locale}-mobile.png` });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(alert).toBeInViewport();
+    await page.screenshot({ path: `test-results/ozon-default-store-${locale}-desktop.png` });
+    await page.setViewportSize({ width: 320, height: 812 });
+    await alert.getByRole("link", { name: t.ozonOpenProductSettings }).click();
+    await expect(page).toHaveURL(/\/settings\?tab=products$/);
+    const panel = page.getByRole("tabpanel");
+    // The selector must remain visible when the requirement is already enabled.
+    await panel.getByRole("combobox").click();
+    await page.getByRole("option", { name: "Default store", exact: true }).click();
+    await panel.getByRole("button", { name: t.save, exact: true }).click();
+    await expect(panel).toContainText(t.settingsSaved);
+    await page.screenshot({ path: `test-results/ozon-default-store-settings-${locale}-mobile.png`, fullPage: true });
+    await page.goto("/operations/marketplace/ozon");
+    await review();
+    await drawer.getByRole("button", { name: t.ozonCreateProduct, exact: true }).first().click();
+    await expect(drawer.getByRole("alert")).toHaveCount(0);
+    await expect.poll(async () => (await (await request.get(`${mockUrl}/__test`)).json()).products.length).toBe(1);
+    expect(errors).toEqual([]);
   });
 }

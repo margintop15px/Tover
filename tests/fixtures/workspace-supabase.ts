@@ -12,6 +12,9 @@ const longName = "Beta workspace with a very long name that must fit inside the 
 let mode = "normal";
 let log: { path: string; method: string; body: Record<string, unknown>; workspace: string | null; redirectTo?: string | null }[] = [];
 let categories: Record<string, unknown>[] = [];
+let stores: Record<string, unknown>[] = [];
+let products: Record<string, unknown>[] = [];
+let workspaceSettings: Record<string, Record<string, unknown>> = {};
 let operationImports: Record<string, unknown>[] = [];
 let importCandidates: Record<string, unknown>[] = [];
 let marketplaceCandidates: Record<string, unknown>[] = [];
@@ -46,8 +49,8 @@ createServer(async (request, response) => {
   };
   if (request.method === "OPTIONS") return json({});
   if (url.pathname === "/__test") {
-    if (request.method === "POST") { mode = body.mode ?? "normal"; log = []; categories = []; operationImports = []; importCandidates = []; marketplaceCandidates = body.marketplaceCandidates ?? []; invites = []; recoveryRequestedAt = null; if (mode.startsWith("team") || mode === "cancel_during_send") seedTeam(); }
-    return json({ mode, log, invites, recoveryRequestedAt });
+    if (request.method === "POST") { mode = body.mode ?? "normal"; log = []; categories = body.categories ?? []; stores = body.stores ?? []; products = []; workspaceSettings = body.settings ?? {}; operationImports = []; importCandidates = []; marketplaceCandidates = body.marketplaceCandidates ?? []; invites = []; recoveryRequestedAt = null; if (mode.startsWith("team") || mode === "cancel_during_send") seedTeam(); }
+    return json({ mode, log, invites, recoveryRequestedAt, workspaceSettings, products, marketplaceCandidates });
   }
   if (url.pathname === "/auth/v1/user") return json(user);
   if (url.pathname === "/auth/v1/logout") return json({});
@@ -129,10 +132,16 @@ createServer(async (request, response) => {
     if (request.method === "GET") return invite ? json({ status: invite.status }) : json({ message: "Not found" }, 404);
   }
   if (table.startsWith("rpc/")) return json([]);
-  if (table === "workspace_settings") return json([{
-    currency: workspace === beta ? "USD" : "EUR", category_required: false, store_required: false,
-    default_category_id: null, default_store_id: null,
-  }]);
+  if (table === "workspace_settings") {
+    if (mode === "settings_storage_failure") return json({ message: "Mock settings storage unavailable" }, 500);
+    const key = workspace || body.workspace_id;
+    const row = workspaceSettings[key] ??= {
+      currency: key === beta ? "USD" : "EUR", category_required: false, store_required: false,
+      default_category_id: null, default_store_id: null,
+    };
+    if (request.method === "POST") Object.assign(row, body);
+    return json(request.headers.accept?.includes("application/vnd.pgrst.object+json") ? row : [row]);
+  }
   if (table === "marketplace_operation_candidates") {
     const rows = marketplaceCandidates.filter((item) => item.workspace_id === workspace && ["id", "status", "provider"].every((column) => {
       const filter = url.searchParams.get(column);
@@ -174,13 +183,20 @@ createServer(async (request, response) => {
     const status = url.searchParams.get("status")?.replace(/^eq\./, "");
     return json(importCandidates.filter((item) => item.import_id === importId && (!status || item.status === status)));
   }
-  if (table === "categories") {
+  if (["categories", "stores", "products"].includes(table)) {
+    const entities = table === "categories" ? categories : table === "stores" ? stores : products;
     if (request.method === "POST") {
       const row = { ...body, id: crypto.randomUUID(), created_at: new Date().toISOString() };
-      categories.push(row);
+      entities.push(row);
       return json(row, 201);
     }
-    return json(categories.filter((item) => item.workspace_id === workspace));
+    const rows = entities.filter((item) => item.workspace_id === workspace && ["id", "name", "sku_code"].every((column) => {
+      const filter = url.searchParams.get(column);
+      return !filter || filter === `eq.${item[column]}` || filter.toLowerCase() === `ilike.${item[column]}`.toLowerCase();
+    }));
+    if (request.method === "DELETE") rows.forEach((row) => entities.splice(entities.indexOf(row), 1));
+    if (request.method === "PATCH") rows.forEach((row) => Object.assign(row, body));
+    return json(request.headers.accept?.includes("application/vnd.pgrst.object+json") ? rows[0] ?? null : rows);
   }
   if (table === "organization_invites" && request.method === "POST") return json({ ...body, id: crypto.randomUUID() }, 201);
   if (table === "imports" && request.method === "POST") return json({ ...body, id: crypto.randomUUID() }, 201);

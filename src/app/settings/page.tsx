@@ -638,7 +638,7 @@ function SettingsPageContent() {
           {referenceFailed && <LoadError onRetry={fetchReferenceData} loading={referenceLoading} />}
           {/* Category required */}
           <div className="space-y-3 rounded-lg border p-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-medium">
                   {t.categoryRequiredLabel}
@@ -653,7 +653,7 @@ function SettingsPageContent() {
               />
             </div>
 
-            {categoryRequired && !settings.categoryRequired && (
+            {categoryRequired && (
               <Field>
                 <FieldLabel>{t.defaultCategory}</FieldLabel>
                 <Select
@@ -671,16 +671,18 @@ function SettingsPageContent() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t.backfillWarning(t.productCategory.toLowerCase())}
-                </p>
+                {!settings.categoryRequired && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t.backfillWarning(t.productCategory.toLowerCase())}
+                  </p>
+                )}
               </Field>
             )}
           </div>
 
           {/* Store required */}
           <div className="space-y-3 rounded-lg border p-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-medium">{t.storeRequiredLabel}</p>
                 <p className="text-xs text-muted-foreground">
@@ -693,7 +695,7 @@ function SettingsPageContent() {
               />
             </div>
 
-            {storeRequired && !settings.storeRequired && (
+            {storeRequired && (
               <Field>
                 <FieldLabel>{t.defaultStore}</FieldLabel>
                 <Select
@@ -711,9 +713,11 @@ function SettingsPageContent() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t.backfillWarning(t.productStore.toLowerCase())}
-                </p>
+                {!settings.storeRequired && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t.backfillWarning(t.productStore.toLowerCase())}
+                  </p>
+                )}
               </Field>
             )}
           </div>

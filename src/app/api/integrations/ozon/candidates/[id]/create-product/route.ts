@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRouteContext, toRouteErrorResponse } from "@/lib/request-context";
 import {
   createProductForCandidateItem,
+  OzonProductDefaultsError,
   type MarketplaceCandidateRow,
 } from "@/lib/ozon/candidates";
 
@@ -44,6 +45,12 @@ export async function POST(
 
     return NextResponse.json({ candidate: updated });
   } catch (error) {
+    if (error instanceof OzonProductDefaultsError) {
+      return NextResponse.json(
+        { error: error.message, code: "OZON_PRODUCT_DEFAULTS_REQUIRED", field: error.field },
+        { status: 409 }
+      );
+    }
     return toRouteErrorResponse(error);
   }
 }

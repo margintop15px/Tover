@@ -1,6 +1,7 @@
 "use client";
 
 import { workspaceFetch } from "@/lib/workspace-fetch";
+import { reportRequestFailure } from "@/lib/api-response";
 
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/i18n/context";
@@ -90,8 +91,19 @@ export default function CategoriesPage() {
 
   const handleDelete = async (item: Category) => {
     if (!confirm(t.confirmDelete)) return;
-    await workspaceFetch(`/api/categories/${item.id}`, { method: "DELETE" });
-    fetchItems();
+    setError("");
+    try {
+      const res = await workspaceFetch(`/api/categories/${item.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.code === "REQUIRED_PRODUCT_DEFAULT" ? t.defaultCategoryDeleteBlocked : data.error || t.unexpectedError);
+        return;
+      }
+      await fetchItems();
+    } catch (error) {
+      reportRequestFailure(error, "delete_category");
+      setError(t.actionUnconfirmed);
+    }
   };
 
   return (
@@ -103,6 +115,8 @@ export default function CategoriesPage() {
           {t.newCategory}
         </Button>
       </div>
+
+      {error && !dialogOpen && <p role="alert" className="mb-4 text-sm text-destructive">{error}</p>}
 
       {loading ? (
         <p className="text-muted-foreground">{t.loading}</p>
