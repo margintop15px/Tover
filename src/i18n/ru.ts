@@ -224,6 +224,7 @@ export const ru: TranslationKeys = {
     "Поддерживаются CSV, XLSX, экспорт Google Sheets, сканы, фото и обычный текст.",
   chooseFile: "Выбрать файл",
   extracting: "Извлечение...",
+  importItemPosition: (position: number, total: number) => `Позиция ${position} из ${total}`,
   extractedCandidates: (count: number) => `Найдено операций: ${count}`,
   needsReviewCount: (count: number) => `Требуют проверки: ${count}`,
   readyCount: (count: number) => `Готовы: ${count}`,

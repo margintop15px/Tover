@@ -135,13 +135,17 @@ type CreateEntityRequest = {
   candidate: OperationImportCandidateRecord;
   operation: OperationImportDraft;
   item?: OperationImportItemDraft;
+  itemIndex?: number;
   rawName?: string;
 };
 
 type BulkAction = {
   fieldLabel: string;
   valueLabel: string;
-  buildOperation: (operation: OperationImportDraft) => OperationImportDraft;
+  buildOperation: (
+    operation: OperationImportDraft,
+    replaceAll: boolean
+  ) => OperationImportDraft;
   isBlank: (operation: OperationImportDraft) => boolean;
   shouldInclude?: (operation: OperationImportDraft) => boolean;
 };
@@ -166,16 +170,13 @@ function formatImportDate(value: string) {
   return new Date(value).toLocaleString();
 }
 
-function getFirstItem(operation: OperationImportDraft): OperationImportItemDraft {
-  return operation.items?.[0] ?? {};
-}
-
-function replaceFirstItem(
+function replaceItem(
   operation: OperationImportDraft,
+  itemIndex: number,
   patch: Partial<OperationImportItemDraft>
 ): OperationImportDraft {
   const items = operation.items?.length ? [...operation.items] : [{}];
-  items[0] = { ...items[0], ...patch };
+  items[itemIndex] = { ...items[itemIndex], ...patch };
   return { ...operation, items };
 }
 
@@ -207,68 +208,6 @@ function mergeCandidatesById(
   if (updates.length === 0) return current;
   const byId = new Map(updates.map((candidate) => [candidate.id, candidate]));
   return current.map((candidate) => byId.get(candidate.id) ?? candidate);
-}
-
-function patchOperationForCreatedEntity(
-  operation: OperationImportDraft,
-  kind: CreateEntityRequest["kind"],
-  item: Product | Supplier | Warehouse
-) {
-  if (kind === "supplier") {
-    const supplier = item as Supplier;
-    return {
-      ...operation,
-      supplierId: supplier.id,
-      supplierName: supplier.name,
-      createSupplier: false,
-    };
-  }
-
-  if (kind === "warehouse") {
-    const warehouse = item as Warehouse;
-    return replaceFirstItem(operation, {
-      warehouseId: warehouse.id,
-      warehouseName: warehouse.name,
-      createWarehouse: false,
-    });
-  }
-
-  const product = item as Product;
-  const firstItem = getFirstItem(operation);
-  return replaceFirstItem(operation, {
-    productId: product.id,
-    productName: product.name,
-    skuCode: product.skuCode || firstItem.skuCode,
-    storeId: product.storeId || firstItem.storeId,
-    createProduct: false,
-  });
-}
-
-function createdEntityErrorField(kind: CreateEntityRequest["kind"]) {
-  if (kind === "supplier") return "supplierId";
-  if (kind === "warehouse") return "items[0].warehouseId";
-  return "items[0].productId";
-}
-
-function patchCandidateForCreatedEntity(
-  candidate: OperationImportCandidateRecord,
-  kind: CreateEntityRequest["kind"],
-  item: Product | Supplier | Warehouse
-) {
-  const validationErrors = candidate.validation_errors.filter(
-    (error) => error.field !== createdEntityErrorField(kind)
-  );
-  return {
-    ...candidate,
-    operation: patchOperationForCreatedEntity(candidate.operation || {}, kind, item),
-    normalized_operation: patchOperationForCreatedEntity(
-      getOperation(candidate),
-      kind,
-      item
-    ),
-    validation_errors: validationErrors,
-    status: validationErrors.length === 0 ? "ready" : "needs_review",
-  } satisfies OperationImportCandidateRecord;
 }
 
 export default function OperationImportPage() {
@@ -604,36 +543,10 @@ export default function OperationImportPage() {
           },
         }),
       });
-      const data = (await res.json()) as {
-        updatedCandidateIds?: string[];
-        summary?: Record<string, unknown>;
-        status?: OperationImportRecord["status"];
-        loadPreview?: LoadPreview;
-        error?: string;
-      };
+      const data = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(data.error || t.unexpectedError);
-      const ids = new Set(data.updatedCandidateIds || []);
-      if (ids.size > 0) {
-        setCandidates((current) =>
-          current.map((candidate) =>
-            ids.has(candidate.id)
-              ? patchCandidateForCreatedEntity(candidate, kind, item)
-              : candidate
-          )
-        );
-      }
-      if (data.summary) {
-        setJob((current) =>
-          current
-            ? {
-                ...current,
-                summary: data.summary!,
-                status: data.status ?? current.status,
-              }
-            : current
-        );
-      }
-      if (data.loadPreview) setLoadPreview(data.loadPreview);
+      // Reload authoritative item mappings and validation after reprocessing.
+      await refreshJob(job.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.unexpectedError);
     } finally {
@@ -792,7 +705,7 @@ export default function OperationImportPage() {
       setProducts((current) => upsertById(current, product));
       const patched = await patchCandidate(
         request.candidate,
-        replaceFirstItem(request.operation, {
+        replaceItem(request.operation, request.itemIndex ?? 0, {
           productId: product.id,
           productName: product.name,
           skuCode: product.skuCode || request.item?.skuCode,
@@ -808,7 +721,7 @@ export default function OperationImportPage() {
       setWarehouses((current) => upsertById(current, warehouse));
       const patched = await patchCandidate(
         request.candidate,
-        replaceFirstItem(request.operation, {
+        replaceItem(request.operation, request.itemIndex ?? 0, {
           warehouseId: warehouse.id,
           warehouseName: warehouse.name,
           createWarehouse: false,
@@ -821,6 +734,9 @@ export default function OperationImportPage() {
     void reprocessCreatedEntity(request.kind, item);
   };
 
+  const detectionQuestions = Array.isArray(job?.findings?.unresolvedQuestions)
+    ? job.findings.unresolvedQuestions.filter((question): question is string => typeof question === "string")
+    : [];
   const summary = job?.summary ?? {};
   const total = getSummaryNumber(summary, "total");
   const needsReview = getSummaryNumber(summary, "needsReview");
@@ -1019,6 +935,14 @@ export default function OperationImportPage() {
 
           {step === "approve" && (
             <>
+              {detectionQuestions.length > 0 && (
+                <div role="status" className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm">
+                  <p className="font-medium">{t.importDocumentStatusNeedsReview}</p>
+                  <ul className="mt-2 list-inside list-disc space-y-1">
+                    {detectionQuestions.map((question, index) => <li key={index}>{question}</li>)}
+                  </ul>
+                </div>
+              )}
               <CandidateEditor
                 candidates={candidates}
                 candidatePage={candidatePage}
@@ -1386,7 +1310,7 @@ function CandidateEditor({
     onBulkPatch(
       source.map((candidate) => ({
         candidateId: candidate.id,
-        operation: bulkAction.buildOperation(getOperation(candidate)),
+        operation: bulkAction.buildOperation(getOperation(candidate), replaceAll),
       }))
     );
     setBulkAction(null);
@@ -1407,13 +1331,13 @@ function CandidateEditor({
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="min-w-56">{t.product}</TableHead>
+              <TableHead className="min-w-36">{t.quantity}</TableHead>
+              <TableHead className="min-w-40">{t.price}</TableHead>
+              <TableHead className="min-w-44">{t.warehouse}</TableHead>
               <TableHead className="min-w-32">{t.operationType}</TableHead>
               <TableHead className="min-w-36">{t.operationDate}</TableHead>
               <TableHead className="min-w-44">{t.supplier}</TableHead>
-              <TableHead className="min-w-56">{t.product}</TableHead>
-              <TableHead className="min-w-44">{t.warehouse}</TableHead>
-              <TableHead className="min-w-36">{t.quantity}</TableHead>
-              <TableHead className="min-w-40">{t.price}</TableHead>
               <TableHead className="min-w-48">{t.validation}</TableHead>
               <TableHead className="w-32 text-right">{t.actions}</TableHead>
             </TableRow>
@@ -1421,7 +1345,11 @@ function CandidateEditor({
           <TableBody>
             {candidates.map((candidate) => {
               const operation = getOperation(candidate);
-              const firstItem = getFirstItem(operation);
+              const items = operation.type === "payment"
+                ? [{}]
+                : operation.items?.length
+                  ? operation.items
+                  : [{}];
               const errors = candidate.validation_errors || [];
               const saving =
                 savingCandidateId === candidate.id ||
@@ -1429,9 +1357,192 @@ function CandidateEditor({
               const rowDisabled =
                 readOnly || loadingPage || candidate.status === "committed" || saving;
 
-              return (
-                <TableRow key={candidate.id}>
-                <TableCell>
+              return items.map((item, itemIndex) => (
+                <TableRow key={`${candidate.id}-${itemIndex}`} data-testid="import-item-row">
+                <TableCell data-testid="import-product-cell">
+                  {items.length > 1 && (
+                    <div className="mb-1 text-xs text-muted-foreground">{t.importItemPosition(itemIndex + 1, items.length)}</div>
+                  )}
+                  <EntityResolver
+                    value={item.productId}
+                    rawName={item.productName || item.skuCode}
+                    items={products}
+                    disabled={rowDisabled}
+                    getItemLabel={(product) =>
+                      product.skuCode
+                        ? `${product.name} (${product.skuCode})`
+                        : product.name
+                    }
+                    onValueChange={(value) =>
+                      onPatch(
+                        candidate,
+                        replaceItem(operation, itemIndex, {
+                          productId: value || undefined,
+                          createProduct: false,
+                        })
+                      )
+                    }
+                    onCreate={() =>
+                      onCreateEntity({
+                        kind: "product",
+                        candidate,
+                        operation: replaceItem(operation, itemIndex, {
+                          productId: undefined,
+                          createProduct: true,
+                        }),
+                        item,
+                        itemIndex,
+                        rawName: item.productName || item.skuCode,
+                      })
+                    }
+                    onApply={() => {
+                      if (!item.productId) return;
+                      const product = products.find(
+                        (product) => product.id === item.productId
+                      );
+                      const productName =
+                        product?.name ||
+                        item.productName ||
+                        item.skuCode ||
+                        "";
+                      setBulkAction({
+                        fieldLabel: t.product,
+                        valueLabel: productName,
+                        buildOperation: (target, replaceAll) => ({
+                          ...target,
+                          items: (target.items?.length ? target.items : [{}]).map((entry) =>
+                            replaceAll || (!entry.productId && !entry.productName && !entry.skuCode)
+                              ? {
+                                  ...entry,
+                                  productId: item.productId,
+                                  productName,
+                                  skuCode: product?.skuCode || item.skuCode,
+                                  storeId: product?.storeId || item.storeId,
+                                  createProduct: false,
+                                }
+                              : entry
+                          ),
+                        }),
+                        isBlank: (target) => (target.items?.length ? target.items : [{}]).some(
+                          (entry) => !entry.productId && !entry.productName && !entry.skuCode
+                        ),
+                        shouldInclude: (target) => target.type !== "payment",
+                      });
+                    }}
+                  />
+                </TableCell>
+                <TableCell className="min-w-36">
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    step="any"
+                    aria-label={t.quantity}
+                    value={item.quantity ?? ""}
+                    disabled={rowDisabled}
+                    onChange={(event) =>
+                      onPatch(
+                        candidate,
+                        replaceItem(operation, itemIndex, {
+                          quantity: event.target.value
+                            ? Number(event.target.value)
+                            : undefined,
+                        })
+                      )
+                    }
+                    className="h-9 min-w-28 tabular-nums"
+                  />
+                </TableCell>
+                <TableCell className="min-w-40">
+                  <div className="relative">
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      step="any"
+                      aria-label={t.price}
+                      value={
+                        operation.type === "payment"
+                          ? operation.paymentAmount ?? ""
+                          : item.unitPrice ?? ""
+                      }
+                      disabled={rowDisabled}
+                      onChange={(event) => {
+                        const value = event.target.value
+                          ? Number(event.target.value)
+                          : undefined;
+                        onPatch(
+                          candidate,
+                          operation.type === "payment"
+                            ? { ...operation, paymentAmount: value }
+                            : replaceItem(operation, itemIndex, { unitPrice: value })
+                        );
+                      }}
+                      className="h-9 min-w-32 pr-14 tabular-nums"
+                    />
+                    <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-xs text-muted-foreground">
+                      {currency}
+                    </span>
+                  </div>
+                </TableCell>
+                <TableCell data-testid="import-warehouse-cell">
+                  <EntityResolver
+                    value={item.warehouseId}
+                    rawName={item.warehouseName}
+                    items={warehouses}
+                    disabled={rowDisabled}
+                    onValueChange={(value) =>
+                      onPatch(
+                        candidate,
+                        replaceItem(operation, itemIndex, {
+                          warehouseId: value || undefined,
+                          createWarehouse: false,
+                        })
+                      )
+                    }
+                    onCreate={() =>
+                      onCreateEntity({
+                        kind: "warehouse",
+                        candidate,
+                        operation: replaceItem(operation, itemIndex, {
+                          warehouseId: undefined,
+                          createWarehouse: true,
+                        }),
+                        item,
+                        itemIndex,
+                        rawName: item.warehouseName,
+                      })
+                    }
+                    onApply={() => {
+                      if (!item.warehouseId) return;
+                      const warehouseName = optionName(
+                        warehouses,
+                        item.warehouseId,
+                        item.warehouseName
+                      );
+                      setBulkAction({
+                        fieldLabel: t.warehouse,
+                        valueLabel: warehouseName,
+                        buildOperation: (target, replaceAll) => ({
+                          ...target,
+                          items: (target.items?.length ? target.items : [{}]).map((entry) =>
+                            replaceAll || (!entry.warehouseId && !entry.warehouseName)
+                              ? {
+                                  ...entry,
+                                  warehouseId: item.warehouseId,
+                                  warehouseName,
+                                  createWarehouse: false,
+                                }
+                              : entry
+                          ),
+                        }),
+                        isBlank: (target) => (target.items?.length ? target.items : [{}]).some(
+                          (entry) => !entry.warehouseId && !entry.warehouseName
+                        ),
+                        shouldInclude: (target) => target.type !== "payment",
+                      });
+                    }}
+                  />
+                </TableCell>
+                {itemIndex === 0 && <TableCell rowSpan={items.length} className="align-top">
                   <div className="flex items-center gap-1">
                     <Select
                       value={operation.type || "__none"}
@@ -1475,8 +1586,8 @@ function CandidateEditor({
                       }}
                     />
                   </div>
-                </TableCell>
-                <TableCell>
+                </TableCell>}
+                {itemIndex === 0 && <TableCell rowSpan={items.length} className="align-top">
                   <div className="flex items-center gap-1">
                     <Input
                       type="date"
@@ -1512,8 +1623,8 @@ function CandidateEditor({
                       }}
                     />
                   </div>
-                </TableCell>
-                <TableCell>
+                </TableCell>}
+                {itemIndex === 0 && <TableCell rowSpan={items.length} className="align-top">
                   <EntityResolver
                     value={operation.supplierId}
                     rawName={operation.supplierName}
@@ -1559,175 +1670,14 @@ function CandidateEditor({
                       });
                     }}
                   />
-                </TableCell>
-                <TableCell>
-                  <EntityResolver
-                    value={firstItem.productId}
-                    rawName={firstItem.productName || firstItem.skuCode}
-                    items={products}
-                    disabled={rowDisabled}
-                    getItemLabel={(product) =>
-                      product.skuCode
-                        ? `${product.name} (${product.skuCode})`
-                        : product.name
-                    }
-                    onValueChange={(value) =>
-                      onPatch(
-                        candidate,
-                        replaceFirstItem(operation, {
-                          productId: value || undefined,
-                          createProduct: false,
-                        })
-                      )
-                    }
-                    onCreate={() =>
-                      onCreateEntity({
-                        kind: "product",
-                        candidate,
-                        operation: replaceFirstItem(operation, {
-                          productId: undefined,
-                          createProduct: true,
-                        }),
-                        item: firstItem,
-                        rawName: firstItem.productName || firstItem.skuCode,
-                      })
-                    }
-                    onApply={() => {
-                      if (!firstItem.productId) return;
-                      const product = products.find(
-                        (item) => item.id === firstItem.productId
-                      );
-                      const productName =
-                        product?.name ||
-                        firstItem.productName ||
-                        firstItem.skuCode ||
-                        "";
-                      setBulkAction({
-                        fieldLabel: t.product,
-                        valueLabel: productName,
-                        buildOperation: (target) =>
-                          replaceFirstItem(target, {
-                            productId: firstItem.productId,
-                            productName,
-                            skuCode: product?.skuCode || firstItem.skuCode,
-                            storeId: product?.storeId || firstItem.storeId,
-                            createProduct: false,
-                          }),
-                        isBlank: (target) => {
-                          const item = getFirstItem(target);
-                          return !item.productId && !item.productName && !item.skuCode;
-                        },
-                        shouldInclude: (target) => target.type !== "payment",
-                      });
-                    }}
-                  />
-                </TableCell>
-                <TableCell>
-                  <EntityResolver
-                    value={firstItem.warehouseId}
-                    rawName={firstItem.warehouseName}
-                    items={warehouses}
-                    disabled={rowDisabled}
-                    onValueChange={(value) =>
-                      onPatch(
-                        candidate,
-                        replaceFirstItem(operation, {
-                          warehouseId: value || undefined,
-                          createWarehouse: false,
-                        })
-                      )
-                    }
-                    onCreate={() =>
-                      onCreateEntity({
-                        kind: "warehouse",
-                        candidate,
-                        operation: replaceFirstItem(operation, {
-                          warehouseId: undefined,
-                          createWarehouse: true,
-                        }),
-                        item: firstItem,
-                        rawName: firstItem.warehouseName,
-                      })
-                    }
-                    onApply={() => {
-                      if (!firstItem.warehouseId) return;
-                      const warehouseName = optionName(
-                        warehouses,
-                        firstItem.warehouseId,
-                        firstItem.warehouseName
-                      );
-                      setBulkAction({
-                        fieldLabel: t.warehouse,
-                        valueLabel: warehouseName,
-                        buildOperation: (target) =>
-                          replaceFirstItem(target, {
-                            warehouseId: firstItem.warehouseId,
-                            warehouseName,
-                            createWarehouse: false,
-                          }),
-                        isBlank: (target) => {
-                          const item = getFirstItem(target);
-                          return !item.warehouseId && !item.warehouseName;
-                        },
-                        shouldInclude: (target) => target.type !== "payment",
-                      });
-                    }}
-                  />
-                </TableCell>
-                <TableCell className="min-w-36">
-                  <Input
-                    type="number"
-                    inputMode="decimal"
-                    step="any"
-                    value={firstItem.quantity ?? ""}
-                    disabled={rowDisabled}
-                    onChange={(event) =>
-                      onPatch(
-                        candidate,
-                        replaceFirstItem(operation, {
-                          quantity: event.target.value
-                            ? Number(event.target.value)
-                            : undefined,
-                        })
-                      )
-                    }
-                    className="h-9 min-w-28 tabular-nums"
-                  />
-                </TableCell>
-                <TableCell className="min-w-40">
-                  <div className="relative">
-                    <Input
-                      type="number"
-                      inputMode="decimal"
-                      step="any"
-                      value={
-                        operation.type === "payment"
-                          ? operation.paymentAmount ?? ""
-                          : firstItem.unitPrice ?? ""
-                      }
-                      disabled={rowDisabled}
-                      onChange={(event) => {
-                        const value = event.target.value
-                          ? Number(event.target.value)
-                          : undefined;
-                        onPatch(
-                          candidate,
-                          operation.type === "payment"
-                            ? { ...operation, paymentAmount: value }
-                            : replaceFirstItem(operation, { unitPrice: value })
-                        );
-                      }}
-                      className="h-9 min-w-32 pr-14 tabular-nums"
-                    />
-                    <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-xs text-muted-foreground">
-                      {currency}
-                    </span>
-                  </div>
-                </TableCell>
+                </TableCell>}
                 <TableCell>
                   <div className="space-y-2">
-                    {statusBadge(candidate)}
-                    {errors.slice(0, 3).map((error, index) => (
+                    {itemIndex === 0 && statusBadge(candidate)}
+                    {errors.filter((error) =>
+                      error.field.startsWith(`items[${itemIndex}].`) ||
+                      (itemIndex === 0 && !/^items\[\d+\]\./.test(error.field))
+                    ).map((error, index) => (
                       <div
                         key={`${error.field}-${index}`}
                         className="text-xs text-destructive"
@@ -1738,7 +1688,7 @@ function CandidateEditor({
                     ))}
                   </div>
                 </TableCell>
-                <TableCell className="text-right">
+                {itemIndex === 0 && <TableCell rowSpan={items.length} className="text-right align-top">
                   <div className="flex justify-end gap-1">
                     <Button
                       type="button"
@@ -1768,9 +1718,9 @@ function CandidateEditor({
                       )}
                     </Button>
                   </div>
-                </TableCell>
+                </TableCell>}
                 </TableRow>
-              );
+              ));
             })}
           </TableBody>
         </Table>
@@ -1888,11 +1838,11 @@ function EntityResolver<T extends { id: string; name: string }>({
           }
         }}
       >
-        <SelectTrigger className="h-9">
+        <SelectTrigger className="h-9 w-full min-w-0 max-w-64">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="__none">-</SelectItem>
+          <SelectItem value="__none">{rawName || "-"}</SelectItem>
           {createSourceName && (
             <SelectItem value="__create">
               {t.createFromSource(createSourceName)}

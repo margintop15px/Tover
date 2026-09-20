@@ -208,6 +208,7 @@ export async function POST(
       .from("operation_imports")
       .update({
         findings: {
+          ...importRecord.findings,
           reprocessedAt: new Date().toISOString(),
           candidateCount: (rows || []).length,
           changedCandidateCount: changed.length,

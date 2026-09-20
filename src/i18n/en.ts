@@ -222,6 +222,7 @@ export const en = {
     "CSV, XLSX, exported Google Sheets, scans, photos, and plain text are supported.",
   chooseFile: "Choose file",
   extracting: "Extracting...",
+  importItemPosition: (position: number, total: number) => `Item ${position} of ${total}`,
   extractedCandidates: (count: number) => `${count} candidate operations found`,
   needsReviewCount: (count: number) => `${count} need review`,
   readyCount: (count: number) => `${count} ready`,
