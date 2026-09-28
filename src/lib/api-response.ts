@@ -12,5 +12,5 @@ export async function readJsonResponse<T>(response: Response): Promise<T> {
 
 export function reportRequestFailure(error: unknown, action: string) {
   // Use fixed action names only: never include credentials, drafts or bodies.
-  Sentry.captureException(error, { tags: { handled_by: "request_ui", action } });
+  Sentry.captureException(error, { tags: { handled_by: "request_ui", action }, fingerprint: ["handled_request", action] });
 }

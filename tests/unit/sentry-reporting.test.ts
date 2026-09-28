@@ -66,6 +66,7 @@ test("unexpected route exceptions reach Sentry; expected auth failures do not", 
     assert.equal(events.length, 2);
     assert.equal(events[1].tags?.handled_by, "request_ui");
     assert.equal(events[1].tags?.action, "load_operations");
+    assert.deepEqual(events[1].fingerprint, ["handled_request", "load_operations"]);
     assert.equal(events[1].exception?.values?.[0].mechanism?.handled, true);
   } finally {
     console.error = originalConsoleError;

@@ -88,3 +88,44 @@ test("browser helper preserves uploads, headers and cancellation; stale writes a
     setRequestWorkspace(null);
   }
 });
+
+test("GET transport failures back off for at most three attempts without retrying writes or aborted reads", async () => {
+  const originalFetch = globalThis.fetch;
+  setRequestWorkspace("alpha");
+  try {
+    const attemptTimes: number[] = [];
+    globalThis.fetch = async () => {
+      attemptTimes.push(performance.now());
+      if (attemptTimes.length < 3) throw new TypeError("Failed to fetch");
+      return Response.json({ ok: true });
+    };
+    assert.equal((await workspaceFetch("/api/operations")).status, 200);
+    assert.equal(attemptTimes.length, 3);
+    assert.ok(attemptTimes[1] - attemptTimes[0] >= 450);
+    assert.ok(attemptTimes[2] - attemptTimes[1] >= 900);
+
+    let attempts = 0;
+    globalThis.fetch = async () => { attempts++; throw new TypeError("Failed to fetch"); };
+    await assert.rejects(workspaceFetch("/api/operations"), /Failed to fetch/);
+    assert.equal(attempts, 3);
+
+    attempts = 0;
+    await assert.rejects(workspaceFetch("/api/operations", { method: "POST" }), /Failed to fetch/);
+    assert.equal(attempts, 1);
+
+    attempts = 0;
+    const controller = new AbortController();
+    const pending = workspaceFetch("/api/operations", { signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+    await assert.rejects(pending, { name: "AbortError" });
+    assert.equal(attempts, 1);
+
+    attempts = 0;
+    globalThis.fetch = async () => { attempts++; return Response.json({}, { status: 503 }); };
+    assert.equal((await workspaceFetch("/api/operations")).status, 503);
+    assert.equal(attempts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    setRequestWorkspace(null);
+  }
+});
