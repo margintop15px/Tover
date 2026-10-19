@@ -1,7 +1,7 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -44,10 +44,24 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-.idea
+.idea/*
+!.idea/codeStyles/
+.idea/codeStyles/*
+!.idea/codeStyles/Project.xml
+!.idea/codeStyles/codeStyleConfig.xml
 *.iml
 
 # Playwright
 playwright-report/
 test-results/
 playwright/.auth/
+
+# Clojure and local migration recovery
+/.cpcache/
+/.nrepl-port
+/.data/
+/.clj-kondo/.cache/
+/.clj-kondo/imports/
+/.migration-backups/
+/.pal/
+/.playwright-mcp/

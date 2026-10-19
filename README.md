@@ -1,466 +1,113 @@
 # Tover
 
-Multi-tenant marketplace turnover tracker built with Next.js + Supabase.
+The main application is now Clojure, using Datastar, http-kit, Reitit, Chassis and RDF4J NativeStore. This is still a UI prototype with one local workspace and no authentication. RDF4J remains provisional. The legacy Next.js application has been removed; Supabase SQL history and selected [legacy contracts](docs/legacy-contracts/README.md) are retained for later migration steps.
 
-## Features
+## Run
 
-- **Auth & Multi-tenancy** — email/password auth, organization creation at signup, role-based access (`owner`, `admin`, `member`), member invites
-- **Inventory Management** — products, warehouses, suppliers, categories, stores
-- **Operations Engine** — 8 operation types: purchase, sale, return, write-off, transfer, production, defect, payment
-- **Weighted-Average Cost Tracking** — automatic cost recalculation on purchases and production
-- **Product Balance Tracking** — real-time per-warehouse stock and cost balances
-- **CSV Imports** — orders, order lines, inventory snapshots, payments
-- **Reports** — Inventory Balances (current + historical), Product Movement, Supplier Debt (with drill-down)
-- **Workspace Settings** — configurable currency, category/store requirement toggles with default backfill
-- **Dashboard** — KPI summary and critical stock alerts
-- **Column Visibility** — per-table column show/hide with localStorage persistence
-- **Bilingual UI** — English and Russian with runtime locale switching
+Requires JDK 21+ and the Clojure CLI. From the repository root:
 
-## Stack
-
-- Next.js 16 (App Router)
-- React 19 + TypeScript
-- Supabase (Auth + Postgres + RLS)
-- shadcn/ui (New York style) + Radix UI + Lucide icons
-- Tailwind CSS 4
-- Playwright (E2E)
-
-## Prerequisites
-
-- Node.js `>=20.9.0`
-- npm
-- Supabase project (URL, anon key, service role key)
-
-## Quick Start
-
-```bash
-cp .env.local.example .env.local
-# fill values in .env.local
-npm install
-npm run dev
+```sh
+clojure -M:dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open <http://localhost:3030>. Development seeds three opening declarations, starts a loopback nREPL on an assigned port, and enables Malli instrumentation. Data persists in `.data/inventory`. Seeds do not overwrite accepted edits. `clojure -M:run` starts without development seeds, examples or instrumentation. A fresh production store is empty; existing accepted local stock is preserved.
 
-## Environment Variables
+Development uses [ring-hot-reload](https://github.com/brettatoms/ring-hot-reload) and Ring's `wrap-reload`. Saving Clojure files under `src` reloads code and refreshes open browser pages. CSS and JavaScript changes under `resources` also refresh the page. Full refresh reinitializes Datastar and RevoGrid and clears unfinished browser input. Changes to `dev`, handler/middleware construction or resource configuration need `user/refresh!`; dependency changes need a REPL restart. Production has no reload middleware or file watcher.
 
-Use `.env.local.example` as template.
-
-```bash
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-NEXT_PUBLIC_SITE_URL=http://localhost:3000
-OZON_CREDENTIAL_ENCRYPTION_KEY=replace-with-a-long-random-secret
-OZON_SYNC_RECOVERY_SECRET=replace-with-a-separate-long-random-secret
-# Optional local mock/test override:
-# OZON_API_BASE_URL=http://127.0.0.1:32123
-# Optional E2E overrides:
-# E2E_EMAIL=playwright@tover.local
-# E2E_PASSWORD=Playwright-dev-password-1
+```clojure
+(user/stop!)
+(user/start!)
+(user/refresh!)
 ```
 
-Notes:
-- `SUPABASE_SERVICE_ROLE_KEY` is required for server-side invite operations.
-- `OZON_CREDENTIAL_ENCRYPTION_KEY` is required before saving Ozon Seller API credentials.
-- `OZON_SYNC_RECOVERY_SECRET` authenticates Supabase Cron calls to the internal
-  Ozon recovery route. Use a separate high-entropy value and never expose it to
-  the browser.
-- `OZON_API_BASE_URL` is optional and should only be used for local mocks/tests.
-- Playwright authenticated tests auto-provision `playwright@tover.local` in local dev when `E2E_EMAIL`/`E2E_PASSWORD` are omitted and the Supabase service role key is present.
-- Never expose `SUPABASE_SERVICE_ROLE_KEY` to the browser.
+Integrant owns the repository, realtime connections, handler and HTTP server. Shutdown closes streams and drains HTTP before closing RDF.
 
-## Supabase Setup
+## UI flow
 
-### 0. Enable required extensions
+The stock screen uses the native RevoGrid 4.28.3 web component. The browser initializer configures columns and interaction through native properties. Datastar overlays temporary browser edits on the accepted `_stockRows` signal. Clojure owns saved stock, business validation and acceptance.
 
-Fresh projects must enable the network/Cron extensions used by migration 020
-and verify that Vault is enabled before running the migrations:
+Goods, Quantity, Unit, Location and Article support inline editing. Text editors suggest matching values and allow new text; Quantity uses a plain editor. Evidence is read-only and system-set. All columns support header sorting. The grid fits its visible rows up to 65% of the viewport. A permanent change bar shows changed/deleted/added row counts and provides Add row, revert, before/after preview and submit controls.
 
-```sql
-create extension if not exists pg_net with schema extensions;
-create extension if not exists pg_cron;
-select count(*) from vault.decrypted_secrets;
+**Add row** inserts a blank green draft and opens Goods editing. The top smart input builds a row from `field:value` chips: type to match fields or known values, choose a field, then choose or enter its value. Enter creates a chip. Click a chip to edit it or × to remove it. Cmd/Ctrl+Enter or the trailing plus adds the row. New rows receive **Manual entry** evidence.
+
+Click a row number to select the whole row, then press Delete to mark it for deletion. Cmd/Ctrl + Delete does the same from a selected cell. Deleted rows stay visible in muted red and stop accepting edits; Revert restores them. Selection follows row identity through sorting and filtering.
+
+All grid edits and new rows are UI drafts. **Submit changes** in the diff or the toolbar keeps new rows and edited values, hides marked rows and clears the pending diff in this tab. Later previews compare against the last local submission; **Revert all changes** restores that local baseline. Deleting an unsubmitted new row removes it immediately. Reloading restores saved stock. Submit makes no persistence request.
+
+Accepted stock updates the grid's `source` property after the active editor closes and any pending proposal is resolved. Background refresh preserves the current review, reason and history. Pinned RevoGrid assets and its MIT license remain in `resources/public/vendor`. RevoGrid keeps its Community attribution.
+
+The top input now creates rows. Existing Clojure smart-adjustment actions remain available to direct callers; the grid and row-entry Submit controls remain UI simulations.
+
+**Operations** uses a read-only RevoGrid with the same spreadsheet appearance as Stock. Each operation has one overview row: date, type, summary, locations/party, items and reason/evidence. Search and native column sorting/filtering remain available. Expanding an operation shows its details: field-level before/after changes, paired transfer locations, or consumed inputs and produced outputs.
+
+In development, **Demo data** switches between illustrative inventory/history and recorded local stock. The examples live under `dev/tover/` and do not change accepted stock or recorded history. Production has no example payloads, badge or toggle.
+
+The arrow beside each Goods name expands that stock line's history as another read-only RevoGrid. Shared operations appear for every affected line. Their expanded details emphasize that line's role and retain the other inputs/outputs. Multiple lines can stay open while sorting or editing.
+
+UI Submit also appends local history entries for additions, edits and deletions. These entries have a **Local** badge and appear in both history views. Unsubmitted drafts are excluded. Switching views preserves drafts; reloading clears local submissions and their history. Recorded operations are read-only and remain in Clojure/RDF.
+
+Components in `tover.ui` are pure Hiccup functions. The props map contains data and event properties such as `:on-click`, `:on-input`, `:on-keydown` and `:init`. Use trailing children only when a component needs caller-supplied content. Views supply direct action expressions. See [AGENTS.md](AGENTS.md) for component conventions. There are no custom client namespaces or application objects on `window`.
+
+The browser holds input strings, a stock-change flag and temporary editor values. Adjustment reviews are rendered by the server. Actions update stock signals; reviews, notices and history replace their own regions.
+
+`@action` and `@view` use Datastar request defaults. An optional third argument supplies request options for that call:
+
+```clojure
+(->expr (@action :tover.actions/accept ~payload {:requestCancellation "disabled"}))
+(->expr (@view :tover.views/stock {:query $query} {:retry "never"}))
 ```
 
-Run this as the project owner in the Supabase SQL Editor. Enable `pg_net` and
-`pg_cron` under Database > Extensions; Vault is exposed under Dashboard
-Integrations and may not appear with the literal `supabase_vault` extension
-label. The count-only query verifies `vault.decrypted_secrets` without printing
-secret values. If the `vault` schema is absent, enable Vault before migration
-020. A permission error means the project owner or database administrator must
-perform this step.
+## Updates and storage
 
-### 1. Run migrations (in order)
+`GET /` renders the page. `POST /view/{*id}` renders fragments; `POST /action/{*id}` executes an action. Both return short Datastar SSE responses with HTML or signal patches.
 
-Files in `supabase/migrations/`:
-- `001_initial_schema.sql` — orders, order lines, inventory snapshots, payments, imports
-- `002_auth_orgs_rbac.sql` — auth, organizations, RBAC, RLS policies
-- `003_inventory_system.sql` — inventory entities, operations, balances, RPCs
-- `004_report_functions.sql` — report RPCs (inventory balances, product movement, supplier debt) and indexes
-- `005_workspace_settings.sql` — workspace settings table (currency, category/store requirements) with RLS
-- `006_product_name_unique.sql` — unique constraint on product names (excluding defect copies)
-- `012_ozon_marketplace_integration.sql` — Ozon marketplace connection, sync staging, and read-only operation candidates
-- `013_ozon_candidate_approval_status.sql` — approved Ozon candidate review state for manual commit workflows
-- `020_ozon_sync_recovery.sql` — durable Ozon step state, leases, recovery RPCs,
-  and the Supabase Cron scheduling helper
-- `021_ozon_sync_checkpoints_observability.sql` — resumable checkpoints,
-  failure-based retries, safe step events, and recovery indexes
-- `022_ozon_evidence_accounting_correctness.sql` — mirror provenance, strict
-  evidence hashes, atomic Ozon candidate commits, nullable inventory cost, and
-  PostgreSQL `NUMERIC` report aggregation
-- `023_ozon_repair_retry_scheduled_steps.sql` — permits the
-  confirmation-gated, lease-free repair to reset legacy scheduled retries
-- `027_ozon_retry_accounting.sql` — counts every executed durable failure and
-  records checkpoint-preserving operator retry requests
-- `028_ozon_automatic_incremental_sync.sql` — UTC daily Ozon
-  scheduling, completed-run watermarking, safe disable, and mutable-posting refresh
+`GET /_bel/realtime/stream` opens a persistent stream with its topics in the initial request. A signed Ring cookie identifies the session; each page has its own tab ID. Stock notifications set a flag, and a direct Datastar effect requests the current stock view. Datastar manages the connection. Publication sends directly to connected subscribers; there is no delivery worker or subscription handshake.
 
-Option A (Supabase SQL Editor):
-- Run migrations in order: `001` through the latest file in `supabase/migrations/`.
+Bel declarations provide typed input and an optional `:output` contract, which defaults to `Result`. Pages and views return element, signal or view instructions; Hiccup belongs inside `{:type :elements :html ...}`. Initial pages emit elements only. Query functions own their result schemas. Startup requires discovered namespaces under `tover`, then registers their declaration Vars without scanning all loaded namespaces. Handlers resolve current Vars for REPL edits. `bel.validation` handles Malli validation and wire codecs. Ring requires the Datastar header for writes.
 
-Option B (psql):
+Streams infer their topic from the namespace and declaration name. Their options map is optional; `:schema` describes the payload passed directly to the body:
 
-```bash
-for migration in supabase/migrations/*.sql; do
-  psql "$SUPABASE_DB_URL" -f "$migration"
-done
+```clojure
+(defstream stock
+  [_ctx _payload]
+  {:type :signals :data {:stockChanged true}})
+
+(bel.realtime/publish! realtime context {:topic :tover.streams/stock :data {}})
 ```
 
-### 2. Configure Auth URLs in Supabase
+Pass shared app context without the request. Delivery adds session and tab IDs from the connection keys; connections store only the SSE stream and topics.
 
-In Auth settings:
-- Site URL: `http://localhost:3000`
-- Additional redirect URLs: `http://localhost:3000/auth/callback`
+RDF holds immutable opening declarations and accepted adjustments. Current stock is derived from their quantities. Acceptance validates input and records an atomic history entry using the current quantity. Quantity input stays a string until the server parses it, preserving integer precision.
 
-For a deployed app, add its exact origin plus `/auth/callback` as well, and set
-the Site URL to that app's origin. Password recovery also uses
-`/auth/callback?next=/reset-password`; allow that URL too.
+There are no revisions, stale-baseline checks, edit replay, request queues, draft reconciliation or delivery acknowledgements. Reloading the page loses unfinished input. Disconnected notifications are lost; opening or reconnecting a stream only registers its topics. Refresh after missed updates is deferred. If delivery is uncertain, refresh and inspect stock/history before submitting again. Concurrent edits use the current stock at acceptance, which can differ from the preview.
 
-Team invitation emails (`type=invite`) establish a session and open the existing
-password setup screen before entering the app. If the email already belongs to
-a confirmed account, the invitation stays pending and a fresh magic sign-in link
-is sent instead (`shouldCreateUser: false`). These links use the implicit flow so
-the recipient can open them in another browser. The existing Magic Link email
-template must contain `{{ .ConfirmationURL }}`. After signing in, the verified-email
-invitation acceptance adds the workspace to their switcher. No account deletion
-or password reset is required.
+## Checks
 
-Signup confirmation emails
-(`type=signup`, with a `pkce_` token) are a separate flow: automatic sign-in
-requires the same browser and origin where signup started. After confirming in
-a different browser, the user can log in with the password chosen during signup.
-
-Migration `029_secure_workspace_invitations.sql` prevents signup metadata from
-granting membership in an existing workspace. After Auth verifies the user's
-email, the existing `accept_my_organization_invites()` call accepts only pending,
-unexpired invitations matching that email and takes the workspace and role from
-the invitation record. The migration does not remove existing memberships;
-review any suspicious earlier grants separately.
-
-Run the database regression test with `bash scripts/test-auth-security.sh`.
-It requires Docker and uses a disposable PostgreSQL container without networking.
-
-### 3. Create first organization
-
-- Go to `/signup`
-- Enter full name, organization name, email, password
-- Confirm email (if email confirmations are enabled)
-
-#### Switching workspaces
-
-Accounts with multiple memberships can switch workspaces in the sidebar (or the
-mobile navigation menu). The selection is remembered for 30 days per account in
-this browser. Switching immediately opens `/operations` in all app tabs and
-discards unsaved forms and filters. Invitations use the selected workspace.
-Each API request validates membership; stale tabs receive `409 WORKSPACE_CHANGED`
-and reload without retrying writes. Existing explicit `workspaceId` API overrides
-remain supported.
-
-Run `npm run test:workspace` for isolated browser/API coverage using a local mock
-Supabase service. It does not connect to a Supabase project. Selection and request
-helper checks also run with `node --import tsx --test tests/unit/workspace.test.ts`.
-
-### 4. Seed demo data (optional)
-
-Populate the database with sample inventory data (categories, warehouses, suppliers, products, operations):
-
-```bash
-npm run seed  # requires dev server running + E2E_EMAIL/E2E_PASSWORD env vars
+```sh
+clojure -M:dev:test
+clojure -M:dev:test --focus tover.store-test
+clojure -M:fmt check
 ```
 
-Authenticated Playwright runs use the same auth model. In local dev, they load `.env.local` and create/update a dev-only owner user automatically when explicit `E2E_EMAIL`/`E2E_PASSWORD` are not set. Set `E2E_AUTO_PROVISION=false` to disable that behavior.
+Tests cover validation, RDF transactions, persistence, stock/history, pure component rendering, direct action flows and transport cleanup. Instrumentation runs during the suite. See [styleguide.md](styleguide.md) for formatting.
 
-### 5. Enable durable Ozon recovery
+Pinned versions: Datastar Clojure SDK/adapter `1.0.0-RC11`, local browser runtime `1.0.4`, http-kit `2.9.0-beta3`, Reitit `0.10.1`, Chassis `1.0.365`. Auth, imports, marketplace integration and production recovery are outside this prototype.
 
-Apply migrations `020` through `028_ozon_automatic_incremental_sync`
-before enabling the worker, deploy
-the app with `OZON_SYNC_RECOVERY_SECRET`, and then create these Supabase Vault
-secrets. The secret value must match the app environment variable; the URL must
-be the deployed internal route:
 
-```sql
-select vault.create_secret(
-  'https://your-app.example.com/api/internal/integrations/ozon/recover',
-  'tover_ozon_recovery_url'
-);
+## Browser checks
 
-select vault.create_secret(
-  'replace-with-the-app-recovery-secret',
-  'tover_ozon_recovery_secret'
-);
+The small Playwright package is isolated under `test/browser`; Node is not an application runtime. Its servers use disposable local stores and never read `.env.local`.
 
-select public.schedule_ozon_sync_recovery();
-```
-
-The helper idempotently replaces `tover-ozon-sync-recovery` and runs it every
-minute. At or after UTC midnight, that route queues each due Ozon account, then
-claims one durable step. It reads both Vault values at execution time and calls
-the protected route with a 120-second `pg_net` timeout. Do not place a real
-deployment URL or secret in a migration. See [docs/ozon-integration.md](docs/ozon-integration.md)
-for pause/resume, monitoring, retry semantics, and failure recovery.
-
-## Auth + Organization Model
-
-Core behavior:
-- Signup creates `profiles` row.
-- Signup with `organization_name` creates a new organization.
-- Signup creator gets `owner` membership.
-- `owner` and `admin` can invite users.
-- Invited users can join organization on acceptance/login.
-
-Roles:
-- `owner`: full org control
-- `admin`: manage users + operational data
-- `member`: standard read/use access
-
-Tenant scoping:
-- All data tables use `workspace_id` which maps to `organizations.id`.
-- RLS policies enforce organization membership.
-
-## Developer Commands
-
-### App lifecycle
-
-```bash
-npm run dev              # Start dev server
-npm run build            # Production build
-npm run start            # Start production server
-npm run lint             # ESLint (flat config, ESLint 9)
-npm run seed             # Seed demo inventory data
-```
-
-### E2E tests (Playwright)
-
-Install once:
-
-```bash
-npm install -D @playwright/test
+```sh
+npm --prefix test/browser ci
+cd test/browser
 npx playwright install chromium
+cd ../..
+npm --prefix test/browser test
 ```
 
-Run:
+## Repository boundaries
 
-```bash
-npm run test:e2e
-npm run test:e2e:headed
-npm run test:e2e:ui
-npm run test:e2e:debug
-```
+[Current specifications](docs/README.md) describe the planned product. [Legacy contracts](docs/legacy-contracts/README.md) retain identity, Ozon and import behavior without the old application implementation. SQL migrations and independent disposable-Postgres checks remain unchanged. The [RDF experiment](experiments/inventory-rdf/README.md) is historical evidence, with an older containment model.
 
-Authenticated E2E tests require:
-
-```bash
-E2E_EMAIL=your-test-user@example.com
-E2E_PASSWORD=your-test-password
-```
-
-What runs by default:
-- public route tests (no credentials required)
-- authenticated tests are skipped unless `E2E_EMAIL` and `E2E_PASSWORD` are set
-
-## Demo Data (CSV)
-
-CSV files for the original import pipeline are in `supabase/demo-data/`:
-- `orders_demo.csv`
-- `order_lines_demo.csv`
-- `inventory_demo.csv`
-- `payments_demo.csv`
-
-Use the dashboard upload card after logging in as an `owner` or `admin`.
-
-## API Quick Reference
-
-All routes require authenticated session unless noted.
-
-### Auth & User
-
-- `GET /api/auth/me` — current user profile + memberships
-- `PATCH /api/auth/me` — update display name
-- `POST /api/auth/invite` — invite user to organization (`owner`/`admin`)
-
-### Dashboard & Metrics
-
-- `GET /api/metrics/summary` — KPI summary for active organization
-- `GET /api/metrics/critical-stock` — critical stock list
-
-### Orders
-
-- `GET /api/orders` — orders list
-- `GET /api/orders/:id/lines` — order line details
-
-### CSV Imports
-
-- `POST /api/imports` — upload/import CSV (`owner`/`admin`)
-- `GET /api/imports` — list imports
-- `GET /api/imports/:id` — import detail
-- `GET /api/imports/:id/errors` — import errors
-
-### Inventory — Master Data
-
-- `GET|POST /api/categories` — list / create category
-- `GET|PUT|DELETE /api/categories/:id` — get / update / delete category
-- `GET|POST /api/stores` — list / create store
-- `GET|PUT|DELETE /api/stores/:id` — get / update / delete store
-- `GET|POST /api/warehouses` — list / create warehouse
-- `GET|PUT|DELETE /api/warehouses/:id` — get / update / delete warehouse
-- `GET|POST /api/suppliers` — list / create supplier
-- `GET|PUT|DELETE /api/suppliers/:id` — get / update / delete supplier
-- `GET|POST /api/products` — list / create product
-- `GET|PUT|DELETE /api/products/:id` — get / update / delete product
-
-### Inventory — Operations & Balances
-
-- `GET /api/operations` — list operations (with filters)
-- `POST /api/operations` — create operation (dispatches to type-specific processor)
-- `GET /api/operations/:id` — operation detail with items
-- `GET /api/product-balances` — current product balances per warehouse
-
-### Reports
-
-- `GET /api/reports/inventory-balances` — inventory balances (current or historical by date)
-- `GET /api/reports/product-movement` — product movement aggregation by date range
-- `GET /api/reports/supplier-debt` — supplier debt summary (all-time + period)
-- `GET /api/reports/supplier-debt/:supplierId` — drill-down: paginated operations for a supplier
-
-### Settings
-
-- `GET /api/settings` — workspace settings (currency, category/store requirements)
-- `PATCH /api/settings` — update workspace settings (`owner`/`admin`)
-
-## Navigation Structure
-
-The app uses a sidebar layout (`AppShell` + `AppSidebar`):
-
-```
-Dashboard        /
-Orders           /orders
-Operations       /operations
-Settings         /settings
-
-Master Data (collapsible group):
-  Products       /products
-  Categories     /categories
-  Warehouses     /warehouses
-  Stores         /stores
-  Suppliers      /suppliers
-
-Reports (collapsible group):
-  Inventory      /reports/inventory
-  Movement       /reports/movement
-  Supplier Debt  /reports/supplier-debt
-```
-
-## Project Structure
-
-```
-src/
-  app/                          Next.js App Router pages and API routes
-    api/                        Route handlers (auth, metrics, orders, imports, inventory,
-                                reports, settings)
-    categories/                 Category management page
-    stores/                     Store management page
-    warehouses/                 Warehouse management page
-    suppliers/                  Supplier management page
-    products/                   Product management page
-    operations/                 Operations list + create form
-    reports/                    Report pages
-      inventory/                Inventory balances (current + historical)
-      movement/                 Product movement report
-      supplier-debt/            Supplier debt report with drill-down
-      operations/               Operations log report
-    settings/                   Workspace settings (currency, requirements, team)
-  components/
-    ui/                         shadcn/ui primitives (button, card, dialog, dropdown-menu,
-                                field, input, label, select, switch, table, tabs, sheet, etc.)
-    AppShell.tsx                Sidebar layout wrapper (hidden on auth pages)
-    AppSidebar.tsx              Sidebar navigation with collapsible groups
-    DataTable.tsx               Reusable data table with column visibility control
-    Pagination.tsx              Pagination controls for reports
-    ReportFilterBar.tsx         Shared filter bar for report pages
-    InviteForm.tsx              Team invite form component
-    KpiCard.tsx                 Dashboard KPI card
-    UploadCard.tsx              CSV upload component
-    ...
-  contexts/
-    WorkspaceSettingsContext.tsx Workspace settings provider (currency, defaults)
-  lib/
-    operations/                 Operation processors and validation
-      validate-operation.ts     Input validation
-      process-purchase.ts       Purchase processor (updates balances + cost)
-      process-production.ts     Production processor
-      process-transfer.ts       Transfer processor
-      process-simple.ts         Sale, return, write-off, defect processor
-      process-payment.ts        Payment processor
-      update-balances.ts        Balance update helpers
-      index.ts                  Dispatcher
-    supabase-server.ts          Server-side Supabase client factories
-    supabase-browser.ts         Browser Supabase client singleton
-    request-context.ts          Route context helper (auth + workspace resolution)
-    csv-parsers.ts              CSV import parsers
-    format-currency.ts          Currency formatting utility (Intl.NumberFormat)
-  types/
-    database.ts                 DB table interfaces and API response types
-    inventory.ts                Inventory, operation, report, and settings types
-  i18n/                         Custom i18n (English + Russian)
-scripts/
-  seed.ts                       Seed script for demo inventory data
-docs/
-  initial-plan.md               Original project plan
-  inventory-system-plan.md      Inventory system design document
-  design-prototype.jpg          UI design prototype
-supabase/
-  migrations/                   SQL migrations (001–006)
-  demo-data/                    CSV demo files for import pipeline
-tests/
-  e2e/                          Playwright E2E tests
-```
-
-## Troubleshooting
-
-### `Missing NEXT_PUBLIC_SUPABASE_URL` or other env errors
-- Verify `.env.local` exists and values are set.
-- Restart dev server after env changes.
-
-### Redirect loop to `/login`
-- Session cookie is missing/expired.
-- Ensure auth callback URL is configured exactly as `http://localhost:3000/auth/callback`.
-
-### `No active organization membership`
-- User exists but has no `organization_memberships` row.
-- Re-run signup/invite flow or check membership data in DB.
-
-### Invite emails not arriving
-- Check Supabase Auth email settings / SMTP configuration.
-- Check invite record in `organization_invites`.
-
-### `playwright: command not found`
-- Install Playwright dev dependency and browser:
-  - `npm install -D @playwright/test`
-  - `npx playwright install chromium`
-
-## Security Notes
-
-- Service role key is used only in server code for privileged auth admin actions.
-- App data access is enforced via Postgres RLS and organization membership policies.
-- Do not call privileged operations from client-side code.
+Milestone 1 moved code and tooling only. Authentication, workspace isolation, real grid submission, the new inventory model and production packaging remain later work. Existing local prototype data moved from `tover_v2/app/.data` to root `.data`; it was not reset or reinterpreted. A verified source/data recovery copy for this local migration is in the ignored `.migration-backups/2026-10-19-milestone-1/` directory. Credentials and private captures remain at their original paths and are excluded from that source archive.

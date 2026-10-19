@@ -1,0 +1,98 @@
+{
+  "formatVersion": 1,
+  "synthetic": true,
+  "source": "baseline:tests/unit/operation-import-extraction.test.ts:5-49",
+  "sourceBytesRetained": false,
+  "fixtureFilename": "invoice.jpg",
+  "findings": {
+    "sourceItemCount": 6
+  },
+  "operation": {
+    "type": "purchase",
+    "operationDate": "2024-10-15",
+    "items": [
+      {
+        "productName": "LEN-IP3-15",
+        "skuCode": "LEN-IP3-15",
+        "quantity": 5,
+        "unitPrice": 45000
+      },
+      {
+        "productName": "LOG-M170",
+        "skuCode": "LOG-M170",
+        "quantity": 10,
+        "unitPrice": 1200
+      },
+      {
+        "productName": "CAB-HDMI-2",
+        "skuCode": "CAB-HDMI-2",
+        "quantity": 20,
+        "unitPrice": 450
+      },
+      {
+        "productName": "SAM-S27R500",
+        "skuCode": "SAM-S27R500",
+        "quantity": 3,
+        "unitPrice": 28500
+      },
+      {
+        "productName": "OKL-930",
+        "skuCode": "OKL-930",
+        "quantity": 15,
+        "unitPrice": 680
+      },
+      {
+        "productName": "EXT-5SOCK",
+        "skuCode": "EXT-5SOCK",
+        "quantity": 8,
+        "unitPrice": 350
+      }
+    ]
+  },
+  "expected": {
+    "candidateCount": 1,
+    "itemCount": 6,
+    "quantityTimesPriceTotal": 344500,
+    "unmappedLastLineRemainsVisible": true
+  },
+  "rejections": [
+    {
+      "case": "first-line-only",
+      "extractedItemCount": 1,
+      "sourceItemCount": 6,
+      "expected": "count-mismatch"
+    },
+    {
+      "case": "provider-status-incomplete",
+      "expected": "did-not-complete"
+    },
+    {
+      "case": "empty-operations",
+      "expected": "no-operations"
+    },
+    {
+      "case": "refusal-without-json",
+      "expected": "missing-structured-output"
+    }
+  ],
+  "reviewFillBlanks": {
+    "source": "baseline:tests/e2e/operation-import-items.authenticated.spec.ts:135-145",
+    "before": [
+      null,
+      "other",
+      null,
+      null,
+      null,
+      null
+    ],
+    "fillValue": "main",
+    "after": [
+      "main",
+      "other",
+      "main",
+      "main",
+      "main",
+      "main"
+    ]
+  }
+}

@@ -1,153 +1,101 @@
-## Project Overview
+<!-- jbcontext-instructions-start -->
+# Semantic code search
 
-Tover is a multi-tenant marketplace turnover tracker built with Next.js 16 (App Router), React 19, TypeScript, and Supabase (Postgres + Auth). It tracks orders, inventory, sales metrics, and critical stock alerts, supporting CSV data imports and role-based access control.
+Use `jbcontext search "<focused description>"` before planning, editing or exact search in unfamiliar code. Use `jbcontext search -p <relative-path> "<query>"` to narrow a known area. Read promising files directly after a relevant hit.
+
+For broader or multi-step exploration, delegate to `context_explorer` with `fork_turns="none"`. Give it a focused intent. While it runs, read only already-known relevant files; call `wait_agent` after that work. Do not repeat broad searches or duplicate the delegated exploration. If the index lacks new files, use focused direct reads or `rg` in the known area.
+<!-- jbcontext-instructions-end -->
+
+## Clojure and REPL Rules
+
+- Clojure work is REPL-first. Before editing any Clojure source, test, fixture,
+  or build namespace, attach to or start an nREPL from the active worktree.
+- Discover servers with `clj-nrepl-eval --discover-ports`.
+- If no suitable worktree REPL is running, start
+  `clojure -M:dev:nrepl` in a long-running terminal, then rediscover its port.
+- If a sandbox denies a loopback socket with `Operation not permitted`, rerun
+  the exact start or eval command through the environment's approval mechanism.
+  The repository fallback client cannot bypass OS or sandbox permissions.
+- Apply runtime and shared-fixture edits with
+  `clj-nrepl-eval -p <port> "(user/start!)"`.
+- Never use `:reload-all` or `tools.namespace/refresh-all`. They can re-evaluate
+  library protocols and orphan live instances.
+- Keep evals small, deterministic, and bounded. Do not run destructive file,
+  Git, publication, or network actions through nREPL without explicit
+  authorization.
+- If startup, rediscovery, the fallback client, and required sandbox approval
+  all fail, report the REPL as a blocker instead of switching silently to a
+  CLI-only Clojure workflow.
+
+## REPL-First Code Discovery
+
+Use nREPL to inspect dependency and library APIs. Do not scrape source from
+`~/.m2`, Git dependency caches, JARs, or generated POMs when the namespace is
+available on the development classpath.
+
+```clojure
+(require '[some.library :as lib] :reload)
+(dir some.library)
+(doc lib/function)
+(source lib/function)
+(ns-publics 'some.library)
+```
+
+Repository source files may be read normally. Use `:reload` for manual
+namespace investigation so an earlier require does not hide recent edits.
+
+## Parenthesis Repair
+
+Do not manually repair unbalanced Clojure delimiters.
+
+```shell
+clj-paren-repair path/to/file.clj
+```
+
+# Tover
+
+The repository root is the Clojure application. Read [README.md](README.md) for the current prototype boundary and [styleguide.md](styleguide.md) for formatting. The documents in [docs/](docs/README.md) describe intended behavior; they do not establish that a feature is implemented.
 
 ## Commands
 
-```bash
-npm run dev              # Start dev server on localhost:3000
-npm run build            # Production build
-npm run lint             # Run ESLint (flat config, ESLint 9)
-npm run test:e2e         # Run Playwright E2E tests (requires dev server or auto-starts one)
-npm run test:e2e:headed  # Playwright in headed browser mode
-npm run test:e2e:debug   # Playwright with debugger
-npm run test:e2e:ui      # Playwright interactive UI mode
-npm run seed             # Seed demo inventory data (requires dev server + E2E_EMAIL/E2E_PASSWORD)
+Run from the repository root:
+
+```sh
+clojure -M:dev          # Local seeds, examples, hot reload and loopback nREPL
+clojure -M:run          # No development seeds, examples or instrumentation
+clojure -M:dev:test     # Instrumented Kaocha suite
+clojure -M:fmt check
+clj-kondo --lint src dev .clj-kondo/hooks/datastar.clj
 ```
 
-E2E tests require `E2E_EMAIL` and `E2E_PASSWORD` env vars for authenticated test projects. Tests are in `tests/e2e/` with three Playwright projects: `setup` (auth), `chromium-public`, and `chromium-authenticated`.
+The development alias is required for tests because Kaocha hooks and instrumentation live under `dev`. Source lint covers `src` and `dev`; negative tests deliberately call functions with invalid types. Keep the existing project REPL lifecycle: `user/start!`, `user/stop!`, `user/refresh!`. Dependency changes require a REPL restart.
 
-## Architecture
+## Structure and limits
 
-### Tech Stack
-- **Next.js 16.1.6** with App Router, **React 19**, **TypeScript** (strict mode)
-- **Supabase** for Postgres DB, Auth (email/password), and RLS
-- **shadcn/ui** (New York style) with Tailwind CSS v4, Radix UI primitives, Lucide icons
-- **PapaParse** for CSV parsing
+- `src/tover`: application, actions/views, inventory queries and RDF persistence.
+- `src/bel`: declaration, rendering, validation and realtime transport support.
+- `resources/public`: Datastar/RevoGrid browser adapters and static assets.
+- `dev`: seeds, examples, instrumentation and REPL lifecycle. Keep development fixtures out of the production classpath.
+- `test`: Clojure tests; `test/browser` has independent Playwright tooling.
+- `supabase/migrations`: retained legacy SQL history. The current Clojure prototype does not use Supabase.
+- `docs/legacy-contracts`: historical behavior and sanitized fixtures for later ports. Do not treat legacy inventory semantics as new requirements.
+- `experiments/inventory-rdf`: historical offline proof. Its containment model is superseded by the current specifications.
 
-### Path Alias
-`@/*` maps to `./src/*`
+Keep changes small and testable. This is still a single local workspace without authentication. Grid Submit is a browser simulation; only the existing direct quantity-adjustment actions persist. Do not claim later migration milestones are implemented.
 
-### Key Directories
-- `src/app/` — Next.js App Router pages and API routes
-- `src/components/ui/` — shadcn/ui primitives (button, card, dialog, field, input, table, tabs, sheet, etc.)
-- `src/components/` — app-specific components (AppShell, AppSidebar, DataTable, Pagination, ReportFilterBar, InviteForm, KpiCard, UploadCard, etc.)
-- `src/contexts/` — React context providers (WorkspaceSettingsContext)
-- `src/lib/` — Supabase clients, auth helpers, CSV parsers, currency formatting, utilities
-- `src/lib/operations/` — operation processors and validation (purchase, sale, transfer, production, etc.)
-- `src/types/database.ts` — TypeScript interfaces for all DB tables and API responses
-- `src/types/inventory.ts` — inventory entity, operation, and request types
-- `src/i18n/` — Custom i18n with Context API (English + Russian)
-- `supabase/migrations/` — SQL migrations (schema, auth, RLS, inventory, reports, settings)
-- `scripts/` — seed script for demo data
-- `docs/` — design docs and plans
+## UI components
 
-### Multi-Tenancy
-Every data table has a `workspace_id` column that maps to `organizations.id`. RLS policies enforce per-organization data isolation. Users access data through their `organization_memberships`.
+- Use `[props]` for components with data or event properties. Destructure when useful. Static components use `[]`.
+- Put data and named event properties in the props map, such as `:model`, `:row`, `:on-click`, `:on-change` and `:init`.
+- Use `[props & children]` only for a real caller-supplied content slot. Render children in that slot.
+- Keep components pure. Views supply event/init expressions; components pass them into attributes without executing them or managing application state.
+- Update callers and Malli schemas together. Use `[:cat Props]` for props-only components and `[:* :any]` only when children are accepted. Outputs remain `schema/Hiccup`.
+- Preserve scoped Datastar lint hooks so interpolated Clojure still receives normal checks.
 
-### Authentication & Authorization
-- Supabase Auth with cookie-based sessions managed by `@supabase/ssr`
-- `middleware.ts` protects all routes except `/login`, `/signup`, `/forgot-password`, `/reset-password`, `/auth/*`
-- Two Supabase client factories in `src/lib/supabase-server.ts`:
-  - `createUserServerClient()` — per-request client with cookie auth
-  - `createServiceRoleClient()` — admin client for privileged operations
-- Browser client singleton in `src/lib/supabase-browser.ts`
+## Database safety
 
-### API Route Pattern
-All API routes use `getRouteContext(request, options)` from `src/lib/request-context.ts` which:
-1. Validates the user session
-2. Resolves organization membership and workspace
-3. Optionally enforces manager role (`requireManager: true` for owner/admin)
-4. Returns `{ supabase, user, workspaceId, role }`
+Never perform destructive database operations, including DELETE, TRUNCATE, DROP, resets or destructive overwrites, without explicit user approval identifying the exact target and impact. Repository cleanup does not authorize database changes.
 
-Errors are handled via `RouteAuthError` class and `toRouteErrorResponse()` helper.
+Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `033_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
 
-### RBAC Roles
-- **owner**, **admin** — manager roles (can invite users, manage imports)
-- **member** — standard read access
-
-### CSV Import Pipeline
-Import types: `orders_csv`, `order_lines_csv`, `inventory_csv`, `payments_csv`. The flow is: parse with PapaParse → validate headers → validate rows → create import record → insert valid rows → store errors in `import_errors` → update import status. Parsers are in `src/lib/csv-parsers.ts`.
-
-### I18n
-Custom Context API solution in `src/i18n/`. Uses `useI18n()` hook returning `{ locale, t, setLocale }`. Translations are typed objects in `en.ts`/`ru.ts`. Locale persisted to localStorage key `tover-locale`.
-
-### Inventory System
-
-**Tables** (all scoped by `workspace_id`):
-- `categories`, `stores`, `warehouses`, `suppliers` — master data entities
-- `products` — linked to category, with optional default warehouse/supplier
-- `product_balances` — per-product, per-warehouse quantity and weighted-average cost
-- `operations` — header record with type, date, warehouse, optional supplier/destination
-- `operation_items` — line items with product, quantity, price
-
-**8 operation types**: `purchase`, `sale`, `return`, `write_off`, `transfer`, `production`, `defect`, `payment`
-
-**Processing pipeline**: validate input → create operation record → create operation items → update product balances (type-specific logic)
-
-**RPCs** (Postgres functions):
-- `update_product_balance` — generic balance upsert
-- `process_purchase_balance` — updates balance with weighted-average cost recalculation
-- `process_production_balances` — deducts components and adds produced product
-- `report_inventory_balances_at_date` — compute historical balances by replaying operations
-- `report_product_movement` — aggregate movement quantities by product/warehouse/type
-- `report_supplier_debt` — calculate purchased/paid totals per supplier
-
-**Processor files** in `src/lib/operations/`:
-- `validate-operation.ts` — input validation
-- `process-purchase.ts` — purchase (updates cost via weighted average)
-- `process-production.ts` — production (deducts components, adds output)
-- `process-transfer.ts` — transfer between warehouses
-- `process-simple.ts` — sale, return, write-off, defect
-- `process-payment.ts` — supplier payment
-- `update-balances.ts` — shared balance update helpers
-- `index.ts` — dispatcher that routes to correct processor by operation type
-
-### Reports System
-3 report types with dedicated pages and API routes:
-- **Inventory Balances** (`/reports/inventory`) — current or historical, units/cost toggle, dynamic warehouse columns
-- **Product Movement** (`/reports/movement`) — aggregated by product/warehouse within date range
-- **Supplier Debt** (`/reports/supplier-debt`) — period + all-time totals, creditor/debitor classification, drill-down
-
-Report API routes: `/api/reports/inventory-balances`, `/api/reports/product-movement`, `/api/reports/supplier-debt`, `/api/reports/supplier-debt/[supplierId]`
-
-Shared components: `Pagination.tsx` (offset-based), `ReportFilterBar.tsx` (flex layout wrapper)
-
-### Workspace Settings
-- `workspace_settings` table: `currency` (3-letter ISO, default EUR), `category_required`, `default_category_id`, `store_required`, `default_store_id`
-- API: `GET|PATCH /api/settings` (PATCH requires manager role)
-- Client-side: `WorkspaceSettingsContext` (`src/contexts/WorkspaceSettingsContext.tsx`) provides settings + `refetch()`
-- Currency formatting: `formatCurrency()` in `src/lib/format-currency.ts` using `Intl.NumberFormat`
-
-### UI Patterns
-- Entity pages follow CRUD pattern: fetch data → `DataTable` → `Dialog` for create/edit
-- `DataTable` supports column visibility control with localStorage persistence (`tover-columns-{tableId}`)
-- Forms use `Field`/`FieldLabel` from `@/components/ui/field`
-- `AppShell` (`src/components/AppShell.tsx`) conditionally renders sidebar (hidden on auth pages)
-- `AppSidebar` has collapsible "Master Data" and "Reports" groups, plus Settings link
-
-### Database Safety
-
-- Never perform destructive database operations—including `DELETE`, `TRUNCATE`, `DROP`, resets, or destructive overwrites—without the user's explicit approval. Identify the exact target and impact first.
-
-### Database Migrations
-
-- New `supabase/migrations/` files must use the next consecutive, zero-padded three-digit prefix: `028_description.sql`.
-- Do not use timestamp-only names, skip sequence numbers, or reuse an existing migration number.
-
-- `001_initial_schema.sql` — orders, order lines, inventory snapshots, payments, imports
-- `002_auth_orgs_rbac.sql` — auth, organizations, memberships, RBAC, RLS policies
-- `003_inventory_system.sql` — inventory entities, operations, balances, indexes, RPCs
-- `004_report_functions.sql` — report RPCs (inventory balances, product movement, supplier debt) + index
-- `005_workspace_settings.sql` — workspace settings table with RLS, auto-seeds defaults
-- `006_product_name_unique.sql` — partial unique constraint on product names (excludes defect copies)
-
-## Environment Variables
-
-Required in `.env.local` (see `.env.local.example`):
-```
-NEXT_PUBLIC_SUPABASE_URL
-NEXT_PUBLIC_SUPABASE_ANON_KEY
-SUPABASE_SERVICE_ROLE_KEY        # server-only
-NEXT_PUBLIC_SITE_URL
-```
+Keep credentials, `.data`, backups, private experiment captures and generated dependencies out of Git. Never expose privileged credentials in browser assets.

@@ -1,0 +1,257 @@
+@prefix ex: <urn:tover:inventory-proof:> .
+@prefix rule: <urn:tover:inventory-proof:rules:> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# Each stratum runs once, in order. All negation reads a completed lower stratum
+# or the immutable source. No new facts can invalidate an earlier stratum.
+# Active facts are reified, not asserted into the source/history graph.
+rule:Projection a sh:NodeShape ; sh:targetNode ex:projection ; sh:rule
+    rule:Eligible, rule:Effective, rule:Active, rule:Known,
+    rule:Consumption, rule:Incomplete, rule:State, rule:Metadata,
+    rule:HistoricalContainment, rule:Lineage, rule:Provenance,
+    rule:Identifiers, rule:IdentifierEnds, rule:ContainmentEdges, rule:InheritedLocation .
+
+rule:Eligible a sh:SPARQLRule ; sh:order 0 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+CONSTRUCT { ?event rule:eligible true }
+WHERE {
+  ex:projection rule:businessTime ?business ; rule:knowledgeTime ?knowledge .
+  ?event a ex:InventoryEvent ; ex:occurredAt ?occurred ; ex:recordedAt ?recorded .
+  FILTER(?occurred <= ?business && ?recorded <= ?knowledge)
+}
+""" .
+
+# An eligible correction supersedes its target even when the correction itself
+# is superseded. This deliberately reproduces the reference's chain semantics:
+# correcting a correction must not silently resurrect the original event.
+rule:Effective a sh:SPARQLRule ; sh:order 1 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+CONSTRUCT { ?event rule:effective true }
+WHERE {
+  ?event rule:eligible true .
+  FILTER NOT EXISTS { ?correction rule:eligible true ; ex:corrects ?event }
+}
+""" .
+
+# Exact triple retractions remove earlier assertions. Total order is occurrence
+# time then event URI. Retractions occur before assertions within the same event,
+# so a same-event retract+assert retains the assertion.
+rule:Active a sh:SPARQLRule ; sh:order 2 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT { ?statement rule:active true }
+WHERE {
+  ?event rule:effective true ; ex:occurredAt ?time ; ex:asserts ?statement .
+  ?statement rdf:subject ?s ; rdf:predicate ?p ; rdf:object ?o .
+  FILTER NOT EXISTS {
+    ?later rule:effective true ; ex:occurredAt ?laterTime ; ex:retracts ?retraction .
+    ?retraction rdf:subject ?s ; rdf:predicate ?p ; rdf:object ?o .
+    FILTER(?laterTime > ?time || (?laterTime = ?time && STR(?later) > STR(?event)))
+  }
+}
+""" .
+
+rule:Known a sh:SPARQLRule ; sh:order 3 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT {
+  ?resource rule:knownResource true .
+  ?batch rule:knownBatch true .
+  ?listing rule:knownListing true .
+  ?statement rule:visibleStatement true .
+}
+WHERE {
+  {
+    ?fact rule:active true ; rdf:subject ?resource ; rdf:predicate ex:status .
+    OPTIONAL { ?resource ex:batch ?batch }
+    OPTIONAL { ?resource ex:listing ?listing }
+  }
+  UNION {
+    ?event rule:eligible true ; ?effect ?statement .
+    VALUES ?effect { ex:asserts ex:retracts }
+  }
+}
+""" .
+
+# Availability is evaluated strictly BEFORE each effective transformation,
+# independent of final status. A later restoration cannot excuse an earlier
+# repeated consumption; own-event assertions cannot create a prior input.
+rule:Consumption a sh:SPARQLRule ; sh:order 4 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT {
+  [] a rule:ConsumptionViolation ; rule:event ?transform ; rule:input ?input .
+}
+WHERE {
+  ?transform rule:effective true ; ex:kind ex:Transform ; ex:occurredAt ?transformTime ; ex:input ?input .
+  FILTER NOT EXISTS {
+    ?assertion rule:effective true ; ex:occurredAt ?assertTime ; ex:asserts ?statement .
+    ?statement rdf:subject ?input ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+    FILTER(?assertTime < ?transformTime || (?assertTime = ?transformTime && STR(?assertion) < STR(?transform)))
+    FILTER NOT EXISTS {
+      ?retraction rule:effective true ; ex:occurredAt ?retractTime ; ex:retracts ?removed .
+      ?removed rdf:subject ?input ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+      FILTER(?retractTime > ?assertTime || (?retractTime = ?assertTime && STR(?retraction) > STR(?assertion)))
+      FILTER(?retractTime < ?transformTime || (?retractTime = ?transformTime && STR(?retraction) < STR(?transform)))
+    }
+  }
+}
+""" .
+
+rule:Incomplete a sh:SPARQLRule ; sh:order 4 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT { ?statement a rule:IncompleteEffect }
+WHERE {
+  ?event rule:effective true ; ?effect ?statement .
+  VALUES ?effect { ex:asserts ex:retracts }
+  FILTER(!EXISTS { ?statement rdf:subject ?s } || !EXISTS { ?statement rdf:predicate ?p } || !EXISTS { ?statement rdf:object ?o })
+}
+""" .
+
+rule:State a sh:SPARQLRule ; sh:order 5 ; sh:construct """
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT { [] a rule:ProjectedFact ; rdf:subject ?s ; rdf:predicate ?p ; rdf:object ?o }
+WHERE { ?statement rule:active true ; rdf:subject ?s ; rdf:predicate ?p ; rdf:object ?o }
+""" .
+
+# Copy static catalog definitions only for temporally known resources, batches
+# and listings. Eligible event/effect evidence stays visible even if superseded.
+# Original state predicates and timeless resource lineage are never copied.
+rule:Metadata a sh:SPARQLRule ; sh:order 5 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX vf: <https://w3id.org/valueflows/ont/vf#>
+PREFIX prov: <http://www.w3.org/ns/prov#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT { [] a rule:ProjectedFact ; rdf:subject ?s ; rdf:predicate ?p ; rdf:object ?o }
+WHERE {
+  ?s ?p ?o .
+  FILTER(?p NOT IN (ex:location, ex:contains, ex:status, ex:activeIdentifier, ex:everContained))
+  FILTER(!STRSTARTS(STR(?p), STR(rule:)))
+  FILTER(?p != rdf:type || !STRSTARTS(STR(?o), STR(rule:)))
+  FILTER NOT EXISTS { ?s a rule:ProjectedFact }
+  FILTER NOT EXISTS { ?s a rule:ConsumptionViolation }
+  FILTER NOT EXISTS { ?s a vf:EconomicResource . FILTER(!EXISTS { ?s rule:knownResource true } || ?p = prov:wasDerivedFrom) }
+  FILTER NOT EXISTS { ?s a ex:InventoryEvent . FILTER NOT EXISTS { ?s rule:eligible true } }
+  FILTER NOT EXISTS { ?s a rdf:Statement . FILTER NOT EXISTS { ?s rule:visibleStatement true } }
+  FILTER NOT EXISTS { ?s a ex:Batch . FILTER NOT EXISTS { ?s rule:knownBatch true } }
+  FILTER NOT EXISTS { ?s a ex:Listing . FILTER NOT EXISTS { ?s rule:knownListing true } }
+}
+""" .
+
+rule:HistoricalContainment a sh:SPARQLRule ; sh:order 5 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT { [] a rule:ProjectedFact ; rdf:subject ?s ; rdf:predicate ex:everContained ; rdf:object ?o }
+WHERE {
+  ?event rule:effective true ; ex:asserts ?statement .
+  ?statement rdf:subject ?s ; rdf:predicate ex:contains ; rdf:object ?o .
+}
+""" .
+
+rule:Lineage a sh:SPARQLRule ; sh:order 5 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX prov: <http://www.w3.org/ns/prov#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT { [] a rule:ProjectedFact ; rdf:subject ?output ; rdf:predicate prov:wasDerivedFrom ; rdf:object ?input }
+WHERE { ?event rule:effective true ; ex:kind ex:Transform ; ex:input ?input ; ex:output ?output }
+""" .
+
+rule:Provenance a sh:SPARQLRule ; sh:order 5 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX prov: <http://www.w3.org/ns/prov#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT { [] a rule:ProjectedFact ; rdf:subject ex:projection ; rdf:predicate ?p ; rdf:object ?o }
+WHERE {
+  { VALUES (?p ?o) { (rdf:type prov:Entity) (ex:origin ex:Derived) } }
+  UNION { ?o rule:effective true . BIND(prov:wasDerivedFrom AS ?p) }
+}
+""" .
+
+# Every effective identifier assertion creates an interval record, including a
+# repeated assertion. ENCODE_FOR_URI matches the reference's percent-encoded
+# constructed URI scheme; no Python identifier policy is needed.
+rule:Identifiers a sh:SPARQLRule ; sh:order 5 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX prov: <http://www.w3.org/ns/prov#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT {
+  [] a rule:ProjectedFact ; rdf:subject ?assignment ; rdf:predicate rdf:type ; rdf:object ex:IdentifierAssignment .
+  [] a rule:ProjectedFact ; rdf:subject ?assignment ; rdf:predicate ex:origin ; rdf:object ex:Derived .
+  [] a rule:ProjectedFact ; rdf:subject ?assignment ; rdf:predicate ex:listing ; rdf:object ?listing .
+  [] a rule:ProjectedFact ; rdf:subject ?assignment ; rdf:predicate ex:identifier ; rdf:object ?identifier .
+  [] a rule:ProjectedFact ; rdf:subject ?assignment ; rdf:predicate ex:validFrom ; rdf:object ?time .
+  [] a rule:ProjectedFact ; rdf:subject ?assignment ; rdf:predicate ex:recordedAt ; rdf:object ?recorded .
+  [] a rule:ProjectedFact ; rdf:subject ?assignment ; rdf:predicate prov:wasDerivedFrom ; rdf:object ?event .
+  [] a rule:ProjectedFact ; rdf:subject ?identifier ; rdf:predicate rdf:type ; rdf:object ex:ExternalIdentifier .
+  [] a rule:ProjectedFact ; rdf:subject ?identifier ; rdf:predicate ex:identifierType ; rdf:object ex:offerId .
+  [] a rule:ProjectedFact ; rdf:subject ?identifier ; rdf:predicate ex:value ; rdf:object ?value .
+  [] a rule:ProjectedFact ; rdf:subject ?identifier ; rdf:predicate ex:scope ; rdf:object ex:constructedAccount .
+}
+WHERE {
+  ?event rule:effective true ; ex:occurredAt ?time ; ex:recordedAt ?recorded ; ex:asserts ?statement .
+  ?statement rdf:subject ?listing ; rdf:predicate ex:activeIdentifier ; rdf:object ?value .
+  BIND(IRI(CONCAT(STR(ex:), "constructed-assignment:", ENCODE_FOR_URI(CONCAT(STR(?event), ":", STR(?statement))))) AS ?assignment)
+  BIND(IRI(CONCAT(STR(ex:), "constructed-identifier:", ENCODE_FOR_URI(STR(?value)))) AS ?identifier)
+}
+""" .
+
+# The first subsequent effective retraction closes every still-open assertion
+# record for the exact listing/value. Repeated assertions retain their individual
+# provenance and do not prevent closure of older intervals. A retract+assert
+# event closes preceding intervals, then opens its own after the retraction.
+rule:IdentifierEnds a sh:SPARQLRule ; sh:order 5 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT { [] a rule:ProjectedFact ; rdf:subject ?assignment ; rdf:predicate ex:validTo ; rdf:object ?endTime }
+WHERE {
+  ?event rule:effective true ; ex:occurredAt ?time ; ex:asserts ?statement .
+  ?statement rdf:subject ?listing ; rdf:predicate ex:activeIdentifier ; rdf:object ?value .
+  ?end rule:effective true ; ex:occurredAt ?endTime ; ex:retracts ?removed .
+  ?removed rdf:subject ?listing ; rdf:predicate ex:activeIdentifier ; rdf:object ?value .
+  FILTER(?endTime > ?time || (?endTime = ?time && STR(?end) > STR(?event)))
+  FILTER NOT EXISTS {
+    ?between rule:effective true ; ex:occurredAt ?betweenTime ; ex:retracts ?intermediate .
+    ?intermediate rdf:subject ?listing ; rdf:predicate ex:activeIdentifier ; rdf:object ?value .
+    FILTER(?betweenTime > ?time || (?betweenTime = ?time && STR(?between) > STR(?event)))
+    FILTER(?betweenTime < ?endTime || (?betweenTime = ?endTime && STR(?between) < STR(?end)))
+  }
+  BIND(IRI(CONCAT(STR(ex:), "constructed-assignment:", ENCODE_FOR_URI(CONCAT(STR(?event), ":", STR(?statement))))) AS ?assignment)
+}
+""" .
+
+# Materialize an auxiliary containment relation solely for recursive location
+# traversal. These working edges are never extracted as projection output.
+rule:ContainmentEdges a sh:SPARQLRule ; sh:order 5 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT { ?parent rule:activeContains ?child }
+WHERE { ?statement rule:active true ; rdf:subject ?parent ; rdf:predicate ex:contains ; rdf:object ?child }
+""" .
+
+rule:InheritedLocation a sh:SPARQLRule ; sh:order 6 ; sh:construct """
+PREFIX ex: <urn:tover:inventory-proof:>
+PREFIX rule: <urn:tover:inventory-proof:rules:>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+CONSTRUCT { [] a rule:ProjectedFact ; rdf:subject ?object ; rdf:predicate ex:inheritedLocation ; rdf:object ?location }
+WHERE {
+  ?fact a rule:ProjectedFact ; rdf:subject ?ancestor ; rdf:predicate ex:location ; rdf:object ?location .
+  ?object (^rule:activeContains)+ ?ancestor .
+}
+""" .

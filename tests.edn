@@ -1,0 +1,4 @@
+#kaocha/v1
+{:plugins              [:hooks]
+ :kaocha.hooks/pre-run  [kaocha-hooks/start-instrumentation]
+ :kaocha.hooks/post-run [kaocha-hooks/stop-instrumentation]}

@@ -1,0 +1,26 @@
+@prefix ex: <urn:tover:inventory-proof:> .
+@prefix vf: <https://w3id.org/valueflows/ont/vf#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# A small application profile; no claim to implement the full VF/EPCIS schemas.
+ex:InventoryEvent a rdfs:Class ; rdfs:subClassOf vf:EconomicEvent .
+ex:Batch a rdfs:Class ; rdfs:subClassOf prov:Entity .
+ex:Listing a rdfs:Class ; rdfs:label "Marketplace listing, distinct from physical stock" .
+ex:ExternalIdentifier a rdfs:Class ; rdfs:label "Typed reference within an account scope" .
+ex:IdentifierAssignment a rdfs:Class ; rdfs:label "Evidence of a listing identifier at a time" .
+ex:Observation a rdfs:Class ; rdfs:subClassOf prov:Entity .
+ex:IdentityDecision a rdfs:Class ; rdfs:label "Derived match decision supported by an observation" .
+ex:Location a rdfs:Class ; rdfs:subClassOf prov:Location .
+ex:contains a rdf:Property ; rdfs:label "Active physical containment in a projected state" .
+ex:everContained a rdf:Property ; rdfs:label "Accepted containment history up to the selected horizon" .
+ex:inheritedLocation a rdf:Property ; rdfs:label "Location derived through active containment" .
+ex:asserts a rdf:Property ; rdfs:range rdf:Statement .
+ex:retracts a rdf:Property ; rdfs:range rdf:Statement .
+ex:corrects a rdf:Property ; rdfs:label "Replacement event; original evidence is retained" .
+ex:evidence a rdf:Property ; rdfs:range prov:Entity .
+ex:occurredAt a rdf:Property ; rdfs:label "Business event time" .
+ex:recordedAt a rdf:Property ; rdfs:label "When the event or correction became known" .
+ex:observedAt a rdf:Property ; rdfs:label "Observation time, not inferred validity start" .
+ex:origin a rdf:Property ; rdfs:label "Observed, Constructed, or Derived" .

@@ -1,0 +1,104 @@
+@prefix ex: <urn:tover:inventory-proof:> .
+@prefix vf: <https://w3id.org/valueflows/ont/vf#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# Validate evidence/events in their graph, and these same shapes against each
+# materialized state. Historical reified statements are not active state facts.
+ex:EventShape a sh:NodeShape ;
+    sh:targetClass ex:InventoryEvent ;
+    sh:property [ sh:path ex:kind ; sh:minCount 1 ; sh:maxCount 1 ;
+        sh:in (ex:Receive ex:Pack ex:Unpack ex:Move ex:Sell ex:Return ex:Transform ex:Relabel) ] ;
+    sh:property [ sh:path ex:occurredAt ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+    sh:property [ sh:path ex:recordedAt ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+    sh:property [ sh:path ex:evidence ; sh:minCount 1 ; sh:class prov:Entity ] ;
+    sh:property [ sh:path ex:resource ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+    sh:property [ sh:path ex:asserts ; sh:class rdf:Statement ] ;
+    sh:property [ sh:path ex:retracts ; sh:class rdf:Statement ] ;
+    sh:property [ sh:path ex:corrects ; sh:maxCount 1 ; sh:class ex:InventoryEvent ] ;
+    sh:or (
+        [ sh:property [ sh:path ex:asserts ; sh:minCount 1 ] ]
+        [ sh:property [ sh:path ex:retracts ; sh:minCount 1 ] ]
+    ) ;
+    sh:sparql [
+        sh:message "Correction references cannot form a cycle." ;
+        sh:select """
+            PREFIX ex: <urn:tover:inventory-proof:>
+            SELECT $this WHERE { $this ex:corrects+ $this . }
+        """
+    ] ;
+    sh:sparql [
+        sh:message "An event cannot be recorded before it occurred." ;
+        sh:select """
+            PREFIX ex: <urn:tover:inventory-proof:>
+            SELECT $this WHERE {
+                $this ex:occurredAt ?occurred ; ex:recordedAt ?recorded .
+                FILTER (?recorded < ?occurred)
+            }
+        """
+    ] .
+
+ex:ProjectionCorrectionShape a sh:NodeShape ;
+    sh:targetNode ex:projection ;
+    sh:sparql [
+        sh:message "Competing effective corrections require explicit resolution." ;
+        sh:select """
+            PREFIX ex: <urn:tover:inventory-proof:>
+            PREFIX prov: <http://www.w3.org/ns/prov#>
+            SELECT $this WHERE {
+                $this prov:wasDerivedFrom ?left, ?right .
+                ?left ex:corrects+ ?original .
+                ?right ex:corrects+ ?original .
+                FILTER (?left != ?right)
+            }
+        """
+    ] .
+
+ex:EvidenceShape a sh:NodeShape ;
+    sh:targetObjectsOf ex:evidence ;
+    sh:property [ sh:path ex:origin ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] .
+
+ex:EffectShape a sh:NodeShape ;
+    sh:targetClass rdf:Statement ;
+    sh:property [ sh:path rdf:subject ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+    sh:property [ sh:path rdf:predicate ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+    sh:property [ sh:path rdf:object ; sh:minCount 1 ; sh:maxCount 1 ] .
+
+# Direct location belongs to top-level resources. Contained objects inherit
+# their location through ex:contains; absent location also preserves unknowns.
+ex:ResourceStateShape a sh:NodeShape ;
+    sh:targetClass vf:EconomicResource ;
+    sh:property [ sh:path ex:location ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+    sh:property [ sh:path ex:status ; sh:maxCount 1 ;
+        sh:in (ex:OnHand ex:Sold ex:Consumed ex:Disassembled) ] ;
+    sh:property [ sh:path [ sh:inversePath ex:contains ] ; sh:maxCount 1 ] ;
+    sh:sparql [
+        sh:message "Active containment cannot form a cycle." ;
+        sh:select """
+            PREFIX ex: <urn:tover:inventory-proof:>
+            SELECT $this WHERE { $this ex:contains+ $this . }
+        """
+    ] ;
+    sh:sparql [
+        sh:message "A contained resource inherits location and cannot have a direct location." ;
+        sh:select """
+            PREFIX ex: <urn:tover:inventory-proof:>
+            SELECT $this WHERE { ?parent ex:contains $this . $this ex:location ?location . }
+        """
+    ] ;
+    sh:sparql [
+        sh:message "A consumed input cannot remain in active containment." ;
+        sh:select """
+            PREFIX ex: <urn:tover:inventory-proof:>
+            SELECT $this WHERE {
+                $this ex:status ex:Consumed .
+                ?parent ex:contains $this .
+            }
+        """
+    ] .
+
+ex:ListingStateShape a sh:NodeShape ;
+    sh:targetClass ex:Listing ;
+    sh:property [ sh:path ex:activeIdentifier ; sh:maxCount 1 ; sh:datatype xsd:string ] .

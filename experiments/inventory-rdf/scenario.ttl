@@ -1,0 +1,279 @@
+# Constructed lifecycle: no event below claims to describe an actual Ozon object.
+@prefix ex: <urn:tover:inventory-proof:> .
+@prefix vf: <https://w3id.org/valueflows/ont/vf#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:constructed-evidence a prov:Entity ; ex:origin ex:Constructed ;
+    rdfs:label "Known-answer constructed lifecycle, version 1" .
+
+ex:spec-a a vf:ResourceSpecification ; ex:origin ex:Constructed ; rdfs:label "Specification A" .
+ex:spec-b a vf:ResourceSpecification ; ex:origin ex:Constructed ; rdfs:label "Specification B" .
+ex:spec-a-modified a vf:ResourceSpecification ; ex:origin ex:Constructed ; rdfs:label "Specification A after modification" .
+ex:spec-pack-a a vf:ResourceSpecification ; ex:origin ex:Constructed ; rdfs:label "Four A objects" .
+ex:spec-pack-mixed a vf:ResourceSpecification ; ex:origin ex:Constructed ; rdfs:label "Two A and two B objects" .
+ex:spec-pack-b a vf:ResourceSpecification ; ex:origin ex:Constructed ; rdfs:label "Four B objects" .
+ex:spec-pair a vf:ResourceSpecification ; ex:origin ex:Constructed ; rdfs:label "One A and one B object" .
+ex:batch-a a ex:Batch, prov:Entity ; ex:origin ex:Constructed .
+ex:batch-b a ex:Batch, prov:Entity ; ex:origin ex:Constructed .
+ex:batch-modified a ex:Batch, prov:Entity ; ex:origin ex:Constructed .
+ex:warehouse-a a ex:Location ; ex:origin ex:Constructed .
+ex:warehouse-ozon a ex:Location ; ex:origin ex:Constructed .
+ex:warehouse-return a ex:Location ; ex:origin ex:Constructed .
+ex:warehouse-b a ex:Location ; ex:origin ex:Constructed .
+ex:warehouse-c a ex:Location ; ex:origin ex:Constructed .
+
+# Static identities exist separately from time-dependent presence and containment.
+ex:object-a1 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-a ; ex:batch ex:batch-a .
+ex:object-a2 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-a ; ex:batch ex:batch-a .
+ex:object-a3 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-a ; ex:batch ex:batch-a .
+ex:object-a4 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-a ; ex:batch ex:batch-a .
+ex:object-a5 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-a ; ex:batch ex:batch-a .
+ex:object-a6 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-a ; ex:batch ex:batch-a .
+ex:object-b1 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-b ; ex:batch ex:batch-b .
+ex:object-b2 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-b ; ex:batch ex:batch-b .
+ex:object-b3 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-b ; ex:batch ex:batch-b .
+ex:object-b4 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-b ; ex:batch ex:batch-b .
+ex:object-b5 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-b ; ex:batch ex:batch-b .
+ex:object-b6 a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-b ; ex:batch ex:batch-b .
+ex:object-a1-modified a vf:EconomicResource ; ex:kind ex:Object ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-a-modified ; ex:batch ex:batch-modified ; prov:wasDerivedFrom ex:object-a1 .
+ex:pack-a a vf:EconomicResource ; ex:kind ex:Pack ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-pack-a ;
+    ex:everContained ex:object-a1, ex:object-a2, ex:object-a3, ex:object-a4 .
+ex:pack-mixed a vf:EconomicResource ; ex:kind ex:Pack ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-pack-mixed ;
+    ex:everContained ex:object-a5, ex:object-a6, ex:object-b1, ex:object-b2 .
+ex:pack-b a vf:EconomicResource ; ex:kind ex:Pack ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-pack-b ;
+    ex:everContained ex:object-b3, ex:object-b4, ex:object-b5, ex:object-b6 .
+ex:pair-1 a vf:EconomicResource ; ex:kind ex:Pack ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-pair ;
+    ex:everContained ex:object-a5, ex:object-b1 .
+ex:pair-2 a vf:EconomicResource ; ex:kind ex:Pack ; ex:origin ex:Constructed ; vf:conformsTo ex:spec-pair ;
+    ex:everContained ex:object-a6, ex:object-b2 .
+
+ex:listing-pair-1 a ex:Listing ; ex:origin ex:Constructed .
+ex:pair-1 ex:listing ex:listing-pair-1 .
+
+# Reified effects are evidence about events, not active state triples.
+ex:receive-a a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Receive ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-01T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-01T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:object-a1, ex:object-a2, ex:object-a3, ex:object-a4, ex:object-a5, ex:object-a6 ;
+    ex:asserts ex:fact-001, ex:fact-002, ex:fact-003, ex:fact-004, ex:fact-005, ex:fact-006, ex:fact-007, ex:fact-008, ex:fact-009, ex:fact-010, ex:fact-011, ex:fact-012 ;
+    ex:output ex:object-a1, ex:object-a2, ex:object-a3, ex:object-a4, ex:object-a5, ex:object-a6 .
+
+ex:receive-b a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Receive ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-02T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-02T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:object-b1, ex:object-b2, ex:object-b3, ex:object-b4, ex:object-b5, ex:object-b6 ;
+    ex:asserts ex:fact-013, ex:fact-014, ex:fact-015, ex:fact-016, ex:fact-017, ex:fact-018, ex:fact-019, ex:fact-020, ex:fact-021, ex:fact-022, ex:fact-023, ex:fact-024 ;
+    ex:output ex:object-b1, ex:object-b2, ex:object-b3, ex:object-b4, ex:object-b5, ex:object-b6 .
+
+ex:pack-a-event a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Pack ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-03T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-03T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pack-a, ex:object-a1, ex:object-a2, ex:object-a3, ex:object-a4 ;
+    ex:asserts ex:fact-025, ex:fact-026, ex:fact-027, ex:fact-028, ex:fact-029, ex:fact-030 ;
+    ex:retracts ex:fact-002, ex:fact-004, ex:fact-006, ex:fact-008 ;
+    ex:input ex:object-a1, ex:object-a2, ex:object-a3, ex:object-a4 ;
+    ex:output ex:pack-a .
+
+ex:pack-mixed-event a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Pack ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-03T13:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-03T13:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pack-mixed, ex:object-a5, ex:object-a6, ex:object-b1, ex:object-b2 ;
+    ex:asserts ex:fact-031, ex:fact-032, ex:fact-033, ex:fact-034, ex:fact-035, ex:fact-036 ;
+    ex:retracts ex:fact-010, ex:fact-012, ex:fact-014, ex:fact-016 ;
+    ex:input ex:object-a5, ex:object-a6, ex:object-b1, ex:object-b2 ;
+    ex:output ex:pack-mixed .
+
+ex:pack-b-event a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Pack ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-03T14:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-03T14:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pack-b, ex:object-b3, ex:object-b4, ex:object-b5, ex:object-b6 ;
+    ex:asserts ex:fact-037, ex:fact-038, ex:fact-039, ex:fact-040, ex:fact-041, ex:fact-042 ;
+    ex:retracts ex:fact-018, ex:fact-020, ex:fact-022, ex:fact-024 ;
+    ex:input ex:object-b3, ex:object-b4, ex:object-b5, ex:object-b6 ;
+    ex:output ex:pack-b .
+
+ex:shipment a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Move ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-04T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-04T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pack-a, ex:pack-mixed, ex:pack-b ;
+    ex:asserts ex:fact-043, ex:fact-044, ex:fact-045 ;
+    ex:retracts ex:fact-026, ex:fact-032, ex:fact-038 .
+
+ex:sell-mixed a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Sell ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-05T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-05T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pack-mixed, ex:object-a5, ex:object-a6, ex:object-b1, ex:object-b2 ;
+    ex:asserts ex:fact-046, ex:fact-047, ex:fact-048, ex:fact-049, ex:fact-050 ;
+    ex:retracts ex:fact-031, ex:fact-009, ex:fact-011, ex:fact-013, ex:fact-015, ex:fact-044 .
+
+ex:return-mixed a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Return ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-06T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-06T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pack-mixed, ex:object-a5, ex:object-a6, ex:object-b1, ex:object-b2 ;
+    ex:asserts ex:fact-031, ex:fact-009, ex:fact-011, ex:fact-013, ex:fact-015, ex:fact-051 ;
+    ex:retracts ex:fact-046, ex:fact-047, ex:fact-048, ex:fact-049, ex:fact-050 .
+
+ex:unpack-mixed a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Unpack ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-07T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-07T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pack-mixed, ex:object-a5, ex:object-a6, ex:object-b1, ex:object-b2 ;
+    ex:asserts ex:fact-052, ex:fact-053, ex:fact-054, ex:fact-055, ex:fact-056 ;
+    ex:retracts ex:fact-031, ex:fact-051, ex:fact-033, ex:fact-034, ex:fact-035, ex:fact-036 ;
+    ex:input ex:pack-mixed ;
+    ex:output ex:object-a5, ex:object-a6, ex:object-b1, ex:object-b2 .
+
+ex:repack-1 a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Pack ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-08T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-08T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pair-1, ex:object-a5, ex:object-b1 ;
+    ex:asserts ex:fact-057, ex:fact-058, ex:fact-059, ex:fact-060, ex:fact-061 ;
+    ex:retracts ex:fact-053, ex:fact-055 ;
+    ex:input ex:object-a5, ex:object-b1 ;
+    ex:output ex:pair-1 .
+
+ex:repack-2 a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Pack ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-08T13:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-08T13:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pair-2, ex:object-a6, ex:object-b2 ;
+    ex:asserts ex:fact-062, ex:fact-063, ex:fact-064, ex:fact-065 ;
+    ex:retracts ex:fact-054, ex:fact-056 ;
+    ex:input ex:object-a6, ex:object-b2 ;
+    ex:output ex:pair-2 .
+
+ex:move-pairs a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Move ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-09T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-09T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pair-1, ex:pair-2 ;
+    ex:asserts ex:fact-066, ex:fact-067 ;
+    ex:retracts ex:fact-058, ex:fact-063 .
+
+ex:relabel-pair-1 a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Relabel ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-10T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-10T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pair-1 ;
+    ex:asserts ex:fact-068 ;
+    ex:retracts ex:fact-061 .
+
+ex:unpack-a a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Unpack ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-11T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-11T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pack-a, ex:object-a1, ex:object-a2, ex:object-a3, ex:object-a4 ;
+    ex:asserts ex:fact-069, ex:fact-070, ex:fact-071, ex:fact-072, ex:fact-073 ;
+    ex:retracts ex:fact-025, ex:fact-043, ex:fact-027, ex:fact-028, ex:fact-029, ex:fact-030 ;
+    ex:input ex:pack-a ;
+    ex:output ex:object-a1, ex:object-a2, ex:object-a3, ex:object-a4 .
+
+ex:modify-a1 a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Transform ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-12T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-12T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:object-a1, ex:object-a1-modified ;
+    ex:asserts ex:fact-074, ex:fact-075, ex:fact-076 ;
+    ex:retracts ex:fact-001, ex:fact-070 ;
+    ex:input ex:object-a1 ;
+    ex:output ex:object-a1-modified .
+
+ex:move-pair-1 a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Move ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-13T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-13T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pair-1 ;
+    ex:asserts ex:fact-077 ;
+    ex:retracts ex:fact-066 .
+
+ex:move-pair-2 a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Move ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-14T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-14T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pair-2 ;
+    ex:asserts ex:fact-078 ;
+    ex:retracts ex:fact-067 .
+
+ex:move-pair-1-correction a ex:InventoryEvent, vf:EconomicEvent ; ex:kind ex:Move ; ex:origin ex:Constructed ;
+    ex:occurredAt "2026-01-13T12:00:00Z"^^xsd:dateTime ; ex:recordedAt "2026-01-15T12:00:00Z"^^xsd:dateTime ;
+    ex:evidence ex:constructed-evidence ;
+    ex:resource ex:pair-1 ;
+    ex:asserts ex:fact-079 ;
+    ex:retracts ex:fact-066 ;
+    ex:corrects ex:move-pair-1 .
+
+# Shared statements allow the same fact to be asserted, retracted and asserted again.
+ex:fact-001 a rdf:Statement ; rdf:subject ex:object-a1 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-002 a rdf:Statement ; rdf:subject ex:object-a1 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-003 a rdf:Statement ; rdf:subject ex:object-a2 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-004 a rdf:Statement ; rdf:subject ex:object-a2 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-005 a rdf:Statement ; rdf:subject ex:object-a3 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-006 a rdf:Statement ; rdf:subject ex:object-a3 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-007 a rdf:Statement ; rdf:subject ex:object-a4 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-008 a rdf:Statement ; rdf:subject ex:object-a4 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-009 a rdf:Statement ; rdf:subject ex:object-a5 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-010 a rdf:Statement ; rdf:subject ex:object-a5 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-011 a rdf:Statement ; rdf:subject ex:object-a6 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-012 a rdf:Statement ; rdf:subject ex:object-a6 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-013 a rdf:Statement ; rdf:subject ex:object-b1 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-014 a rdf:Statement ; rdf:subject ex:object-b1 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-015 a rdf:Statement ; rdf:subject ex:object-b2 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-016 a rdf:Statement ; rdf:subject ex:object-b2 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-017 a rdf:Statement ; rdf:subject ex:object-b3 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-018 a rdf:Statement ; rdf:subject ex:object-b3 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-019 a rdf:Statement ; rdf:subject ex:object-b4 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-020 a rdf:Statement ; rdf:subject ex:object-b4 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-021 a rdf:Statement ; rdf:subject ex:object-b5 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-022 a rdf:Statement ; rdf:subject ex:object-b5 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-023 a rdf:Statement ; rdf:subject ex:object-b6 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-024 a rdf:Statement ; rdf:subject ex:object-b6 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-025 a rdf:Statement ; rdf:subject ex:pack-a ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-026 a rdf:Statement ; rdf:subject ex:pack-a ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-027 a rdf:Statement ; rdf:subject ex:pack-a ; rdf:predicate ex:contains ; rdf:object ex:object-a1 .
+ex:fact-028 a rdf:Statement ; rdf:subject ex:pack-a ; rdf:predicate ex:contains ; rdf:object ex:object-a2 .
+ex:fact-029 a rdf:Statement ; rdf:subject ex:pack-a ; rdf:predicate ex:contains ; rdf:object ex:object-a3 .
+ex:fact-030 a rdf:Statement ; rdf:subject ex:pack-a ; rdf:predicate ex:contains ; rdf:object ex:object-a4 .
+ex:fact-031 a rdf:Statement ; rdf:subject ex:pack-mixed ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-032 a rdf:Statement ; rdf:subject ex:pack-mixed ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-033 a rdf:Statement ; rdf:subject ex:pack-mixed ; rdf:predicate ex:contains ; rdf:object ex:object-a5 .
+ex:fact-034 a rdf:Statement ; rdf:subject ex:pack-mixed ; rdf:predicate ex:contains ; rdf:object ex:object-a6 .
+ex:fact-035 a rdf:Statement ; rdf:subject ex:pack-mixed ; rdf:predicate ex:contains ; rdf:object ex:object-b1 .
+ex:fact-036 a rdf:Statement ; rdf:subject ex:pack-mixed ; rdf:predicate ex:contains ; rdf:object ex:object-b2 .
+ex:fact-037 a rdf:Statement ; rdf:subject ex:pack-b ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-038 a rdf:Statement ; rdf:subject ex:pack-b ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-039 a rdf:Statement ; rdf:subject ex:pack-b ; rdf:predicate ex:contains ; rdf:object ex:object-b3 .
+ex:fact-040 a rdf:Statement ; rdf:subject ex:pack-b ; rdf:predicate ex:contains ; rdf:object ex:object-b4 .
+ex:fact-041 a rdf:Statement ; rdf:subject ex:pack-b ; rdf:predicate ex:contains ; rdf:object ex:object-b5 .
+ex:fact-042 a rdf:Statement ; rdf:subject ex:pack-b ; rdf:predicate ex:contains ; rdf:object ex:object-b6 .
+ex:fact-043 a rdf:Statement ; rdf:subject ex:pack-a ; rdf:predicate ex:location ; rdf:object ex:warehouse-ozon .
+ex:fact-044 a rdf:Statement ; rdf:subject ex:pack-mixed ; rdf:predicate ex:location ; rdf:object ex:warehouse-ozon .
+ex:fact-045 a rdf:Statement ; rdf:subject ex:pack-b ; rdf:predicate ex:location ; rdf:object ex:warehouse-ozon .
+ex:fact-046 a rdf:Statement ; rdf:subject ex:pack-mixed ; rdf:predicate ex:status ; rdf:object ex:Sold .
+ex:fact-047 a rdf:Statement ; rdf:subject ex:object-a5 ; rdf:predicate ex:status ; rdf:object ex:Sold .
+ex:fact-048 a rdf:Statement ; rdf:subject ex:object-a6 ; rdf:predicate ex:status ; rdf:object ex:Sold .
+ex:fact-049 a rdf:Statement ; rdf:subject ex:object-b1 ; rdf:predicate ex:status ; rdf:object ex:Sold .
+ex:fact-050 a rdf:Statement ; rdf:subject ex:object-b2 ; rdf:predicate ex:status ; rdf:object ex:Sold .
+ex:fact-051 a rdf:Statement ; rdf:subject ex:pack-mixed ; rdf:predicate ex:location ; rdf:object ex:warehouse-return .
+ex:fact-052 a rdf:Statement ; rdf:subject ex:pack-mixed ; rdf:predicate ex:status ; rdf:object ex:Disassembled .
+ex:fact-053 a rdf:Statement ; rdf:subject ex:object-a5 ; rdf:predicate ex:location ; rdf:object ex:warehouse-return .
+ex:fact-054 a rdf:Statement ; rdf:subject ex:object-a6 ; rdf:predicate ex:location ; rdf:object ex:warehouse-return .
+ex:fact-055 a rdf:Statement ; rdf:subject ex:object-b1 ; rdf:predicate ex:location ; rdf:object ex:warehouse-return .
+ex:fact-056 a rdf:Statement ; rdf:subject ex:object-b2 ; rdf:predicate ex:location ; rdf:object ex:warehouse-return .
+ex:fact-057 a rdf:Statement ; rdf:subject ex:pair-1 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-058 a rdf:Statement ; rdf:subject ex:pair-1 ; rdf:predicate ex:location ; rdf:object ex:warehouse-return .
+ex:fact-059 a rdf:Statement ; rdf:subject ex:pair-1 ; rdf:predicate ex:contains ; rdf:object ex:object-a5 .
+ex:fact-060 a rdf:Statement ; rdf:subject ex:pair-1 ; rdf:predicate ex:contains ; rdf:object ex:object-b1 .
+ex:fact-061 a rdf:Statement ; rdf:subject ex:listing-pair-1 ; rdf:predicate ex:activeIdentifier ; rdf:object "OLD-PAIR" .
+ex:fact-062 a rdf:Statement ; rdf:subject ex:pair-2 ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-063 a rdf:Statement ; rdf:subject ex:pair-2 ; rdf:predicate ex:location ; rdf:object ex:warehouse-return .
+ex:fact-064 a rdf:Statement ; rdf:subject ex:pair-2 ; rdf:predicate ex:contains ; rdf:object ex:object-a6 .
+ex:fact-065 a rdf:Statement ; rdf:subject ex:pair-2 ; rdf:predicate ex:contains ; rdf:object ex:object-b2 .
+ex:fact-066 a rdf:Statement ; rdf:subject ex:pair-1 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-067 a rdf:Statement ; rdf:subject ex:pair-2 ; rdf:predicate ex:location ; rdf:object ex:warehouse-a .
+ex:fact-068 a rdf:Statement ; rdf:subject ex:listing-pair-1 ; rdf:predicate ex:activeIdentifier ; rdf:object "NEW-PAIR" .
+ex:fact-069 a rdf:Statement ; rdf:subject ex:pack-a ; rdf:predicate ex:status ; rdf:object ex:Disassembled .
+ex:fact-070 a rdf:Statement ; rdf:subject ex:object-a1 ; rdf:predicate ex:location ; rdf:object ex:warehouse-ozon .
+ex:fact-071 a rdf:Statement ; rdf:subject ex:object-a2 ; rdf:predicate ex:location ; rdf:object ex:warehouse-ozon .
+ex:fact-072 a rdf:Statement ; rdf:subject ex:object-a3 ; rdf:predicate ex:location ; rdf:object ex:warehouse-ozon .
+ex:fact-073 a rdf:Statement ; rdf:subject ex:object-a4 ; rdf:predicate ex:location ; rdf:object ex:warehouse-ozon .
+ex:fact-074 a rdf:Statement ; rdf:subject ex:object-a1 ; rdf:predicate ex:status ; rdf:object ex:Consumed .
+ex:fact-075 a rdf:Statement ; rdf:subject ex:object-a1-modified ; rdf:predicate ex:status ; rdf:object ex:OnHand .
+ex:fact-076 a rdf:Statement ; rdf:subject ex:object-a1-modified ; rdf:predicate ex:location ; rdf:object ex:warehouse-ozon .
+ex:fact-077 a rdf:Statement ; rdf:subject ex:pair-1 ; rdf:predicate ex:location ; rdf:object ex:warehouse-b .
+ex:fact-078 a rdf:Statement ; rdf:subject ex:pair-2 ; rdf:predicate ex:location ; rdf:object ex:warehouse-c .
+ex:fact-079 a rdf:Statement ; rdf:subject ex:pair-1 ; rdf:predicate ex:location ; rdf:object ex:warehouse-c .

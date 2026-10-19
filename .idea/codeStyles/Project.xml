@@ -1,0 +1,10 @@
+<component name="ProjectCodeStyleConfiguration">
+  <code_scheme name="Project" version="173">
+    <ClojureCodeStyleSettings>
+      <option name="formattingStyle" value="CLJFMT" />
+      <option name="cljfmtAutoEnable" value="ALWAYS_ENABLE" />
+      <option name="alignBindingForms" value="true" />
+      <option name="nsImportsUse" value="VECTOR" />
+    </ClojureCodeStyleSettings>
+  </code_scheme>
+</component>

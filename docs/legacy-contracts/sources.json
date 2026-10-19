@@ -1,0 +1,376 @@
+{
+  "formatVersion": 1,
+  "capturedAt": "2026-10-19",
+  "baselineCommit": "9f799586a62226bc62643e5dedc54d76a0176359",
+  "baselineDescription": "2026-09-28 Retry failed reads and separate handled Sentry errors",
+  "workingTreeWasDirty": true,
+  "scope": "Local source and synthetic test contract extraction only; no remote data or secrets.",
+  "baselineReferenceFormat": "baseline:path:line; retrieve with git show <baselineCommit>:<path>",
+  "workingReferenceFormat": "working:path:line; pre-removal snapshot hash below; dirty behavior is summarized in identity-and-email.md",
+  "sources": [
+    {
+      "path": "README.md",
+      "lines": "130-162,194-239,462-476",
+      "baselineSha256": "70c0074f5fe4fd5373db6341666b75e15efb66bdc3bc39cae7511991a3e9cfbb",
+      "capturedWorkingSha256": "70c0074f5fe4fd5373db6341666b75e15efb66bdc3bc39cae7511991a3e9cfbb",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/request-context.ts",
+      "lines": "28-73",
+      "baselineSha256": "3a6bae782db4c81e669799568760e398e43fd967c90669ad36d2c11ad08eef60",
+      "capturedWorkingSha256": "3a6bae782db4c81e669799568760e398e43fd967c90669ad36d2c11ad08eef60",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/workspace.ts",
+      "lines": "1-55",
+      "baselineSha256": "be7e55f48049539fd47ef53a7be4232ca22d4bf8300c6e99c4d1c728c04336a0",
+      "capturedWorkingSha256": "be7e55f48049539fd47ef53a7be4232ca22d4bf8300c6e99c4d1c728c04336a0",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/team-actions.ts",
+      "lines": "9-94",
+      "baselineSha256": "73768668bf2432d762b9e206aaa03780b1b235d379fd7e7a7d612a3ba17959b3",
+      "capturedWorkingSha256": "73768668bf2432d762b9e206aaa03780b1b235d379fd7e7a7d612a3ba17959b3",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/supabase-email.ts",
+      "lines": "3-10",
+      "baselineSha256": "e741d5f612f6cad1c72abb146011eefa3746ac22535a9744c2312a79a6505c9c",
+      "capturedWorkingSha256": "e741d5f612f6cad1c72abb146011eefa3746ac22535a9744c2312a79a6505c9c",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/supabase-server.ts",
+      "lines": "29-61",
+      "baselineSha256": "2bde95dd8b88621f889d8b7cc6752abf49739a1b3d3ceb44c7a8436843e06f1d",
+      "capturedWorkingSha256": "2bde95dd8b88621f889d8b7cc6752abf49739a1b3d3ceb44c7a8436843e06f1d",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/auth-redirect.ts",
+      "lines": "1-7",
+      "baselineSha256": "367318ac449d1dd234736416b58ba4f8ebd707968d6496dd9908708ce900e0ce",
+      "capturedWorkingSha256": "367318ac449d1dd234736416b58ba4f8ebd707968d6496dd9908708ce900e0ce",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/app/auth/callback/page.tsx",
+      "lines": "11-74",
+      "baselineSha256": "a2a4cf96e78115c893f883f9c4cd6643d2bbeeeb196ff63787807d4cdfbfbc7f",
+      "capturedWorkingSha256": "a2a4cf96e78115c893f883f9c4cd6643d2bbeeeb196ff63787807d4cdfbfbc7f",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/app/forgot-password/page.tsx",
+      "lines": "21-50",
+      "baselineSha256": "1535d92e9c01f3ca286aed9dcc75aa23350c52b271d229ae59b08455c997a8dd",
+      "capturedWorkingSha256": "1535d92e9c01f3ca286aed9dcc75aa23350c52b271d229ae59b08455c997a8dd",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/app/reset-password/page.tsx",
+      "lines": "19-74",
+      "baselineSha256": "09c24c57e425154d116b3ed0010c4424e12a469ae561f822a86249b332aca0f1",
+      "capturedWorkingSha256": "09c24c57e425154d116b3ed0010c4424e12a469ae561f822a86249b332aca0f1",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/app/api/auth/me/route.ts",
+      "lines": "19-93",
+      "baselineSha256": "6684790da09a43dc1c28bc2eef0420c1ef07f9ed0b1433a1824c3a296cd5d78b",
+      "capturedWorkingSha256": "6684790da09a43dc1c28bc2eef0420c1ef07f9ed0b1433a1824c3a296cd5d78b",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/app/api/auth/workspace/route.ts",
+      "lines": "5-23",
+      "baselineSha256": "3a3e4b394c7966c1652a8a44d0cb5bdaf83ca534b720a5709ad6a02d696da09d",
+      "capturedWorkingSha256": "3a3e4b394c7966c1652a8a44d0cb5bdaf83ca534b720a5709ad6a02d696da09d",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/app/api/auth/members/[userId]/recovery/route.ts",
+      "lines": "6-28",
+      "baselineSha256": "f100bf87ebf43fd1e01f06a2864080e309a4ef0679dd862ec2d2887d21afcff4",
+      "capturedWorkingSha256": "f100bf87ebf43fd1e01f06a2864080e309a4ef0679dd862ec2d2887d21afcff4",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/app/login/page.tsx",
+      "lines": "42-63,104",
+      "baselineSha256": "ad0ec5fab390dfe668bc04adc15f5b8d2bcad488538c6cc8ceeaaaed93fb2d21",
+      "capturedWorkingSha256": "faaf97df21125e64ddbec0ad16cd185756051698007e355297cc564892066e0a",
+      "workingDiffersFromBaseline": true
+    },
+    {
+      "path": "src/components/AppShell.tsx",
+      "lines": "43-96",
+      "baselineSha256": "1ebd7e4e14611e76093e1c3f64bb8fa27b78607d7e5921c2efe5618771e41df2",
+      "capturedWorkingSha256": "808fb9ad04f6071c70e6d869ccca0a61e44dc57cb0972521d2d527a2a583110d",
+      "workingDiffersFromBaseline": true
+    },
+    {
+      "path": "src/contexts/WorkspaceContext.tsx",
+      "lines": "1-200",
+      "baselineSha256": "4d143910416e9d936d1492aee9fd662c160800ce53c726312f09dc9579e0f8ea",
+      "capturedWorkingSha256": "904679e0d62b851579ede3dc594dc896979e86541a7826cbf92fe01a4157889c",
+      "workingDiffersFromBaseline": true
+    },
+    {
+      "path": "src/lib/supabase-browser.ts",
+      "lines": "20-22",
+      "baselineSha256": "bea38921282ac3ed8b553a3e7aa157b6a380c620ddd9b6d5023242e49bc72b9a",
+      "capturedWorkingSha256": "3ddd4ec87f072a24b4b3d085f906bc1c300e5c29995950c8ed8908015bb162a2",
+      "workingDiffersFromBaseline": true
+    },
+    {
+      "path": "src/lib/workspace-fetch.ts",
+      "lines": "25-48",
+      "baselineSha256": "4431f185f90b8028b6609e882f775aece4f0e8d8a169172a4b2407e74471e91b",
+      "capturedWorkingSha256": "3ec199b53f06488acc0ac2eca5208dc1189e51664ffb247597fd77425a4967c4",
+      "workingDiffersFromBaseline": true
+    },
+    {
+      "path": "tests/e2e/workspace-network.spec.ts",
+      "lines": "51-128",
+      "baselineSha256": "d3bf144a343cda51ee1e2ad8c1f18cf7fe5528483647ccec761187a80c074d9f",
+      "capturedWorkingSha256": "a1f483f08e7d103744b751e3fbfd176b49be7b382ec28aec218fa8cd4f9fe013",
+      "workingDiffersFromBaseline": true
+    },
+    {
+      "path": "tests/unit/workspace.test.ts",
+      "lines": "133-157",
+      "baselineSha256": "a0a624cc143fe168760a1912c252c87e9465f9073162ce8600e0b040cb87b973",
+      "capturedWorkingSha256": "399b5a416df7f669686fb247bb9f5904ae7f97c33b87db021855a92acbe9e74e",
+      "workingDiffersFromBaseline": true
+    },
+    {
+      "path": "tests/e2e/workspace-switch.spec.ts",
+      "lines": "84-210",
+      "baselineSha256": "c940c55f2b2af3e3a1bcf1064224f4b75a288f258f607a7e07c76cbbe96b2446",
+      "capturedWorkingSha256": "c940c55f2b2af3e3a1bcf1064224f4b75a288f258f607a7e07c76cbbe96b2446",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/migrations/002_auth_orgs_rbac.sql",
+      "lines": "3-62,98-131,313-443",
+      "baselineSha256": "7795dc8525ea9bf6d8a8e8d2ade424d63892fd871d1df63b11e48b223c1638f2",
+      "capturedWorkingSha256": "7795dc8525ea9bf6d8a8e8d2ade424d63892fd871d1df63b11e48b223c1638f2",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/migrations/029_secure_workspace_invitations.sql",
+      "lines": "1-108",
+      "baselineSha256": "63c155e24c62e5e614a21f0aeec8cc52389f7f26ded8d4d463112d6864a1465d",
+      "capturedWorkingSha256": "63c155e24c62e5e614a21f0aeec8cc52389f7f26ded8d4d463112d6864a1465d",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/migrations/032_team_invitation_recovery.sql",
+      "lines": "9-210",
+      "baselineSha256": "1e4975ad182e0d2227d12625ba17a6d3ea547a81e0b000476201e66e5607783d",
+      "capturedWorkingSha256": "1e4975ad182e0d2227d12625ba17a6d3ea547a81e0b000476201e66e5607783d",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/ozon/client.ts",
+      "lines": "3-57,122-331",
+      "baselineSha256": "74a07c387d8eeaaee5314f19a2cbb2defc38a7ccbfe370f23962f1dde89cd1d3",
+      "capturedWorkingSha256": "74a07c387d8eeaaee5314f19a2cbb2defc38a7ccbfe370f23962f1dde89cd1d3",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/ozon/credentials.ts",
+      "lines": "4-92",
+      "baselineSha256": "976a59499d893a528c56a26f986596f27fe387eca16a7aa26884d2b55501c42f",
+      "capturedWorkingSha256": "976a59499d893a528c56a26f986596f27fe387eca16a7aa26884d2b55501c42f",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/ozon/durable-runner.ts",
+      "lines": "198-315",
+      "baselineSha256": "8cd23be850e1ed540fe08e2ba60248047422966025754d87126647eda52f4678",
+      "capturedWorkingSha256": "8cd23be850e1ed540fe08e2ba60248047422966025754d87126647eda52f4678",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/ozon/sync.ts",
+      "lines": "160-343,5692-5740",
+      "baselineSha256": "351eeafa9ff479f13eb8a36d5c77e3d7b50c57ef6a46ff75a7e013c07b7a8933",
+      "capturedWorkingSha256": "351eeafa9ff479f13eb8a36d5c77e3d7b50c57ef6a46ff75a7e013c07b7a8933",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "docs/ozon-integration.md",
+      "lines": "129-148,205-314,316-831,867-902,917-933",
+      "baselineSha256": "c0d7d3992ae9e588cf370d14a9d4b71b18693df0842f96ca0f82f7e8efc13d36",
+      "capturedWorkingSha256": "c0d7d3992ae9e588cf370d14a9d4b71b18693df0842f96ca0f82f7e8efc13d36",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "tests/unit/ozon-client.test.ts",
+      "lines": "64-310",
+      "baselineSha256": "9f7b737506ab3badd8e9009e2d0e18691f3443048e9cd27566239c401d3b4ba9",
+      "capturedWorkingSha256": "9f7b737506ab3badd8e9009e2d0e18691f3443048e9cd27566239c401d3b4ba9",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "tests/unit/ozon-sync.test.ts",
+      "lines": "110-1177",
+      "baselineSha256": "dec34399b4e8588013553b8e9d5c861ec65dab189f2500fbabacff84c883d9b4",
+      "capturedWorkingSha256": "dec34399b4e8588013553b8e9d5c861ec65dab189f2500fbabacff84c883d9b4",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "tests/unit/ozon-correctness-repair.test.ts",
+      "lines": "81-205,243-425",
+      "baselineSha256": "a2f4bd86d464b50948343d3996878d9eba9f5568673c628cdfdd3e096c3456f9",
+      "capturedWorkingSha256": "a2f4bd86d464b50948343d3996878d9eba9f5568673c628cdfdd3e096c3456f9",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "tests/unit/ozon-durable-runner.test.ts",
+      "lines": "182-200",
+      "baselineSha256": "a91cbf66e4e6d321c5ac7553b55d937dff021f3285a3753a7eeeca5cd4d83994",
+      "capturedWorkingSha256": "a91cbf66e4e6d321c5ac7553b55d937dff021f3285a3753a7eeeca5cd4d83994",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "tests/e2e/ozon-mock-server.ts",
+      "lines": "686-750",
+      "baselineSha256": "d3a0351e53d59b985a99aede6dc922be2a0401f3aaec0ab2ea5a8d720de8df0a",
+      "capturedWorkingSha256": "d3a0351e53d59b985a99aede6dc922be2a0401f3aaec0ab2ea5a8d720de8df0a",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/migrations/021_ozon_sync_checkpoints_observability.sql",
+      "lines": "full file",
+      "baselineSha256": "dddb60de52de8034c940bddc9f011e8fd674ee282ac4ddda9fcd22faa65fa336",
+      "capturedWorkingSha256": "dddb60de52de8034c940bddc9f011e8fd674ee282ac4ddda9fcd22faa65fa336",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/migrations/027_ozon_retry_accounting.sql",
+      "lines": "full file",
+      "baselineSha256": "7d848b079ba290eea533bb0c9b470a953a9191d9d4d1309824a48622d18c06a1",
+      "capturedWorkingSha256": "7d848b079ba290eea533bb0c9b470a953a9191d9d4d1309824a48622d18c06a1",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/migrations/028_ozon_automatic_incremental_sync.sql",
+      "lines": "full file",
+      "baselineSha256": "607ffbab9a0499804c0df5db27c3cd4c30850007910ef08b4f5f85633e1e7c66",
+      "capturedWorkingSha256": "607ffbab9a0499804c0df5db27c3cd4c30850007910ef08b4f5f85633e1e7c66",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/operation-imports/openai.ts",
+      "lines": "39-56,481-534,595",
+      "baselineSha256": "de84d680bb19a8e0b24a0e51803ccdc1c4001e80150cf0e327afcff69a1cc34c",
+      "capturedWorkingSha256": "de84d680bb19a8e0b24a0e51803ccdc1c4001e80150cf0e327afcff69a1cc34c",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/operation-imports/pipeline.ts",
+      "lines": "207-208,466-491,900-912",
+      "baselineSha256": "bed438cdeb87dbb564c6f10f386738641bbc5b6d7ed46d63c705dafb01cf8cf4",
+      "capturedWorkingSha256": "bed438cdeb87dbb564c6f10f386738641bbc5b6d7ed46d63c705dafb01cf8cf4",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/lib/operation-imports/types.ts",
+      "lines": "48-74",
+      "baselineSha256": "253e3f294b9fff97dde1e61ed477a9600c27a26d011d0fa31564ef491ead1fe2",
+      "capturedWorkingSha256": "253e3f294b9fff97dde1e61ed477a9600c27a26d011d0fa31564ef491ead1fe2",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "src/app/api/operation-imports/route.ts",
+      "lines": "48-50,95-108,248-258",
+      "baselineSha256": "dad6f4f4c89b692eda2230cf6001066da8d0ad5e64e99625be89da5c9d14b492",
+      "capturedWorkingSha256": "dad6f4f4c89b692eda2230cf6001066da8d0ad5e64e99625be89da5c9d14b492",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/migrations/008_operation_imports.sql",
+      "lines": "3-68",
+      "baselineSha256": "ec3ed24d3b04856c63b6e60701bd9338c71ae0a3b4aed96f435a7f345d39a764",
+      "capturedWorkingSha256": "ec3ed24d3b04856c63b6e60701bd9338c71ae0a3b4aed96f435a7f345d39a764",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/migrations/018_operation_import_targeted_reprocess.sql",
+      "lines": "full file",
+      "baselineSha256": "e4d1b39b98373eba116987723fcc9615cbbd5a27dffa4158e01bfebf7c1eac46",
+      "capturedWorkingSha256": "e4d1b39b98373eba116987723fcc9615cbbd5a27dffa4158e01bfebf7c1eac46",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/migrations/019_operation_import_partial_commit.sql",
+      "lines": "41-96,322-389",
+      "baselineSha256": "cf91a6575e03c9b34a2d4a436eb45bcad591e873f9973a98566a2af697b3e235",
+      "capturedWorkingSha256": "cf91a6575e03c9b34a2d4a436eb45bcad591e873f9973a98566a2af697b3e235",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "tests/unit/operation-import-extraction.test.ts",
+      "lines": "5-49",
+      "baselineSha256": "0c7493734493d141d2bf2ebd118583444a338bbd36ed0cdc538a13edfa2aa931",
+      "capturedWorkingSha256": "0c7493734493d141d2bf2ebd118583444a338bbd36ed0cdc538a13edfa2aa931",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "tests/e2e/operation-import-items.authenticated.spec.ts",
+      "lines": "94-167",
+      "baselineSha256": "1406f5fc01856ff5c67b75f2686d6a8720da1a6ea4459a68792a04e831254356",
+      "capturedWorkingSha256": "1406f5fc01856ff5c67b75f2686d6a8720da1a6ea4459a68792a04e831254356",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "scripts/test-auth-security.sh",
+      "lines": "4-22",
+      "baselineSha256": "c612a7a682919317ab000cdb48f0002c91ee06cf572b355581ffd7103a580bae",
+      "capturedWorkingSha256": "c612a7a682919317ab000cdb48f0002c91ee06cf572b355581ffd7103a580bae",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "scripts/test-workspace-reset.sh",
+      "lines": "4-18",
+      "baselineSha256": "a3ad3493d6388150e6203882378a33f199e0cec5926f044bfe695ff02473ccc5",
+      "capturedWorkingSha256": "a3ad3493d6388150e6203882378a33f199e0cec5926f044bfe695ff02473ccc5",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "scripts/test-auth-recovery.sh",
+      "lines": "7-13,61-77",
+      "baselineSha256": "86b2a2e1543806580758e6384754b51a6045519cf537921be810cc27ce4ea987",
+      "capturedWorkingSha256": "86b2a2e1543806580758e6384754b51a6045519cf537921be810cc27ce4ea987",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/tests/workspace-invitation-security.sql",
+      "lines": "full file",
+      "baselineSha256": "b2a37be6d7b2dbad266ce0df52b95516efc6169c02e27439cb02885a7f227299",
+      "capturedWorkingSha256": "b2a37be6d7b2dbad266ce0df52b95516efc6169c02e27439cb02885a7f227299",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/tests/workspace-reset-performance.sql",
+      "lines": "22-53,113-169",
+      "baselineSha256": "1a6cebc887e94b3922385a3d89cbfb6cd4bf7ab87951a7d400eed8b6977ac8d3",
+      "capturedWorkingSha256": "1a6cebc887e94b3922385a3d89cbfb6cd4bf7ab87951a7d400eed8b6977ac8d3",
+      "workingDiffersFromBaseline": false
+    },
+    {
+      "path": "supabase/tests/inventory-adjustment-type.sql",
+      "lines": "full file",
+      "baselineSha256": "35ad4fb15cef43c0d01f25143a024c04bdfaaf094600e1deccd2679b607cec7e",
+      "capturedWorkingSha256": "35ad4fb15cef43c0d01f25143a024c04bdfaaf094600e1deccd2679b607cec7e",
+      "workingDiffersFromBaseline": false
+    }
+  ]
+}

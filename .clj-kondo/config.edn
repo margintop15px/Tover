@@ -1,0 +1,11 @@
+{:linters {:unquote-not-syntax-quoted {:level :off}}
+ :lint-as
+ {bel.core/defpage           clojure.core/defn
+  bel.core/defview           clojure.core/defn
+  bel.core/defaction         clojure.core/defn
+  bel.core/defstream         clojure.core/defn
+  tover.rdf/with-transaction clojure.core/let}
+
+ :hooks
+ {:analyze-call
+  {bel.expressions/->expr hooks.datastar/->expr}}}

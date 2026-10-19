@@ -1,0 +1,17 @@
+{:function-arguments-indentation        :cursive
+ :remove-consecutive-blank-lines?       false
+ :remove-blank-lines-in-forms?          false
+ :remove-multiple-non-indenting-spaces? true
+ :align-map-columns?                    true
+ :align-form-columns?                   false
+ :align-single-column-lines?            false
+ :max-column-alignment-gap              20
+ :sort-ns-references?                   true
+ :paths ["src" "dev" "test"]
+ :extra-indents
+ {tover.rdf/with-transaction [[:block 1]]
+  bel.core/defpage           [[:inner 0]]
+  bel.core/defview           [[:inner 0]]
+  bel.core/defaction         [[:inner 0]]
+  bel.core/defstream         [[:inner 0]]
+  bel.expressions/->expr     [[:inner 0]]}}

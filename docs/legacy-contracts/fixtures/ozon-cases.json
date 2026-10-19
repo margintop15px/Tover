@@ -1,0 +1,305 @@
+{
+  "formatVersion": 1,
+  "capturedAt": "2026-10-19",
+  "providerLastVerifiedByLegacyRunbook": "2026-07-27",
+  "liveProviderRevalidated": false,
+  "synthetic": true,
+  "readOnlyEndpoints": [
+    "/v2/warehouse/list",
+    "/v1/warehouse/fbo/seller/list",
+    "/v3/product/list",
+    "/v3/product/info/list",
+    "/v4/product/info/attributes",
+    "/v4/product/info/stocks",
+    "/v5/product/info/prices",
+    "/v1/product/info/discounted",
+    "/v4/posting/fbs/list",
+    "/v3/posting/fbs/get",
+    "/v3/posting/fbo/list",
+    "/v2/posting/fbo/get",
+    "/v1/returns/list",
+    "/v2/returns/rfbs/list",
+    "/v2/returns/rfbs/get",
+    "/v1/posting/unpaid-legal/product/list",
+    "/v1/finance/accrual/types",
+    "/v1/finance/accrual/by-day",
+    "/v1/finance/document-b2b-sales/json",
+    "/v1/finance/cash-flow-statement/list",
+    "/v1/finance/mutual-settlement",
+    "/v1/finance/products/buyout",
+    "/v1/finance/compensation",
+    "/v1/finance/decompensation",
+    "/v1/report/discounted/create",
+    "/v1/report/info",
+    "/v1/report/list",
+    "/v1/removal/from-stock/list",
+    "/v1/removal/from-supply/list",
+    "/v3/supply-order/list",
+    "/v3/supply-order/get",
+    "/v1/supply-order/bundle",
+    "/v1/analytics/stocks",
+    "/v1/analytics/turnover/stocks"
+  ],
+  "cases": [
+    {
+      "id": "lossless-json-numbers",
+      "source": "baseline:tests/unit/ozon-client.test.ts:148-162",
+      "rawBody": "{\"id\":9223372036854775807,\"quantity\":1.2300,\"nested\":{\"amount\":12345678901234567890.1234},\"label\":\"value 42\"}",
+      "expected": {
+        "id": "9223372036854775807",
+        "quantity": "1.2300",
+        "nested": {
+          "amount": "12345678901234567890.1234"
+        },
+        "label": "value 42"
+      }
+    },
+    {
+      "id": "return-int64-cursor",
+      "source": "baseline:tests/unit/ozon-sync.test.ts:270-308",
+      "endpoint": "/v1/returns/list",
+      "firstRequest": {
+        "filter": {
+          "logistic_return_date": {
+            "time_from": "2026-07-01T00:00:00.000Z",
+            "time_to": "2026-07-27T23:59:59.999Z"
+          }
+        },
+        "limit": 100,
+        "last_id": 0
+      },
+      "laterCursor": "9223372036854775807",
+      "expectedLaterCursorType": "string"
+    },
+    {
+      "id": "empty-stocks",
+      "source": "baseline:tests/unit/ozon-sync.test.ts:310-323",
+      "input": {
+        "product_id": "123456789012345678",
+        "offer_id": "OFFER-1",
+        "stocks": []
+      },
+      "expectedRows": [],
+      "invalidInput": {
+        "product_id": "123"
+      },
+      "expectedInvalid": "incomplete-response"
+    },
+    {
+      "id": "return-receipt-and-money",
+      "source": "baseline:tests/unit/ozon-correctness-repair.test.ts:243-288",
+      "input": {
+        "id": "9223372036854775807",
+        "posting_number": "FBO-1",
+        "schema": "FBO",
+        "visual": {
+          "status": {
+            "sys_name": "ReceivedBySeller"
+          }
+        },
+        "logistic": {
+          "return_date": "2026-07-26T10:00:00Z",
+          "final_moment": "2026-07-27T10:00:00Z"
+        },
+        "target_place": {
+          "id": "987654321012345678",
+          "name": "Returns warehouse"
+        },
+        "product": {
+          "product_id": "123456789012345678",
+          "offer_id": "OFFER-1",
+          "sku": "987654321012345678",
+          "name": "Product",
+          "quantity": "1.500",
+          "price": {
+            "price": "10.2500",
+            "currency_code": "RUB"
+          }
+        }
+      },
+      "expected": {
+        "returnId": "9223372036854775807",
+        "postingNumber": "FBO-1",
+        "status": "ReceivedBySeller",
+        "schema": "FBO",
+        "logisticReturnDate": "2026-07-26T10:00:00.000Z",
+        "logisticFinalMoment": "2026-07-27T10:00:00.000Z",
+        "returnedAt": "2026-07-27T10:00:00.000Z",
+        "offerId": "OFFER-1",
+        "sku": "987654321012345678",
+        "ozonProductId": "123456789012345678",
+        "productName": "Product",
+        "quantity": "1.5",
+        "price": "10.25",
+        "currencyCode": "RUB",
+        "warehouseId": "987654321012345678",
+        "warehouseName": "Returns warehouse"
+      }
+    },
+    {
+      "id": "rfbs-unknown-receipt",
+      "source": "baseline:tests/unit/ozon-correctness-repair.test.ts:290-304",
+      "input": {
+        "return_id": "RFBS-1",
+        "state": {
+          "state": "ArrivedAtReturnPlace"
+        },
+        "product": {
+          "sku": "123",
+          "offer_id": "RFBS-OFFER",
+          "price": "7.10",
+          "currency_code": "RUB"
+        },
+        "warehouse_id": "321"
+      },
+      "expectedFields": {
+        "quantity": null,
+        "returnedAt": null,
+        "price": "7.1"
+      }
+    },
+    {
+      "id": "supply-list-is-ids",
+      "source": "baseline:tests/unit/ozon-sync.test.ts:904-956",
+      "endpoint": "/v3/supply-order/list",
+      "responses": [
+        {
+          "order_ids": [
+            1,
+            "2"
+          ],
+          "last_id": "next"
+        },
+        {
+          "result": {
+            "order_ids": [
+              "3"
+            ],
+            "last_id": ""
+          }
+        }
+      ],
+      "expectedListCursors": [
+        "",
+        "next"
+      ],
+      "expectedDetailRequest": {
+        "endpoint": "/v3/supply-order/get",
+        "body": {
+          "order_ids": [
+            "1",
+            "2",
+            "3"
+          ]
+        }
+      },
+      "maximumDetailBatch": 50,
+      "partialDetailResponse": "fail instead of silently losing unresolved IDs"
+    },
+    {
+      "id": "posting-keeps-two-lines",
+      "source": "baseline:tests/e2e/ozon-mock-server.ts:686-750",
+      "sanitization": "Fixed synthetic identifiers; removed all buyer/contact/address fields from local fixture.",
+      "endpoint": "/v4/posting/fbs/list",
+      "response": {
+        "result": {
+          "postings": [
+            {
+              "posting_number": "SYNTHETIC-FBS-1",
+              "order_id": "SYNTHETIC-ORDER-1",
+              "status": "delivered",
+              "in_process_at": "2099-05-01T09:00:00.000Z",
+              "shipment_date": "2099-05-01T10:00:00.000Z",
+              "products": [
+                {
+                  "product_id": "1",
+                  "offer_id": "SYNTHETIC-1",
+                  "sku": "101",
+                  "name": "Synthetic product 1",
+                  "quantity": 2,
+                  "price": {
+                    "amount": "10.25",
+                    "currency": "RUB"
+                  }
+                },
+                {
+                  "product_id": "2",
+                  "offer_id": "SYNTHETIC-2",
+                  "sku": "102",
+                  "name": "Synthetic product 2",
+                  "quantity": 1,
+                  "price": {
+                    "amount": "7.10",
+                    "currency": "RUB"
+                  }
+                }
+              ],
+              "analytics_data": {
+                "warehouse": "Synthetic seller warehouse"
+              }
+            }
+          ],
+          "has_next": false,
+          "cursor": ""
+        }
+      },
+      "expectedLineCount": 2,
+      "expectedWarehouseIdentity": null,
+      "expectedWarehouseName": "Synthetic seller warehouse",
+      "expectedDeliveredTimestamp": null
+    },
+    {
+      "id": "safe-retrieval-backoff",
+      "source": "baseline:tests/unit/ozon-client.test.ts:164-174",
+      "endpoint": "/v2/warehouse/list",
+      "outcomes": [
+        "transport-error",
+        "transport-error",
+        "transport-error",
+        "success"
+      ],
+      "randomValue": 0.5,
+      "expectedAttempts": 4,
+      "expectedBackoffMs": [
+        625,
+        1125,
+        2125
+      ]
+    },
+    {
+      "id": "report-creation-no-http-retry",
+      "source": "baseline:tests/unit/ozon-client.test.ts:176-200",
+      "endpoint": "/v1/report/discounted/create",
+      "outcomes": [
+        {
+          "status": 503,
+          "body": {
+            "code": 13,
+            "message": "busy"
+          }
+        }
+      ],
+      "expectedAttempts": 1
+    },
+    {
+      "id": "unknown-error-redaction",
+      "source": "baseline:tests/unit/ozon-durable-runner.test.ts:182-200",
+      "inputKind": "unknown-exception",
+      "expected": {
+        "retryable": true,
+        "persistedError": {
+          "message": "Ozon sync step failed",
+          "kind": "unknown",
+          "retryable": true
+        }
+      },
+      "mustExclude": [
+        "arbitrary exception text",
+        "stack",
+        "credentials",
+        "request body",
+        "response body"
+      ]
+    }
+  ]
+}
