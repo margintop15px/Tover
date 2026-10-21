@@ -9,10 +9,18 @@
     [org.httpkit.server :as http]
     [reitit.ring :as ring]
     [ring.middleware.anti-forgery :refer [wrap-anti-forgery]]
+    [ring.middleware.keyword-params :refer [wrap-keyword-params]]
     [ring.middleware.params :refer [wrap-params]]
     [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
-    [tover.rdf :as rdf]
-    [tover.schema :as schema])
+    [tover.auth.core :as auth]
+    [tover.auth.security :as security]
+    [tover.auth.sessions :as sessions]
+    [tover.auth.supabase :as auth-supabase]
+    [tover.shared.rdf :as rdf]
+    [tover.shared.schema :as schema]
+    [tover.shared.web.errors :as errors]
+    [tover.workspaces.core :as workspaces]
+    [tover.workspaces.supabase :as workspace-supabase])
   (:import
     [clojure.lang ExceptionInfo]))
 
@@ -33,6 +41,11 @@
   [:map
    [:repo rdf/Repository]
    [:realtime realtime/Realtime]
+   [:auth [:fn #(satisfies? auth/Auth %)]]
+   [:workspaces [:fn #(satisfies? workspaces/Directory %)]]
+   [:session-store :any]
+   [:origin schema/Text]
+   [:development? {:optional true} :boolean]
    [:operation-examples {:optional true} :map]])
 
 
@@ -52,6 +65,9 @@
   [:map
    [::repo rdf/Repository]
    [::realtime realtime/Realtime]
+   [::auth :any]
+   [::workspaces :any]
+   [::session-store :any]
    [::handler schema/Handler]
    [::server StopFn]])
 
@@ -76,42 +92,94 @@
    [:=> [:cat HandlerOptions] schema/Handler]}
   [options]
   (bel/init! {:scan-ns ['tover]})
-  (let [{:keys [realtime]} (validation/check! HandlerOptions options)
-        context (select-keys options [:repo :realtime :operation-examples])
-        routes (into [["/" {:get (handler/page-handler context :tover.pages/stock)}]
-                      ["/view/{*id}" {:post (handler/view-handler context)}]
-                      ["/action/{*id}" {:post (handler/action-handler context)}]]
-                     (realtime/routes realtime))]
-    (-> (ring/ring-handler
-          (ring/router routes)
-          (ring/routes
-            (ring/create-resource-handler {:path "/" :root "public"})
-            (ring/create-default-handler)))
+
+  (let [{:keys [realtime session-store origin development?]} (validation/check! HandlerOptions options)
+        context (select-keys options [:repo :realtime :operation-examples :auth :workspaces :session-store :origin])
+        extra-routes (mapv (fn [[path data]]
+                             [path (assoc data :tover/access :workspace)])
+                           (realtime/routes realtime))
+        routed (ring/ring-handler
+                 (ring/router (handler/routes context extra-routes)
+                              {:reitit.ring/default-options-endpoint nil
+                               :data {:middleware [wrap-keyword-params
+                                                   (security/identity-middleware context)
+                                                   errors/form-exception-middleware]}})
+                 (ring/routes
+                   (ring/create-resource-handler {:path "/" :root "public"})
+                   (ring/create-default-handler)))
+        secured (fn [request]
+                  (let [response (routed request)]
+                    (update response :headers merge
+                            {"cache-control" "private, no-store" "referrer-policy" "strict-origin"})))]
+    (-> secured
+        wrap-anti-forgery
+        (security/wrap-origin origin)
         wrap-params
-        (wrap-anti-forgery {:safe-header "datastar-request"})
-        session/wrap-session
+        (session/wrap-session {:store        session-store :cookie-name "tover-session"
+                               :cookie-attrs {:http-only true               :same-site :lax :path "/"
+                                              :secure    (not development?)}})
         hk/wrap-start-responding)))
+
+
+(defn system-config
+  "Compose explicit implementations; development supplies fixtures through Integrant."
+  {:malli/schema [:=> [:cat Port schema/Text :map] Config]}
+  [port path services]
+  (validation/check! Port port)
+  (validation/check! schema/Text path)
+  {::repo          {:path path}
+   ::auth          {:instance (:auth services)}
+   ::workspaces    {:instance (:workspaces services)}
+   ::session-store {:instance (:session-store services)}
+   ::realtime      {:auth          (ig/ref ::auth)
+                    :workspaces    (ig/ref ::workspaces)
+                    :session-store (ig/ref ::session-store)
+                    :repo          (ig/ref ::repo)}
+   ::handler       (merge (select-keys services [:origin :development?])
+                          {:repo          (ig/ref ::repo)
+                           :realtime      (ig/ref ::realtime)
+                           :auth          (ig/ref ::auth)
+                           :workspaces    (ig/ref ::workspaces)
+                           :session-store (ig/ref ::session-store)})
+   ::server        {:repo          (ig/ref ::repo)
+                    :handler       (ig/ref ::handler)
+                    :realtime      (ig/ref ::realtime)
+                    :session-store (ig/ref ::session-store)
+                    :port          port}})
 
 
 (defn config
   {:malli/schema
    [:function
     [:=> [:cat] Config]
-    [:=> [:cat Port schema/Text] Config]]}
+    [:=> [:cat Port schema/Text] Config]
+    [:=> [:cat Port schema/Text
+          [:map
+           [:development? :boolean]
+           [:environment {:optional true} [:map-of :string [:maybe :string]]]]] Config]]}
   ([]
    (config 3030 ".data/inventory"))
 
   ([port path]
-   (validation/check! Port port)
-   (validation/check! schema/Text path)
-   {::repo     {:path path}
-    ::realtime {}
-    ::handler  {:repo     (ig/ref ::repo)
-                :realtime (ig/ref ::realtime)}
-    ::server   {:repo     (ig/ref ::repo)
-                :handler  (ig/ref ::handler)
-                :realtime (ig/ref ::realtime)
-                :port     port}}))
+   (config port path {:development? false}))
+
+  ([port path {:keys [development? environment]}]
+   (let [environment   (or environment (System/getenv))
+         required      (fn [name]
+                         (or (not-empty (get environment name))
+                             (throw (ex-info (str "Missing configuration: " name) {:type :configuration}))))
+         provider      {:auth-url (required "TOVER_AUTH_URL") :rest-url  (required "TOVER_REST_URL")
+                        :api-key  (required "TOVER_API_KEY")  :admin-key (required "TOVER_AUTH_ADMIN_KEY")}
+         origin        (required "TOVER_ORIGIN")
+         configuration (system-config port path {:origin origin :development? development?})]
+     (when-not (or (re-matches #"https://[^/]+" origin)
+                   (and development? (re-matches #"http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?" origin)))
+       (throw (ex-info "Production origin must be an HTTPS origin" {:type :configuration})))
+     (-> configuration
+         (assoc ::auth provider ::workspaces provider)
+         (assoc ::session-store {:jdbc-url       (required "TOVER_JDBC_URL")
+                                 :user           (required "TOVER_DB_USER")     :password (required "TOVER_DB_PASSWORD")
+                                 :encryption-key (required "TOVER_SESSION_KEY")})))))
 
 
 (defn repo
@@ -125,8 +193,28 @@
 (defn realtime
   {:malli/schema
    [:=> [:cat [:map]] realtime/Realtime]}
-  [_options]
-  (realtime/start!))
+  [options]
+  (realtime/start!
+    {:authorize (fn [{:keys [auth-session-id auth-version scope-id]}]
+                  (when auth-session-id
+                    (let [identity (security/authenticate options auth-session-id)]
+                      (when (and identity (= scope-id (:workspace-id identity)) (= auth-version (:auth-version identity)))
+                        (merge (select-keys options [:repo]) identity)))))}))
+
+
+(defn auth
+  {:malli/schema [:=> [:cat :map] [:fn #(satisfies? auth/Auth %)]]} [{:keys [instance] :as options}]
+  (or instance (auth-supabase/auth options)))
+
+
+(defn workspaces
+  {:malli/schema [:=> [:cat :map] [:fn #(satisfies? workspaces/Directory %)]]} [{:keys [instance] :as options}]
+  (or instance (workspace-supabase/workspaces options)))
+
+
+(defn session-store
+  {:malli/schema [:=> [:cat :map] :any]} [{:keys [instance] :as options}]
+  (or instance (sessions/jdbc-store options)))
 
 
 (defn handler

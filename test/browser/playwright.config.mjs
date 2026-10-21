@@ -16,7 +16,7 @@ export default defineConfig({
   },
   projects: modes.map((mode, index) => ({
     name: mode,
-    testMatch: `${mode}.spec.mjs`,
+    testMatch: mode === 'production' ? ['production.spec.mjs', 'navigation.spec.mjs'] : 'development.spec.mjs',
     use: { baseURL: `http://127.0.0.1:${port + index}` },
   })),
   webServer: modes.map((mode, index) => ({

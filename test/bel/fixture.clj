@@ -10,10 +10,12 @@
 
 
 (defpage document
-  {:schema [:map [:query {:optional true} :string]]
-   :query  query-document}
+  {:route    "/"
+   :document (fn [_props & children] [:html (into [:body] children)])
+   :schema   [:map [:query {:optional true} :string]]
+   :query    query-document}
   [{:keys [message]}]
-  {:type :elements :html [:html [:body [:h1 message]]]})
+  {:type :elements :html [:main [:h1 message]]})
 
 
 (defview row

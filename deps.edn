@@ -1,24 +1,29 @@
-{:paths ["src" "resources"]
- :deps  {org.clojure/clojure                        {:mvn/version "1.13.0-alpha8"}
-         org.clojure/java.classpath                 {:mvn/version "1.1.1"}
-         org.clojure/tools.namespace                {:mvn/version "1.5.1"}
-         dev.data-star.clojure/sdk                  {:mvn/version "1.0.0-RC11"}
-         dev.data-star.clojure/http-kit             {:mvn/version "1.0.0-RC11"}
-         http-kit/http-kit                          {:mvn/version "2.9.0-beta4"}
-         metosin/reitit-ring                        {:mvn/version "0.11.0"}
-         dev.onionpancakes/chassis                  {:mvn/version "1.0.365"}
-         com.cnuernber/charred                      {:mvn/version "1.043"}
-         backtick/backtick                          {:mvn/version "0.4.0"}
-         io.github.squint-cljs/squint               {:git/url "https://github.com/squint-cljs/squint.git"
-                                                     :git/sha "d9ce10899d531377ed17222f05472d1a451d96bd"}
-         integrant/integrant                        {:mvn/version "1.0.1"}
-         metosin/malli                              {:mvn/version "0.20.3"}
-         com.yetanalytics/flint                     {:mvn/version "0.3.1"
-                                                     :exclusions  [org.clojure/clojure org.clojure/clojurescript]}
-         ring/ring-anti-forgery                     {:mvn/version "1.4.0"}
-         org.eclipse.rdf4j/rdf4j-repository-sail    {:mvn/version "6.2.0-M1"}
-         org.eclipse.rdf4j/rdf4j-sail-nativerdf     {:mvn/version "6.2.0-M1"}
-         org.eclipse.rdf4j/rdf4j-queryparser-sparql {:mvn/version "6.2.0-M1"}}
+{:paths
+ ["src" "resources"]
+
+ :deps
+ {org.clojure/clojure                        {:mvn/version "1.13.0-alpha8"}
+  org.clojure/java.classpath                 {:mvn/version "1.1.1"}
+  org.clojure/tools.namespace                {:mvn/version "1.5.1"}
+  dev.data-star.clojure/sdk                  {:mvn/version "1.0.0-RC11"}
+  dev.data-star.clojure/http-kit             {:mvn/version "1.0.0-RC11"}
+  http-kit/http-kit                          {:mvn/version "2.9.0-beta4"}
+  metosin/reitit-ring                        {:mvn/version "0.11.0"}
+  metosin/reitit-middleware                  {:mvn/version "0.11.0"}
+  dev.onionpancakes/chassis                  {:mvn/version "1.0.365"}
+  com.cnuernber/charred                      {:mvn/version "1.043"}
+  backtick/backtick                          {:mvn/version "0.4.0"}
+  io.github.squint-cljs/squint               {:git/url "https://github.com/squint-cljs/squint.git"
+                                              :git/sha "d9ce10899d531377ed17222f05472d1a451d96bd"}
+  integrant/integrant                        {:mvn/version "1.0.1"}
+  metosin/malli                              {:mvn/version "0.20.3"}
+  com.yetanalytics/flint                     {:mvn/version "0.3.1"
+                                              :exclusions  [org.clojure/clojure org.clojure/clojurescript]}
+  ring/ring-anti-forgery                     {:mvn/version "1.4.0"}
+  org.postgresql/postgresql                  {:mvn/version "42.7.14"}
+  org.eclipse.rdf4j/rdf4j-repository-sail    {:mvn/version "6.2.0-M1"}
+  org.eclipse.rdf4j/rdf4j-sail-nativerdf     {:mvn/version "6.2.0-M1"}
+  org.eclipse.rdf4j/rdf4j-queryparser-sparql {:mvn/version "6.2.0-M1"}}
 
  :jvm-opts
  ["--enable-native-access=ALL-UNNAMED"
@@ -26,23 +31,31 @@
   "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"]
 
  :aliases
- {:run  {:main-opts ["-m" "tover.app"]}
+ {:run
+  {:main-opts ["-m" "tover.app"]}
 
-  :fmt  {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.16.6"}}
-         :main-opts  ["-m" "cljfmt.main"]}
+  :fmt
+  {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.16.6"}}
+   :main-opts  ["-m" "cljfmt.main"]}
 
-  :dev  {:extra-paths ["dev"]
-         :extra-deps  {nrepl/nrepl                           {:mvn/version "1.8.0"}
-                       integrant/repl                        {:mvn/version "0.5.1"}
-                       ring/ring-devel                       {:mvn/version "1.15.5"}
-                       com.github.brettatoms/ring-hot-reload {:mvn/version "0.2.9"}}
-         :main-opts   ["-m" "user"]}
+  :dev
+  {:extra-paths ["dev"]
+   :extra-deps  {nrepl/nrepl                           {:mvn/version "1.8.0"}
+                 integrant/repl                        {:mvn/version "0.5.1"}
+                 ring/ring-devel                       {:mvn/version "1.15.5"}
+                 com.github.brettatoms/ring-hot-reload {:mvn/version "0.2.9"}}
+   :main-opts   ["-m" "user"]}
 
   :nrepl
   {:extra-deps {nrepl/nrepl {:mvn/version "1.8.0"}}
    :main-opts  ["-m" "nrepl.cmdline"
                 "--interactive" "--color" "--bind" "127.0.0.1"]}
 
-  :test {:extra-paths ["test"]
-         :extra-deps  {lambdaisland/kaocha {:mvn/version "1.91.1392"}}
-         :main-opts   ["-m" "kaocha.runner"]}}}
+  :identity-integration
+  {:extra-paths ["test"]
+   :main-opts   ["-m" "identity-integration"]}
+
+  :test
+  {:extra-paths ["test"]
+   :extra-deps  {lambdaisland/kaocha {:mvn/version "1.91.1392"}}
+   :main-opts   ["-m" "kaocha.runner"]}}}

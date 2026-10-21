@@ -1,31 +1,41 @@
--- Run only via scripts/test-auth-security.sh, which creates a disposable cluster.
+-- Run only via scripts/test-auth-security.sh against its disposable cluster.
 \set QUIET 1
-CREATE ROLE anon;
-CREATE ROLE authenticated;
-CREATE ROLE service_role BYPASSRLS;
-CREATE SCHEMA auth;
-CREATE TABLE auth.users (
-  id uuid PRIMARY KEY,
-  email text,
-  email_confirmed_at timestamptz,
-  last_sign_in_at timestamptz,
-  raw_user_meta_data jsonb DEFAULT '{}'::jsonb
-);
-CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
-  SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid;
-$$;
-CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$
-  SELECT current_setting('request.jwt.claim.role', true);
-$$;
-GRANT USAGE ON SCHEMA auth TO authenticated, anon;
-
+\ir auth-stub.sql
+\if :legacy
 \ir ../migrations/001_initial_schema.sql
 \ir ../migrations/002_auth_orgs_rbac.sql
 \ir ../migrations/003_inventory_system.sql
 \ir ../migrations/029_secure_workspace_invitations.sql
 \ir ../migrations/032_team_invitation_recovery.sql
-
+-- Simulate legacy Data API grants before the forward migration restricts them.
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO authenticated;
+CREATE FUNCTION public.legacy_privilege_probe() RETURNS integer LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1; $$;
+GRANT EXECUTE ON FUNCTION public.legacy_privilege_probe() TO authenticated;
+INSERT INTO auth.users (id,email,email_confirmed_at,raw_user_meta_data)
+VALUES ('90000000-0000-0000-0000-000000000001','preserved@example.test',now(),
+  '{"organization_name":"Preserved workspace"}');
+\endif
+\ir ../migrations/033_identity_and_sessions.sql
+-- A second application must preserve data and authorization.
+\ir ../migrations/033_identity_and_sessions.sql
+\if :legacy
+DO $$ BEGIN
+  ASSERT EXISTS (SELECT FROM auth.users u JOIN public.profiles p ON p.user_id=u.id
+    JOIN public.organization_memberships m ON m.user_id=u.id
+    JOIN public.organizations o ON o.id=m.organization_id
+    JOIN public.warehouses w ON w.workspace_id=o.id AND w.is_default_defect
+    WHERE u.id='90000000-0000-0000-0000-000000000001' AND o.name='Preserved workspace' AND m.role_id='owner'),
+    'upgrade did not preserve existing account, workspace, owner membership and inventory';
+  ASSERT NOT has_function_privilege('tover_app','public.legacy_privilege_probe()','EXECUTE'),
+    'session role inherited legacy SECURITY DEFINER access through PUBLIC';
+  ASSERT has_function_privilege('authenticated','public.legacy_privilege_probe()','EXECUTE'),
+    'forward hardening removed a legacy explicit role grant';
+END; $$;
+\else
+DO $$ BEGIN
+  ASSERT to_regclass('public.warehouses') IS NULL, 'fresh identity installed legacy inventory';
+END; $$;
+\endif
 
 -- A victim workspace exists; the attacker knows its UUID.
 INSERT INTO public.organizations (id, name)
@@ -40,10 +50,13 @@ BEGIN
     'forged signup metadata granted membership';
   ASSERT EXISTS (SELECT FROM public.organizations o
     JOIN public.organization_memberships m ON m.organization_id = o.id
-    JOIN public.warehouses w ON w.workspace_id = o.id AND w.is_default_defect
     WHERE o.name = 'My own workspace' AND m.role_id = 'owner'
       AND m.user_id = '20000000-0000-0000-0000-000000000001'),
     'legitimate self-service workspace creation broke';
+  IF to_regclass('public.warehouses') IS NOT NULL THEN
+    ASSERT NOT EXISTS (SELECT FROM public.warehouses w JOIN public.organizations o ON o.id=w.workspace_id
+      WHERE o.name='My own workspace'), 'signup created a legacy warehouse';
+  END IF;
 END;
 $$;
 
@@ -164,6 +177,8 @@ SET ROLE authenticated;
 DO $$ BEGIN
   ASSERT public.accept_my_organization_invites() = 0;
   ASSERT (SELECT status FROM public.organization_memberships WHERE user_id = auth.uid()) = 'suspended';
+  ASSERT NOT EXISTS (SELECT FROM public.my_workspaces() WHERE organization_id='10000000-0000-0000-0000-000000000001'),
+    'suspended membership appeared in active workspace choices';
 END; $$;
 RESET ROLE;
 
@@ -247,3 +262,41 @@ DO $$ BEGIN
 END; $$;
 RESET ROLE;
 \echo 'PASS: invitation security, manager scope, recovery cooldown, role preservation, suspension, expiry, grouping, resend and cancellation'
+
+-- Managers must also use RPCs; direct writes cannot bypass cooldown/role rules.
+SET ROLE authenticated;
+SET request.jwt.claim.sub = '20000000-0000-0000-0000-000000000005';
+DO $$ DECLARE r jsonb; BEGIN
+  BEGIN
+    INSERT INTO public.organization_memberships (organization_id,user_id,role_id)
+    VALUES ('10000000-0000-0000-0000-000000000001',gen_random_uuid(),'owner');
+    RAISE EXCEPTION 'manager bypassed membership RPC boundary';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  BEGIN
+    UPDATE public.organization_invites SET role_id='owner' WHERE email='unfinished@example.test';
+    RAISE EXCEPTION 'manager bypassed invitation RPC boundary';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  ASSERT NOT has_schema_privilege('authenticated','app_private','USAGE');
+  ASSERT NOT has_schema_privilege('anon','app_private','USAGE');
+  ASSERT NOT has_schema_privilege('service_role','app_private','USAGE');
+  ASSERT NOT has_table_privilege('tover_app','public.organization_memberships','UPDATE');
+  ASSERT NOT has_function_privilege('anon','public.create_organization(text)','EXECUTE');
+  r := public.manage_workspace_invitation('10000000-0000-0000-0000-000000000001','create',NULL,'failed-send@example.test');
+  ASSERT (public.revoke_workspace_invitation_reservation('10000000-0000-0000-0000-000000000001',(r->>'id')::uuid)->>'ok')::boolean;
+  ASSERT EXISTS (SELECT FROM public.organization_invites WHERE id=(r->>'id')::uuid AND status='revoked');
+END; $$;
+RESET ROLE;
+SET ROLE tover_app;
+INSERT INTO app_private.sessions(id,data,tokens) VALUES ('opaque-test-session','{:test true}','encrypted-test-token');
+DO $$ BEGIN PERFORM 1 FROM app_private.sessions WHERE id='opaque-test-session' FOR UPDATE; END; $$;
+UPDATE app_private.sessions SET data='{:test false}' WHERE id='opaque-test-session';
+DELETE FROM app_private.sessions WHERE id='opaque-test-session';
+RESET ROLE;
+DO $$ BEGIN
+  ASSERT NOT has_table_privilege('authenticated','app_private.sessions','SELECT');
+  ASSERT NOT has_table_privilege('tover_app','auth.users','SELECT');
+  ASSERT NOT has_table_privilege('tover_app','public.organization_invites','SELECT');
+  ASSERT NOT EXISTS (SELECT FROM pg_roles WHERE rolname='tover_app'
+    AND (rolsuper OR rolbypassrls OR rolinherit OR rolcreaterole OR rolcreatedb));
+END; $$;
+\echo 'PASS: portable identity contract, restricted session role and manager RPC boundary'

@@ -1,0 +1,69 @@
+:root {
+  color-scheme: light dark;
+  --iw-bg: light-dark(#ffffff, #1c1e22);
+  --iw-ink: light-dark(#25282d, #e8eaee);
+  --iw-muted: light-dark(#707780, #a5abb4);
+  --iw-line: light-dark(#e4e6e9, #383d44);
+  --iw-soft: light-dark(#f6f7f8, #24282d);
+  --iw-blue: light-dark(#315f9a, #a3c6f2);
+  --iw-blue-fill: light-dark(#edf3fb, #293748);
+  --iw-green: light-dark(#326644, #abd3b9);
+  --iw-green-fill: light-dark(#edf6ef, #2a3c31);
+  --iw-amber: light-dark(#865b23, #e4c18b);
+  --iw-amber-fill: light-dark(#fbf3e6, #3b3225);
+  --iw-red: light-dark(#9a423c, #e4aaa4);
+  --iw-red-fill: light-dark(#fff1ef, #402b2e);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--iw-bg); color: var(--iw-ink); font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+[hidden] { display: none !important; }
+a { color: var(--iw-blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .45; }
+:focus-visible { outline: 2px solid var(--iw-blue); outline-offset: 2px; }
+#tover-app { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
+.app-nav { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--iw-line); padding: 8px 16px; }
+.app-nav-pages { display: flex; align-items: stretch; gap: 8px; }
+.app-nav-pages a { display: flex; align-items: center; padding: 8px 12px; color: var(--iw-muted); }
+.app-nav-pages a[aria-current=page] { color: var(--iw-ink); box-shadow: inset 0 -2px var(--iw-ink); }
+.app-nav-tools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.nav-icon, .theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 5px; border: 0; border-radius: 4px; background: transparent; }
+.nav-icon { color: var(--iw-muted); }
+.nav-icon:hover, .nav-icon[aria-current=page] { color: var(--iw-ink); background: var(--iw-soft); text-decoration: none; }
+.theme-toggle:hover { background: var(--iw-soft); }
+.nav-icon svg, .theme-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.theme-icon-light { display: none; }
+html[data-theme=dark] .theme-icon-light { display: block; }
+html[data-theme=dark] .theme-icon-dark { display: none; }
+#page-content { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+#page-content:focus { outline: none; }
+.identity { width: 100%; max-width: 46rem; margin: 24px auto; padding: 16px 24px; }
+.identity h1 { font-size: 20px; font-weight: 500; margin: 0 0 24px; }
+.identity h2 { font-size: 14px; font-weight: 600; margin: 24px 0 12px; }
+.identity form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 16px 0; }
+.identity label { display: flex; flex-direction: column; gap: 5px; color: var(--iw-muted); }
+.identity input, .identity select, .identity textarea { min-height: 34px; max-width: 100%; padding: 6px 9px; color: var(--iw-ink); background: var(--iw-bg); border: 1px solid var(--iw-line); border-radius: 3px; }
+.identity button:not(.theme-toggle), .navigation-notice button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--iw-line); border-radius: 3px; background: var(--iw-soft); }
+.identity button[type=submit] { background: var(--iw-ink); color: var(--iw-bg); border-color: var(--iw-ink); }
+.identity ul { padding: 0; list-style: none; }
+.identity li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0; padding: 12px 0; border-bottom: 1px solid var(--iw-line); }
+.identity li form { margin: 0; }
+.identity-theme { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+.error, .identity [role=alert] { color: var(--iw-red); }
+.app-notice, .navigation-notice { padding: 12px 16px; margin: 0; background: var(--iw-amber-fill); }
+.app-notice.error { background: var(--iw-red-fill); }
+.navigation-notice { position: fixed; bottom: 16px; left: 16px; right: 16px; z-index: 100; border: 1px solid var(--iw-amber); border-radius: 4px; }
+@media (max-width: 600px) {
+  .app-nav { gap: 8px; padding: 8px; }
+  .app-nav-pages { gap: 0; }
+  .app-nav-pages a { padding: 8px; }
+  .identity { margin: 12px auto; padding: 16px; }
+  .identity form { align-items: stretch; }
+  .identity label { width: 100%; }
+  .identity input, .identity select { font-size: 16px; }
+}
+@media (pointer: coarse) {
+  .identity button, .app-nav a, .theme-toggle { min-height: 44px; }
+}

@@ -10,10 +10,16 @@
     [ring.hot-reload.inject :as inject]
     [ring.middleware.reload :refer [wrap-reload]]
     [tover.app :as app]
-    [tover.operation-examples :as operation-examples]
-    [tover.rdf :as rdf]
-    [tover.schema :as schema]
-    [tover.store :as store]))
+    [tover.identity :as identity]
+    [tover.operations.examples :as operation-examples]
+    [tover.session-store :as session-store]
+    [tover.shared.rdf :as rdf]
+    [tover.shared.schema :as shared]
+    [tover.stock.schema :as schema]
+    [tover.stock.store :as store])
+  (:import
+    [java.io FileNotFoundException]
+    [java.util Properties]))
 
 
 (def seed-rows
@@ -23,9 +29,9 @@
 
 
 (defn seed!
-  {:malli/schema [:=> [:cat rdf/Repository] schema/Rows]}
-  [repo]
-  (mapv #(store/declare-opening! repo %) seed-rows))
+  {:malli/schema [:=> [:cat rdf/Repository shared/Scope] schema/Rows]}
+  [repo scope]
+  (mapv #(store/declare-opening! repo scope %) seed-rows))
 
 
 ;; Integrant's default init-key resolves :user/malli to this function.
@@ -41,13 +47,13 @@
 
 
 (def OpeningStockOptions
-  [:map [:repo rdf/Repository] [:instrumentation :int]])
+  [:map [:repo rdf/Repository] [:scope shared/Scope] [:instrumentation :int]])
 
 
 (defn opening-stock
   {:malli/schema [:=> [:cat OpeningStockOptions] schema/Rows]}
-  [{:keys [repo]}]
-  (seed! repo))
+  [{:keys [repo scope]}]
+  (seed! repo scope))
 
 
 (defn browser-reload
@@ -80,19 +86,52 @@
         (hot/wrap-hot-reload (:reloader browser-reload)))))
 
 
+(defn local-environment
+  {:malli/schema
+   [:=> [:cat] [:map-of :string [:maybe :string]]]}
+  []
+  (let [profile  (try
+                   (with-open [reader (io/reader "deployment/local-identity/.env")]
+                     (doto (Properties.) (.load reader)))
+                   (catch FileNotFoundException _
+                     (throw (ex-info "Missing local Supabase profile. Run deployment/local-identity/identity.sh init and up."
+                                     {:type :configuration}))))
+        settings (merge (into {} profile)
+                        (select-keys (System/getenv) ["IDENTITY_API_PORT" "IDENTITY_DB_PORT" "TO_DEV_SITE_URL"]))
+        api      (str "http://127.0.0.1:" (get settings "IDENTITY_API_PORT" "58000"))]
+    {"TOVER_AUTH_URL"       (str api "/auth/v1")
+     "TOVER_REST_URL"       (str api "/rest/v1")
+     "TOVER_API_KEY"        (get settings "ANON_KEY")
+     "TOVER_AUTH_ADMIN_KEY" (get settings "SERVICE_ROLE_KEY")
+     "TOVER_ORIGIN"         (get settings "TO_DEV_SITE_URL" "http://localhost:3030")
+     "TOVER_JDBC_URL"       (str "jdbc:postgresql://127.0.0.1:" (get settings "IDENTITY_DB_PORT" "55432") "/postgres")
+     "TOVER_DB_USER"        "tover_app"
+     "TOVER_DB_PASSWORD"    (get settings "TO_DEV_APP_PASSWORD")
+     "TOVER_SESSION_KEY"    (get settings "SESSION_ENCRYPTION_KEY")}))
+
+
 (defn dev-config
   {:malli/schema [:=> [:cat] app/Config]}
   []
-  (-> (app/config)
-      (assoc ::malli {}
-             ::browser-reload {}
-             ::opening-stock {:repo            (ig/ref ::app/repo)
-                              :instrumentation (ig/ref ::malli)})
-      (assoc ::handler (assoc (::app/handler (app/config))
-                              :opening-stock (ig/ref ::opening-stock)
-                              :browser-reload (ig/ref ::browser-reload)))
-      (dissoc ::app/handler)
-      (assoc-in [::app/server :handler] (ig/ref ::handler))))
+  (let [mode            (or (System/getenv "TOVER_IDENTITY_MODE") "local")
+        fixtures        (when (= mode "fixtures") (identity/fixtures))
+        configuration   (case mode
+                          "fixtures" (app/system-config 3030 ".data/inventory"
+                                                        {:auth          (:auth fixtures)             :workspaces   (:workspaces fixtures)
+                                                         :session-store (session-store/memory-store)
+                                                         :origin        "http://localhost:3030"      :development? true})
+                          "local" (app/config 3030 ".data/inventory" {:development? true :environment (local-environment)})
+                          "supabase" (app/config 3030 ".data/inventory" {:development? true})
+                          (throw (ex-info "Unknown development identity mode" {:type :configuration})))
+        handler-options (cond-> (assoc (::app/handler configuration) :browser-reload (ig/ref ::browser-reload))
+                          fixtures (assoc :opening-stock (ig/ref ::opening-stock)))]
+    (cond-> (-> configuration
+                (assoc ::malli {} ::browser-reload {} ::handler handler-options)
+                (dissoc ::app/handler)
+                (assoc-in [::app/server :handler] (ig/ref ::handler)))
+      fixtures (assoc ::opening-stock {:repo            (ig/ref ::app/repo)
+                                       :scope           {:workspace-id (:workspace-id fixtures)}
+                                       :instrumentation (ig/ref ::malli)}))))
 
 
 (repl/set-prep! dev-config)

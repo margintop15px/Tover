@@ -67,19 +67,19 @@
 (defn- connection
   {:malli/schema [:=> [:cat realtime/Realtime :uuid :uuid [:vector realtime/Topic]] :map]}
   [realtime session tab topics]
-  (let [events (atom [])
-        closed (atom false)
+  (let [events  (atom [])
+        closed  (atom false)
         failure (atom nil)
-        sse (fake-stream events closed failure)]
+        sse     (fake-stream events closed failure)]
     (realtime/open! realtime session tab topics sse)
     {:events events :closed closed :failure failure :sse sse}))
 
 
 (deftest realtime-schema-validates-atom-contents
-  (let [sid (UUID/randomUUID)
-        tid (UUID/randomUUID)
+  (let [sid        (UUID/randomUUID)
+        tid        (UUID/randomUUID)
         connection {:sse :stream :topics #{::events}}
-        state {:connections {sid {tid connection}} :stopped? false}]
+        state      {:connections {sid {tid connection}} :stopped? false}]
     (is (m/validate realtime/Realtime (realtime/start!)))
     (is (m/validate realtime/Realtime {:state (atom state)}))
     (is (not (m/validate realtime/Realtime {:state state})))
@@ -100,10 +100,10 @@
 (deftest topics-are-attached-at-open-and-reconnect-without-delivery
   (with-realtime
     (fn [realtime]
-      (let [sid (UUID/randomUUID)
-            tid (UUID/randomUUID)
+      (let [sid   (UUID/randomUUID)
+            tid   (UUID/randomUUID)
             topic ::events
-            old (connection realtime sid tid [topic topic])]
+            old   (connection realtime sid tid [topic topic])]
         (is (= #{topic} (get-in @(:state realtime) [:connections sid tid :topics])))
         (is (empty? @(:events old)))
         (let [current (connection realtime sid tid [topic])]
@@ -132,14 +132,14 @@
 (deftest closing-tabs-keeps-siblings-and-removes-empty-sessions
   (with-realtime
     (fn [realtime]
-      (let [sid (UUID/randomUUID)
+      (let [sid       (UUID/randomUUID)
             other-sid (UUID/randomUUID)
-            tid-a (UUID/randomUUID)
-            tid-b (UUID/randomUUID)
+            tid-a     (UUID/randomUUID)
+            tid-b     (UUID/randomUUID)
             other-tid (UUID/randomUUID)
-            a (connection realtime sid tid-a [::events])
-            b (connection realtime sid tid-b [::events])
-            other (connection realtime other-sid other-tid [::events])]
+            a         (connection realtime sid tid-a [::events])
+            b         (connection realtime sid tid-b [::events])
+            other     (connection realtime other-sid other-tid [::events])]
         (#'realtime/close-connection! realtime sid tid-a (:sse a))
         (is @(:closed a))
         (is (nil? (get-in @(:state realtime) [:connections sid tid-a])))
@@ -155,12 +155,12 @@
 (deftest overlapping-opens-close-each-displaced-stream
   (with-realtime
     (fn [realtime]
-      (let [sid (UUID/randomUUID)
-            tid (UUID/randomUUID)
-            old (connection realtime sid tid [::events])
+      (let [sid     (UUID/randomUUID)
+            tid     (UUID/randomUUID)
+            old     (connection realtime sid tid [::events])
             closing (promise)
-            resume (promise)
-            close! d*/close-sse!]
+            resume  (promise)
+            close!  d*/close-sse!]
         (with-redefs [d*/close-sse! (fn [sse]
                                       (is (not (Thread/holdsLock (:state realtime))))
                                       (let [current (get-in @(:state realtime) [:connections sid tid :sse])]
@@ -176,7 +176,7 @@
                 (is (map? (deref replacement 5000 nil)))
                 (deliver resume true)
                 (let [displaced (deref opening 5000 nil)
-                      current (deref replacement 5000 nil)]
+                      current   (deref replacement 5000 nil)]
                   (is @(:closed old))
                   (is (= true (some-> displaced :closed deref)))
                   (is (= false (some-> current :closed deref)))
@@ -187,12 +187,12 @@
 (deftest stop-clears-admitted-stream-and-rejects-overlapping-open
   (with-realtime
     (fn [realtime]
-      (let [sid (UUID/randomUUID)
-            tid (UUID/randomUUID)
-            old (connection realtime sid tid [::events])
+      (let [sid     (UUID/randomUUID)
+            tid     (UUID/randomUUID)
+            old     (connection realtime sid tid [::events])
             closing (promise)
-            resume (promise)
-            close! d*/close-sse!]
+            resume  (promise)
+            close!  d*/close-sse!]
         (with-redefs [d*/close-sse! (fn [sse]
                                       (is (not (Thread/holdsLock (:state realtime))))
                                       (if (identical? sse (:sse old))
@@ -217,13 +217,13 @@
 (deftest publications-are-immediate-and-respect-topics-session-and-tab
   (with-realtime
     (fn [realtime]
-      (let [sid-a (UUID/randomUUID)
-            sid-b (UUID/randomUUID)
-            tab-a (UUID/randomUUID)
-            topic ::events
-            a (connection realtime sid-a tab-a [topic])
-            b (connection realtime sid-a (UUID/randomUUID) [topic])
-            c (connection realtime sid-b (UUID/randomUUID) [topic])
+      (let [sid-a        (UUID/randomUUID)
+            sid-b        (UUID/randomUUID)
+            tab-a        (UUID/randomUUID)
+            topic        ::events
+            a            (connection realtime sid-a tab-a [topic])
+            b            (connection realtime sid-a (UUID/randomUUID) [topic])
+            c            (connection realtime sid-b (UUID/randomUUID) [topic])
             unsubscribed (connection realtime sid-a (UUID/randomUUID) [])]
         (realtime/publish! realtime {} {:topic topic :data {:type :changed :n 1}})
         (realtime/publish! realtime {} {:topic topic :data {:type :changed :n 2} :session-id sid-a})
@@ -240,10 +240,10 @@
 (deftest topics-and-events-are-validated-before-use
   (with-realtime
     (fn [realtime]
-      (let [sid (UUID/randomUUID)
-            tid (UUID/randomUUID)
+      (let [sid   (UUID/randomUUID)
+            tid   (UUID/randomUUID)
             topic ::events
-            tab (connection realtime sid tid [topic])]
+            tab   (connection realtime sid tid [topic])]
         (doseq [invalid [{:topic :unknown/stream :data {}}
                          {:topic :events :data {}}
                          {:topic [::events] :data {}}
@@ -262,11 +262,11 @@
 (deftest projection-failures-close-the-affected-stream-and-other-tabs-continue
   (with-realtime
     (fn [realtime]
-      (let [sid (UUID/randomUUID)
+      (let [sid   (UUID/randomUUID)
             tid-a (UUID/randomUUID)
             topic ::events
-            a (connection realtime sid tid-a [topic])
-            b (connection realtime sid (UUID/randomUUID) [topic])]
+            a     (connection realtime sid tid-a [topic])
+            b     (connection realtime sid (UUID/randomUUID) [topic])]
         (realtime/publish! realtime
                            {:projection-error (IllegalStateException. "Projection failed")
                             :projection-tab   tid-a}
@@ -281,9 +281,9 @@
   (doseq [failure [:false :throw :assert]]
     (with-realtime
       (fn [realtime]
-        (let [sid (UUID/randomUUID)
+        (let [sid   (UUID/randomUUID)
               topic ::events
-              tab (connection realtime sid (UUID/randomUUID) [topic])]
+              tab   (connection realtime sid (UUID/randomUUID) [topic])]
           (reset! (:failure tab) failure)
           (realtime/publish! realtime {} {:topic topic :data {:type :changed :n 1}})
           (is @(:closed tab))
@@ -293,11 +293,11 @@
 (deftest stopping-closes-connections-and-refuses-publication-and-new-connections
   (with-realtime
     (fn [realtime]
-      (let [sid (UUID/randomUUID)
+      (let [sid   (UUID/randomUUID)
             topic ::events
-            tabs [(connection realtime sid (UUID/randomUUID) [topic])
-                  (connection realtime sid (UUID/randomUUID) [topic])
-                  (connection realtime (UUID/randomUUID) (UUID/randomUUID) [topic])]]
+            tabs  [(connection realtime sid (UUID/randomUUID) [topic])
+                   (connection realtime sid (UUID/randomUUID) [topic])
+                   (connection realtime (UUID/randomUUID) (UUID/randomUUID) [topic])]]
         (realtime/stop! realtime)
         (realtime/stop! realtime)
         (doseq [tab tabs] (is @(:closed tab)))
@@ -309,23 +309,23 @@
 (deftest streams-and-view-queries-use-shared-context-without-retaining-request
   (with-realtime
     (fn [realtime]
-      (let [sid (UUID/randomUUID)
-            tid (UUID/randomUUID)
-            context {:marker "shared"}
+      (let [sid       (UUID/randomUUID)
+            tid       (UUID/randomUUID)
+            context   {:marker "shared"}
             projected (atom [])
-            queried (atom [])
+            queried   (atom [])
             callbacks (atom nil)
-            sent (atom [])
-            sse (fake-stream sent (atom false) (atom nil))
-            view {:bel/schema [:map] :bel/output core/Result
-                  :bel/query  (fn [context _] (swap! queried conj context) {:marker (:marker context)})
-                  :bel/fn     (fn [data] {:type :signals :data data})}]
-        (with-redefs [events (fn [context _]
-                               (swap! projected conj context)
-                               {:type :view :id ::context-view})
-                      core/get-view (constantly view)
+            sent      (atom [])
+            sse       (fake-stream sent (atom false) (atom nil))
+            view      {:bel/schema [:map] :bel/output core/Result
+                       :bel/query  (fn [context _] (swap! queried conj context) {:marker (:marker context)})
+                       :bel/fn     (fn [data] {:type :signals :data data})}]
+        (with-redefs [events            (fn [context _]
+                                          (swap! projected conj context)
+                                          {:type :view :id ::context-view})
+                      core/get-view     (constantly view)
                       hk/->sse-response (fn [_ options] (reset! callbacks options) {:status 200})]
-          (let [open (get-in (into {} (realtime/routes realtime)) ["/_bel/realtime/stream" :get])
+          (let [open    (get-in (into {} (realtime/routes realtime)) ["/_bel/realtime/stream" :get])
                 request {:request-method :get :session {:bel/session-id sid}
                          :query-params   {"datastar" (charred/write-json-str
                                                        {:tabId (str tid) :topics ["bel.realtime-test/events"]})}}]
@@ -346,13 +346,13 @@
 (deftest stream-get-decodes-topics-derives-session-and-cleans-up-on-close
   (with-realtime
     (fn [realtime]
-      (let [sid (UUID/randomUUID)
-            tid (UUID/randomUUID)
+      (let [sid       (UUID/randomUUID)
+            tid       (UUID/randomUUID)
             route-map (into {} (realtime/routes realtime))
-            open (get-in route-map ["/_bel/realtime/stream" :get])
-            input {:tabId (str tid) :topics ["bel.realtime-test/events"] :sessionId "spoofed"}
-            request {:request-method :get :session {:bel/session-id sid}
-                     :query-params   {"datastar" (charred/write-json-str input)}}
+            open      (get-in route-map ["/_bel/realtime/stream" :get])
+            input     {:tabId (str tid) :topics ["bel.realtime-test/events"] :sessionId "spoofed"}
+            request   {:request-method :get :session {:bel/session-id sid}
+                       :query-params   {"datastar" (charred/write-json-str input)}}
             callbacks (atom nil)]
         (is (= 1 (count route-map)))
         (with-redefs [hk/->sse-response (fn [_ options] (reset! callbacks options) {:status 200})]
@@ -367,7 +367,7 @@
                                                 (charred/write-json-str invalid))))))))
         (let [events (atom [])
               closed (atom false)
-              sse (fake-stream events closed (atom nil))]
+              sse    (fake-stream events closed (atom nil))]
           ((get @callbacks hk/on-open) sse)
           (is (= #{::events} (get-in @(:state realtime) [:connections sid tid :topics])))
           (is (empty? @events))
@@ -380,3 +380,102 @@
           (is (false? ((get @callbacks hk/on-exception) sse (Exception.) nil)))
           (is @closed)
           (is (empty? (:connections @(:state realtime)))))))))
+
+
+(deftest publications-cannot-cross-connection-scopes
+  (with-realtime
+    (fn [rt]
+      (let [scope-a (UUID/randomUUID)
+            scope-b (UUID/randomUUID)
+            sid     (UUID/randomUUID)
+            tid-a   (UUID/randomUUID)
+            tid-b   (UUID/randomUUID)
+            a       (connection rt sid tid-a [::events])
+            b       (connection rt sid tid-b [::events])]
+        (realtime/open! rt sid tid-a [::events] (:sse a) {:scope-id scope-a})
+        (realtime/open! rt sid tid-b [::events] (:sse b) {:scope-id scope-b})
+        (realtime/publish! rt {} {:topic ::events :data {:n 1} :scope-id scope-a})
+        (realtime/publish! rt {} {:topic ::events :data {:n 2} :scope-id scope-b})
+        (realtime/publish! rt {} {:topic ::events :data {:n 3}})
+        (is (= ["1"] (mapv :n (messages (:events a)))))
+        (is (= ["2"] (mapv :n (messages (:events b)))))))))
+
+
+(deftest every-delivery-uses-current-recipient-context-and-closes-revoked-connections
+  (with-realtime
+    (fn [base]
+      (let [recipient (atom {:user-id :recipient :role :member})
+            checked   (atom [])
+            rt        (assoc base :authorize (fn [connection] (swap! checked conj connection) @recipient))
+            sid       (UUID/randomUUID)
+            tid       (UUID/randomUUID)
+            tab       (connection rt sid tid [::events])
+            contexts  (atom [])
+            queries   (atom [])
+            view      {:bel/schema [:map] :bel/output core/Result
+                       :bel/query  (fn [context _] (swap! queries conj context) {})
+                       :bel/fn     (fn [_] [])}]
+        (with-redefs [events        (fn [context _] (swap! contexts conj context) {:type :view :id ::recipient})
+                      core/get-view (constantly view)]
+          (realtime/publish! rt {:user-id :publisher :publisher-only "secret"} {:topic ::events :data {}})
+          (swap! recipient assoc :role :admin)
+          (realtime/publish! rt {} {:topic ::events :data {}})
+          (is (= [{:user-id :recipient :role :member :session-id sid :tab-id tid}
+                  {:user-id :recipient :role :admin :session-id sid :tab-id tid}] @contexts))
+          (reset! recipient nil)
+          (realtime/publish! rt {} {:topic ::events :data {}})
+          (is (= 3 (count @checked)))
+          (is (= 2 (count @contexts)))
+          (is (= @contexts @queries))
+          (is @(:closed tab))
+          (is (empty? (:connections @(:state rt)))))))))
+
+
+(deftest closing-authentication-session-closes-only-its-streams
+  (with-realtime
+    (fn [rt]
+      (let [sid  (UUID/randomUUID)
+            tids (repeatedly 3 #(UUID/randomUUID))
+            tabs (mapv #(connection rt sid % [::events]) tids)]
+        (doseq [[tid tab auth] (map vector tids tabs ["session-a" "session-a" "session-b"])]
+          (realtime/open! rt sid tid [::events] (:sse tab) {:auth-session-id auth}))
+        (realtime/close-session! rt "session-a")
+        (is (= [true true false] (mapv #(deref (:closed %)) tabs)))
+        (is (= 1 (count (get-in @(:state rt) [:connections sid]))))))))
+
+
+(deftest stream-registration-retains-only-trusted-metadata
+  (with-realtime
+    (fn [rt]
+      (let [sid       (UUID/randomUUID)
+            tid       (UUID/randomUUID)
+            scope-id  (UUID/randomUUID)
+            metadata  {:scope-id scope-id :auth-session-id "opaque-session" :auth-version (UUID/randomUUID)}
+            callbacks (atom nil)
+            request   {:request-method       :get :session {:bel/session-id sid :access-token "secret"}
+                       :bel/realtime-context (assoc metadata :extension :allowed :access-token "secret" :request {:uri "/"})
+                       :query-params         {"datastar" (charred/write-json-str {:tabId (str tid) :topics ["bel.realtime-test/events"]})}}
+            sse       (fake-stream (atom []) (atom false) (atom nil))
+            open      (realtime/stream-handler rt)]
+        (with-redefs [hk/->sse-response (fn [_ options] (reset! callbacks options) {:status 200})]
+          (is (= 200 (:status (open request))))
+          ((get @callbacks hk/on-open) sse)
+          (is (= (assoc metadata :sse sse :topics #{::events})
+                 (get-in @(:state rt) [:connections sid tid])))
+          (doseq [[key value] [[:scope-id "invalid"] [:auth-session-id 1] [:auth-version "invalid"]]]
+            (is (= 400 (:status (open (assoc-in request [:bel/realtime-context key] value)))))))))))
+
+
+(deftest opening-retains-only-trusted-metadata
+  (with-realtime
+    (fn [rt]
+      (let [sid      (UUID/randomUUID)
+            tid      (UUID/randomUUID)
+            metadata {:scope-id (UUID/randomUUID) :auth-session-id "opaque-session" :auth-version (UUID/randomUUID)}
+            sse      (fake-stream (atom []) (atom false) (atom nil))]
+        (realtime/open! rt sid tid [::events] sse
+                        (assoc metadata :extension :allowed :access-token "secret" :request {:uri "/"}))
+        (is (= (assoc metadata :sse sse :topics #{::events})
+               (get-in @(:state rt) [:connections sid tid])))
+        (doseq [[key value] [[:scope-id "invalid"] [:auth-session-id 1] [:auth-version "invalid"]]]
+          (is (thrown? Exception (realtime/open! rt sid tid [::events] sse (assoc metadata key value)))))))))

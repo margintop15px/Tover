@@ -52,6 +52,11 @@ Do not manually repair unbalanced Clojure delimiters.
 clj-paren-repair path/to/file.clj
 ```
 
+## Patterns to follow
+
+- Always prefer an open map spec in Malli (don't put `{:closed true}` on `:map` unless strictly necessary)
+
+
 # Tover
 
 The repository root is the Clojure application. Read [README.md](README.md) for the current prototype boundary and [styleguide.md](styleguide.md) for formatting. The documents in [docs/](docs/README.md) describe intended behavior; they do not establish that a feature is implemented.
@@ -61,27 +66,27 @@ The repository root is the Clojure application. Read [README.md](README.md) for 
 Run from the repository root:
 
 ```sh
-clojure -M:dev          # Local seeds, examples, hot reload and loopback nREPL
+clojure -M:dev          # Local Supabase profile, examples, hot reload and loopback nREPL
 clojure -M:run          # No development seeds, examples or instrumentation
 clojure -M:dev:test     # Instrumented Kaocha suite
 clojure -M:fmt check
 clj-kondo --lint src dev .clj-kondo/hooks/datastar.clj
 ```
 
-The development alias is required for tests because Kaocha hooks and instrumentation live under `dev`. Source lint covers `src` and `dev`; negative tests deliberately call functions with invalid types. Keep the existing project REPL lifecycle: `user/start!`, `user/stop!`, `user/refresh!`. Dependency changes require a REPL restart.
+The development alias is required for tests because Kaocha hooks and instrumentation live under `dev`. Source lint covers `src` and `dev`; negative tests deliberately call functions with invalid types. Keep the existing project REPL lifecycle: `user/start!`, `user/stop!`, `user/refresh!`. Default development reads the existing private `deployment/local-identity/.env`; initialize and start that profile separately. It does not start Docker or apply migrations. Use `TOVER_IDENTITY_MODE=fixtures` for offline seeded development, or `supabase` for explicit `TOVER_*` environment settings. Dependency changes require a REPL restart.
 
 ## Structure and limits
 
-- `src/tover`: application, actions/views, inventory queries and RDF persistence.
+- `src/tover`: domain folders for Auth, Workspaces, Teams, Stock and Operations; shared UI/web/infrastructure under `shared`; Integrant composition in `app.clj`.
 - `src/bel`: declaration, rendering, validation and realtime transport support.
 - `resources/public`: Datastar/RevoGrid browser adapters and static assets.
 - `dev`: seeds, examples, instrumentation and REPL lifecycle. Keep development fixtures out of the production classpath.
 - `test`: Clojure tests; `test/browser` has independent Playwright tooling.
-- `supabase/migrations`: retained legacy SQL history. The current Clojure prototype does not use Supabase.
+- `supabase/migrations`: immutable SQL history; 033 supports fresh identity installation and upgrade from 032. See `docs/identity-deployment.md` for the local Auth/Postgres/PostgREST profile.
 - `docs/legacy-contracts`: historical behavior and sanitized fixtures for later ports. Do not treat legacy inventory semantics as new requirements.
 - `experiments/inventory-rdf`: historical offline proof. Its containment model is superseded by the current specifications.
 
-Keep changes small and testable. This is still a single local workspace without authentication. Grid Submit is a browser simulation; only the existing direct quantity-adjustment actions persist. Do not claim later migration milestones are implemented.
+Keep changes small and testable. Identity and workspace isolation are implemented. Default development uses the local self-hosted profile (`TOVER_IDENTITY_MODE=local`); offline fixtures require explicit selection. Production requires credentials and has no fixture fallback. Grid Submit remains a browser simulation; only direct quantity-adjustment actions persist. Do not claim later migration milestones are implemented.
 
 ## UI components
 
@@ -96,6 +101,6 @@ Keep changes small and testable. This is still a single local workspace without 
 
 Never perform destructive database operations, including DELETE, TRUNCATE, DROP, resets or destructive overwrites, without explicit user approval identifying the exact target and impact. Repository cleanup does not authorize database changes.
 
-Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `033_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
+Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `034_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
 
 Keep credentials, `.data`, backups, private experiment captures and generated dependencies out of Git. Never expose privileged credentials in browser assets.

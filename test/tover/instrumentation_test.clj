@@ -3,13 +3,13 @@
             [clojure.test :refer [deftest is]]
             [instrumentation :as instrumentation]
             [malli.core :as m]
-            [tover.ui :as ui]))
+            [tover.stock.ui :as ui]))
 
 
 (deftest every-application-function-has-an-active-schema
   (is (some #(= 'bel.core (-> % meta :ns ns-name)) (instrumentation/function-vars)))
   (is (some #(= 'bel.handler (-> % meta :ns ns-name)) (instrumentation/function-vars)))
-  (is (some #(= 'tover.pages (-> % meta :ns ns-name)) (instrumentation/function-vars)))
+  (is (some #(= 'tover.stock.web (-> % meta :ns ns-name)) (instrumentation/function-vars)))
   (is (not (contains? (set (instrumentation/function-vars)) #'fixture/row)))
   (doseq [var (instrumentation/function-vars)]
     (let [{:keys [ns name]} (meta var)]
@@ -20,9 +20,9 @@
 
 
 (deftest instrumentation-restarts-after-namespace-and-var-removal
-  (let [deleted (create-ns 'instrumentation.deleted-fixture)
+  (let [deleted  (create-ns 'instrumentation.deleted-fixture)
         retained (create-ns 'instrumentation.retained-fixture)
-        schema [:=> [:cat :string] :string]]
+        schema   [:=> [:cat :string] :string]]
     (try
       (intern deleted 'removed identity)
       (intern retained 'removed identity)

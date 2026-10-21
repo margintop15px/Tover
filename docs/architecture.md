@@ -1,7 +1,7 @@
 # Tover v2 architecture
 
 - Status: specification draft.
-- Review date: 2026-10-09.
+- Review date: 2026-10-20.
 - Agreed domain foundation: RDF.
 - [Product requirements](product-requirements.md) define the domain contract and terminology.
 - [Client UI specification](client-ui-spec.md) defines interactions.
@@ -17,12 +17,43 @@
 - Preserve earlier responses after newer captures.
 - Do not override a confirmed physical movement solely because newer data arrived.
 - Build the v2 application and server-rendered UI in Clojure.
-- Use Datastar for rendering transport and browser events, with Hyper for the first local slice.
+- Use Datastar for rendering transport and browser events, with http-kit.
 - The [first working Stock page](../README.md) uses embedded RDF4J NativeStore provisionally. Q-19 remains open for production storage and topology.
 - Start with one application service and a durable worker.
 - Use the worker for imports, reconciliation, Projection builds and exports.
 - Permit shared code and deployment infrastructure.
 - Separate services only when measured load or isolation requires them.
+
+## Implemented code organization
+
+- Keep feature queries, commands, declarations and specific UI with Auth, Workspaces, Teams, Stock and Operations. Use `core.clj` as the main namespace within a domain folder.
+- Keep Auth and workspace protocols independent of their web declarations. Integrant retains the same service and component keys.
+- Share UI/forms, the application document/shell, error rendering, common schemas, RDF infrastructure and Supabase transport under `tover.shared`. Shared UI/web support references feature destinations by qualified declaration ID.
+- Compose Stock and Operations through `tover.inventory.workbench`, using Stock presentation helpers without depending on its web declarations. Preserve the mounted workbench and its draft lifetime.
+- Mirror domain namespaces in tests. Keep cross-domain application tests and reusable fixture helpers separate. Browser assets retain their locations.
+- Declaration IDs follow the domain namespaces; GET URLs, persisted RDF identifiers and service contracts remain unchanged. This namespace migration needs a fresh development REPL and a browser reload.
+
+## Implemented identity boundary (milestone 2)
+
+- Integrant injects application-owned Auth and workspace interfaces plus a Ring session store. The Supabase HTTP implementation serves hosted and self-hosted deployments through configuration. Offline implementations stay under `dev`.
+- Browsers call Tover. Auth and user-authenticated PostgREST calls run on the server. Actions, UI and RDF receive verified user/workspace/role values without provider credentials.
+- Private Postgres sessions contain encrypted token pairs. Cookies contain opaque identifiers. Row locks coordinate refresh; later read failures preserve successfully rotated credentials. Logout invalidates the local session even during upstream outages.
+- Resolve current user and active membership for protected requests. Require CSRF, configured origin and current page context on mutations. Owner/admin manage retained team controls; active members can use existing inventory actions. Finer permission policies remain future work.
+- Scope all existing RDF reads and writes by workspace, including operations/history. Preserve and exclude anonymous prototype graphs. Reauthorize scoped realtime recipients before delivery.
+- Migration 033 is the shared fresh identity baseline and upgrade from 032. Keep historical migrations and existing data. The [local deployment profile](identity-deployment.md) proves Auth/Postgres/PostgREST compatibility; production migration remains separate.
+
+## Implemented page boundary
+
+- Bel generates Reitit routes from declaration metadata. A `defpage` owns a GET URL; canonical action/view URLs dispatch through the same registry. Rebuild the router after route, hierarchy or policy metadata changes; renderer and query Vars remain live.
+- Bel composes pages through explicit `:parent` references and pure child slots. Query the ancestor chain before rendering; prepare the complete composition before sending a patch. Unrouted layouts supply a Tover-owned document component to their descendants.
+- Tover supplies access policies as route data. Page ancestry supplies layout, while Tover route middleware verifies identity, workspace and manager requirements. Bel owns routing and HTML/Datastar response negotiation; business commands, documents, assets and security policy remain Tover concerns.
+- One application document owns assets, CSRF/context metadata and one workspace realtime connection. Its shared shell contains Inventory, Workspaces and Team. Direct GETs render the complete requested page; internal navigation morphs the shell and uses native browser history.
+- All application POST commands use `defaction` and canonical action URLs. Actions may return native Ring responses for standalone HTML or attach `:session`, `:session/key` and `:cookies` to instruction results. Bel applies those changes after rendering. For terminal page effects, Bel resolves the destination through named routes and applies its route middleware before patching. Ordinary form submissions redirect; Datastar responses refresh the current page without another history entry or push a different destination after a confirmed patch. Business errors preserve explicitly retained non-secret input; security failures keep their error status.
+- Stock and Operations share one mounted inventory workbench with route-derived visibility. Leaving inventory discards prototype drafts, simulated submissions and widget state. Widget removal cancels page requests and releases browser listeners and observers.
+- Authentication forms submit complete documents; active workspace actions return document reload effects. Other internal navigation and forms reuse the shell. Failed navigation preserves the current page; failed Back/Forward can recover through a complete document request. Superseded action page effects cannot replace a newer navigation.
+- Shared styles and theme tokens apply to all pages. Prototype inventory behavior remains in browser adapters until its later server implementation.
+
+The following architecture also describes future capabilities. Grid submission, the physical inventory model, workers, external integrations and production cutover are not established by this milestone.
 
 ```mermaid
 flowchart LR

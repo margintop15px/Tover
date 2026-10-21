@@ -17,15 +17,21 @@
       (when-let [response (handler (assoc request :session current))]
         (if (and (contains? response :session) (nil? (:session response)))
           response
-          (update response :session #(merge current %)))))))
+          (update response :session #(with-meta (merge current %) (meta %))))))))
 
 
 (defn wrap-session
-  "Give requests a server-owned UUID session identity through Ring's signed cookie store."
-  {:malli/schema [:=> [:cat [:fn ifn?]] [:fn ifn?]]}
-  [handler]
-  (session/wrap-session
-    (wrap-session-id handler)
-    {:store        (cookie-store)
-     :cookie-name  "bel-session"
-     :cookie-attrs {:http-only true :same-site :lax}}))
+  "Give requests a server-owned UUID identity, using an optional Ring session store."
+  {:malli/schema [:function
+                  [:=> [:cat [:fn ifn?]] [:fn ifn?]]
+                  [:=> [:cat [:fn ifn?] :map] [:fn ifn?]]]}
+  ([handler]
+   (wrap-session handler {}))
+
+  ([handler options]
+   (session/wrap-session
+     (wrap-session-id handler)
+     (merge {:store        (cookie-store)
+             :cookie-name  "bel-session"
+             :cookie-attrs {:http-only true :same-site :lax}}
+            options))))

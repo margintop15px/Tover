@@ -23,13 +23,6 @@ function element(tag, className, content) {
   return node;
 }
 
-let activeGrid = null;
-for (const type of ['pointerdown', 'focusin']) {
-  document.addEventListener(type, event => {
-    activeGrid = event.target.closest?.('revo-grid') || null;
-  });
-}
-
 class StockOperations extends HTMLElement {
   constructor() {
     super();
@@ -44,6 +37,8 @@ class StockOperations extends HTMLElement {
     this.detailHeights = new Map();
     this.observedDetails = new Set();
     this.frame = null;
+    this.activeGrid = null;
+    this.activateGrid = event => { this.activeGrid = event.target.closest?.('revo-grid') || null; };
     this.detailObserver = new ResizeObserver(entries => {
       for (const { target } of entries) {
         if (!target.isConnected) {
@@ -101,11 +96,17 @@ class StockOperations extends HTMLElement {
       this[property] = value;
     }
     window.addEventListener('resize', this.scheduleResize);
-    this.render();
+    for (const type of ['pointerdown', 'focusin']) document.addEventListener(type, this.activateGrid);
+    if (!this.grid) this.render();
+    else {
+      this.sizeObserver.observe(this);
+      this.scheduleLayout();
+    }
   }
 
   disconnectedCallback() {
     window.removeEventListener('resize', this.scheduleResize);
+    for (const type of ['pointerdown', 'focusin']) document.removeEventListener(type, this.activateGrid);
     this.detailObserver.disconnect();
     this.sizeObserver.disconnect();
     this.observedDetails.clear();
@@ -198,7 +199,7 @@ class StockOperations extends HTMLElement {
     this.grid.addEventListener('beforekeydown', event => {
       const original = event.detail.original;
       const targetGrid = original.target.closest?.('revo-grid');
-      if (this.viewMode !== 'table' || (original.target === document.body ? activeGrid !== this.grid : targetGrid !== this.grid) ||
+      if (this.viewMode !== 'table' || (original.target === document.body ? this.activeGrid !== this.grid : targetGrid !== this.grid) ||
           original.target.closest?.('.operations-detail,.operations-toggle')) event.preventDefault();
     });
     for (const name of ['aftergridrender', 'contentsizechanged', 'afteranysource', 'aftertrimmed', 'aftersortingapply']) {
