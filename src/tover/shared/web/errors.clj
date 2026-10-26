@@ -1,9 +1,9 @@
 (ns tover.shared.web.errors
   (:require
     [bel.handler :as html]
-    [clojure.string :as str]
     [reitit.ring.middleware.exception :as exception]
-    [tover.auth.security :as security])
+    [tover.auth.security :as security]
+    [tover.shared.i18n :as i18n])
   (:import
     [clojure.lang ExceptionInfo]))
 
@@ -18,7 +18,7 @@
       (if (and security? (security/datastar-request? request))
         (throw error)
         (let [response (html/error-page-response
-                         (assoc request :tover/error (str (str/replace (name code) "-" " ") " — " (.getMessage error)))
+                         (assoc request :tover/error (i18n/error-message error))
                          page-id (select-keys (:form-params request) retained))]
           (if (= 200 (:status response))
             (-> response

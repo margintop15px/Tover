@@ -27,7 +27,7 @@
             navigation (handler {:uri     "/new-internal-page"        :request-method :get
                                  :headers {"datastar-request" "true"}})
             mutation   (handler {:uri "/new-internal-page" :request-method :post :headers {}})]
-        (is (= {:status 303 :headers {"location" "/auth/login"} :body ""} document))
+        (is (= {:status 303 :headers {"location" "/auth/login" "x-tover-language" "en"} :body ""} document))
         (is (= 401 (:status navigation)))
         (is (= 401 (:status mutation)))))
     (let [handler (security/wrap-identity (constantly {:status 200}) services :optional)]

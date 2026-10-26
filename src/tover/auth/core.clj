@@ -7,7 +7,8 @@
   [:map
    [:user-id :uuid]
    [:email :string]
-   [:email-confirmed? :boolean]])
+   [:email-confirmed? :boolean]
+   [:locale {:optional true} [:enum "en" "ru"]]])
 
 
 (def Tokens
@@ -27,6 +28,7 @@
   (^{:malli/schema [:=> [:cat :any :string] :nil]} sign-out! [provider access-token])
   (^{:malli/schema [:=> [:cat :any :map] :map]} verify-email! [provider input])
   (^{:malli/schema [:=> [:cat :any :map] :nil]} recover! [provider input])
+  (^{:malli/schema [:=> [:cat :any :string [:enum "en" "ru"]] :map]} set-locale! [provider access-token locale])
   (^{:malli/schema [:=> [:cat :any :string :string] :map]} set-password! [provider access-token password])
   (^{:malli/schema [:=> [:cat :any :map] :nil]} invite! [provider input])
   (^{:malli/schema [:=> [:cat :any :map] :nil]} magic-link! [provider input]))

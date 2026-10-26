@@ -1,12 +1,12 @@
 # Tover specifications
 
-The Clojure application lives at the repository root. It is still a local UI prototype; see the [application README](../README.md) for implemented behavior and limitations.
+The Clojure application lives at the repository root. The agreed first tester version uses a durable inventory ledger, shared server drafts and real identity. The [application README](../README.md) describes running and checking it; passing release checks establish readiness.
 
-These draft documents define the intended product:
+- [Product requirements](product-requirements.md): item identity, eight operation types, corrections and shared acceptance.
+- [Client UI](client-ui-spec.md): Stock, Operations, server editing and lazy item history.
+- [Architecture](architecture.md): ownership, authorization, transport and runtime boundaries.
+- [RDF storage](rdf-machinery.md): records, replay, transactions and quantity lineage.
+- [Identity deployments](identity-deployment.md): local and hosted identity compatibility.
+- [Production deployment](production-deployment.md): HTTPS, SMTP, installation, upgrades and backup/restore.
 
-- [Product requirements](product-requirements.md): vocabulary, business rules and unresolved policies.
-- [Client UI specification](client-ui-spec.md): user workflows and observable outcomes.
-- [Architecture](architecture.md): ownership and system boundaries.
-- [RDF machinery](rdf-machinery.md): accepted history, semantics and projections.
-
-[Legacy contracts](legacy-contracts/README.md) preserve selected identity, Ozon and import behavior for later ports. They describe the removed application. The [offline RDF experiment](../experiments/inventory-rdf/README.md) uses the superseded containment model and does not validate the new production lifecycle.
+The 2026-10-21 contracts supersede individual physical-unit identity and browser-simulated submissions. [Legacy contracts](legacy-contracts/README.md) retain selected historical integration behavior. The [offline RDF experiment](../experiments/inventory-rdf/README.md) uses a superseded containment model and is not the current ledger contract.

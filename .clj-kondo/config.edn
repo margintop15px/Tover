@@ -1,6 +1,7 @@
 {:linters {:unquote-not-syntax-quoted {:level :off}}
  :lint-as
- {bel.core/defpage           clojure.core/defn
+ {backtick/defquote          clojure.core/def
+  bel.core/defpage           clojure.core/defn
   bel.core/defview           clojure.core/defn
   bel.core/defaction         clojure.core/defn
   bel.core/defstream         clojure.core/defn

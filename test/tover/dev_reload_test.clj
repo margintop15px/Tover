@@ -11,7 +11,6 @@
     [ring.hot-reload.watcher :as watcher]
     [tover.app :as app]
     [tover.identity :as identity]
-    [tover.operations.examples :as operation-examples]
     [tover.session-store :as session-store]
     [user])
   (:import
@@ -75,8 +74,7 @@
             (is (str/includes? (:body response) "hot-reload:before-morph"))
             (is (str/includes? (:body response) "event.preventDefault();location.reload();"))
             (is (= 1 @created))
-            (is (= {:rows operation-examples/rows :entries operation-examples/entries}
-                   (:operation-examples @options)))
+            (is (not (contains? @options :operation-examples)))
             (is (uuid? (first @sessions)))
             (is (= (first @sessions) (second @sessions)))))))))
 
@@ -136,6 +134,7 @@
                (println "TOVER_CONFIG_CHECK"
                         (pr-str
                           {:production-error           production-error
+                           :inventory-path             (get-in development [:tover.app/repo :path])
                            :development-error          (:error development)
                            :provider-options?          (= {:auth-url  (get environment "TOVER_AUTH_URL")
                                                            :rest-url  (get environment "TOVER_REST_URL")
@@ -183,18 +182,18 @@
   (let [result (isolated-config-check nil)]
     (is (= :configuration (:production-error result)))
     (is (nil? (:development-error result)))
+    (is (= ".data/tester-inventory-v1" (:inventory-path result)))
     (is (every? true? (map result [:provider-options? :jdbc-sessions? :dev-handler? :reload-dependency? :production-handler-absent? :development?]))
         (pr-str result))
     (is (every? false? (map result [:fixture-auth? :fixture-workspaces? :fixture-sessions? :seed-dependency? :scoped-seed?]))
         (pr-str result))))
 
 
-(deftest explicit-fixtures-retain-scoped-seeds-and-memory-services
+(deftest runtime-fixture-mode-is-no-longer-available
   (let [result (isolated-config-check "fixtures")]
-    (is (nil? (:development-error result)))
-    (is (every? true? (map result [:fixture-auth? :fixture-workspaces? :fixture-sessions? :seed-dependency? :scoped-seed?]))
-        (pr-str result))
-    (is (every? false? (map result [:provider-options? :jdbc-sessions?])) (pr-str result))))
+    (is (= :configuration (:development-error result)))
+    (is (false? (:fixture-auth? result)))
+    (is (false? (:seed-dependency? result)))))
 
 
 (deftest explicit-supabase-and-unknown-modes-do-not-fall-back-to-local-settings

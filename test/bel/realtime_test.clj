@@ -343,6 +343,32 @@
             (is (= ["shared" "updated"] (mapv :marker (messages sent))))))))))
 
 
+(deftest opted-in-stream-resnapshots-after-each-connection-registration
+  (with-realtime
+    (fn [realtime]
+      (let [sid        (UUID/randomUUID)
+            tid        (UUID/randomUUID)
+            callbacks  (atom nil)
+            received   (atom [])
+            definition (core/get-stream ::events)]
+        (with-redefs [core/get-stream   (fn [topic]
+                                          (when (= topic ::events)
+                                            (assoc definition :bel/resnapshot-on-open? true)))
+                      events            (fn [context _]
+                                          (is (get-in @(:state realtime) [:connections sid tid]))
+                                          (swap! received conj (select-keys context [:session-id :tab-id]))
+                                          {:type :signals :data {:inventoryChanged true}})
+                      hk/->sse-response (fn [_ options] (reset! callbacks options) {:status 200})]
+          (let [open    (realtime/stream-handler realtime)
+                request {:request-method :get :session {:bel/session-id sid}
+                         :query-params   {"datastar" (charred/write-json-str
+                                                       {:tabId (str tid) :topics ["bel.realtime-test/events"]})}}]
+            (dotimes [_ 2]
+              (is (= 200 (:status (open request))))
+              ((get @callbacks hk/on-open) (fake-stream (atom []) (atom false) (atom nil))))
+            (is (= [{:session-id sid :tab-id tid} {:session-id sid :tab-id tid}] @received))))))))
+
+
 (deftest stream-get-decodes-topics-derives-session-and-cleans-up-on-close
   (with-realtime
     (fn [realtime]

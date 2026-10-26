@@ -1,0 +1,4 @@
+:8080 {
+	root * /srv/templates
+	file_server
+}

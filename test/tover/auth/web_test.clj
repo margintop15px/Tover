@@ -46,7 +46,7 @@
           (is (= "text/html; charset=utf-8" (get-in response [:headers "content-type"])))
           (is (= "invalid-credentials" (get-in response [:headers "x-tover-error"])))
           (is (str/includes? (:body response) (str "value=\"" (:email user) "\"")))
-          (is (str/includes? (:body response) "invalid credentials"))
+          (is (str/includes? (:body response) "Invalid email or password."))
           (is (not (str/includes? (:body response) "wrong-private-password"))))))))
 
 

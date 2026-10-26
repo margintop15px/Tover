@@ -22,24 +22,46 @@ for (const path of ['src', 'resources']) {
   symlinkSync(join(root, 'dev', 'tover'), join(project, 'dev', 'tover'), 'dir');
 }
 
-// The smoke fixture distinguishes recorded stock from the visual development examples.
-const examples = mode === 'development';
+// Test-only identity fixtures run against a new durable inventory store for each process.
 const program = `
-  (require '[tover.app :as app] '[tover.stock.store :as store]
-           '[tover.identity :as identity] '[tover.session-store :as session-store])
+  (require '[tover.app :as app] '[tover.identity :as identity]
+           '[tover.session-store :as session-store])
   (def identities (identity/fixtures))
-  ${examples ? "(require '[tover.operations.examples :as examples])" : ''}
-  (def configuration
-    (cond-> (app/system-config ${port} ${JSON.stringify(join(project, 'inventory'))}
-                               {:auth (:auth identities) :workspaces (:workspaces identities)
-                                :session-store (session-store/memory-store)
-                                :origin "http://127.0.0.1:${port}" :development? true})
-      ${examples} (assoc-in [::app/handler :operation-examples]
-                            ${examples ? '{:rows examples/rows :entries examples/entries}' : '{}'})))
-  (def system (app/start! configuration))
-  ${examples ? `(store/declare-opening! (::app/repo system) {:workspace-id (:workspace-id identities)}
-                 {:id "smoke-recorded" :name "Recorded smoke stock" :article "SMOKE-STORED"
-                  :quantity 11 :unit "pcs" :location "Smoke shelf"})` : ''}
+  ${process.env.TOVER_BROWSER_MANAGEMENT_FIXTURES === 'true' ? `
+  (let [state (:state identities)
+        workspace-id (java.util.UUID/fromString "00000000-0000-4000-8000-000000000103")
+        user (fn [id email] {:user-id (java.util.UUID/fromString id) :email email
+                             :email-confirmed? true :password "tover-development"})
+        users [(user "00000000-0000-4000-8000-000000000011" "zero@example.test")
+               (user "00000000-0000-4000-8000-000000000012" "manager@example.test")
+               (user "00000000-0000-4000-8000-000000000013" "admin@example.test")
+               (user "00000000-0000-4000-8000-000000000014" "suspended-member-with-an-intentionally-long-email-address@example.test")
+               (user "00000000-0000-4000-8000-000000000015" "invited@example.test")
+               (user "00000000-0000-4000-8000-000000000016" "native-en@example.test")
+               (user "00000000-0000-4000-8000-000000000017" "native-ru@example.test")]
+        [zero manager admin suspended invited] (map :user-id users)
+        membership (fn [role status] {:role role :status status :created-at "2026-01-01T00:00:00Z"})
+        invitation (fn [id email role status] {:id (java.util.UUID/fromString id)
+                     :workspace-id workspace-id :email email :role role :status status
+                     :created-at "2026-01-01T00:00:00Z"
+                     :expires-at (if (= status :pending)
+                                   (str (.plusSeconds (java.time.Instant/now) 604800))
+                                   "2026-01-08T00:00:00Z")})
+        invites [(invitation "00000000-0000-4000-8000-000000000201" "pending@example.test" :member :pending)
+                 (invitation "00000000-0000-4000-8000-000000000202" "expired@example.test" :admin :expired)]]
+    (swap! state (fn [value] (-> value
+                    (update :users into (map (juxt :user-id clojure.core/identity) users))
+                    (assoc-in [:users manager :display-name] "Alexandra Workspace Manager With A Long Name")
+                    (assoc-in [:workspaces workspace-id] {:name "Management workspace"})
+                    (assoc-in [:memberships workspace-id]
+                      {manager (membership :owner :active) admin (membership :admin :active)
+                       suspended (membership :member :suspended) invited (membership :member :invited)})
+                    (update :invitations into (map (juxt :id clojure.core/identity) invites))))))
+  ` : ''}
+  (def system (app/start! (app/system-config ${port} ${JSON.stringify(join(project, 'inventory'))}
+                           {:auth (:auth identities) :workspaces (:workspaces identities)
+                            :session-store (session-store/memory-store)
+                            :origin "http://127.0.0.1:${port}" :development? true})))
   (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable #(app/stop! system)))
   @(promise)
 `;

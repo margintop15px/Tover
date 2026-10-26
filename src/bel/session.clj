@@ -12,7 +12,7 @@
   [handler]
   (fn [request]
     (let [current (:session request)
-          id (:bel/session-id current)
+          id      (:bel/session-id current)
           current (assoc current :bel/session-id (if (m/validate :uuid id) id (UUID/randomUUID)))]
       (when-let [response (handler (assoc request :session current))]
         (if (and (contains? response :session) (nil? (:session response)))

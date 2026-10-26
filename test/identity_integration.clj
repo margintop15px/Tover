@@ -63,6 +63,9 @@
         memberships (workspaces/list-memberships directory (:access-token tokens))]
     (is (= email (:email (auth/current-user auth (:access-token tokens)))))
     (is (= :owner (:role (first memberships))))
+    (is (= {(str (get-in tokens [:user :user-id])) email}
+           (workspaces/actor-labels directory (:access-token tokens) (:workspace-id (first memberships))
+                                    [(get-in tokens [:user :user-id]) (random-uuid)])))
     (is (= 0 (workspaces/accept-invites! directory (:access-token tokens))))
     (when-let [settings (:session *options*)]
       (support/with-application

@@ -4,6 +4,7 @@
     [ring.middleware.session.store :as ring-store]
     [tover.auth.core :as auth]
     [tover.auth.sessions :as sessions]
+    [tover.shared.i18n :as i18n]
     [tover.workspaces.core :as workspaces])
   (:import
     [java.time Instant]))
@@ -11,7 +12,7 @@
 
 (defn failure
   {:malli/schema [:=> [:cat :int :keyword :string] :any]} [status code message]
-  (throw (ex-info message {:type :identity :status status :code code})))
+  (throw (ex-info message {:type :identity :status status :code code :locale i18n/*locale*})))
 
 
 (defn authenticate
@@ -119,26 +120,30 @@
                             (local-identity services request)
                             (authenticate services (:session/key request))))
              protected? (not (contains? #{:optional :logout} policy))]
-         (when (and protected? (nil? identity))
-           (failure 401 :unauthenticated "Please sign in."))
+         (binding [i18n/*locale* (i18n/resolve-locale (assoc request :tover/identity identity))]
+           (when (and protected? (nil? identity))
+             (failure 401 :unauthenticated "Please sign in."))
          ;; The one-use email response cannot contain the newly rotated session's context yet.
-         (when (and identity (not (contains? #{:optional :finish} policy))
-                    (or (datastar-request? request)
-                        (not (contains? #{:get :head :options} (:request-method request)))))
-           (let [version (get-in request [:headers "x-tover-context"])]
-             (when-not (= (str (:auth-version identity)) version)
-               (failure 409 :workspace-changed "Workspace changed. Reload this page before continuing."))))
-         (when (and protected? (not (contains? #{:password :finish} policy)) (:password-required? identity))
-           (failure 409 :password-required "Set your password before continuing."))
-         (when (and (contains? #{:workspace :manager} policy) (nil? (:workspace-id identity)))
-           (failure 409 :workspace-required "Create or select a workspace first."))
-         (when (= policy :manager)
-           (require-manager! identity))
-         (handler (assoc request :tover/identity identity :bel/context identity
-                         :bel/realtime-context (when identity
-                                                 {:scope-id        (:workspace-id identity)
-                                                  :auth-session-id (:auth-session-id identity)
-                                                  :auth-version    (:auth-version identity)}))))
+           (when (and identity (not (contains? #{:optional :finish} policy))
+                      (or (datastar-request? request)
+                          (not (contains? #{:get :head :options} (:request-method request)))))
+             (let [version (get-in request [:headers "x-tover-context"])]
+               (when-not (= (str (:auth-version identity)) version)
+                 (failure 409 :workspace-changed "Workspace changed. Reload this page before continuing."))))
+           (when (and protected? (not (contains? #{:password :finish} policy)) (:password-required? identity))
+             (failure 409 :password-required "Set your password before continuing."))
+           (when (and (contains? #{:workspace :manager} policy) (nil? (:workspace-id identity)))
+             (failure 409 :workspace-required "Create or select a workspace first."))
+           (when (= policy :manager)
+             (require-manager! identity))
+           (let [request (assoc request :tover/identity identity)
+                 locale  (i18n/resolve-locale request)]
+             ((i18n/wrap-locale handler) (assoc request :bel/context (assoc identity :locale locale)
+                                                :bel/realtime-context (when identity
+                                                                        {:scope-id        (:workspace-id identity)
+                                                                         :auth-session-id (:auth-session-id identity)
+                                                                         :auth-version    (:auth-version identity)
+                                                                         :locale          locale}))))))
        (catch clojure.lang.ExceptionInfo error
          (let [{:keys [status code]} (ex-data error)]
            (if status
@@ -146,8 +151,9 @@
                (when (= status 401)
                  (ring-store/delete-session (:session-store services) (:session/key request)))
                (if (and (= status 401) (= policy :optional))
-                 (handler (assoc request :tover/identity nil :bel/context nil))
-                 (response request status (or code :identity-error) (.getMessage error))))
+                 ((i18n/wrap-locale handler) (assoc request :tover/identity nil :bel/context nil))
+                 (assoc-in (response request status (or code :identity-error) (i18n/error-message error))
+                           [:headers "x-tover-language"] (or (:locale (ex-data error)) i18n/*locale*))))
              (throw error))))))))
 
 
@@ -171,5 +177,5 @@
                (or (and supplied (not= supplied origin))
                    (= "cross-site" (get-in request [:headers "sec-fetch-site"]))
                    (and unsafe? (nil? supplied))))
-        {:status 403 :headers {"content-type" "text/plain"} :body "Invalid request origin."}
+        {:status 403 :headers {"content-type" "text/plain"} :body (i18n/t "Invalid request origin.")}
         (handler request)))))

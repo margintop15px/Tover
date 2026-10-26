@@ -3,7 +3,7 @@
             [clojure.test :refer [deftest is]]
             [instrumentation :as instrumentation]
             [malli.core :as m]
-            [tover.stock.ui :as ui]))
+            [tover.app :as app]))
 
 
 (deftest every-application-function-has-an-active-schema
@@ -16,7 +16,7 @@
       (is (:malli/schema (meta var)) (str var))
       (is (get-in (m/function-schemas) [(ns-name ns) name]) (str var))
       (is (:malli.instrument/original (meta @var)) (str var))))
-  (is (thrown? clojure.lang.ExceptionInfo (ui/stock-review {:proposal "not-a-proposal"}))))
+  (is (thrown? clojure.lang.ExceptionInfo (app/system-config "invalid-port" "/tmp/unused" {}))))
 
 
 (deftest instrumentation-restarts-after-namespace-and-var-removal
@@ -37,7 +37,7 @@
       (is (nil? (get-in (m/function-schemas) ['instrumentation.retained-fixture 'removed])))
       (is (= schema (m/form (:schema (get-in (m/function-schemas) ['instrumentation.retained-fixture 'explicit])))))
       (is (= #{:input} (:scope (get-in (m/function-schemas) ['instrumentation.retained-fixture 'explicit]))))
-      (is (thrown? clojure.lang.ExceptionInfo (ui/stock-review {:proposal "not-a-proposal"})))
+      (is (thrown? clojure.lang.ExceptionInfo (app/system-config "invalid-port" "/tmp/unused" {})))
       (finally
         (remove-ns (ns-name deleted))
         (remove-ns (ns-name retained))

@@ -7,6 +7,7 @@
     [tover.auth.core :as auth]
     [tover.auth.security :as security]
     [tover.auth.sessions :as sessions]
+    [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.core :as ui]
     [tover.shared.ui.forms :refer [field form]]
@@ -19,15 +20,19 @@
 (defn document
   {:malli/schema [:=> [:cat :map [:* :any]] schema/Hiccup]}
   [{:keys [request title]} & children]
-  [:html {:lang "en"}
-   [:head [:meta {:charset "utf-8"}] [:meta {:name "viewport" :content "width=device-width,initial-scale=1"}]
+  [:html {:lang i18n/*locale*}
+   [:head [:meta {:charset "utf-8"}]
+    (i18n/catalog-meta)
+    [:script {:src "/language.js"}]
+    [:script {:type "module" :src "/i18n.js"}]
+    [:meta {:name "viewport" :content "width=device-width,initial-scale=1"}]
     [:meta {:name "tover-context" :content (str (or (get-in request [:tover/identity :auth-version]) "anonymous"))}]
     [:title title]
     [:link {:rel "stylesheet" :href "/app.css"}]
     [:script {:src "/theme.js" :defer true}]
     [:script {:src "/identity.js" :defer true}]]
    [:body.identity-document
-    (into [:main.identity [:div.identity-theme (ui/theme-toggle)]] children)]])
+    (into [:main.identity [:div.identity-theme (ui/language-switch request) (ui/theme-toggle)]] children)]])
 
 
 (defn- page-content
@@ -63,11 +68,11 @@
    :query      web/query-request}
   [request]
   {:type :elements
-   :html (page-content request "Sign in"
+   :html (page-content request (i18n/t "Sign in")
                        [:div
-                        (form request (bel/action-url ::sign-in) "Sign in"
-                              (field request "email" "Email" "email") (field request "password" "Password" "password"))
-                        [:p [:a {:href "/auth/signup"} "Create an account"] " · " [:a {:href "/auth/recover"} "Forgot password?"]]])})
+                        (form request (bel/action-url ::sign-in) (i18n/t "Sign in")
+                              (field request "email" (i18n/t "Email") "email") (field request "password" (i18n/t "Password") "password"))
+                        [:p [:a {:href "/auth/signup"} (i18n/t "Create an account")] " · " [:a {:href "/auth/recover"} (i18n/t "Forgot password?")]]])})
 
 
 (defpage signup
@@ -78,10 +83,10 @@
    :query      web/query-request}
   [request]
   {:type :elements
-   :html (page-content request "Create an account"
-                       (form request (bel/action-url ::sign-up) "Create account"
-                             (field request "email" "Email" "email") (field request "password" "Password" "password")
-                             (field request "workspace-name" "Workspace name" "text")))})
+   :html (page-content request (i18n/t "Create an account")
+                       (form request (bel/action-url ::sign-up) (i18n/t "Create account")
+                             (field request "email" (i18n/t "Email") "email") (field request "password" (i18n/t "Password") "password")
+                             (field request "workspace-name" (i18n/t "Workspace name") "text")))})
 
 
 (defpage recover
@@ -92,8 +97,8 @@
    :query      web/query-request}
   [request]
   {:type :elements
-   :html (page-content request "Recover your account"
-                       (form request (bel/action-url ::send-recovery) "Send recovery email" (field request "email" "Email" "email")))})
+   :html (page-content request (i18n/t "Recover your account")
+                       (form request (bel/action-url ::send-recovery) (i18n/t "Send recovery email") (field request "email" (i18n/t "Email") "email")))})
 
 
 (defpage verify
@@ -104,12 +109,12 @@
    :query      web/query-request}
   [request]
   {:type :elements
-   :html (page-content request "Confirm email link"
-                       (form request (bel/action-url ::verify-email) "Continue"
+   :html (page-content request (i18n/t "Confirm email link")
+                       (form request (bel/action-url ::verify-email) (i18n/t "Continue")
                              [:input {:type "hidden" :name "token-hash" :value (or (get-in request [:params :token_hash])
                                                                                    (get-in request [:params :token-hash]))}]
                              [:input {:type "hidden" :name "type" :value (get-in request [:params :type])}]
-                             [:p "Continue to verify this link and sign in."]))})
+                             [:p (i18n/t "Continue to verify this link and sign in.")]))})
 
 
 (defpage confirm
@@ -130,8 +135,8 @@
    :query      web/query-request}
   [request]
   {:type :elements
-   :html (page-content request "Set your password"
-                       (form request (bel/action-url ::set-password) "Save password" (field request "password" "New password" "password")))})
+   :html (page-content request (i18n/t "Set your password")
+                       (form request (bel/action-url ::set-password) (i18n/t "Save password") (field request "password" (i18n/t "New password") "password")))})
 
 
 (defn- login-response
@@ -152,9 +157,9 @@
       response
       (catch ExceptionInfo error
         (if-let [status (:status (ex-data error))]
-          (assoc (page request "Workspace access unavailable"
-                       [:div [:p "You are signed in. Retry to finish accepting your invitations."]
-                        (form request (bel/action-url ::finish-sign-in) "Retry workspace access")])
+          (assoc (page request (i18n/t "Workspace access unavailable")
+                       [:div [:p (i18n/t "You are signed in. Retry to finish accepting your invitations.")]
+                        (form request (bel/action-url ::finish-sign-in) (i18n/t "Retry workspace access"))])
                  :status status :session (:session response))
           (throw error))))))
 
@@ -172,17 +177,18 @@
   (let [result (auth/sign-up! auth {:email          email
                                     :password       password
                                     :workspace-name workspace-name
+                                    :locale         i18n/*locale*
                                     :redirect-to    (str origin "/auth/verify")})]
     (if (:access-token result)
       (login-response result :tover.workspaces.web/page false)
-      (page request "Check your email" [:p "Open the email link to confirm your account."]))))
+      (page request (i18n/t "Check your email") [:p (i18n/t "Open the email link to confirm your account.")]))))
 
 
 (defaction send-recovery
   {:route-data {:tover/access :optional :bel/error-page ::recover :bel/retain ["email"]}}
   [{:keys [auth origin request]} {:keys [email]}]
   (auth/recover! auth {:email email :redirect-to (str origin "/auth/verify")})
-  (page request "Check your email" [:p "If this account exists, a recovery link will arrive."]))
+  (page request (i18n/t "Check your email") [:p (i18n/t "If this account exists, a recovery link will arrive.")]))
 
 
 (defaction verify-email
@@ -223,3 +229,22 @@
     (realtime/close-session! realtime key)
     (when token (try (auth/sign-out! auth token) (catch Exception _)))
     {:type :page :id ::login :reload? true :session nil}))
+
+
+(defaction set-language
+  {:schema     [:map [:locale [:enum "en" "ru"]] [:return-to {:optional true} :string]]
+   :route-data {:tover/access :optional}}
+  [{:keys [auth request] :as services} {:keys [locale return-to]}]
+  (try
+    (when (:tover/identity request)
+      (auth/set-locale! auth (security/access-token services request) locale))
+    {:status  303
+     :headers {"location" (if (and (string? return-to) (re-matches #"/(?!/)[^\r\n\\]*" return-to)) return-to "/")}
+     :cookies {"tover-language" {:value  locale :path "/" :max-age 31536000 :http-only true :same-site :lax
+                                 :secure (= :https (:scheme request))}}
+     :body    ""}
+    (catch Exception error
+      (binding [*out* *err*]
+        (println "Language preference save failed:" (select-keys (ex-data error) [:type :code :status])))
+      (assoc (page request (i18n/t "Language")
+                   [:p {:role "alert"} (i18n/t "Could not save language. Please try again.")]) :status 503))))

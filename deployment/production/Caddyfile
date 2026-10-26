@@ -1,0 +1,15 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$TOVER_DOMAIN} {
+	reverse_proxy app:3030 {
+		flush_interval -1
+	}
+}
+
+# This listener has no published port; only Auth fetches email templates.
+:8080 {
+	root * /srv/templates
+	file_server
+}

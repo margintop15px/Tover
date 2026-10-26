@@ -59,34 +59,38 @@ clj-paren-repair path/to/file.clj
 
 # Tover
 
-The repository root is the Clojure application. Read [README.md](README.md) for the current prototype boundary and [styleguide.md](styleguide.md) for formatting. The documents in [docs/](docs/README.md) describe intended behavior; they do not establish that a feature is implemented.
+The repository root is the Clojure application. Read [README.md](README.md) for implementation status and [styleguide.md](styleguide.md) for formatting. The documents in [docs/](docs/README.md) describe intended behavior; release evidence requires tests and deployment checks.
 
 ## Commands
 
 Run from the repository root:
 
 ```sh
-clojure -M:dev          # Local Supabase profile, examples, hot reload and loopback nREPL
+clojure -M:dev          # Real local Supabase, empty inventory, hot reload and loopback nREPL
 clojure -M:run          # No development seeds, examples or instrumentation
 clojure -M:dev:test     # Instrumented Kaocha suite
 clojure -M:fmt check
 clj-kondo --lint src dev .clj-kondo/hooks/datastar.clj
 ```
 
-The development alias is required for tests because Kaocha hooks and instrumentation live under `dev`. Source lint covers `src` and `dev`; negative tests deliberately call functions with invalid types. Keep the existing project REPL lifecycle: `user/start!`, `user/stop!`, `user/refresh!`. Default development reads the existing private `deployment/local-identity/.env`; initialize and start that profile separately. It does not start Docker or apply migrations. Use `TOVER_IDENTITY_MODE=fixtures` for offline seeded development, or `supabase` for explicit `TOVER_*` environment settings. Dependency changes require a REPL restart.
+The development alias is required for tests because Kaocha hooks and instrumentation live under `dev`. Source lint covers `src` and `dev`; negative tests deliberately call functions with invalid types. Keep the existing project REPL lifecycle: `user/start!`, `user/stop!`, `user/refresh!`. Default development reads the existing private `deployment/local-identity/.env`; initialize and start that profile separately. It does not start Docker or apply migrations. Use `TOVER_IDENTITY_MODE=supabase` for explicit `TOVER_*` settings. Fixtures belong only to isolated tests. Dependency changes require a REPL restart.
 
 ## Structure and limits
 
 - `src/tover`: domain folders for Auth, Workspaces, Teams, Stock and Operations; shared UI/web/infrastructure under `shared`; Integrant composition in `app.clj`.
 - `src/bel`: declaration, rendering, validation and realtime transport support.
-- `resources/public`: Datastar/RevoGrid browser adapters and static assets.
-- `dev`: seeds, examples, instrumentation and REPL lifecycle. Keep development fixtures out of the production classpath.
+- `resources/public`: Datastar/Jspreadsheet CE browser adapters and static assets.
+- `resources/inventory`: versioned RDF/OWL vocabulary, SHACL constraints and executable SPARQL projections/invariants.
+- `src/tover/inventory`: semantic ledger, replay, shared drafts, acceptance and workbench. Whole quantities aggregate by stable item ID and location; no per-unit identities or automatic receipt allocation.
+- `dev`: isolated fixtures, instrumentation and REPL lifecycle. Keep development fixtures out of the production classpath.
 - `test`: Clojure tests; `test/browser` has independent Playwright tooling.
 - `supabase/migrations`: immutable SQL history; 033 supports fresh identity installation and upgrade from 032. See `docs/identity-deployment.md` for the local Auth/Postgres/PostgREST profile.
 - `docs/legacy-contracts`: historical behavior and sanitized fixtures for later ports. Do not treat legacy inventory semantics as new requirements.
 - `experiments/inventory-rdf`: historical offline proof. Its containment model is superseded by the current specifications.
 
-Keep changes small and testable. Identity and workspace isolation are implemented. Default development uses the local self-hosted profile (`TOVER_IDENTITY_MODE=local`); offline fixtures require explicit selection. Production requires credentials and has no fixture fallback. Grid Submit remains a browser simulation; only direct quantity-adjustment actions persist. Do not claim later migration milestones are implemented.
+Keep changes small and testable. Identity, workspace isolation, durable shared drafts and atomic ledger Submit are implemented. Default development uses the local self-hosted profile (`TOVER_IDENTITY_MODE=local`). Production requires credentials and has no fixture fallback. Browser adapters forward edits and render authoritative server results. Imports, marketplace integrations, uploads and accounting reports remain deferred.
+
+Keep business constraints in the semantic package where practical. Accepted history is structured RDF; stock and lineage derive from effective revisions. Semantic resource checksums are immutable within a store. Change ontology/shapes/queries only through an explicit reviewed migration and restored-backup rehearsal; never silently replace installed semantics. Preserve old stores and select a separate `TOVER_INVENTORY_PATH` for empty tester inventory.
 
 ## UI components
 
@@ -101,6 +105,6 @@ Keep changes small and testable. Identity and workspace isolation are implemente
 
 Never perform destructive database operations, including DELETE, TRUNCATE, DROP, resets or destructive overwrites, without explicit user approval identifying the exact target and impact. Repository cleanup does not authorize database changes.
 
-Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `034_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
+Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `035_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
 
 Keep credentials, `.data`, backups, private experiment captures and generated dependencies out of Git. Never expose privileged credentials in browser assets.

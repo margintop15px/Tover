@@ -2,8 +2,10 @@
   (:require
     [bel.core :as bel :refer [defaction defpage]]
     [bel.realtime :as realtime]
+    [clojure.string :as str]
     [tover.auth.security :as security]
     [tover.auth.sessions :as sessions]
+    [tover.shared.i18n :as i18n]
     [tover.shared.ui.forms :refer [field form]]
     [tover.shared.web.core :as web]
     [tover.workspaces.core :as workspaces]))
@@ -12,18 +14,39 @@
 (defn workspace-content
   {:malli/schema [:=> [:cat :map] [:vector :any]]} [request]
   (let [{:keys [memberships workspace-id]} (:tover/identity request)]
-    [:div.identity-content
-     (when (seq memberships)
-       (form request ::select-workspace "Open workspace"
-             [:label "Workspace"
-              (into [:select {:name "workspace-id"}]
-                    (map (fn [membership]
-                           [:option {:value    (str (:workspace-id membership))
-                                     :selected (= workspace-id (:workspace-id membership))}
-                            (:name membership)]) memberships))]))
-     [:h2 "Create workspace"]
-     (form request ::create-workspace "Create workspace" (field request "name" "Workspace name" "text"))
-     (form request (bel/action-url :tover.auth.web/sign-out) "Sign out")]))
+    [:div.management-content
+     [:details.management-disclosure {:open (or (empty? memberships) (contains? (:params request) :name))}
+      [:summary (i18n/t "Create workspace")]
+      [:div.management-form
+       (form request ::create-workspace (i18n/t "Create workspace")
+             (field request "name" (i18n/t "Workspace name") "text"))]]
+     [:section.management-section {:aria-label (i18n/t "Workspaces")}
+      (if (seq memberships)
+        [:div.management-table-wrap
+         [:table.management-table
+          [:thead
+           [:tr
+            [:th {:scope "col"} (i18n/t "Workspace")]
+            [:th.management-role {:scope "col"} (i18n/t "Role")]
+            [:th {:scope "col"} (i18n/t "Actions")]]]
+          (into [:tbody]
+                (for [membership memberships
+                      :let       [role (i18n/t (str/capitalize (name (:role membership))))]]
+                  [:tr
+                   [:td.management-primary
+                    [:span.management-name (:name membership)]
+                    (when (= workspace-id (:workspace-id membership))
+                      [:span.management-current (i18n/t "Current workspace")])
+                    [:span.management-mobile-meta role]]
+                   [:td.management-role role]
+                   [:td.management-actions
+                    (form request ::select-workspace (i18n/t "Open")
+                          [:input {:type "hidden" :name "workspace-id" :value (str (:workspace-id membership))}])]]))]]
+        [:div.management-empty
+         [:p (i18n/t "No workspaces yet.")]
+         [:p (i18n/t "Create a workspace to get started.")]])]
+     [:footer.management-footer
+      (form request (bel/action-url :tover.auth.web/sign-out) (i18n/t "Sign out"))]]))
 
 
 (defpage page
@@ -34,8 +57,9 @@
    :query      web/query-request}
   [request]
   {:type :elements
-   :html [:section.identity {:aria-labelledby "workspace-title"}
-          [:h1#workspace-title {:tabindex -1} "Workspaces"]
+   :html [:section.management-page {:aria-labelledby "workspace-title"}
+          [:header.management-header
+           [:h1#workspace-title {:tabindex -1} (i18n/t "Workspaces")]]
           (workspace-content request)]})
 
 

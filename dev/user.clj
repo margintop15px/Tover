@@ -9,29 +9,10 @@
     [ring.hot-reload.core :as hot]
     [ring.hot-reload.inject :as inject]
     [ring.middleware.reload :refer [wrap-reload]]
-    [tover.app :as app]
-    [tover.identity :as identity]
-    [tover.operations.examples :as operation-examples]
-    [tover.session-store :as session-store]
-    [tover.shared.rdf :as rdf]
-    [tover.shared.schema :as shared]
-    [tover.stock.schema :as schema]
-    [tover.stock.store :as store])
+    [tover.app :as app])
   (:import
     [java.io FileNotFoundException]
     [java.util Properties]))
-
-
-(def seed-rows
-  [{:id "notebook" :name "Notebook A5" :article "NB-A5" :unit "pcs" :location "Main shelf" :quantity 24}
-   {:id "tea" :name "Green tea, 100 g" :article "TEA-100" :unit "packs" :location "Main shelf" :quantity 18}
-   {:id "cable" :name "USB-C cable, 1 m" :article "USB-C-1" :unit "pcs" :location "Storage box" :quantity 12}])
-
-
-(defn seed!
-  {:malli/schema [:=> [:cat rdf/Repository shared/Scope] schema/Rows]}
-  [repo scope]
-  (mapv #(store/declare-opening! repo scope %) seed-rows))
 
 
 ;; Integrant's default init-key resolves :user/malli to this function.
@@ -44,16 +25,6 @@
 
 (defmethod ig/halt-key! ::malli [_ _]
   (instrumentation/stop!))
-
-
-(def OpeningStockOptions
-  [:map [:repo rdf/Repository] [:scope shared/Scope] [:instrumentation :int]])
-
-
-(defn opening-stock
-  {:malli/schema [:=> [:cat OpeningStockOptions] schema/Rows]}
-  [{:keys [repo scope]}]
-  (seed! repo scope))
 
 
 (defn browser-reload
@@ -73,11 +44,10 @@
 (defn handler
   {:malli/schema [:=> [:cat :map] [:fn ifn?]]}
   [{:keys [browser-reload] :as options}]
-  (let [base-handler (app/create-handler (assoc options :operation-examples
-                                                {:rows operation-examples/rows :entries operation-examples/entries}))]
+  (let [base-handler (app/create-handler options)]
     (-> (fn [request]
           (bel/init! {:scan-ns ['tover]})
-          ;; RevoGrid and Datastar need a fresh page after source changes.
+          ;; Jspreadsheet and Datastar need a fresh page after source changes.
           (inject/inject-into-response
             (base-handler request)
             (str "document.addEventListener('hot-reload:before-morph',"
@@ -114,24 +84,16 @@
   {:malli/schema [:=> [:cat] app/Config]}
   []
   (let [mode            (or (System/getenv "TOVER_IDENTITY_MODE") "local")
-        fixtures        (when (= mode "fixtures") (identity/fixtures))
+        path            (or (System/getenv "TOVER_INVENTORY_PATH") ".data/tester-inventory-v1")
         configuration   (case mode
-                          "fixtures" (app/system-config 3030 ".data/inventory"
-                                                        {:auth          (:auth fixtures)             :workspaces   (:workspaces fixtures)
-                                                         :session-store (session-store/memory-store)
-                                                         :origin        "http://localhost:3030"      :development? true})
-                          "local" (app/config 3030 ".data/inventory" {:development? true :environment (local-environment)})
-                          "supabase" (app/config 3030 ".data/inventory" {:development? true})
+                          "local" (app/config 3030 path {:development? true :environment (local-environment)})
+                          "supabase" (app/config 3030 path {:development? true})
                           (throw (ex-info "Unknown development identity mode" {:type :configuration})))
-        handler-options (cond-> (assoc (::app/handler configuration) :browser-reload (ig/ref ::browser-reload))
-                          fixtures (assoc :opening-stock (ig/ref ::opening-stock)))]
-    (cond-> (-> configuration
-                (assoc ::malli {} ::browser-reload {} ::handler handler-options)
-                (dissoc ::app/handler)
-                (assoc-in [::app/server :handler] (ig/ref ::handler)))
-      fixtures (assoc ::opening-stock {:repo            (ig/ref ::app/repo)
-                                       :scope           {:workspace-id (:workspace-id fixtures)}
-                                       :instrumentation (ig/ref ::malli)}))))
+        handler-options (assoc (::app/handler configuration) :browser-reload (ig/ref ::browser-reload))]
+    (-> configuration
+        (assoc ::malli {} ::browser-reload {} ::handler handler-options)
+        (dissoc ::app/handler)
+        (assoc-in [::app/server :handler] (ig/ref ::handler)))))
 
 
 (repl/set-prep! dev-config)
@@ -167,10 +129,11 @@
     (spit ".nrepl-port" (:port server))
     (println "nREPL:" (:port server))
     (.addShutdownHook (Runtime/getRuntime)
-                      (Thread. ^Runnable (fn []
-                                           ((requiring-resolve 'integrant.repl/halt))
-                                           (nrepl/stop-server server)
-                                           (io/delete-file ".nrepl-port" true)))))
+                      (Thread. ^Runnable
+                        (fn []
+                          ((requiring-resolve 'integrant.repl/halt))
+                          (nrepl/stop-server server)
+                          (io/delete-file ".nrepl-port" true)))))
   ;; Keep the JVM alive when the HTTP server is stopped from the REPL.
   @(promise))
 

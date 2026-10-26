@@ -100,6 +100,12 @@ assert rpc('accept_my_organization_invites',{},recipient[2]['access_token'])==0
 memberships=rpc('my_workspaces',{},recipient[2]['access_token'])
 assert any(m['organization_id']==workspace and m['role_id']=='member' for m in memberships)
 rpc('workspace_team',{'p_workspace_id':workspace},recipient[2]['access_token'],(403,))
+labels=rpc('workspace_actor_labels',{'p_workspace_id':workspace,
+    'p_actor_ids':[manager[1]['id'],recipient[1]['id'],outsider[1]['id']]},recipient[2]['access_token'])
+assert {record['userId']:record['label'] for record in labels}=={
+    manager[1]['id']:'manager',recipient[1]['id']:'recipient'}
+rpc('workspace_actor_labels',{'p_workspace_id':workspace,'p_actor_ids':[manager[1]['id']]},
+    outsider[2]['access_token'],(403,))
 team=rpc('workspace_team',{'p_workspace_id':workspace})
 assert len(team['members'])==2
 new_workspace=rpc('create_organization',{'p_name':f'M2 extra {suffix}'})
@@ -113,7 +119,7 @@ assert refreshed['access_token'] and refreshed['refresh_token']
 request(auth,'/logout?scope=local','POST',{},refreshed['access_token'])
 request(auth,'/user',token=refreshed['access_token'],expected=(401,403))
 request(auth,'/token?grant_type=refresh_token','POST',{'refresh_token':refreshed['refresh_token']},expected=(400,401,403))
-print('PASS: real Auth login/user/refresh/logout, PostgREST workspace/team/invitation contracts and cross-workspace rejection')
+print('PASS: real Auth login/user/refresh/logout, PostgREST workspace/team/actor-label/invitation contracts and cross-workspace rejection')
 if remote and not os.environ.get('IDENTITY_TEST_JDBC_URL'):
     print('SKIP: hosted JDBC session contract (no explicit IDENTITY_TEST_JDBC_URL configured)')
 PY

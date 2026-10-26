@@ -1,0 +1,27 @@
+PREFIX t: <urn:tover:inventory-v1:>
+
+# These are operation-line transformations, without receipt or unit allocations.
+SELECT ?entityId ?revision ?businessOrder ?occurredAt
+       ?input ?inputId ?inputItemId ?inputQuantity ?inputLocation ?inputPosition
+       ?output ?outputId ?outputItemId ?outputQuantity ?outputLocation ?outputPosition
+WHERE {
+  GRAPH ?history {
+    ?record a t:Record ; t:entityId ?entityId ; t:revision ?revision ;
+            t:businessOrder ?businessOrder ; t:cancelled false ; t:operation ?entry .
+    FILTER NOT EXISTS {
+      ?later a t:Record ; t:entityId ?entityId ; t:revision ?laterRevision .
+      FILTER (?laterRevision > ?revision)
+    }
+    ?entry t:operationType ?policy ; t:occurredAt ?occurredAt ; t:input ?input ; t:output ?output .
+    ?input t:lineId ?inputId ; t:item ?inputItem ; t:quantity ?inputQuantity ;
+           t:location ?inputLocationRef ; t:position ?inputPosition .
+    ?inputItem t:itemId ?inputItemId .
+    ?inputLocationRef t:locationName ?inputLocation .
+    ?output t:lineId ?outputId ; t:item ?outputItem ; t:quantity ?outputQuantity ;
+            t:location ?outputLocationRef ; t:position ?outputPosition .
+    ?outputItem t:itemId ?outputItemId .
+    ?outputLocationRef t:locationName ?outputLocation .
+  }
+  GRAPH ?ontology { ?policy t:stockEffect t:production }
+}
+ORDER BY ?occurredAt ?businessOrder ?entityId ?inputPosition ?outputPosition

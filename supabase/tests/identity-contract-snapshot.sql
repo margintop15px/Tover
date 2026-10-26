@@ -17,6 +17,6 @@ SELECT jsonb_build_object(
   'functions',(SELECT jsonb_agg(jsonb_build_array(n.nspname,p.proname,pg_get_functiondef(p.oid),p.proacl::text)
     ORDER BY n.nspname,p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname='private' OR (n.nspname='public' AND p.proname IN ('create_organization','my_workspaces',
-      'workspace_team','manage_workspace_invitation','request_member_recovery','accept_my_organization_invites',
+      'workspace_team','workspace_actor_labels','manage_workspace_invitation','request_member_recovery','accept_my_organization_invites',
       'revoke_workspace_invitation_reservation','bootstrap_new_user','app_is_org_member','app_has_org_role','set_updated_at')))
 )::text;

@@ -12,11 +12,11 @@
   {:malli/schema [:=> [:cat] [:vector [:fn var?]]]}
   []
   (vec (for [namespace (all-ns)
-             :when (or (= 'user (ns-name namespace))
-                       (str/starts-with? (str (ns-name namespace)) "tover.")
-                       (contains? #{'bel.core 'bel.handler 'bel.nav 'bel.realtime 'bel.session 'bel.validation} (ns-name namespace)))
-             [_ var] (ns-interns namespace)
-             :when (and (bound? var) (fn? @var) (not (:macro (meta var))) (not (:test (meta var))))]
+             :when     (or (= 'user (ns-name namespace))
+                           (str/starts-with? (str (ns-name namespace)) "tover.")
+                           (contains? #{'bel.core 'bel.handler 'bel.nav 'bel.realtime 'bel.session 'bel.validation} (ns-name namespace)))
+             [_ var]   (ns-interns namespace)
+             :when     (and (bound? var) (fn? @var) (not (:macro (meta var))) (not (:test (meta var))))]
          var)))
 
 
@@ -25,17 +25,17 @@
   {:malli/schema [:=> [:cat] :nil]}
   []
   (let [schemas (or (m/function-schemas) {})
-        live (into {}
-                   (keep (fn [[namespace entries]]
-                           (when-let [loaded (find-ns namespace)]
-                             [namespace (select-keys entries (keys (ns-interns loaded)))])))
-                   schemas)]
+        live    (into {}
+                      (keep (fn [[namespace entries]]
+                              (when-let [loaded (find-ns namespace)]
+                                [namespace (select-keys entries (keys (ns-interns loaded)))])))
+                      schemas)]
     (when (not= schemas live)
       ;; Malli's dev stop resolves every registered namespace before applying filters.
       (m/-deregister-function-schemas! :clj)
       (with-out-str (dev/stop!))
       (doseq [[namespace entries] live
-              [name definition] entries]
+              [name definition]   entries]
         (m/-register-function-schema! namespace name (:schema definition)
                                       (dissoc definition :schema :ns :name)))))
   nil)
@@ -45,7 +45,7 @@
   {:malli/schema [:=> [:cat] :int]}
   []
   (prune-function-schemas!)
-  (let [vars (function-vars)
+  (let [vars    (function-vars)
         missing (filterv #(not (:malli/schema (meta %))) vars)
         options {:filters [(instrument/-filter-var (set vars))] :report (pretty/thrower)}]
     (when (seq missing)

@@ -10,9 +10,11 @@
     [tover.auth.core :as auth]
     [tover.auth.security :as security]
     [tover.auth.sessions :as sessions]
+    [tover.shared.i18n :as i18n]
     [tover.shared.ui.forms :as forms]
     [tover.shared.web.errors :as errors]
     [tover.support :as support]
+    [tover.teams.core :as teams]
     [tover.workspaces.core :as workspaces])
   (:import
     [java.io ByteArrayInputStream]
@@ -30,6 +32,7 @@
     (sign-out! [_ token] (auth/sign-out! provider token))
     (verify-email! [_ input] (auth/verify-email! provider input))
     (recover! [_ input] (auth/recover! provider input))
+    (set-locale! [_ token locale] (auth/set-locale! provider token locale))
     (set-password! [_ token password] (auth/set-password! provider token password))
     (invite! [_ _] (auth/fail! code 503 uncertain?))
     (magic-link! [_ input] (auth/magic-link! provider input))))
@@ -225,7 +228,7 @@
         request  (-> (support/request services :post "/action/tover.teams.core/invite")
                      (form-request {"email" "uncertain@example.test" "role" "member"})
                      (assoc-in [:headers "datastar-request"] "true"))]
-    (is (= expected (handler request)))))
+    (is (= (assoc-in expected [:headers "x-tover-language"] "en") (handler request)))))
 
 
 (deftest page-effect-reauthorizes-after-workspace-change-during-command
@@ -300,3 +303,46 @@
       (is (= {:email "submitted@example.test" :role "owner"} @retained))
       (is (empty? (:invitations @(:state services))))
       (is (empty? (:emails @(:state services)))))))
+
+
+(deftest management-tables-show-member-identities-roles-states-and-eligible-actions
+  (let [active-id   (random-uuid)
+        members     [{:user-id active-id :name "Alex Owner" :email "owner@example.test" :role :owner :status :active}
+                     {:user-id (random-uuid) :name "  " :email "admin@example.test" :role :admin :status :suspended}
+                     {:user-id (random-uuid) :email "member@example.test" :role :member :status :suspended}]
+        invitations [{:id (random-uuid) :email "pending@example.test" :role :admin :status :pending}
+                     {:id (random-uuid) :email "expired@example.test" :role :member :status :expired}]
+        request     {:anti-forgery-token "csrf" :tover/identity {:auth-version "context"}}]
+    (doseq [locale ["en" "ru"]]
+      (binding [i18n/*locale* locale]
+        (let [markup (handler/render-html (teams/team-content request {:members members :invitations invitations}))]
+          (is (str/includes? markup "<span class=\"management-name\">Alex Owner</span><span class=\"management-secondary\">owner@example.test</span>"))
+          (is (str/includes? markup "<span class=\"management-name\">admin@example.test</span>"))
+          (is (str/includes? markup "<span class=\"management-name\">member@example.test</span>"))
+          (doseq [key ["Member" "Role" "Status" "Actions" "Owner" "Admin" "Active" "Suspended" "Pending" "Expired" "Resend" "Cancel"]]
+            (is (str/includes? markup (i18n/t key)) key))
+          (is (str/includes? markup "<span class=\"management-count\">3</span>"))
+          (is (str/includes? markup "<span class=\"management-count\">2</span>"))
+          (is (= 1 (count (re-seq #"action=\"/action/tover.teams.core/recovery\"" markup))))
+          (is (str/includes? markup (str "name=\"user-id\" value=\"" active-id "\"")))
+          (doseq [action ["resend" "cancel"]]
+            (is (= 2 (count (re-seq (re-pattern (str "action=\"/action/tover.teams.core/" action "\"")) markup)))))
+          (is (str/includes? markup "name=\"__anti-forgery-token\" value=\"csrf\""))
+          (is (str/includes? markup "name=\"_tover-context\" value=\"context\"")))))))
+
+
+(deftest invite-disclosure-retains-invalid-fields-and-collapses-after-success
+  (doseq [[params open?] [[{} false] [{:email ""} true] [{:role "admin"} true]
+                          [{:email "retained@example.test" :role "admin"} true]]]
+    (let [markup (handler/render-html (teams/team-content {:params params} {:members [] :invitations []}))]
+      (is (= open? (boolean (re-find #"<details[^>]* open[ >]" markup))))
+      (is (str/includes? markup (str "name=\"email\" type=\"email\" required value=\"" (get params :email "") "\"")))
+      (is (str/includes? markup (if (= "admin" (:role params))
+                                  "<option value=\"admin\" selected>"
+                                  "<option value=\"member\" selected>")))))
+  (doseq [locale ["en" "ru"]]
+    (binding [i18n/*locale* locale]
+      (let [markup (handler/render-html (teams/team-content {} {:members [] :invitations []}))]
+        (is (str/includes? markup (i18n/t "No members yet.")))
+        (is (str/includes? markup (i18n/t "No invitations yet.")))
+        (is (= 2 (count (re-seq #"<span class=\"management-count\">0</span>" markup))))))))

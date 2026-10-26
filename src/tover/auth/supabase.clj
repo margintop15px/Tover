@@ -2,6 +2,7 @@
   (:require
     [clojure.string :as str]
     [tover.auth.core :as auth]
+    [tover.shared.i18n :as i18n]
     [tover.shared.supabase :as http])
   (:import
     [java.time Instant]
@@ -21,9 +22,11 @@
   [data]
   (try
     (auth/check-input! [:map [:id :string] [:email :string]] data)
-    {:user-id          (UUID/fromString (:id data))
-     :email            (:email data)
-     :email-confirmed? (boolean (:email_confirmed_at data))}
+    (cond-> {:user-id          (UUID/fromString (:id data))
+             :email            (:email data)
+             :email-confirmed? (boolean (:email_confirmed_at data))}
+      (i18n/supported (get-in data [:user_metadata :locale]))
+      (assoc :locale (get-in data [:user_metadata :locale])))
     (catch Exception _
       (auth/fail! :invalid-response 502 false))))
 
@@ -72,12 +75,15 @@
       (sign-up! [_ input]
         (auth/check-input! [:map [:email Text] [:password Text]
                             [:workspace-name {:optional true} :string]
-                            [:redirect-to {:optional true} Text]] input)
+                            [:redirect-to {:optional true} Text]
+                            [:locale {:optional true} [:enum "en" "ru"]]] input)
         (let [data (request! (str "/signup" (http/query (when-let [redirect (:redirect-to input)]
                                                           {:redirect_to redirect})))
-                             {:body (cond-> (select-keys input [:email :password])
-                                      (not (str/blank? (:workspace-name input)))
-                                      (assoc :data {:organization_name (:workspace-name input)}))})]
+                             {:body (assoc (select-keys input [:email :password])
+                                           :data (cond-> {}
+                                                   (:locale input) (assoc :locale (:locale input))
+                                                   (not (str/blank? (:workspace-name input)))
+                                                   (assoc :organization_name (:workspace-name input))))})]
           (if (:access_token data) (tokens data) {:user (user (or (:user data) data))})))
       (sign-in! [_ input]
         (auth/check-input! [:map [:email Text] [:password Text]] input)
@@ -95,6 +101,9 @@
         (tokens (request! "/verify" {:body {:token_hash (:token-hash input) :type (name (:type input))}})))
       (recover! [_ input]
         (email! "/recover" input false))
+      (set-locale! [_ access-token locale]
+        (auth/check-input! [:enum "en" "ru"] locale)
+        (user (request! "/user" {:method :put :token access-token :body {:data {:locale locale}}})))
       (set-password! [_ access-token password]
         (auth/check-input! Text password)
         (user (request! "/user" {:method :put :token access-token :body {:password password}})))

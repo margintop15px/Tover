@@ -40,26 +40,34 @@
        ([method uri params]
         (request! method uri params {}))
        ([method uri params options]
-        (let [post?      (= method :post)
-              params     (merge (cond-> {}
-                                  (and post? (not= false (:csrf? options)))
-                                  (assoc "__anti-forgery-token" (:csrf @state))
-                                  (and post? (not= false (:context? options)))
-                                  (assoc "_tover-context" (:context @state))) params)
-              encoded    (if (seq params) (subs (http/query params) 1) "")
-              origin     (if (contains? options :origin) (:origin options) "http://localhost:3030")
-              response   (handler (cond-> {:uri     uri :request-method method :scheme :http :server-name "localhost" :server-port 3030
-                                           :headers (merge (cond-> {"host" "localhost:3030"}
-                                                             (:cookie @state) (assoc "cookie" (:cookie @state))
-                                                             origin (assoc "origin" origin)
-                                                             post? (assoc "content-type" "application/x-www-form-urlencoded"))
-                                                           (:headers options))}
-                                    post? (assoc :body (ByteArrayInputStream. (.getBytes encoded "UTF-8")))
-                                    (and (not post?) (seq params)) (assoc :query-string encoded)))
-              set-cookie (get-in response [:headers "Set-Cookie"])
-              set-cookie (if (string? set-cookie) set-cookie (first set-cookie))
-              body       (if (string? (:body response)) (:body response) "")]
-          (when set-cookie (swap! state assoc :cookie (first (str/split set-cookie #";"))))
+        (let [post?       (= method :post)
+              params      (merge (cond-> {}
+                                   (and post? (not= false (:csrf? options)))
+                                   (assoc "__anti-forgery-token" (:csrf @state))
+                                   (and post? (not= false (:context? options)))
+                                   (assoc "_tover-context" (:context @state))) params)
+              encoded     (if (seq params) (subs (http/query params) 1) "")
+              origin      (if (contains? options :origin) (:origin options) "http://localhost:3030")
+              response    (handler (cond-> {:uri     uri :request-method method :scheme :http :server-name "localhost" :server-port 3030
+                                            :headers (merge (cond-> {"host" "localhost:3030"}
+                                                              (:cookie @state) (assoc "cookie" (:cookie @state))
+                                                              origin (assoc "origin" origin)
+                                                              post? (assoc "content-type" "application/x-www-form-urlencoded"))
+                                                            (:headers options))}
+                                     post? (assoc :body (ByteArrayInputStream. (.getBytes encoded "UTF-8")))
+                                     (and (not post?) (seq params)) (assoc :query-string encoded)))
+              set-cookie  (get-in response [:headers "Set-Cookie"])
+              set-cookies (if (string? set-cookie) [set-cookie] set-cookie)
+              body        (if (string? (:body response)) (:body response) "")]
+          (when (seq set-cookies)
+            (swap! state
+                   (fn [current]
+                     (let [cookies (reduce (fn [cookies cookie]
+                                             (let [[name value] (str/split (first (str/split cookie #";")) #"=" 2)]
+                                               (if (str/includes? (str/lower-case cookie) "max-age=0")
+                                                 (dissoc cookies name) (assoc cookies name value))))
+                                           (:cookies current {}) set-cookies)]
+                       (assoc current :cookies cookies :cookie (str/join "; " (map (fn [[k v]] (str k "=" v)) cookies)))))))
           (when-let [csrf (hidden-value body "__anti-forgery-token")] (swap! state assoc :csrf csrf))
           (when-let [context (second (re-find #"<meta name=\"tover-context\" content=\"([^\"]*)\"" body))]
             (swap! state assoc :context context))
@@ -99,7 +107,7 @@
 (defn session-key
   {:malli/schema [:=> [:cat :map] :string]}
   [{:keys [state]}]
-  (second (str/split (:cookie @state) #"=" 2)))
+  (get-in @state [:cookies "tover-session"]))
 
 
 (def user-id
@@ -177,9 +185,10 @@
     (refresh! [_ token] (if-let [f (:refresh overrides)] (f token) (auth/refresh! provider token)))
     (sign-out! [_ token] (if-let [f (:sign-out overrides)] (f token) (auth/sign-out! provider token)))
     (verify-email! [_ input] (auth/verify-email! provider input))
-    (recover! [_ input] (auth/recover! provider input))
+    (recover! [_ input] (if-let [f (:recover overrides)] (f input) (auth/recover! provider input)))
+    (set-locale! [_ token locale] (if-let [f (:set-locale overrides)] (f token locale) (auth/set-locale! provider token locale)))
     (set-password! [_ token password] (auth/set-password! provider token password))
-    (invite! [_ input] (auth/invite! provider input))
+    (invite! [_ input] (if-let [f (:invite overrides)] (f input) (auth/invite! provider input)))
     (magic-link! [_ input] (auth/magic-link! provider input))))
 
 
@@ -190,6 +199,10 @@
     (list-memberships [_ token] (if-let [f (:list-memberships overrides)] (f token) (workspaces/list-memberships provider token)))
     (create-workspace! [_ token name] (workspaces/create-workspace! provider token name))
     (team [_ token workspace-id] (if-let [f (:team overrides)] (f token workspace-id) (workspaces/team provider token workspace-id)))
+    (actor-labels [_ token workspace-id actor-ids]
+      (if-let [f (:actor-labels overrides)]
+        (f token workspace-id actor-ids)
+        (workspaces/actor-labels provider token workspace-id actor-ids)))
     (manage-invitation! [_ token input] (if-let [f (:manage-invitation overrides)] (f token input) (workspaces/manage-invitation! provider token input)))
     (revoke-reservation! [_ token workspace-id invite-id] (workspaces/revoke-reservation! provider token workspace-id invite-id))
     (request-member-recovery! [_ token workspace-id user-id] (workspaces/request-member-recovery! provider token workspace-id user-id))

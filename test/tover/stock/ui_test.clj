@@ -1,164 +1,119 @@
 (ns tover.stock.ui-test
   (:require
+    [bel.handler :as handler]
     [clojure.test :refer [deftest is]]
-    [tover.inventory.workbench :as workbench]
-    [tover.shared.schema :as schema]
-    [tover.stock.ui :as ui]))
-
-
-(def rows
-  [{:id "notebook" :name "Notebook A5" :article "NB-A5" :unit "pcs" :location "Main shelf" :quantity 24}
-   {:id "tea" :name "Green tea, 100 g" :article "TEA-100" :unit "packs" :location "Main shelf" :quantity 18}])
+    [tover.inventory.grid :as grid]
+    [tover.inventory.tables :as tables]
+    [tover.inventory.workbench :as workbench]))
 
 
 (def model
-  {:rows    rows :evidence {}  :history        {:row nil :history []}
-   :editing nil  :proposal nil :interpretation {:type :search :query "" :rows rows}})
+  {:ledger-revision 0 :items {} :rows [] :operations [] :drafts []})
 
 
-(def props
-  {:smart {} :sheet {} :rows {} :review {}})
+(defn render
+  {:malli/schema [:=> [:cat :map] :string]}
+  [props]
+  (handler/render-html (workbench/stock-page (merge {:model model :view :stock :query ""} props))))
 
 
-(defn- nodes
-  {:malli/schema [:=> [:cat schema/Hiccup] [:sequential :any]]}
-  [hiccup]
-  (tree-seq sequential? seq hiccup))
+(deftest shared-input-and-real-server-actions-on-both-pages
+  (doseq [view [:stock :operations]]
+    (let [page (render {:view view})]
+      (is (re-find #"stock-entry" page))
+      (is (re-find #"/action/tover.inventory.smart-web/suggest" page))
+      (is (re-find (if (= view :stock) #"/action/tover.stock.web/add-entry" #"beginAdd") page))
+      (is (re-find #"No changes" page))
+      (is (re-find #"Preview changes" page))
+      (is (re-find #"Revert all changes" page))
+      (is (not (re-find #"New operation type|Sort stock|Sort direction|No pending changes|Accepted quantities" page)))
+      (is (not (re-find #"Demo data|_localOperations|_submittedCells|UI preview|Local seed" page)))))
+  (is (re-find #"inventory-grid id=\"stock-grid\"" (render {})))
+  (is (< (.indexOf (render {}) "id=\"inventory-review\"") (.indexOf (render {}) "id=\"stock-grid\"")))
+  (is (not (re-find #"Production timeline|inventory-timeline|id=\"history-panel\"" (render {:view :operations})))))
 
 
-(defn- attributes
-  {:malli/schema [:=> [:cat schema/Hiccup] [:sequential :map]]}
-  [hiccup]
-  (keep #(when (and (vector? %) (map? (second %))) (second %)) (nodes hiccup)))
+(deftest operation-type-selects-fields-on-server-and-production-stays-one-draft
+  (let [entry {:kind    :operation :type :production :occurred-at "2026-10-20T12:00:00Z" :reason ""
+               :inputs  [{:item-id "a" :name "Input" :quantity 2 :location "Shelf"}]
+               :outputs [{:item-id "b" :name "Output" :quantity 1 :location "Shelf"}]}
+        page  (render {:model (assoc model :drafts [{:id "one" :revision 1 :entry entry}])})]
+    (is (not (re-find #"Inputs consumed|Outputs created" page)))
+    (is (re-find #"inventory-production-input" page))
+    (is (re-find #"inventory-production-output" page))
+    (is (= 1 (count (filter :selection (mapcat :cells (:rows (grid/drafts {:drafts [{:id "one" :revision 1 :entry entry}]})))))))
+    (is (every? (set (map #(get-in % [:target :path]) (mapcat :cells (:rows (grid/drafts {:drafts [{:id "one" :revision 1 :entry entry}]})))))
+                ["inputs/0/quantity" "outputs/0/quantity"]))
+    (is (not (re-find #"Amount \(optional" page))))
+  (let [page (render {:model (assoc model :drafts [{:id "payment" :revision 1 :entry {:kind :operation :type :payment}}])})]
+    (is (re-find #"Currency" page))
+    (is (re-find #"Direction" page))
+    (is (not (re-find #"data-field=\"lines/0" page)))))
 
 
-(deftest rendering-is-pure-and-keeps-accepted-and-proposed-stock-distinct
-  (let [calls   (atom 0)
-        action  #(swap! calls inc)
-        signals "{\"stockChanged\":false}"
-        row     (first rows)
-        change  {:row row :row-id (:id row) :before 24 :after 18}
-        model   (assoc model :proposal change)
-        events  (assoc props :signals signals :init action :effect action
-                       :review {:on-accept action :on-discard action :bind "reason" :value "Shelf count"})
-        page    (workbench/stock-page (assoc events :model model))]
-    (is (= page (workbench/stock-page (assoc events :model model))))
-    (is (zero? @calls) "Rendering passes event values through without executing them")
-    (is (= {:data-signals__ifmissing signals :data-init action :data-effect action}
-           (select-keys (second page) [:data-signals__ifmissing :data-init :data-effect])))
-    (is (= 1 (count (filter #(and (vector? %) (= :tr.inline-diff (first %))) (nodes page)))))
-    (is (some #{[:td.numeric "24 pcs"]} (nodes page)))
-    (is (some #{[:td.numeric "18 pcs"]} (nodes page)))
-    (is (some #{[:div.diff-caption "Notebook A5" " · " "Main shelf"]} (nodes page)))
-    (is (some #(= action (:data-on:click %)) (attributes page)))
-    (is (some #(and (= "adjustment-reason" (:id %)) (= "reason" (:data-bind %))
-                    (= "Shelf count" (:value %))) (attributes page)))
-    (is (not-any? #(and (string? %) (re-find #"[Rr]evision" %)) (nodes page)))))
+(deftest item-history-table-shows-own-records-and-gantt-uses-dated-lineage
+  (let [history {:item          {:id "item" :name "Goods"}
+                 :records       [{:operation-id "opening"              :operation-revision 1 :type  :opening :kind     :opening
+                                  :occurred-at  "2026-10-20T12:00:00Z" :before             0 :after 8        :location "Shelf"}]
+                 :audit-records [{:entity-id   "opening" :revision 1 :status :effective :actor "Owner"
+                                  :recorded-at "2026-10-20T12:00:00Z"
+                                  :entry       {:kind :opening :occurred-at "2026-10-20T12:00:00Z"}}]
+                 :lineage       [{:operation-id "prod" :occurred-at                   "2026-10-20T13:00:00Z"
+                                  :inputs       [{:item-id "a" :quantity 2}] :outputs [{:item-id "item" :quantity 1}]}]}
+        page    (handler/render-html (workbench/history-panel (assoc history :row-id "item@Shelf" :request-id "history-test" :mode "lineage")))]
+    (is (= "0 → 8 · Shelf" (get-in (tables/history history) [:rows 0 :cells 6 :value])))
+    (is (re-find #"inventory-timeline" page))
+    (is (not (re-find #"item-history-grid|lineage-production|lineage-legend" page)))
+    (is (not (re-find #"Show this item only|Include parent items" page)))
+    (is (not (re-find #"Local seed|receipt allocation|physical" page)))))
 
 
-(deftest spreadsheet-remains-accessible-with-empty-stock
-  (let [page  (workbench/stock-page (assoc props :model (assoc model :rows []
-                                                               :interpretation {:type :search :query "missing" :rows []})))
-        attrs (attributes page)]
-    (is (some #(= "RevoGrid stock spreadsheet" (:aria-label %)) attrs))
-    (is (some #(= "polite" (:aria-live %)) attrs))
-    (is (= [:div#stock-review nil] (ui/stock-review {:proposal nil})))))
+(deftest pending-catalog-recurses-through-production-receipts-and-replacements-with-accepted-precedence
+  (let [snapshot {:items  {"known" {:id "known" :name "Accepted name" :article "A"}}
+                  :drafts [{:entry {:kind :opening :lines [{:item-id "opening" :name "Opening item"}
+                                                           {:item-id "known" :name "Pending old name"}]}}
+                           {:entry {:kind :operation :type :purchase :receipts [{:lines [{:item-id "receipt" :name "Receipt item"}]}]}}
+                           {:entry {:kind :revision :replacement {:type    :production
+                                                                  :inputs  [{:item-id "input" :name "Input item"}]
+                                                                  :outputs [{:item-id "output" :name "Output item"}]}}}]}
+        catalog  (workbench/item-catalog snapshot)]
+    (is (= #{"known" "opening" "receipt" "input" "output"} (set (keys catalog))))
+    (is (= "Accepted name" (get-in catalog ["known" :name])))
+    (is (= "A" (get-in catalog ["known" :article])))))
 
 
-(deftest stock-and-operations-navigation-remains-pure
-  (let [calls  (atom 0)
-        source #(swap! calls inc)
-        page   (workbench/stock-page (assoc props :model model
-                                            :view :operations
-                                            :operations {:source source :examples? true :on-examples-toggle "toggle-examples"}))
-        attrs  (attributes page)]
-    (is (zero? @calls))
-    (is (some #(and (vector? %) (= :section#stock-view (first %)) (true? (:hidden (second %)))) (nodes page)))
-    (is (some #(and (vector? %) (= :section#operations-view (first %)) (false? (:hidden (second %)))) (nodes page)))
-    (doseq [tag [:section#stock-view :section#operations-view]]
-      (is (= 1 (count (filter #(and (vector? %) (= tag (first %))) (nodes page))))))
-    (is (some #(and (vector? %) (= :stock-operations#operations-history (first %))
-                    (= {:data-ignore-morph "" :data-effect source :data-examples "" :data-on:examples-toggle "toggle-examples"} (second %)))
-              (nodes page)))))
+(deftest review-has-one-stock-diff-and-no-duplicated-item-summary
+  (let [before  {:id "goods@Shelf" :item-id "goods" :name "Goods" :location "Shelf" :quantity 4}
+        preview {:valid?      true     :selected [{:id "one" :revision 1}] :expected-ledger-revision 0
+                 :before-rows [before] :rows     []}
+        page    (handler/render-html (workbench/preview-panel preview :stock ""))
+        result  (tables/resulting-stock preview)]
+    (is (= 1 (count (:rows result))))
+    (is (= {:before 4 :value 0} (get-in result [:rows 0 :cells 1])))
+    (is (re-find #"inventory-grid id=\"resulting-stock-grid\"" page))
+    (is (not (re-find #"inventory-entry-facts|sheet-diff-table|Change preview" page)))
+    (is (not (re-find #"<ul|<li" page)))))
 
 
-(deftest history-displays-only-the-selected-goods
-  (let [entries [{:id           #uuid "2b1b0cd3-ad61-4695-9b72-a098a737fbb7" :row-id "notebook" :before 24 :after 18 :delta -6
-                  :reason       "Shelf count" :actor "previous actor" :recorded-at "2026-10-09T12:00:00Z"
-                  :effective-at "2026-10-09T12:00:00Z"}
-                 {:id           #uuid "a1073e12-ddbc-4cb5-bd7c-8eadf6d34a8f" :row-id "tea" :before 18 :after 10 :delta -8
-                  :reason       "Tea count" :recorded-at "2026-10-09T11:00:00Z"
-                  :effective-at "2026-10-09T11:00:00Z"}]
-        history (ui/item-history {:row (first rows) :history (filterv #(= "notebook" (:row-id %)) entries) :on-click "close"})]
-    (is (= ["history-2b1b0cd3-ad61-4695-9b72-a098a737fbb7"] (vec (keep :id (attributes history)))))
-    (is (some #(= "close" (:data-on:click %)) (attributes history)))
-    (is (some #{"Shelf count · 2026-10-09T12:00:00Z"} (nodes history)))
-    (is (some #{[:li "Opening declaration" [:span.subline "Local seed data · origin and cost unknown"]]} (nodes history)))))
+(deftest both-submit-controls-block-reviews-until-the-receipt-is-acknowledged
+  (let [toolbar (workbench/change-toolbar model :stock)
+        preview (workbench/preview-panel {:valid? true :rows [] :before-rows []} :stock "")
+        buttons (for [tree  [toolbar preview]
+                      node  (tree-seq coll? seq tree)
+                      :when (and (vector? node) (#{:button.sheet-icon-button.is-submit :button.sheet-submit-preview} (first node)))]
+                  (get-in node [1 :data-on:click]))]
+    (is (= 2 (count buttons)))
+    (doseq [action buttons]
+      (is (re-find #"\$saveStatus\s*=\s*['\"]Saving['\"]" action))
+      (is (< (.indexOf action "Saving") (.indexOf action "/action/tover.stock.web/submit"))))))
 
 
-(deftest smart-input-accepts-ordinary-event-properties
-  (let [calls  (atom 0)
-        action #(swap! calls inc)
-        page   (ui/smart-entry {:source action :on-add-row action})
-        attrs  (attributes page)]
-    (is (zero? @calls))
-    (is (some #(and (= "" (:data-ignore-morph %)) (= action (:data-effect %))
-                    (= action (:data-on:row-add %))) attrs))
-    (is (some #(and (vector? %) (= :stock-entry#stock-entry (first %))) (nodes page)))
-    (is (some #{[:div#smart-result]} (nodes page)))))
-
-
-(deftest spreadsheet-events-pass-through-without-executing
-  (let [calls  (atom 0)
-        action #(swap! calls inc)
-        sheet  (ui/stock-sheet {:source            action                :on-preview      action              :on-editing action
-                                :on-draft          action                :on-reset-drafts "reset-cell-drafts"
-                                :on-select-rows    action                :on-delete-rows  action
-                                :on-add-row        "add-row"
-                                :on-preview-drafts "preview-cell-drafts" :on-submit       "submit-changes"
-                                :on-error          action})
-        attrs  (attributes sheet)]
-    (is (zero? @calls))
-    (is (some #(and (= "" (:data-ignore-morph %))
-                    (every? (fn [key] (= action (get % key)))
-                            [:data-effect :data-on:quantity-preview :data-on:grid-editing
-                             :data-on:cells-draft :data-on:rows-select :data-on:rows-delete :data-on:stock-edit-error])) attrs))
-    (doseq [handler ["add-row" "reset-cell-drafts" "preview-cell-drafts" "submit-changes"]]
-      (is (some #(= handler (:data-on:click %)) attrs)))))
-
-
-(deftest toolbar-stays-visible-and-draft-preview-shows-before-and-after
-  (let [sheet   (ui/stock-sheet {})
-        toolbar (first (filter #(and (vector? %) (= :div.sheet-toolbar (first %))) (nodes sheet)))
-        cells   [{:row-id "notebook" :name "Notebook A5" :field "name" :before "Notebook A5" :after "Notebook B5"}]
-        preview (ui/stock-draft-preview {:cells cells :on-submit "submit-changes"})]
-    (is (= :div.sheet-toolbar (first toolbar)))
-    (is (nil? (get-in toolbar [1 :data-show])))
-    (is (= preview (ui/stock-draft-preview {:cells cells :on-submit "submit-changes"})))
-    (is (some #{[:td.sheet-diff-before "Notebook A5"]} (nodes preview)))
-    (is (some #{[:td.sheet-diff-after "Notebook B5"]} (nodes preview)))
-    (is (some #{"Submit changes"} (nodes preview)))
-    (is (some #(= "submit-changes" (:data-on:click %)) (attributes preview)))))
-
-
-(deftest generic-row-identifiers-are-safe-in-every-fragment
-  (let [row      (assoc (first rows) :id "new row/α +'[]")
-        editing  {:row row}
-        proposed {:row row :row-id (:id row) :before 24 :after 18}
-        encoded  "new+row%2F%CE%B1+%2B%27%5B%5D"]
-    (is (= "stock-notebook" (ui/element-id "stock-" "notebook")))
-    (doseq [prefix ["stock-" "accepted-quantity-" "editor-" "quantity-" "evidence-" "review-"]]
-      (is (= (str prefix encoded) (ui/element-id prefix (:id row)))))
-    (is (= (str "stock-" encoded) (get-in (ui/stock-row {:row row :editing editing :change proposed :latest nil}) [1 :id])))
-    (is (= (str "review-" encoded) (get-in (ui/adjustment-review {:proposal proposed}) [1 :id])))))
-
-
-(deftest fragments-have-stable-hosts-and-footer-uses-server-values
-  (let [page (workbench/stock-page (assoc props :model model :init "open-stream" :notice "Saved" :error? true))]
-    (is (= "open-stream" (get-in page [1 :data-init])))
-    (is (some #{[:span#evidence-notice {:aria-live "polite" :class "error"} "Saved"]} (nodes page)))
-    (doseq [tag [:div#smart-result :revo-grid#stock-revogrid :div#stock-review :div#history-panel :footer.app-footer#stock-footer]]
-      (is (= 1 (count (filter #(and (vector? %) (= tag (first %))) (nodes page)))))))
-  (is (= [:div#history-panel nil] (ui/history-panel {:row nil :history []}))))
-
-
+(deftest active-filter-strip-describes-columns-operators-and-connectors
+  (let [page (workbench/filter-strip-html :stock {"name" [{:id "a" :type "begins" :value "Note" :relation "or"}
+                                                          {:id "b" :type "eq" :value "Paper"}]})]
+    (is (re-find #"Goods" page))
+    (is (re-find #"begins with “Note”" page))
+    (is (re-find #"equals “Paper”" page))
+    (is (re-find #">OR<" page))
+    (is (re-find #"Reset all" page))
+    (is (re-find #"Remove Goods filter 2" page))))

@@ -12,7 +12,8 @@
     const button = document.querySelector('#theme-toggle');
     if (!button) return;
     const target = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-    const label = `Switch to ${target} mode`;
+    const key = target === 'dark' ? 'Switch to dark mode' : 'Switch to light mode';
+    const label = window.toverTranslate?.(key) || key;
     button.setAttribute('aria-label', label);
     button.title = label;
   }
@@ -36,6 +37,8 @@
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, { once: true });
   else initialize();
+
+  document.addEventListener('tover:language-ready', updateButton);
 
   system.addEventListener('change', event => {
     if (!preference) apply(event.matches ? 'dark' : 'light');

@@ -1,0 +1,55 @@
+@prefix t: <urn:tover:inventory-v1:> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+
+t:Ontology a owl:Ontology ; owl:versionInfo "inventory-v1.0.0" .
+t:Workspace a owl:Class .
+t:Item a owl:Class ; rdfs:comment "A goods/variant identity shared across suppliers and receipts." .
+t:Location a owl:Class .
+t:Record a owl:Class ; rdfs:subClassOf prov:Entity .
+t:InventoryEntry a owl:Class ; rdfs:subClassOf prov:Activity .
+t:Operation a owl:Class ; rdfs:subClassOf t:InventoryEntry .
+t:OpeningBalance a owl:Class ; rdfs:subClassOf t:InventoryEntry .
+t:ManualCorrection a owl:Class ; rdfs:subClassOf t:InventoryEntry .
+t:Purchase a owl:Class ; rdfs:subClassOf t:Operation .
+t:Return a owl:Class ; rdfs:subClassOf t:Operation .
+t:Transfer a owl:Class ; rdfs:subClassOf t:Operation .
+t:Production a owl:Class ; rdfs:subClassOf t:Operation .
+t:Defect a owl:Class ; rdfs:subClassOf t:Operation .
+t:Sale a owl:Class ; rdfs:subClassOf t:Operation .
+t:WriteOff a owl:Class ; rdfs:subClassOf t:Operation .
+t:Payment a owl:Class ; rdfs:subClassOf t:Operation .
+t:Line a owl:Class .
+t:InputLine a owl:Class ; rdfs:subClassOf t:Line .
+t:OutputLine a owl:Class ; rdfs:subClassOf t:Line .
+t:Receipt a owl:Class .
+t:Effect a owl:Class ; rdfs:comment "A dated, ordered effect derived from an effective accepted revision." .
+
+t:workspace a owl:ObjectProperty ; rdfs:range t:Workspace .
+t:operation a owl:ObjectProperty ; rdfs:domain t:Record ; rdfs:range t:InventoryEntry .
+t:item a owl:ObjectProperty ; rdfs:range t:Item .
+t:location a owl:ObjectProperty ; rdfs:range t:Location .
+t:fromLocation a owl:ObjectProperty ; rdfs:range t:Location .
+t:toLocation a owl:ObjectProperty ; rdfs:range t:Location .
+t:hasLine a owl:ObjectProperty ; rdfs:range t:Line .
+t:line a owl:ObjectProperty ; rdfs:subPropertyOf t:hasLine ; rdfs:range t:Line .
+t:input a owl:ObjectProperty ; rdfs:subPropertyOf t:hasLine ; owl:inverseOf t:consumedBy ; rdfs:range t:InputLine .
+t:output a owl:ObjectProperty ; rdfs:subPropertyOf t:hasLine ; owl:inverseOf t:producedBy ; rdfs:range t:OutputLine .
+t:receipt a owl:ObjectProperty ; rdfs:range t:Receipt .
+t:derivedFrom a owl:ObjectProperty ; rdfs:subPropertyOf prov:wasDerivedFrom .
+t:Item owl:disjointWith t:Operation, t:Location .
+t:OpeningBalance owl:disjointWith t:Operation .
+t:ManualCorrection owl:disjointWith t:Operation .
+
+# Effect policy is data, shared by SPARQL derivation and bounded temporal orchestration.
+t:opening t:stockEffect t:add .
+t:correction t:stockEffect t:set .
+t:purchase t:stockEffect t:add ; t:entryClass t:Purchase .
+t:return t:stockEffect t:directional ; t:entryClass t:Return .
+t:transfer t:stockEffect t:transfer ; t:entryClass t:Transfer .
+t:production t:stockEffect t:production ; t:entryClass t:Production .
+t:defect t:stockEffect t:remove ; t:entryClass t:Defect .
+t:sale t:stockEffect t:remove ; t:entryClass t:Sale .
+t:write-off t:stockEffect t:remove ; t:entryClass t:WriteOff .
+t:payment t:stockEffect t:none ; t:entryClass t:Payment .

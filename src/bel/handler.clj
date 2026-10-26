@@ -137,12 +137,13 @@
 
 
 (defn- error-response
-  {:malli/schema [:=> [:cat :any] :map]}
-  [exception]
+  {:malli/schema [:=> [:cat :map :any] :map]}
+  [request exception]
   (log-error! exception)
   {:status  (if (= :validation (:type (ex-data exception))) 422 500)
    :headers {"content-type" "text/plain; charset=utf-8"}
-   :body    "The request could not be completed."})
+   :body    (if-let [message (:bel/error-message request)]
+              (message exception) "The request could not be completed.")})
 
 
 (defn- short-response
@@ -150,7 +151,8 @@
   [request prepared]
   (hk/->sse-response
     request
-    {hk/on-open
+    {hk/write-profile hk/buffered-writer-profile
+     hk/on-open
      (fn [sse]
        (try
          (send-prepared! sse prepared)
@@ -236,13 +238,13 @@
                                (:path-params request))
                 pages   (core/page-chain id)
                 options {:document (last (keep :bel/document pages))
-                         :title    (:bel/title (last pages))}
+                         :title    ((or (:bel/translate-title request) identity) (:bel/title (last pages)))}
                 hiccup  (render-page context id input pages)]
             (render-page-response request id hiccup options))
           (catch Exception exception
             (if (:status (ex-data exception))
               (throw exception)
-              (error-response exception))))
+              (error-response request exception))))
         {:status 404 :body "Page not found"}))))
 
 
@@ -294,7 +296,8 @@
       (if (datastar/datastar-request? request)
         (hk/->sse-response
           request
-          {hk/on-open (fn [sse]
+          {:headers   {"Content-Type" "text/event-stream; charset=utf-8"}
+           hk/on-open (fn [sse]
                         (try (datastar/redirect! sse url)
                              (finally (datastar/close-sse! sse))))})
         {:status 303 :headers {"location" url} :body ""}))))
@@ -321,7 +324,7 @@
                               (:bel/patch-mode definition) (assoc :patch-mode (:bel/patch-mode definition)))]
             (short-response request (prepare-result context instruction)))
           (catch Exception exception
-            (if (:status (ex-data exception)) (throw exception) (error-response exception))))
+            (if (:status (ex-data exception)) (throw exception) (error-response request exception))))
         {:status 404 :body "View not found"}))))
 
 
@@ -347,7 +350,7 @@
                          (or (:bel/input-error? (ex-data exception))
                              (not= :validation (:type (ex-data exception))))))
               (throw exception)
-              (error-response exception))))
+              (error-response request exception))))
         {:status 404 :body "Action not found"}))))
 
 

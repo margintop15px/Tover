@@ -23,6 +23,8 @@
   org.postgresql/postgresql                  {:mvn/version "42.7.14"}
   org.eclipse.rdf4j/rdf4j-repository-sail    {:mvn/version "6.2.0-M1"}
   org.eclipse.rdf4j/rdf4j-sail-nativerdf     {:mvn/version "6.2.0-M1"}
+  org.eclipse.rdf4j/rdf4j-shacl              {:mvn/version "6.2.0-M1"}
+  org.eclipse.rdf4j/rdf4j-rio-turtle         {:mvn/version "6.2.0-M1"}
   org.eclipse.rdf4j/rdf4j-queryparser-sparql {:mvn/version "6.2.0-M1"}}
 
  :jvm-opts

@@ -1,8 +1,10 @@
 (ns tover.teams.core
   (:require
     [bel.core :refer [defaction defpage]]
+    [clojure.string :as str]
     [tover.auth.core :as auth]
     [tover.auth.security :as security]
+    [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.forms :refer [field form]]
     [tover.workspaces.core :as workspaces])
@@ -21,27 +23,74 @@
 (defn team-content
   {:malli/schema [:=> [:cat :map :map] [:vector :any]]}
   [request {:keys [members invitations]}]
-  [:div.identity-content
-   [:h2 "Members"]
-   (into [:ul]
-         (for [member members]
-           [:li (:email member) " · " (name (:role member)) " · " (name (:status member))
-            (when (= :active (:status member))
-              (form request ::recovery "Send recovery email"
-                    [:input {:type "hidden" :name "user-id" :value (str (:user-id member))}]))]))
-   [:h2 "Invite member"]
-   (form request ::invite "Send invitation"
-         (field request "email" "Email" "email")
-         [:label "Role" [:select {:name "role"}
-                         [:option {:value "member" :selected (not= "admin" (get-in request [:params :role]))} "Member"]
-                         [:option {:value "admin" :selected (= "admin" (get-in request [:params :role]))} "Admin"]]])
-   [:h2 "Invitations"]
-   (into [:ul]
-         (for [invitation invitations]
-           [:li (:email invitation) " · " (name (:status invitation))
-            (for [[action title] [[::resend "Resend"] [::cancel "Cancel"]]]
-              (form request action title
-                    [:input {:type "hidden" :name "invite-id" :value (str (:id invitation))}]))]))])
+  [:div.management-content
+   [:details.management-disclosure
+    {:open (or (contains? (:params request) :email) (contains? (:params request) :role))}
+    [:summary (i18n/t "Invite member")]
+    [:div.management-form
+     (form request ::invite (i18n/t "Send invitation")
+           (field request "email" (i18n/t "Email") "email")
+           [:label (i18n/t "Role") [:select {:name "role"}
+                                    [:option {:value "member" :selected (not= "admin" (get-in request [:params :role]))} (i18n/t "Member")]
+                                    [:option {:value "admin" :selected (= "admin" (get-in request [:params :role]))} (i18n/t "Admin")]]])]]
+   [:section.management-section {:aria-labelledby "team-members-title"}
+    [:div.management-section-heading
+     [:h2#team-members-title (i18n/t "Members")]
+     [:span.management-count (count members)]]
+    (if (seq members)
+      [:div.management-table-wrap
+       [:table.management-table {:aria-labelledby "team-members-title"}
+        [:thead [:tr
+                 [:th {:scope "col"} (i18n/t "Member")]
+                 [:th.management-role {:scope "col"} (i18n/t "Role")]
+                 [:th.management-status {:scope "col"} (i18n/t "Status")]
+                 [:th {:scope "col"} (i18n/t "Actions")]]]
+        (into [:tbody]
+              (for [member members
+                    :let   [role (i18n/t (str/capitalize (name (:role member))))
+                            status (i18n/t (str/capitalize (name (:status member))))
+                            named? (not (str/blank? (:name member)))]]
+                [:tr
+                 [:td.management-primary
+                  [:span.management-name (if named? (:name member) (:email member))]
+                  (when named? [:span.management-secondary (:email member)])
+                  [:span.management-mobile-meta role " · " status]]
+                 [:td.management-role role]
+                 [:td.management-status status]
+                 [:td.management-actions
+                  (when (= :active (:status member))
+                    (form request ::recovery (i18n/t "Send recovery email")
+                          [:input {:type "hidden" :name "user-id" :value (str (:user-id member))}]))]]))]]
+      [:p.management-empty (i18n/t "No members yet.")])]
+   [:section.management-section {:aria-labelledby "team-invitations-title"}
+    [:div.management-section-heading
+     [:h2#team-invitations-title (i18n/t "Invitations")]
+     [:span.management-count (count invitations)]]
+    (if (seq invitations)
+      [:div.management-table-wrap
+       [:table.management-table {:aria-labelledby "team-invitations-title"}
+        [:thead [:tr
+                 [:th {:scope "col"} (i18n/t "Email")]
+                 [:th.management-role {:scope "col"} (i18n/t "Role")]
+                 [:th.management-status {:scope "col"} (i18n/t "Status")]
+                 [:th {:scope "col"} (i18n/t "Actions")]]]
+        (into [:tbody]
+              (for [invitation invitations
+                    :let       [role (i18n/t (str/capitalize (name (or (:role invitation) :member))))
+                                status (i18n/t (str/capitalize (name (:status invitation))))]]
+                [:tr
+                 [:td.management-primary
+                  [:span.management-name (:email invitation)]
+                  [:span.management-mobile-meta role " · " status]]
+                 [:td.management-role role]
+                 [:td.management-status status]
+                 [:td.management-actions
+                  (form request ::resend (i18n/t "Resend")
+                        [:input {:type "hidden" :name "invite-id" :value (str (:id invitation))}])
+                  [:div.management-action-danger
+                   (form request ::cancel (i18n/t "Cancel")
+                         [:input {:type "hidden" :name "invite-id" :value (str (:id invitation))}])]]]))]]
+      [:p.management-empty (i18n/t "No invitations yet.")])]])
 
 
 (defn query-team
@@ -58,8 +107,12 @@
    :query      query-team}
   [{:keys [request model]}]
   {:type :elements
-   :html [:section.identity {:aria-labelledby "team-title"}
-          [:h1#team-title {:tabindex -1} "Team"]
+   :html [:section.management-page {:aria-labelledby "team-title"}
+          [:header.management-header
+           [:h1#team-title {:tabindex -1} (i18n/t "Team")]
+           [:p.management-subtitle
+            (:name (first (filter #(= (:workspace-id %) (get-in request [:tover/identity :workspace-id]))
+                                  (get-in request [:tover/identity :memberships]))))]]
           (team-content request model)]})
 
 

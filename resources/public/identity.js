@@ -17,6 +17,8 @@ if (csrf) {
     headers.set('X-CSRF-Token', csrf);
     if (context) headers.set('X-Tover-Context', context);
     const response = await originalFetch(input, { ...init, headers });
+    const language = response.headers.get('x-tover-language');
+    if (language && language !== document.documentElement.lang) { location.reload(); return response; }
     const redirect = response.headers.get('x-tover-redirect');
     if (redirect) location.assign(redirect);
     else if (response.status === 401) location.assign('/auth/login');

@@ -69,12 +69,31 @@
             (rdf/close! repo)))))))
 
 
+(deftest health-and-readiness-are-public-and-fail-closed-without-sensitive-details
+  (with-data-path
+    (fn [path]
+      (let [repo (rdf/native-store path)
+            rt   (realtime/start!)]
+        (try
+          (let [handler (app/create-handler (merge (fixture-services) {:repo repo :realtime rt}))
+                request {:request-method :get :headers {}}]
+            (is (= 200 (:status (handler (assoc request :uri "/healthz")))))
+            (is (= 200 (:status (handler (assoc request :uri "/readyz")))))
+            (is (= "" (:body (handler (assoc request :uri "/readyz" :request-method :head)))))
+            (rdf/close! repo)
+            (is (= 200 (:status (handler (assoc request :uri "/healthz")))))
+            (let [response (handler (assoc request :uri "/readyz"))]
+              (is (= 503 (:status response)))
+              (is (= "unavailable\n" (:body response)))))
+          (finally (realtime/stop! rt) (rdf/close! repo)))))))
+
+
 (deftest operational-handlers-are-built-once-with-current-verified-request-context
   (with-data-path
     (fn [path]
       (let [repo             (rdf/native-store path)
             rt               (realtime/start!)
-            context          {:repo repo :realtime rt :operation-examples {:rows [] :entries []}}
+            context          {:repo repo :realtime rt}
             first-identity   {:workspace-id (:workspace-id scope) :user-id #uuid "10000000-0000-4000-8000-000000000001" :auth-version 1}
             second-identity  (assoc first-identity :workspace-id #uuid "00000000-0000-0000-0000-000000000002" :auth-version 2)
             current-identity (atom first-identity)

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { signIn } from './auth.fixture.mjs';
+import { addStockRow, draftCell, gridHeader, openReview, operationGrid, stockGrid } from './grid.fixture.mjs';
 
 test.beforeEach(async ({ page }) => signIn(page));
 
@@ -12,40 +13,18 @@ async function unchangedDocument(page) {
   expect(await page.evaluate(() => window.navigationDocument)).toBe('original');
 }
 
-async function addDraft(page, name) {
-  const entry = page.locator('#stock-entry');
-  await entry.getByRole('combobox', { name: 'Add stock row', exact: true }).fill(name);
-  await entry.getByRole('combobox', { name: 'Add stock row', exact: true }).press('Enter');
-  await entry.getByRole('button', { name: 'Add row', exact: true }).click();
-  await expect(page.locator('#stock-revogrid')).toContainText(name);
-}
-
-test('internal history preserves the workbench and leaving inventory discards drafts', async ({ page }) => {
+test('internal navigation preserves durable workspace drafts', async ({ page }) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await markDocument(page);
-  await addDraft(page, 'Navigation draft');
-  await page.evaluate(() => { document.querySelector('#stock-revogrid').navigationGrid = true; });
-  await page.getByRole('link', { name: 'Operations', exact: true }).click();
-  await expect(page).toHaveURL(/\/operations$/);
-  await expect(page.locator('#operations-history')).toBeVisible();
-  await unchangedDocument(page);
-  expect(await page.evaluate(() => document.querySelector('#stock-revogrid').navigationGrid)).toBe(true);
-  await page.goBack();
-  await expect(page).toHaveURL(/\/$/);
-  await expect(page.locator('#stock-revogrid')).toContainText('Navigation draft');
-  await page.goForward();
-  await expect(page.locator('#operations-history')).toBeVisible();
-  await page.getByRole('link', { name: 'Workspaces', exact: true }).click();
-  await expect(page).toHaveURL(/\/workspace$/);
-  await expect(page.locator('#stock-revogrid')).toHaveCount(0);
-  await unchangedDocument(page);
-  await page.getByRole('link', { name: 'Stock', exact: true }).click();
-  await expect(page.locator('#stock-revogrid')).toBeVisible();
-  await expect(page.locator('#page-content')).toBeFocused();
-  await expect(page.locator('#stock-revogrid')).not.toContainText('Navigation draft');
-  await addDraft(page, 'Fresh navigation draft');
-  await unchangedDocument(page);
+  const name = `Navigation draft ${Date.now()}`;
+  const id = await addStockRow(page, name);
+  for (const destination of ['Operations', 'Workspaces', 'Stock']) {
+    await page.getByRole('link', { name: destination, exact: true }).click();
+    await unchangedDocument(page);
+  }
+  await openReview(page);
+  await expect(draftCell(page, id, 'lines/0/name')).toHaveText(name);
   expect(errors).toEqual([]);
 });
 
@@ -76,7 +55,7 @@ for (const failure of ['http', 'network']) {
     await page.getByRole('link', { name: 'Team', exact: true }).click();
     await expect(page.locator('#bel-navigation-notice')).toContainText('could not be loaded');
     await expect(page).toHaveURL(/\/$/);
-    await expect(page.locator('#stock-revogrid')).toBeVisible();
+    await expect(stockGrid(page)).toBeVisible();
     await unchangedDocument(page);
     await page.unroute('**/team?datastar=*');
     await page.locator('#bel-navigation-notice').getByRole('button', { name: 'Retry' }).click();
@@ -214,11 +193,12 @@ test('internal form failures keep input and never retry an uncertain mutation', 
   await expect(page).toHaveURL(/\/team$/);
   await markDocument(page);
   const form = page.locator('form[action="/action/tover.teams.core/invite"]');
+  await form.locator('xpath=ancestor::details').locator('summary').click();
   await form.locator('[name="email"]').fill('owner@example.test');
   await form.locator('[name="role"]').selectOption('admin');
   const historyLength = await page.evaluate(() => history.length);
   await form.getByRole('button', { name: 'Send invitation' }).click();
-  await expect(page.getByRole('alert')).toContainText('member exists');
+  await expect(page.getByRole('alert')).toContainText('This user is already a workspace member.');
   await expect(form.locator('[name="email"]')).toHaveValue('owner@example.test');
   await expect(form.locator('[name="role"]')).toHaveValue('admin');
   expect(await page.evaluate(() => history.length)).toBe(historyLength);
@@ -240,6 +220,7 @@ test('successful Team actions refresh the page without another history entry', a
   await expect(page).toHaveURL(/\/team$/);
   await markDocument(page);
   const form = page.locator('form[action="/action/tover.teams.core/invite"]');
+  await form.locator('xpath=ancestor::details').locator('summary').click();
   const email = `navigation-${Date.now()}@example.test`;
   await form.locator('[name="email"]').fill(email);
   const historyLength = await page.evaluate(() => history.length);
@@ -262,6 +243,7 @@ test('action page effects commit a different destination and support Back naviga
   }));
   const historyLength = await page.evaluate(() => history.length);
   const form = page.locator('form[action="/action/tover.teams.core/invite"]');
+  await form.locator('xpath=ancestor::details').locator('summary').click();
   await form.locator('[name="email"]').fill('destination@example.test');
   await page.evaluate(() => { document.body.style.minHeight = '3000px'; scrollTo(0, 500); });
   await form.evaluate(element => element.requestSubmit());
@@ -301,6 +283,7 @@ for (const order of ['action-first', 'navigation-first']) {
       await route.fulfill({ status: 503, body: 'Unavailable' });
     });
     const form = page.locator('form[action="/action/tover.teams.core/invite"]');
+    await form.locator('xpath=ancestor::details').locator('summary').click();
     await form.locator('[name="email"]').fill('late@example.test');
     await form.getByRole('button', { name: 'Send invitation' }).click();
     await actionRequested;
@@ -321,29 +304,6 @@ for (const order of ['action-first', 'navigation-first']) {
     await expect(page.getByRole('heading', { name: 'Stale effect' })).toHaveCount(0);
   });
 }
-
-test('late inventory view responses cannot patch a later workbench instance', async ({ page }) => {
-  let release;
-  let started;
-  const blocked = new Promise(resolve => { release = resolve; });
-  const requested = new Promise(resolve => { started = resolve; });
-  await page.route('**/view/tover.stock.web/draft-preview', async route => {
-    started();
-    await blocked;
-    await route.fulfill({ status: 200, contentType: 'text/html',
-      body: '<div id="stock-draft-preview">Stale inventory response</div>' }).catch(() => {});
-  });
-  await addDraft(page, 'Pending inventory view');
-  await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
-  await requested;
-  await page.getByRole('link', { name: 'Workspaces', exact: true }).click();
-  await expect(page).toHaveURL(/\/workspace$/);
-  await page.getByRole('link', { name: 'Stock', exact: true }).click();
-  await expect(page.locator('#stock-revogrid')).toBeVisible();
-  release();
-  await expect(page.locator('#stock-draft-preview')).not.toContainText('Stale inventory response');
-  await expect(page.locator('#stock-revogrid')).not.toContainText('Pending inventory view');
-});
 
 test('shared pages retain consistent appearance and navigation at desktop and narrow widths', async ({ page }) => {
   const directory = '/tmp/tover-navigation-icons';
@@ -385,9 +345,15 @@ test('shared pages retain consistent appearance and navigation at desktop and na
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   const dark = await appearance();
   await checkInternalLayout();
-  await expect(page.locator('#stock-revogrid').getByText('Goods', { exact: true })).toBeVisible();
+  await expect(gridHeader(stockGrid(page), 'name')).toContainText('Goods');
   await page.screenshot({ path: `${directory}/desktop-stock-dark.png`, fullPage: true });
   await page.locator('.app-nav').screenshot({ path: `${directory}/navigation.png` });
+  await page.getByRole('link', { name: 'Operations', exact: true }).click();
+  await expect(page).toHaveURL(/\/operations$/);
+  expect(await appearance()).toEqual(dark);
+  await checkInternalLayout();
+  await expect(gridHeader(operationGrid(page), 'occurred-at')).toContainText('Date');
+  await page.screenshot({ path: `${directory}/desktop-operations-dark.png`, fullPage: true });
   await page.getByRole('link', { name: 'Team', exact: true }).click();
   await expect(page).toHaveURL(/\/team$/);
   expect(await appearance()).toEqual(dark);

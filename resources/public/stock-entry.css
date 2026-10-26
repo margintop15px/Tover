@@ -11,10 +11,6 @@
 #inventory-evidence-workbench input.stock-entry-input{flex:1;min-width:150px;width:auto;background:transparent;border:0;outline:0;box-shadow:none;padding:7px 6px;height:32px}
 #inventory-evidence-workbench input.stock-entry-input:focus-visible{outline:0;box-shadow:none}
 #inventory-evidence-workbench .stock-entry-input::placeholder{color:var(--iw-muted);opacity:1}
-#inventory-evidence-workbench button.stock-entry-add{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;align-self:center;margin-left:auto;padding:0;width:30px;height:30px;min-height:30px;border-radius:4px;background:var(--iw-green-fill);color:var(--iw-green)}
-#inventory-evidence-workbench button.stock-entry-add svg{display:block;width:18px;height:18px}
-#inventory-evidence-workbench button.stock-entry-add:hover:enabled{background:color-mix(in srgb,var(--iw-green-fill) 83%,var(--iw-green))}
-#inventory-evidence-workbench button.stock-entry-add:disabled{background:transparent;opacity:.5;color:var(--iw-muted)}
 #inventory-evidence-workbench .stock-entry-menu{position:absolute;top:calc(100% + 4px);left:0;width:100%;max-height:300px;overflow:auto;padding:4px;border:1px solid var(--iw-line);border-radius:6px;background:var(--iw-bg);box-shadow:0 8px 24px #0002;z-index:20}
 #inventory-evidence-workbench button.stock-entry-option{display:flex;align-items:center;gap:10px;width:100%;min-height:34px;padding:7px 9px;border-radius:3px;text-align:left}
 #inventory-evidence-workbench button.stock-entry-option.is-active,#inventory-evidence-workbench button.stock-entry-option:hover{background:var(--iw-blue-fill)}
@@ -25,3 +21,10 @@
 #inventory-evidence-workbench .stock-entry-option-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--iw-green)}
 #inventory-evidence-workbench .stock-entry-option-description{margin-left:auto;color:var(--iw-muted);font-size:11px;white-space:nowrap}
 @media(max-width:600px){#inventory-evidence-workbench input.stock-entry-input{font-size:16px;min-width:110px}#inventory-evidence-workbench .stock-entry-chip-value{max-width:180px}}
+#inventory-evidence-workbench button.stock-entry-clear{flex:0 0 auto;padding:0 8px;color:var(--iw-muted);font-size:18px;line-height:1}
+#inventory-evidence-workbench button.stock-entry-cancel{display:inline-flex;flex:0 0 28px;align-items:center;justify-content:center;width:28px;height:28px;min-height:28px;padding:0;color:var(--iw-muted)}
+#inventory-evidence-workbench button.stock-entry-cancel[hidden]{display:none}
+#inventory-evidence-workbench .stock-entry-shortcut{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+#inventory-evidence-workbench .stock-entry-feedback{padding:7px 4px;color:var(--iw-red);font-size:12px}
+#inventory-evidence-workbench .stock-entry-error{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px}
+#inventory-evidence-workbench .stock-entry-error button{padding:3px 7px;border:1px solid var(--iw-line);border-radius:3px;color:var(--iw-text)}

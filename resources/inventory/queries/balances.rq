@@ -1,0 +1,17 @@
+PREFIX t: <urn:tover:inventory-v1:>
+
+# A physical count replaces all preceding effects at the same item/location.
+SELECT ?itemId ?location (SUM(?contribution) AS ?quantity)
+WHERE {
+  GRAPH ?effects {
+    ?effect t:itemId ?itemId ; t:locationName ?location ; t:ordinal ?ordinal ;
+            t:mode ?mode ; t:quantity ?amount ; t:delta ?delta .
+    FILTER NOT EXISTS {
+      ?reset t:itemId ?itemId ; t:locationName ?location ; t:mode t:set ; t:ordinal ?resetOrdinal .
+      FILTER (?resetOrdinal > ?ordinal)
+    }
+    BIND(IF(?mode = t:set, ?amount, ?delta) AS ?contribution)
+  }
+}
+GROUP BY ?itemId ?location
+ORDER BY ?itemId ?location

@@ -55,6 +55,7 @@ next-env.d.ts
 playwright-report/
 test-results/
 playwright/.auth/
+.playwright-mcp/
 
 # Clojure and local migration recovery
 /.cpcache/
@@ -65,3 +66,10 @@ playwright/.auth/
 /.migration-backups/
 /.pal/
 /.playwright-mcp/
+
+.claude/
+.superpowers/
+
+# Python deployment helpers
+__pycache__/
+*.py[cod]

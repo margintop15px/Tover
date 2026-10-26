@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 import { action, actions } from './datastar.js';
 
 const page = () => document.querySelector('#bel-page');
@@ -42,7 +43,7 @@ function notice(message, retry) {
   if (retry) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = 'Retry';
+    button.textContent = t('Retry');
     button.addEventListener('click', retry, { once: true });
     element.append(' ', button);
   }
@@ -52,7 +53,7 @@ function failed(request) {
   if (pending !== request || request.controller.signal.aborted) return;
   pending = null;
   if (request.pop) location.reload();
-  else notice('The page could not be loaded.', () => navigate(request.context, request.url));
+  else notice(t('The page could not be loaded.'), () => navigate(request.context, request.url));
 }
 
 async function navigate(context, target, { pop = false, scroll = [0, 0] } = {}) {
@@ -134,8 +135,8 @@ document.addEventListener('datastar-fetch', event => {
       }
     }
   } else if (['error', 'retries-failed'].includes(type) && !request && el?.closest?.('form')) {
-    notice(argsRaw.status === '403' ? 'The request was rejected. Refresh the page before trying again.'
-      : 'The request could not be confirmed. Your input has been kept; check the result before trying again.');
+    notice(argsRaw.status === '403' ? t('The request was rejected. Refresh the page before trying again.')
+      : t('The request could not be confirmed. Your input has been kept; check the result before trying again.'));
   }
 });
 

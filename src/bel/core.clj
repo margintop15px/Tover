@@ -118,6 +118,7 @@
                              :bel/selector (:selector opts)
                              :bel/patch-mode (:patch-mode opts)
                              :bel/route-data (:route-data opts)
+                             :bel/resnapshot-on-open? (boolean (:resnapshot-on-open? opts))
                              :malli/schema [:=> (cond
                                                   request? [:cat :map input-schema]
                                                   children? [:cat :any [:* :any]]

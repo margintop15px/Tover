@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Tover backup maintenance window
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+# Never interrupt daytime use to catch up after the VM was offline.
+Persistent=false
+AccuracySec=1min
+Unit=tover-backup.service
+
+[Install]
+WantedBy=timers.target

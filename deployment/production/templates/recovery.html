@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="{{ if eq .Data.locale "ru" }}ru{{ else }}en{{ end }}"><body>
+<p>{{ if eq .Data.locale "ru" }}Подтвердите этот запрос входа в Tover.{{ else }}Confirm this Tover authentication request.{{ end }}</p>
+<p><a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&amp;type=recovery">{{ if eq .Data.locale "ru" }}Продолжить в Tover{{ else }}Continue to Tover{{ end }}</a></p>
+<p>{{ if eq .Data.locale "ru" }}На следующей странице подтвердите использование этой ссылки.{{ else }}The next page requires confirmation before this link is used.{{ end }}</p>
+</body></html>

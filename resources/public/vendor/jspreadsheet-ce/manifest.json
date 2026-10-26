@@ -1,0 +1,41 @@
+{
+  "purpose": "Pinned, self-hosted browser assets. Formula evaluation is disabled by the inventory adapter.",
+  "packages": [
+    {
+      "name": "jspreadsheet-ce",
+      "version": "5.0.4",
+      "license": "MIT",
+      "registryTarball": "https://registry.npmjs.org/jspreadsheet-ce/-/jspreadsheet-ce-5.0.4.tgz",
+      "tarballSha256": "f5465620894e83a7ea6f03b2173aff712f8d51c8aa7acc9ffdbb8271b87c3830",
+      "files": {
+        "jspreadsheet.js": "d51368406bc33aa7525d348fb74742eb1436d0286654cc615f21f4ce96fa470d",
+        "jspreadsheet.css": "3805f5e96baa35b4ef285210099a24fe3af169f6a466a30de122220d2fbb4907",
+        "JSPREADSHEET-LICENSE": "c83411f080a34b5715b51965e600ae458ffea34043b5448e0ae7131bd40beab6"
+      }
+    },
+    {
+      "name": "jsuites",
+      "version": "5.12.0",
+      "license": "MIT",
+      "registryTarball": "https://registry.npmjs.org/jsuites/-/jsuites-5.12.0.tgz",
+      "tarballSha256": "0ba6c4a93252604dbe86cca6da63ad6df9c2e66c328cac2c39deb550aa82bc33",
+      "files": {
+        "jsuites.js": "b146c58ab145dc971a18dbc1eb7702ed54db8bdf6be1263a0de7941b1f2c87a4",
+        "jsuites.css": "f5c7a1649554341b291581b550ca8497cd14e2e79b18e9a0ce7229c68f8f0f12",
+        "JSUITES-LICENSE": "792a7484666a1059f0968724c2a632b50c416bdb59f5ee22aacd490b2e6462c9"
+      }
+    },
+    {
+      "name": "@jspreadsheet/formula",
+      "version": "2.0.2",
+      "license": "MIT (upstream distribution source header)",
+      "registryTarball": "https://registry.npmjs.org/@jspreadsheet/formula/-/jspreadsheet-formula-2.0.2.tgz",
+      "tarballSha256": "d3a7675b7382c731844f16bcedcc609d8884baeaf9e1cc6fe0f8471a77b821c7",
+      "files": {
+        "formula.js": "15b5bc386e354509e550d45b62852eba1288fd5e72010588f081e33f5eb7b0a4",
+        "FORMULA-LICENSE": "298512c2a561494c4b5883b5eebd8291fb3c5a39294b0e7d61104733f43f3882"
+      },
+      "licenseNotice": "The npm distribution includes its MIT notice in dist/index.js and does not ship a separate LICENSE file; FORMULA-LICENSE preserves that notice verbatim."
+    }
+  ]
+}

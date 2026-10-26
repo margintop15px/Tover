@@ -24,7 +24,7 @@
   {:malli/schema [:=> [:cat :any :any] :any]}
   [schema data]
   (if-let [explanation (m/explain schema data)]
-    (let [errors (error/humanize explanation)
+    (let [errors   (error/humanize explanation)
           messages (if (map? errors)
                      (map (fn [[field messages]]
                             (str (if (ident? field) (name field) field) ": " (str/join ", " messages)))

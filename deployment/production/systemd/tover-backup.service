@@ -1,0 +1,16 @@
+[Unit]
+Description=Tover consistent local and Selectel VM backup
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+WorkingDirectory=/srv/tover
+EnvironmentFile=/etc/tover/backup.env
+ExecStart=/usr/bin/python3 /srv/tover/deployment/production/scheduled-backup.py
+TimeoutStartSec=90min
+# Allow the backup helper's 240-second healthy restart on cancellation.
+TimeoutStopSec=5min

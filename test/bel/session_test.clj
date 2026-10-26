@@ -16,12 +16,12 @@
 
 (deftest ring-session-keeps-native-identity-and-response-session-fields
   (let [requests (atom [])
-        handler (session/wrap-session
-                  (fn [request]
-                    (swap! requests conj (:session request))
-                    {:status 200 :body "ok" :session {:setting true}}))
+        handler  (session/wrap-session
+                   (fn [request]
+                     (swap! requests conj (:session request))
+                     {:status 200 :body "ok" :session {:setting true}}))
         response (handler {:headers {}})
-        cookie (session-cookie response)]
+        cookie   (session-cookie response)]
     (handler {:headers {"cookie" cookie}})
     (is (instance? UUID (:bel/session-id (first @requests))))
     (is (= (:bel/session-id (first @requests)) (:bel/session-id (second @requests))))
@@ -31,8 +31,8 @@
 
 
 (deftest sessions-are-distinct-and-request-fields-cannot-select-identity
-  (let [ids (atom [])
-        forged (UUID/randomUUID)
+  (let [ids     (atom [])
+        forged  (UUID/randomUUID)
         handler (session/wrap-session
                   (fn [request]
                     (swap! ids conj (get-in request [:session :bel/session-id]))
@@ -44,30 +44,30 @@
 
 
 (deftest tampered-cookie-does-not-reuse-a-session
-  (let [ids (atom [])
+  (let [ids     (atom [])
         handler (session/wrap-session
                   (fn [request]
                     (swap! ids conj (get-in request [:session :bel/session-id]))
                     {:status 200 :body "ok"}))
-        cookie (session-cookie (handler {:headers {}}))]
+        cookie  (session-cookie (handler {:headers {}}))]
     (handler {:headers {"cookie" (str cookie "tampered")}})
     (is (not= (first @ids) (second @ids)))))
 
 
 (deftest explicit-nil-session-clears-prior-state-and-identity
-  (let [requests (atom [])
-        handler (session/wrap-session
-                  (fn [request]
-                    (swap! requests conj (:session request))
-                    (case (:uri request)
-                      "/set" {:status 200 :body "ok" :session {:setting true}}
-                      "/clear" {:status 200 :body "ok" :session nil}
-                      {:status 200 :body "ok"})))
+  (let [requests       (atom [])
+        handler        (session/wrap-session
+                         (fn [request]
+                           (swap! requests conj (:session request))
+                           (case (:uri request)
+                             "/set" {:status 200 :body "ok" :session {:setting true}}
+                             "/clear" {:status 200 :body "ok" :session nil}
+                             {:status 200 :body "ok"})))
         initial-cookie (session-cookie (handler {:uri "/set" :headers {}}))
-        cleared (handler {:uri "/clear" :headers {"cookie" initial-cookie}})
-        next-cookie (if (get-in cleared [:headers "Set-Cookie"])
-                      (session-cookie cleared)
-                      initial-cookie)]
+        cleared        (handler {:uri "/clear" :headers {"cookie" initial-cookie}})
+        next-cookie    (if (get-in cleared [:headers "Set-Cookie"])
+                         (session-cookie cleared)
+                         initial-cookie)]
     (handler {:uri "/read" :headers {"cookie" next-cookie}})
     (let [[initial before-clear after-clear] @requests]
       (is (true? (:setting before-clear)))

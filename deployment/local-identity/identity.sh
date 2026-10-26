@@ -31,6 +31,8 @@ PY
     "${compose[@]}" up -d --wait --wait-timeout 180
     "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
       < "$repo_dir/supabase/migrations/033_identity_and_sessions.sql"
+    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+      < "$repo_dir/supabase/migrations/034_workspace_actor_labels.sql"
     # The migration never includes a password; configure this local role separately.
     "${compose[@]}" exec -T db sh -c \
       'psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 --set=app_password="$TO_DEV_APP_PASSWORD"' <<'SQL'

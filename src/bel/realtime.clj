@@ -19,7 +19,8 @@
   [:map
    [:scope-id {:optional true} :uuid]
    [:auth-session-id {:optional true} :string]
-   [:auth-version {:optional true} :uuid]])
+   [:auth-version {:optional true} :uuid]
+   [:locale {:optional true} :string]])
 
 
 (def State
@@ -40,7 +41,8 @@
   (let [valid-state? (m/validator State)]
     [:map
      [:state [:fn #(and (instance? Atom %) (valid-state? @%))]]
-     [:authorize {:optional true} [:fn ifn?]]]))
+     [:authorize {:optional true} [:fn ifn?]]
+     [:render {:optional true} [:fn ifn?]]]))
 
 
 (def Event
@@ -110,7 +112,8 @@
         (let [context    (assoc recipient-context :session-id session-id :tab-id tab-id)
               definition (stream-definition topic)
               result     (validation/check! (:bel/output definition)
-                                            ((:bel/fn definition) context data))]
+                                            ((or (:render realtime) (fn [_ render] (render)))
+                                             context #((:bel/fn definition) context data)))]
           (handler/send-result! context (:sse connection) result))
         (close-connection! realtime session-id tab-id (:sse connection))))
     (catch Throwable error
@@ -147,7 +150,8 @@
 
   ([options]
    (cond-> {:state (atom {:connections {} :stopped? false})}
-     (:authorize options) (assoc :authorize (:authorize options)))))
+     (:authorize options) (assoc :authorize (:authorize options))
+     (:render options) (assoc :render (:render options)))))
 
 
 (defn stop!
@@ -186,7 +190,7 @@
    (validation/check! ConnectionContext connection-context)
    (doseq [topic topics]
      (stream-definition topic))
-   (let [connection (assoc (select-keys connection-context [:scope-id :auth-session-id :auth-version])
+   (let [connection (assoc (select-keys connection-context [:scope-id :auth-session-id :auth-version :locale])
                            :sse sse :topics (set topics))
          [before _] (swap-vals! (:state realtime)
                                 (fn [state]
@@ -210,13 +214,21 @@
             session-id             (validation/check! :uuid (get-in request [:session :bel/session-id]))
             connection-context     (select-keys
                                      (validation/check! ConnectionContext (or (:bel/realtime-context request) {}))
-                                     [:scope-id :auth-session-id :auth-version])]
+                                     [:scope-id :auth-session-id :auth-version :locale])]
         (doseq [topic topics]
           (stream-definition topic))
 
         (hk/->sse-response
           request
-          {hk/on-open      #(open! realtime session-id tabId topics % connection-context)
+          {:headers        {"Content-Type" "text/event-stream; charset=utf-8"}
+           hk/on-open      (fn [sse]
+                             (open! realtime session-id tabId topics sse connection-context)
+                             ;; Register first, then resnapshot: a reconnect must recover missed updates.
+                             (when-let [connection (get-in @(:state realtime) [:connections session-id tabId])]
+                               (doseq [topic topics]
+                                 (when (:bel/resnapshot-on-open? (stream-definition topic))
+                                   (deliver! realtime {} session-id tabId connection
+                                             {:topic topic :data {}})))))
            hk/on-close     (fn [sse _status] (remove-connection! realtime session-id tabId sse))
            hk/on-exception (fn [sse _error _event] (close-connection! realtime session-id tabId sse) false)}))
       (catch Exception _

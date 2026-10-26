@@ -50,6 +50,10 @@ services:
       GOTRUE_JWT_EXP: 3600
       GOTRUE_JWT_ISSUER: http://127.0.0.1:${IDENTITY_API_PORT:-58000}/auth/v1
       GOTRUE_MAILER_AUTOCONFIRM: 'false'
+      GOTRUE_MAILER_SUBJECTS_CONFIRMATION: 'Tover: confirm email / подтвердите почту'
+      GOTRUE_MAILER_SUBJECTS_INVITE: 'Tover: invitation / приглашение'
+      GOTRUE_MAILER_SUBJECTS_RECOVERY: 'Tover: recover access / восстановление доступа'
+      GOTRUE_MAILER_SUBJECTS_MAGIC_LINK: 'Tover: sign in / вход'
       GOTRUE_SMTP_ADMIN_EMAIL: auth@tover.test
       GOTRUE_SMTP_HOST: mail
       GOTRUE_SMTP_PORT: 1025

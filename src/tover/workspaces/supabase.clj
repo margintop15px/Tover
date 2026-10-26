@@ -89,6 +89,23 @@
         (let [data (rpc! token "workspace_team" {:p_workspace_id (str workspace-id)})]
           {:members     (mapv normalize-record (:members data))
            :invitations (mapv normalize-record (:invitations data))}))
+      (actor-labels [_ token workspace-id actor-ids]
+        (auth/check-input! [:vector :uuid] actor-ids)
+        (reduce (fn [labels ids]
+                  (let [data      (rpc! token "workspace_actor_labels"
+                                        {:p_workspace_id (str workspace-id)
+                                         :p_actor_ids    (mapv str ids)})
+                        requested (set (map str ids))]
+                    (try
+                      (auth/check-input! [:vector [:map [:userId :string] [:label [:string {:min 1}]]]] data)
+                      (when-not (every? #(and (contains? requested (:userId %))
+                                              (not (str/blank? (:label %)))) data)
+                        (auth/fail! :invalid-response 502 false))
+                      (catch Exception _ (auth/fail! :invalid-response 502 false)))
+                    (when-not (= (count data) (count (distinct (map :userId data))))
+                      (auth/fail! :invalid-response 502 false))
+                    (into labels (map (juxt :userId :label)) data)))
+                {} (partition-all 200 (distinct actor-ids))))
       (manage-invitation! [_ token {:keys [workspace-id action invite-id email role] :as input}]
         (auth/check-input! [:map [:workspace-id :uuid] [:action [:enum :create :resend :cancel]]]
                            input)

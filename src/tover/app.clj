@@ -16,13 +16,18 @@
     [tover.auth.security :as security]
     [tover.auth.sessions :as sessions]
     [tover.auth.supabase :as auth-supabase]
+    [tover.inventory.smart-web]
+    [tover.shared.i18n :as i18n]
     [tover.shared.rdf :as rdf]
     [tover.shared.schema :as schema]
+    [tover.shared.supabase :as supabase]
     [tover.shared.web.errors :as errors]
     [tover.workspaces.core :as workspaces]
     [tover.workspaces.supabase :as workspace-supabase])
   (:import
-    [clojure.lang ExceptionInfo]))
+    [clojure.lang ExceptionInfo]
+    [java.sql DriverManager]
+    [java.util Properties]))
 
 
 (def Config
@@ -46,7 +51,7 @@
    [:session-store :any]
    [:origin schema/Text]
    [:development? {:optional true} :boolean]
-   [:operation-examples {:optional true} :map]])
+   [:identity-health {:optional true} :map]])
 
 
 (def ServerOptions
@@ -87,6 +92,43 @@
           failure cleanups))
 
 
+(defn- readiness!
+  "Probe storage and configured identity services without creating users or sessions."
+  {:malli/schema [:=> [:cat :map] :boolean]}
+  [{:keys [repo identity-health]}]
+  (when-not (.isInitialized ^org.eclipse.rdf4j.repository.Repository repo)
+    (throw (ex-info "Inventory is not initialized." {:type :unavailable})))
+  (rdf/with-transaction [connection {:repo repo :level :snapshot}]
+    (.size ^org.eclipse.rdf4j.repository.RepositoryConnection connection
+           (make-array org.eclipse.rdf4j.model.Resource 0)))
+  (when-let [{:keys [jdbc-url user password auth-url rest-url api-key]} identity-health]
+    (let [properties (doto (Properties.)
+                       (.setProperty "user" user)
+                       (.setProperty "password" password)
+                       (.setProperty "connectTimeout" "2")
+                       (.setProperty "socketTimeout" "2"))]
+      (with-open [connection (DriverManager/getConnection jdbc-url properties)
+                  statement  (.createStatement connection)
+                  result     (.executeQuery statement "select 1 from app_private.sessions limit 1")]
+        (.next result)))
+    (doseq [url [(str auth-url "/health") (str rest-url "/")]]
+      (supabase/request! {:client (supabase/client) :api-key api-key :timeout-ms 2000}
+                         {:url url :method :get})))
+  true)
+
+
+(defn- health-response
+  {:malli/schema [:=> [:cat :map :map] :map]}
+  [options request]
+  (if-not (contains? #{:get :head} (:request-method request))
+    {:status 405 :headers {"allow" "GET, HEAD"} :body ""}
+    (let [ready? (or (= "/healthz" (:uri request))
+                     (try (readiness! options) (catch Exception _ false)))]
+      {:status  (if ready? 200 503)
+       :headers {"content-type" "text/plain; charset=utf-8" "cache-control" "no-store"}
+       :body    (if (= :head (:request-method request)) "" (if ready? "ok\n" "unavailable\n"))})))
+
+
 (defn create-handler
   {:malli/schema
    [:=> [:cat HandlerOptions] schema/Handler]}
@@ -94,7 +136,7 @@
   (bel/init! {:scan-ns ['tover]})
 
   (let [{:keys [realtime session-store origin development?]} (validation/check! HandlerOptions options)
-        context (select-keys options [:repo :realtime :operation-examples :auth :workspaces :session-store :origin])
+        context (select-keys options [:repo :realtime :auth :workspaces :session-store :origin])
         extra-routes (mapv (fn [[path data]]
                              [path (assoc data :tover/access :workspace)])
                            (realtime/routes realtime))
@@ -108,12 +150,17 @@
                    (ring/create-resource-handler {:path "/" :root "public"})
                    (ring/create-default-handler)))
         secured (fn [request]
-                  (let [response (routed request)]
+                  (let [response (if (contains? #{"/healthz" "/readyz"} (:uri request))
+                                   (health-response options request)
+                                   (routed request))]
                     (update response :headers merge
                             {"cache-control" "private, no-store" "referrer-policy" "strict-origin"})))]
     (-> secured
-        wrap-anti-forgery
+        (wrap-anti-forgery {:error-handler (fn [_request]
+                                             {:status 403 :headers {"content-type" "text/plain; charset=utf-8"}
+                                              :body   (i18n/t "Invalid anti-forgery token")})})
         (security/wrap-origin origin)
+        i18n/wrap-locale
         wrap-params
         (session/wrap-session {:store        session-store :cookie-name "tover-session"
                                :cookie-attrs {:http-only true               :same-site :lax :path "/"
@@ -122,7 +169,7 @@
 
 
 (defn system-config
-  "Compose explicit implementations; development supplies fixtures through Integrant."
+  "Compose explicit services; isolated tests may supply their own adapters."
   {:malli/schema [:=> [:cat Port schema/Text :map] Config]}
   [port path services]
   (validation/check! Port port)
@@ -135,7 +182,7 @@
                     :workspaces    (ig/ref ::workspaces)
                     :session-store (ig/ref ::session-store)
                     :repo          (ig/ref ::repo)}
-   ::handler       (merge (select-keys services [:origin :development?])
+   ::handler       (merge (select-keys services [:origin :development? :identity-health])
                           {:repo          (ig/ref ::repo)
                            :realtime      (ig/ref ::realtime)
                            :auth          (ig/ref ::auth)
@@ -158,7 +205,10 @@
            [:development? :boolean]
            [:environment {:optional true} [:map-of :string [:maybe :string]]]]] Config]]}
   ([]
-   (config 3030 ".data/inventory"))
+   (let [port (try (Integer/parseInt (or (System/getenv "TOVER_PORT") "3030"))
+                   (catch NumberFormatException _
+                     (throw (ex-info "Invalid TOVER_PORT" {:type :configuration}))))]
+     (config port (or (System/getenv "TOVER_INVENTORY_PATH") ".data/inventory-v1"))))
 
   ([port path]
    (config port path {:development? false}))
@@ -177,6 +227,11 @@
        (throw (ex-info "Production origin must be an HTTPS origin" {:type :configuration})))
      (-> configuration
          (assoc ::auth provider ::workspaces provider)
+         (assoc-in [::handler :identity-health]
+                   (merge (select-keys provider [:auth-url :rest-url :api-key])
+                          {:jdbc-url (required "TOVER_JDBC_URL")
+                           :user     (required "TOVER_DB_USER")
+                           :password (required "TOVER_DB_PASSWORD")}))
          (assoc ::session-store {:jdbc-url       (required "TOVER_JDBC_URL")
                                  :user           (required "TOVER_DB_USER")     :password (required "TOVER_DB_PASSWORD")
                                  :encryption-key (required "TOVER_SESSION_KEY")})))))
@@ -195,11 +250,16 @@
    [:=> [:cat [:map]] realtime/Realtime]}
   [options]
   (realtime/start!
-    {:authorize (fn [{:keys [auth-session-id auth-version scope-id]}]
+    {:render    (fn [context render]
+                  (binding [i18n/*locale* (or (get-in context [:user :locale]) (:locale context) "en")]
+                    (render)))
+     :authorize (fn [{:keys [auth-session-id auth-version scope-id locale]}]
                   (when auth-session-id
                     (let [identity (security/authenticate options auth-session-id)]
-                      (when (and identity (= scope-id (:workspace-id identity)) (= auth-version (:auth-version identity)))
-                        (merge (select-keys options [:repo]) identity)))))}))
+                      (when (and identity (= scope-id (:workspace-id identity)) (= auth-version (:auth-version identity))
+                                 (or (nil? (get-in identity [:user :locale]))
+                                     (= locale (get-in identity [:user :locale]))))
+                        (merge (select-keys options [:repo]) {:locale locale} identity)))))}))
 
 
 (defn auth

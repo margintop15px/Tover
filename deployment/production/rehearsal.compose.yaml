@@ -1,0 +1,27 @@
+# Disposable rehearsal only: loopback ephemeral ports, captured mail, no public TLS.
+services:
+  auth:
+    depends_on:
+      mail: {condition: service_started}
+    ports: [127.0.0.1::9999]
+    environment:
+      GOTRUE_SMTP_HOST: mail
+      GOTRUE_SMTP_PORT: 1025
+      GOTRUE_SMTP_USER: ''
+      GOTRUE_SMTP_PASS: ''
+      GOTRUE_SMTP_ADMIN_EMAIL: auth@tover.test
+      GOTRUE_SMTP_MAX_FREQUENCY: 1s
+  rest:
+    networks: [identity, outbound]
+    ports: [127.0.0.1::3000]
+  app:
+    networks: [identity, outbound]
+    ports: [127.0.0.1::3030]
+  proxy:
+    ports: !reset []
+    volumes:
+      - ./rehearsal.Caddyfile:/etc/caddy/Caddyfile:ro
+  mail:
+    image: axllent/mailpit:v1.27.8
+    networks: [identity, outbound]
+    ports: [127.0.0.1::8025]

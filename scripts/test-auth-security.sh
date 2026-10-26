@@ -24,6 +24,8 @@ for scenario in fresh upgrade; do
   docker exec "$test_container" createdb -U postgres "$scenario"
   docker exec "$test_container" psql -X -q -U postgres -d "$scenario" \
     -c "SET client_min_messages=warning" -v ON_ERROR_STOP=1 -v VERBOSITY=terse -v legacy="$legacy" -f /work/supabase/tests/workspace-invitation-security.sql
+  docker exec "$test_container" psql -X -q -U postgres -d "$scenario" \
+    -c "SET client_min_messages=warning" -v ON_ERROR_STOP=1 -v VERBOSITY=terse -f /work/supabase/tests/workspace-actor-labels-security.sql
 
   # Both transactions overlap; only one can reserve a normalized email.
   reserve="BEGIN; SET LOCAL ROLE authenticated; SET LOCAL request.jwt.claim.sub='20000000-0000-0000-0000-000000000005'; SELECT public.manage_workspace_invitation('10000000-0000-0000-0000-000000000001','create',NULL,'race@example.test'); SELECT pg_sleep(0.4); COMMIT;"

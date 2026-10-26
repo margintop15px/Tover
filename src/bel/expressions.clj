@@ -1,15 +1,15 @@
 (ns bel.expressions
   (:refer-clojure
-   :exclude [compile selector])
+    :exclude [compile selector])
   (:require
-   [backtick :refer [template]]
-   [charred.api :as charred]
-   [clojure.string :as str]
-   [clojure.walk :as walk]
-   [squint.compiler])
+    [backtick :refer [template]]
+    [charred.api :as charred]
+    [clojure.string :as str]
+    [clojure.walk :as walk]
+    [squint.compiler])
   (:import
-   [clojure.lang IObj]
-   [java.util UUID]))
+    [clojure.lang IObj]
+    [java.util UUID]))
 
 
 ;; ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@
   [_ _ x]
   (let [js "(!(~{}))"]
     (bool-expr
-     (concat (list 'js* js) (list x)))))
+      (concat (list 'js* js) (list x)))))
 
 
 (defn expr-when
@@ -107,7 +107,7 @@
   ([_ _ x & next]
    (let [js (str/join " || " (repeat (inc (count next)) "(~{})"))]
      (bool-expr
-      (concat (list 'js* js) (cons x next))))))
+       (concat (list 'js* js) (cons x next))))))
 
 
 (defn expr-raw
@@ -126,7 +126,7 @@
   ([_ _ x & next]
    (let [js (str/join " && " (repeat (inc (count next)) "(~{})"))]
      (bool-expr
-      (concat (list 'js* js) (cons x next))))))
+       (concat (list 'js* js) (cons x next))))))
 
 
 (defn replace-truth
@@ -141,8 +141,8 @@
   (-> js-string
       (str/replace #"squint_core\.deref\(squint_core.(get)\)\s*\(" "@$1(")
       (str/replace
-       #"squint_core\.deref\(([a-zA-Z_$][a-zA-Z0-9_$]*)\)\s*\("
-       "@$1(")))
+        #"squint_core\.deref\(([a-zA-Z_$][a-zA-Z0-9_$]*)\)\s*\("
+        "@$1(")))
 
 
 (defn unescape-forward-slashes
@@ -159,10 +159,10 @@
   [form]
   (into #{}
         (comp
-         (filter symbol?) ;; Keep symbols
-         (filter #(and (str/starts-with? (name %) "$") ;; ...starting with $
-                       (str/includes? (name %) "-"))) ;; ...containing dashes
-         (map name))
+          (filter symbol?) ;; Keep symbols
+          (filter #(and (str/starts-with? (name %) "$") ;; ...starting with $
+                        (str/includes? (name %) "-"))) ;; ...containing dashes
+          (map name))
         (tree-seq coll? seq form)))
 
 
@@ -172,10 +172,10 @@
   Squint converts symbols like foo-bar into foo_bar, this function reverses that."
   [js-string form]
   (let [kebab-symbols (collect-kebab-signals form)
-        replacements (for [sym kebab-symbols
-                           :let [kebab-case sym
-                                 snake-case (str/replace kebab-case #"-" "_")]]
-                       [snake-case kebab-case])]
+        replacements  (for [sym  kebab-symbols
+                            :let [kebab-case sym
+                                  snake-case (str/replace kebab-case #"-" "_")]]
+                        [snake-case kebab-case])]
 
     (reduce (fn [result [from to]]
               (str/replace result from to))
@@ -212,18 +212,18 @@
 
 (defn js* [form]
   (->
-   (squint.compiler/compile-string (str form)
-                                   {:elide-imports true
-                                    :elide-exports true
-                                    :top-level     false
-                                    :context       :expr
-                                    :macros        compiler-macro-options})
-   (replace-deref)
-   (replace-truth)
-   (restore-signals-casing form)
-   (str/replace #"\n" " ")
-   (unescape-forward-slashes)
-   (str/trim)))
+    (squint.compiler/compile-string (str form)
+                                    {:elide-imports true
+                                     :elide-exports true
+                                     :top-level     false
+                                     :context       :expr
+                                     :macros        compiler-macro-options})
+    (replace-deref)
+    (replace-truth)
+    (restore-signals-casing form)
+    (str/replace #"\n" " ")
+    (unescape-forward-slashes)
+    (str/trim)))
 
 
 (defn compile [forms]
@@ -238,59 +238,59 @@
   "This function converts forms whose head is a symbol starting with $ into string concatenation forms"
   [form]
   (postwalk-expr
-   (fn [node]
-     (if (and (sequential? node)
-              (symbol? (first node))
-              (.startsWith (name (first node)) "$"))
-       (let [signal-ref (name (first node))
-             args (rest node)
-             processed-args (map (fn [arg]
-                                   (if (and (sequential? arg)
-                                            (= 'clojure.core/unquote (first arg)))
-                                     (second arg)
-                                     arg))
-                                 args)]
-         (list 'clojure.core/unquote
-               (list 'clojure.core/symbol
-                     (cons 'str (cons signal-ref processed-args)))))
-       node))
-   form))
+    (fn [node]
+      (if (and (sequential? node)
+               (symbol? (first node))
+               (.startsWith (name (first node)) "$"))
+        (let [signal-ref     (name (first node))
+              args           (rest node)
+              processed-args (map (fn [arg]
+                                    (if (and (sequential? arg)
+                                             (= 'clojure.core/unquote (first arg)))
+                                      (second arg)
+                                      arg))
+                                  args)]
+          (list 'clojure.core/unquote
+                (list 'clojure.core/symbol
+                      (cons 'str (cons signal-ref processed-args)))))
+        node))
+    form))
 
 
 (defn process-not-equals
   "Transforms (not= x y ...) into (not (= x y ...)) to avoid squint_core dependency"
   [form]
   (postwalk-expr
-   (fn [node]
-     (if (and (list? node)
-              (= 'not= (first node)))
-       (list 'not (cons '= (rest node)))
-       node))
-   form))
+    (fn [node]
+      (if (and (list? node)
+               (= 'not= (first node)))
+        (list 'not (cons '= (rest node)))
+        node))
+    form))
 
 
 (defn process-macros [form]
   (postwalk-expr
-   (fn [node]
-     (if (and (list? node)
-              (contains? macro-replacements (first node)))
-       (cons (get macro-replacements (first node)) (rest node))
-       node))
-   form))
+    (fn [node]
+      (if (and (list? node)
+               (contains? macro-replacements (first node)))
+        (cons (get macro-replacements (first node)) (rest node))
+        node))
+    form))
 
 
 (defn process-interpolation
   "Walks the forms and replaces (\"`foo`\") with (expr/js-template \"foo\")"
   [form]
   (postwalk-expr
-   (fn [node]
-     (if (and (list? node)
-              (= 1 (count node))
-              (string? (first node))
-              (= \` (ffirst node)))
-       (cons 'expr/js-template node)
-       node))
-   form))
+    (fn [node]
+      (if (and (list? node)
+               (= 1 (count node))
+               (string? (first node))
+               (= \` (ffirst node)))
+        (cons 'expr/js-template node)
+        node))
+    form))
 
 
 (defn process-literals
@@ -299,11 +299,11 @@
    Reader UUIDs otherwise stringify as bare tokens, producing invalid JS."
   [form]
   (postwalk-expr
-   (fn [node]
-     (if (instance? UUID node)
-       (str node)
-       node))
-   form))
+    (fn [node]
+      (if (instance? UUID node)
+        (str node)
+        node))
+    form))
 
 
 (defn pre-process [forms]
@@ -325,8 +325,8 @@
   "Walk form tree, return true if any (clojure.core/unquote ...) node exists."
   [form]
   (boolean
-   (some #(and (seq? %) (= 'clojure.core/unquote (first %)))
-         (tree-seq coll? seq form))))
+    (some #(and (seq? %) (= 'clojure.core/unquote (first %)))
+          (tree-seq coll? seq form))))
 
 
 (defn extract-unquotes
@@ -337,22 +337,22 @@
    Normalizes Cons/LazySeq nodes back to PersistentList so (str form) stays
    valid Clojure source for Squint."
   [form]
-  (let [counter (atom 0)
+  (let [counter  (atom 0)
         bindings (atom [])]
     [(walk/postwalk
-      (fn [node]
-        (cond
-          (and (seq? node) (= 'clojure.core/unquote (first node)))
-          (let [placeholder (str "__DS_" (swap! counter inc) "__")]
-            (swap! bindings conj [placeholder (second node)])
-            placeholder)
+       (fn [node]
+         (cond
+           (and (seq? node) (= 'clojure.core/unquote (first node)))
+           (let [placeholder (str "__DS_" (swap! counter inc) "__")]
+             (swap! bindings conj [placeholder (second node)])
+             placeholder)
 
-          (and (seq? node) (not (list? node)))
-          (apply list node)
+           (and (seq? node) (not (list? node)))
+           (apply list node)
 
-          :else
-          node))
-      form)
+           :else
+           node))
+       form)
      @bindings]))
 
 
@@ -377,15 +377,15 @@
   "Compile a template at macro expansion and emit runtime placeholder replacement."
   [processed-form]
   (let [[template-form bindings] (extract-unquotes processed-form)
-        compiled-template (compile template-form)]
+        compiled-template        (compile template-form)]
     (reduce
-     (fn [expr [placeholder original-expr]]
-       (let [quoted-ph (str "\"" placeholder "\"")]
-         (if (str/includes? compiled-template quoted-ph)
-           `(str/replace ~expr ~quoted-ph (clj->js ~original-expr))
-           `(str/replace ~expr ~placeholder (str ~original-expr)))))
-     compiled-template
-     bindings)))
+      (fn [expr [placeholder original-expr]]
+        (let [quoted-ph (str "\"" placeholder "\"")]
+          (if (str/includes? compiled-template quoted-ph)
+            `(str/replace ~expr ~quoted-ph (clj->js ~original-expr))
+            `(str/replace ~expr ~placeholder (str ~original-expr)))))
+      compiled-template
+      bindings)))
 
 
 ;; ---------------------------------------------------------------------------
@@ -405,7 +405,7 @@
   [& forms]
   (let [runtime-forced? (and (seq forms)
                              (-> forms first meta :runtime))
-        processed-form (pre-process forms)]
+        processed-form  (pre-process forms)]
     (cond
       runtime-forced?
       `(compile (process-literals (template ~processed-form)))

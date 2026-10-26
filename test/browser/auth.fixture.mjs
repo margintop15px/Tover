@@ -1,4 +1,5 @@
 import { expect } from '@playwright/test';
+import { stockGrid } from './grid.fixture.mjs';
 
 export async function signIn(page, email = 'owner@example.test', password = 'tover-development') {
   await page.goto('/auth/login');
@@ -11,7 +12,8 @@ export async function signIn(page, email = 'owner@example.test', password = 'tov
   ]);
   expect(response.status()).toBe(303);
   await page.goto('/');
-  await expect(page.locator('#stock-revogrid')).toBeVisible();
+  await expect(stockGrid(page)).toBeVisible();
+  await expect.poll(() => stockGrid(page).evaluate(grid => Boolean(grid.worksheet))).toBe(true);
 }
 
 export async function pageContext(page) {

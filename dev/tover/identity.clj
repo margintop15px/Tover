@@ -16,7 +16,7 @@
 (defn- public-user
   {:malli/schema [:=> [:cat :map] auth/User]}
   [user]
-  (select-keys user [:user-id :email :email-confirmed?]))
+  (select-keys user [:user-id :email :email-confirmed? :locale]))
 
 
 (defn- normalized-email
@@ -166,7 +166,7 @@
               (when (find-user @state email) (auth/fail! :email-exists 422 false))
               (let [user {:user-id          (UUID/randomUUID) :email    (normalized-email email)
                           :email-confirmed? false             :password password}]
-                (swap! state assoc-in [:users (:user-id user)] user)
+                (swap! state assoc-in [:users (:user-id user)] (cond-> user (:locale input) (assoc :locale (:locale input))))
                 (when-not (str/blank? workspace-name) (add-workspace! state (:user-id user) workspace-name))
                 (queue-email! state :signup input)
                 {:user (public-user user)})))
@@ -202,6 +202,11 @@
           (recover! [_ input]
             (when (find-user @state (:email input)) (queue-email! state :recovery input))
             nil)
+          (set-locale! [_ token locale]
+            (auth/check-input! [:enum "en" "ru"] locale)
+            (let [user (checked-user state token)]
+              (swap! state assoc-in [:users (:user-id user) :locale] locale)
+              (public-user (get-in @state [:users (:user-id user)]))))
           (set-password! [_ token password]
             (let [user (checked-user state token)]
               (auth/check-input! [:string {:min 1}] password)
@@ -231,13 +236,22 @@
                    vec)))
           (create-workspace! [_ token name]
             (add-workspace! state (:user-id (checked-user state token)) name))
+          (actor-labels [_ token workspace-id actor-ids]
+            (auth/check-input! [:vector :uuid] actor-ids)
+            (membership! state token workspace-id false)
+            (into {} (keep (fn [user-id]
+                             (when (get-in @state [:memberships workspace-id user-id])
+                               (let [{:keys [display-name email]} (get-in @state [:users user-id])
+                                     label (if (str/blank? display-name) email (str/trim display-name))]
+                                 (when-not (str/blank? label) [(str user-id) label])))))
+                  actor-ids))
           (team [_ token workspace-id]
             (membership! state token workspace-id true)
             {:members     (->> (get-in @state [:memberships workspace-id])
                                (map (fn [[user-id membership]]
                                       (merge {:user-id            user-id
                                               :email              (get-in @state [:users user-id :email])
-                                              :name               nil
+                                              :name               (get-in @state [:users user-id :display-name])
                                               :email-confirmed-at (when (get-in @state [:users user-id :email-confirmed?]) timestamp)
                                               :last-sign-in-at    nil :recovery-requested-at nil}
                                              (select-keys membership [:role :status :recovery-requested-at]))))

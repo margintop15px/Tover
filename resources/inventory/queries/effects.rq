@@ -1,0 +1,75 @@
+PREFIX t: <urn:tover:inventory-v1:>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+# The history and ontology named graphs are supplied as RDF bindings.
+# Equal-time events retain original accepted business order across revisions.
+SELECT ?record ?entityId ?revision ?businessOrder ?recordedAt ?actor ?reason
+       ?kind ?operationType ?occurredAt ?eventId ?receiptId ?eventIndex
+       ?phase ?lineIndex ?lineId ?itemId ?location ?quantity ?mode ?delta
+WHERE {
+  GRAPH ?history {
+    ?record a t:Record ; t:entityId ?entityId ; t:revision ?revision ;
+            t:businessOrder ?businessOrder ; t:cancelled false ;
+            t:recordedAt ?recordedAt ; t:actor ?actor ; t:operation ?entry .
+    FILTER NOT EXISTS {
+      ?later a t:Record ; t:entityId ?entityId ; t:revision ?laterRevision .
+      FILTER (?laterRevision > ?revision)
+    }
+    OPTIONAL { ?record t:reason ?reason }
+    ?entry t:kind ?kind ; t:occurredAt ?entryTime .
+    OPTIONAL { ?entry t:operationType ?operationType }
+    BIND(IF(?kind = t:operation, ?operationType, ?kind) AS ?policy)
+  }
+  GRAPH ?ontology { ?policy t:stockEffect ?stockEffect }
+  {
+    VALUES ?stockEffect { t:add t:remove t:set t:directional }
+    GRAPH ?history {
+      {
+        FILTER NOT EXISTS { ?entry t:hasReceipts true }
+        ?entry t:line ?line .
+        BIND(0 AS ?eventIndex)
+      }
+      UNION
+      {
+        ?entry t:hasReceipts true ; t:receipt ?receipt .
+        ?receipt t:occurredAt ?receiptTime ; t:position ?eventIndex ;
+                 t:id ?receiptId ; t:line ?line .
+      }
+      OPTIONAL { ?entry t:direction ?direction }
+      ?line t:location ?locationRef .
+    }
+    BIND(IF(?stockEffect = t:directional, IF(?direction = t:incoming, t:add, t:remove), ?stockEffect) AS ?mode)
+    BIND(0 AS ?phase)
+  }
+  UNION
+  {
+    VALUES ?stockEffect { t:transfer }
+    GRAPH ?history {
+      ?entry t:line ?line .
+      { ?entry t:fromLocation ?locationRef . BIND(t:remove AS ?mode) BIND(0 AS ?phase) }
+      UNION
+      { ?entry t:toLocation ?locationRef . BIND(t:add AS ?mode) BIND(1 AS ?phase) }
+    }
+    BIND(0 AS ?eventIndex)
+  }
+  UNION
+  {
+    VALUES ?stockEffect { t:production }
+    GRAPH ?history {
+      { ?entry t:input ?line . BIND(t:remove AS ?mode) BIND(0 AS ?phase) }
+      UNION
+      { ?entry t:output ?line . BIND(t:add AS ?mode) BIND(1 AS ?phase) }
+      ?line t:location ?locationRef .
+    }
+    BIND(0 AS ?eventIndex)
+  }
+  GRAPH ?history {
+    ?line t:item ?item ; t:quantity ?quantity ; t:position ?lineIndex ; t:lineId ?lineId .
+    ?item t:itemId ?itemId .
+    ?locationRef t:locationName ?location .
+  }
+  BIND(COALESCE(?receiptTime, ?entryTime) AS ?occurredAt)
+  BIND(IF(BOUND(?receiptId), CONCAT(?entityId, "/", ?receiptId), ?entityId) AS ?eventId)
+  BIND(IF(?mode = t:remove, -?quantity, IF(?mode = t:set, 0, ?quantity)) AS ?delta)
+}
+ORDER BY ?occurredAt ?businessOrder ?eventIndex ?phase ?lineIndex ?eventId ?lineId

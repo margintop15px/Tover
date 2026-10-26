@@ -1,0 +1,21 @@
+PREFIX t: <urn:tover:inventory-v1:>
+
+# Check every point in business time; a later receipt cannot repair a negative past.
+SELECT ?effect ?itemId ?location ?ordinal (SUM(?contribution) AS ?after)
+WHERE {
+  GRAPH ?effects {
+    ?effect t:itemId ?itemId ; t:locationName ?location ; t:ordinal ?ordinal .
+    ?previous t:itemId ?itemId ; t:locationName ?location ; t:ordinal ?previousOrdinal ;
+              t:mode ?mode ; t:quantity ?amount ; t:delta ?delta .
+    FILTER (?previousOrdinal <= ?ordinal)
+    FILTER NOT EXISTS {
+      ?reset t:itemId ?itemId ; t:locationName ?location ; t:mode t:set ; t:ordinal ?resetOrdinal .
+      FILTER (?previousOrdinal < ?resetOrdinal && ?resetOrdinal <= ?ordinal)
+    }
+    BIND(IF(?mode = t:set, ?amount, ?delta) AS ?contribution)
+  }
+}
+GROUP BY ?effect ?itemId ?location ?ordinal
+HAVING (SUM(?contribution) < 0 || SUM(?contribution) > 9223372036854775807)
+ORDER BY ?ordinal
+LIMIT 100

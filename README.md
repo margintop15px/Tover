@@ -1,22 +1,22 @@
 # Tover
 
-The main application is Clojure, using Datastar, http-kit, Reitit, Chassis and RDF4J NativeStore. Authentication and workspace isolation are implemented; inventory remains a UI prototype and RDF4J remains provisional. Hosted and self-hosted Supabase Auth/Postgres/PostgREST use the same adapters, selected through Integrant. The legacy Next.js application has been removed; SQL history and selected [legacy contracts](docs/legacy-contracts/README.md) are retained.
+Tover is a Clojure inventory application using Bel/Datastar, Jspreadsheet CE and RDF4J NativeStore. Supabase Auth/Postgres/PostgREST provide accounts, workspaces, invitations and private sessions. The [current specifications](docs/README.md) define the first tester contract; complete the release checks before inviting testers.
 
-## Run
+## Run locally
 
-Requires JDK 21+ and the Clojure CLI. Initialize and start the [local identity profile](docs/identity-deployment.md) first. From the repository root:
+Requires JDK 25+ (the pinned RDF4J version needs Java 25), the Clojure CLI, Docker Compose v2 and Python 3. Initialize the [local identity profile](docs/identity-deployment.md) once, then start it without replacing its private configuration:
 
 ```sh
+deployment/local-identity/identity.sh init
+deployment/local-identity/identity.sh up
 clojure -M:dev
 ```
 
-Open <http://localhost:3030> and sign in with an existing local account or create one. Default development reads `deployment/local-identity/.env` directly and uses local Supabase Auth, Postgres sessions and captured email. No shell exports are required. It starts a loopback nREPL and enables Malli instrumentation. Inventory persists in `.data/inventory`; a new workspace is empty.
+Skip `init` if `deployment/local-identity/.env` already exists. Open <http://localhost:3030>. Default development reads that private profile directly and uses real local Auth, Postgres sessions and captured email. Application startup does not start Docker or apply migrations. Workspaces start empty; development no longer seeds prototype inventory or exposes demo switches.
 
-For the offline seeded prototype, run `TOVER_IDENTITY_MODE=fixtures clojure -M:dev` and sign in with `owner@example.test` / `tover-development`. This mode uses in-memory sessions and seeds three opening declarations into the fixture workspace without overwriting accepted edits. `TOVER_IDENTITY_MODE=supabase` uses explicit `TOVER_*` environment settings for a hosted or custom development target; see [Identity deployments](docs/identity-deployment.md).
+Development defaults to `.data/tester-inventory-v1`, preserving previous inventory stores. Set `TOVER_INVENTORY_PATH` to select another store; an incompatible semantic package requires an explicit migration or another fresh path.
 
-`clojure -M:run` requires explicit identity/database credentials, a 32-byte Base64 session encryption key and an HTTPS application origin. It has no fixture fallback, examples or instrumentation. Workspaces use separate RDF graphs; old anonymous prototype graphs remain untouched and excluded. A fresh workspace is empty.
-
-Development uses [ring-hot-reload](https://github.com/brettatoms/ring-hot-reload) and Ring's `wrap-reload`. Saving Clojure files under `src` reloads code and refreshes open browser pages. CSS and JavaScript changes under `resources` also refresh the page. Full refresh reinitializes Datastar and RevoGrid and clears unfinished browser input. Changes to declaration routes, page hierarchy, route policies, `dev`, handler/middleware construction or resource configuration need `user/refresh!` to rebuild the router; dependency changes need a REPL restart. Production has no reload middleware or file watcher.
+Integrant owns HTTP, realtime, identity/session adapters and RDF. The development REPL lifecycle remains:
 
 ```clojure
 (user/stop!)
@@ -24,91 +24,80 @@ Development uses [ring-hot-reload](https://github.com/brettatoms/ring-hot-reload
 (user/refresh!)
 ```
 
-Integrant owns the repository, realtime connections, handler and HTTP server. Shutdown closes streams and drains HTTP before closing RDF.
+Development enables loopback nREPL, Malli instrumentation and hot reload. Route/hierarchy/policy changes require `user/refresh!`; dependency changes require a REPL restart. Production has no development namespaces, seeds, examples or instrumentation. Isolated test fixtures remain under the test/development tooling.
 
-## UI flow
+## Inventory workflow
 
-Stock (`/`), Operations (`/operations`), Workspaces and Team share one server-rendered shell, navigation and theme. Direct visits return complete HTML; internal links fetch Datastar page patches and update browser history after rendering. Back/Forward restores the URL and scroll position. Authentication and active workspace changes use complete document loads.
+Stock shows quantities by stable item ID and location. A purchase adds its item quantities to stock when accepted. Purchases have one item list with no separate arrival step or delivery status. Article/barcode edits retain the item's history. Different suppliers can contribute to the same balance. Operations shows accepted business history for Purchase, Return, Transfer, Production, Defect, Sale, Write-off and Payment. Financial amounts remain exact facts; Payment has no stock effect.
 
-Pages declare GET URLs in `defpage` metadata. Bel builds their Reitit routes and resolves the matched declaration through its registry. Layouts use explicit `:parent` references; Tover owns their documents, appearance and access policies. All application POST commands use `defaction` at canonical `/action/<namespace>/<name>` URLs, including authentication and workspace changes. A same-page effect refreshes content without adding history; a different destination adds an entry after its patch is applied. Authentication forms submit complete documents; workspace changes return document reload effects.
+Both pages share the header and combined search/add-operation input. Choose an operation type to receive its server-defined fields. Operations Add row creates a business-operation draft; Stock Add row declares preexisting stock. Inline Stock edits become manual corrections. Production consumes input quantities and creates outputs atomically, including packing, unpacking and repacking.
 
-The stock screen uses the native RevoGrid 4.28.3 web component. The browser initializer configures columns and interaction through native properties. Datastar overlays temporary browser edits on the accepted `_stockRows` signal. Clojure owns saved stock, business validation and acceptance.
+Jspreadsheet CE 5.0.4, jSuites 5.12.0 and Formula 2.0.2 are pinned and served locally with their MIT notices. The [asset manifest](resources/public/vendor/jspreadsheet-ce/manifest.json) records checksums. The server defines merged operation groups and stable cell edit targets; formulas, arbitrary row/column insertion and manual merging are disabled. Review shows editable **Changes to submit**, then affected **Resulting stock** rows. Only changed cells are highlighted.
 
-Goods, Quantity, Unit, Location and Article support inline editing. Text editors suggest matching values and allow new text; Quantity uses a plain editor. Evidence is read-only and system-set. All columns support header sorting. The grid fits its visible rows up to 65% of the viewport. A permanent change bar shows changed/deleted/added row counts and provides Add row, revert, before/after preview and submit controls.
+New smart-input operations autosave privately until Done (Cmd/Ctrl-Enter). Done validates the complete line and shares it as a pending workspace entry; refresh resumes unfinished work. Stock Add row and edits to existing pending entries remain shared. Preview selected entries on the server, then Submit that exact selection atomically. Unselected entries remain pending. Revision checks prevent silent overwrites; durable receipts make retries safe. Backdated changes replay affected history and must preserve nonnegative balances and available production inputs.
 
-**Add row** inserts a blank green draft and opens Goods editing. The top smart input builds a row from `field:value` chips: type to match fields or known values, choose a field, then choose or enter its value. Enter creates a chip. Click a chip to edit it or × to remove it. Cmd/Ctrl+Enter or the trailing plus adds the row. New rows receive **Manual entry** evidence.
+Preview and Submit query the affected item component directly from RDF, including complete multi-line operations, production dependencies, original-operation references and their immutable revision chains. The installed SHACL/SPARQL checks and independent replay validate that scoped chronology. Submit updates only affected accepted projection records, pending overlays and operation groups in the ledger transaction. Unrelated histories and projection payloads stay unread. Full rebuilds remain the recovery and equivalence check.
 
-Click a row number to select the whole row, then press Delete to mark it for deletion. Cmd/Ctrl + Delete does the same from a selected cell. Deleted rows stay visible in muted red and stop accepting edits; Revert restores them. Selection follows row identity through sorting and filtering.
+Stock and Operations use server-loaded spreadsheet viewports with a scrollbar spanning the filtered result. Windows target 200 rows and retain complete operation groups; large groups may exceed that target. The browser renders a bounded window and preserves its visible row during expansion and realtime refresh. Server query sessions are account/workspace scoped, expire after five idle minutes, and are capped at 32. Initial and subsequent windows use SPARQL filtering, ordering, counts and offsets over a disposable RDF read projection. Query sessions retain descriptors rather than full tables. Item choices load on demand, at most 30 matches. Existing stores receive a one-time backfill from saved stock and streamed latest records; later reads do not reconstruct full history. Projection changes commit atomically with drafts and accepted history.
 
-All grid edits and new rows are UI drafts. **Submit changes** in the diff or the toolbar keeps new rows and edited values, hides marked rows and clears the pending diff in this tab. Later previews compare against the last local submission; **Revert all changes** restores that local baseline. Deleting an unsubmitted new row removes it immediately. Leaving inventory or reloading restores saved stock. Submit makes no persistence request.
+Expand a Stock item to query only its own effects and audit revisions. Lineage additionally queries production parents before their consumption dates; unrelated workspace history stays unread. Its Gantt includes parents in separate item/location lanes; click a bar or marker to fetch the authorized historical operation revision. History resolves actor names or email addresses through the workspace. Operations has details without lineage. Pooled quantities do not imply allocation to particular receipts or individual physical units.
 
-Accepted stock updates the grid's `source` property after the active editor closes and any pending proposal is resolved. Background refresh preserves the current review, reason and history. Pinned RevoGrid assets and its MIT license remain in `resources/public/vendor`. RevoGrid keeps its Community attribution.
+The server owns search, sorting, filtering, validation, history and acceptance. Smart search defaults to Goods and adds begins-with conditions; the filter strip and complex column-header filters use the same server state. Browser adapters own editor events, focus, selection and rendering. They do not simulate Submit, fabricate local history or calculate inventory business effects. One workspace SSE connection per tab carries draft/stock/operations notifications; reconnect refreshes authoritative state. Private composition edits do not broadcast workspace changes.
 
-The top input now creates rows. Existing Clojure smart-adjustment actions remain available to direct callers; the grid and row-entry Submit controls remain UI simulations.
+The header switches between English and Russian and reloads the current page. Signed-in language preferences follow the account across devices; guests use a remembered browser choice or their browser language, with English as fallback. Switching can discard unsaved browser input. Interface text and error messages share `resources/i18n/messages.json`; business data stays as entered. Restart the app after changing the catalog. Authentication emails use the recipient's saved language, defaulting to English, with bilingual subjects.
 
-**Operations** uses a read-only RevoGrid with the same spreadsheet appearance as Stock. Each operation has one overview row: date, type, summary, locations/party, items and reason/evidence. Search and native column sorting/filtering remain available. Expanding an operation shows its details: field-level before/after changes, paired transfer locations, or consumed inputs and produced outputs.
+## Identity and storage
 
-In development, **Demo data** switches between illustrative inventory/history and recorded local stock. The examples live under `dev/tover/operations/` and do not change accepted stock or recorded history. Production has no example payloads or toggle. The shared navigation has no demo title.
+Signup, email confirmation, login/logout, recovery, workspace creation, invitations, joining and workspace switching use the real identity adapters. Every protected request and realtime delivery checks current membership. Managers administer Team; active members can edit and submit inventory drafts. Provider tokens stay encrypted in private Postgres sessions; cookies contain opaque identifiers. Mutations require CSRF and the configured origin/page context.
 
-The arrow beside each Goods name expands that stock line's history as another read-only RevoGrid. Shared operations appear for every affected line. Their expanded details emphasize that line's role and retain the other inputs/outputs. Multiple lines can stay open while sorting or editing.
+RDF stores workspace items, immutable accepted operation/correction revisions, shared drafts, projection revisions and submission receipts. A versioned RDF/OWL/SHACL/SPARQL package defines domain relationships and constraints wherever practical. Clojure coordinates authorization, transactions, concurrency, semantic validation and delivery. Stock/history rebuild from effective accepted records. Existing prototype stores and anonymous graphs are preserved; they are not assigned to new workspaces.
 
-UI Submit also appends local history entries for additions, edits and deletions. These entries have a **Local** badge and appear in both history views. Unsubmitted drafts are excluded. Switching Stock/Operations preserves drafts and local submissions. Leaving inventory for Workspaces or Team discards them without confirmation; returning queries saved stock again. Reloading also clears local submissions and their history. Recorded operations are read-only and remain in Clojure/RDF.
+## Production
 
-Domain UI components and shared components in `tover.shared.ui` are pure Hiccup functions. The props map contains data and event properties such as `:on-click`, `:on-input`, `:on-keydown` and `:init`. Use trailing children only when a component needs caller-supplied content. Views supply direct action expressions. See [AGENTS.md](AGENTS.md) for component conventions. There are no custom client namespaces or application objects on `window`.
+Use the [production deployment guide](docs/production-deployment.md) for a single-host Compose installation with HTTPS, real SMTP, private Supabase ingress, pinned images, persistent RDF/Postgres volumes and backup/restore helpers.
 
-The browser holds input strings, a stock-change flag and temporary editor values. Adjustment reviews are rendered by the server. Actions update stock signals; reviews, notices and history replace their own regions.
+The selected fresh tester host is [VDS by Selectel](docs/selectel-deployment.md), with an 8 GiB memory budget, bounded logs and scheduled consistent local plus provider backups. Build an amd64 release bundle outside Russia and transfer it over SSH. The server loads all five images locally; installation and upgrades require no GitHub, Maven or registry access. The runbook includes bundle creation, server, DNS, SMTP and private API settings.
 
-`@action` and `@view` use Datastar request defaults. An optional third argument supplies request options for that call:
+On the connected build machine, commit all pending changes, push an annotated release tag and publish the verified bundle as a GitHub prerelease:
 
-```clojure
-(->expr (@action :tover.stock.web/accept ~payload {:requestCancellation "disabled"}))
-(->expr (@view :tover.stock.web/stock {:query $query} {:retry "never"}))
+```sh
+python3 deployment/production/publish.py v0.1.0-tester.1 \
+  --message "Release first tester deployment" --output /tmp/tover-v0.1.0-tester.1
 ```
 
-## Updates and storage
+This requires authenticated Git/`gh`, Docker and Buildx. It checks the bundle and rehearses fresh installation plus backup/restore before creating the GitHub release. See the [release runbook](docs/selectel-deployment.md#install-the-release) for failure handling and private evidence.
 
-`GET /`, `/operations`, `/workspace` and `/team` render complete documents or Datastar patches according to the request. Generated `POST /view/<namespace>/<name>` routes render fragments; `POST /action/<namespace>/<name>` routes execute actions. Datastar responses use short SSE streams with HTML, signal or page effects; ordinary authentication forms receive HTML or redirects.
+Inside the extracted bundle on the server:
 
-`GET /_bel/realtime/stream` opens a persistent stream with its topics in the initial request. An opaque HttpOnly cookie identifies a server-side session; each document has its own tab ID. Internal navigation retains one workspace stream. Production stores encrypted Auth tokens in private Postgres sessions. Refreshes serialize under a row lock. Every protected request verifies the current user and membership. Mutations require CSRF tokens, the configured origin and the current page context.
-
-Streams and publications carry the server-derived workspace. Delivery rechecks the recipient's current session and membership. Logout and workspace changes close old streams; other tabs reload and stale requests return `409 WORKSPACE_CHANGED`. Stock notifications set a flag, and a direct Datastar effect requests the current stock view. Publication remains direct, without a delivery worker or subscription handshake.
-
-Bel declarations provide typed input and an optional `:output` contract. Views default to `Result`; actions default to `ActionResult`, which also accepts native Ring responses for standalone HTML. Instruction action results can carry top-level `:session`, `:session/key` and `:cookies` entries, applied to the rendered response. Pages return one rooted `{:type :elements :html ...}` instruction. `{:type :page :id :qualified/page :input {}}` is a terminal navigation effect; it cannot be mixed with fragment or signal instructions. A page can name a `:parent`; parent renderers accept `[props & children]` and render the child in that slot. Queries run root to leaf, composition runs leaf to root, and the whole result is prepared before delivery. The document component supplies assets and bootstrap only on complete loads. Routes declare authentication, workspace and manager policies through Reitit middleware. Query functions own their result schemas. Startup requires discovered namespaces under `tover`, then registers their declaration Vars without scanning all loaded namespaces. Handlers resolve current Vars for REPL edits. `bel.validation` handles Malli validation and wire codecs. The Datastar header alone does not authorize writes.
-
-Streams infer their topic from the namespace and declaration name. Their options map is optional; `:schema` describes the payload passed directly to the body:
-
-```clojure
-(defstream changed
-  [_ctx _payload]
-  {:type :signals :data {:stockChanged true}})
-
-(bel.realtime/publish! realtime context {:topic :tover.stock.web/changed :data {}})
+```sh
+deployment/production/production.sh load-images
+export TOVER_ENV_FILE=/etc/tover/app.env
+deployment/production/production.sh init
+# Configure the private production .env: DNS, HTTPS origin, SMTP and release image tag.
+deployment/production/production.sh check
+deployment/production/production.sh install-fresh
 ```
 
-Pass shared app context without the request and include `:scope-id` from the trusted workspace. Delivery uses freshly authorized recipient context. Connections retain only stream/topic and session/workspace references, without request objects or credentials.
+The production profile uses a new dedicated inventory volume and does not read local identity credentials or `.data`. `clojure -M:run` requires explicit `TOVER_*` identity/database settings, a 32-byte Base64 session key and an HTTPS origin. `TOVER_PORT` defaults to 3030; `TOVER_INVENTORY_PATH` selects the store. `/healthz` checks the running process; `/readyz` checks RDF, JDBC sessions, Auth and PostgREST.
 
-RDF holds immutable opening declarations and accepted adjustments. Current stock is derived from their quantities. Acceptance validates input and records an atomic history entry using the current quantity. Quantity input stays a string until the server parses it, preserving integer precision.
+Back up identity, shared drafts and accepted inventory together. The production helper stops writers and closes the stores before copying them, keeps logical Postgres dumps and restores only into a fresh target. Preserve immutable SQL migrations: 033 installs fresh identity or upgrades the complete 032 contract; 034 adds member-authorized actor labels. Apply both before this application version. The inventory ledger requires no SQL migration.
 
-There are no revisions, stale-baseline checks, edit replay, request queues, draft reconciliation or delivery acknowledgements. Leaving inventory or reloading loses unfinished input. Failed navigation leaves the current page and its input intact. Disconnected notifications are lost; opening or reconnecting a stream only registers its topics. Refresh after missed updates is deferred. If delivery is uncertain, refresh and inspect stock/history before submitting again. Concurrent edits use the current stock at acceptance, which can differ from the preview.
+The ordered timeline query has quadratic worst-case growth within the affected component and a 15-second query limit. Complete multi-line operations and references can connect a large portion of inventory. Keep the first rollout small; see [measured timings and operating limits](docs/production-deployment.md) before expanding tester histories.
 
 ## Checks
 
 ```sh
 clojure -M:dev:test
-clojure -M:dev:test --focus tover.stock.store-test
 clojure -M:fmt check
+clj-kondo --lint src dev .clj-kondo/hooks/datastar.clj
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test/production -v
+scripts/test-auth-security.sh
+scripts/test-identity-integration.sh
 ```
 
-Tests cover validation, RDF transactions, persistence, stock/history, pure component rendering, page hierarchy, direct action flows and transport cleanup. Browser checks cover history, navigation failures, draft lifetime, forms, workspace resets and shared light/dark styling. Instrumentation runs during the suite. See [styleguide.md](styleguide.md) for formatting.
+Use the development alias for tests because instrumentation and Kaocha hooks live under `dev`. Clojure work is REPL-first; see [AGENTS.md](AGENTS.md) and [styleguide.md](styleguide.md).
 
-Pinned versions: Datastar Clojure SDK/adapter `1.0.0-RC11`, local browser runtime `1.0.4`, http-kit `2.9.0-beta4`, Reitit `0.11.0`, Chassis `1.0.365`. Imports, marketplace integration and production cutover remain later work.
-
-
-## Browser checks
-
-Internal forms use Datastar form data with mutation retries disabled. Business errors patch the page and preserve non-secret fields; authentication, authorization and CSRF failures retain their HTTP error statuses. The pinned browser runtime only consumes HTTP 200 patch bodies, so rendered business errors use 200 with the existing error-code header. Ordinary form fallbacks retain normal redirects and error statuses.
-
-The small Playwright package is isolated under `test/browser`; Node is not an application runtime. Its servers use disposable local stores and never read `.env.local`.
+Browser tooling is isolated under `test/browser`; Node is not an application runtime:
 
 ```sh
 npm --prefix test/browser ci
@@ -116,18 +105,23 @@ cd test/browser
 npx playwright install chromium
 cd ../..
 npm --prefix test/browser test
+cd test/browser && npx playwright test --config ce.config.mjs
+npx playwright test --config i18n.config.mjs
+npx playwright test --config identity.config.mjs
+npx playwright test --config viewport.config.mjs
+npx playwright test --config viewport-app.config.mjs
 ```
 
-## Code organization
+The viewport suites reproduce 10,000-record scrolling with isolated static fixtures, then exercise real RDF acceptance, window queries, details and member updates in a separate temporary application store. They do not use or modify local inventory. RDF read tests also forbid full snapshots/history during initial reads, verify bounded payload decoding, and cover projection backfill, reopen and rollback.
 
-Clojure source and tests are grouped by domain: `auth`, `workspaces`, `teams`, `stock` and `operations`. Domain folders use `core.clj` for their main contracts or compact implementation. Web declarations, substantial UI, persistence and adapters stay with their domain. `tover.inventory.workbench` composes Stock and Operations without depending on their route declarations.
+Reproduce scoped acceptance checks with `clojure -M:dev:test --focus tover.inventory.scoped-acceptance-test --focus tover.inventory.affected-query-test --focus tover.inventory.history-projection-test`. These compare incremental acceptance with full rebuilds and guard against decoding or replaying unrelated history.
 
-`tover.shared` owns reusable UI/forms, the application document/shell, error rendering, common schemas, RDF infrastructure and Supabase transport. `tover.app` owns Integrant composition. Development fixtures remain under `dev`; browser assets remain in `resources/public`. Tests mirror these domains, with cross-domain flows and reusable helpers kept separate.
+Run `python3 scripts/test-i18n-emails.py` against the running local identity profile to check both languages for all four email templates and the English fallback. It creates uniquely named test accounts and retains them.
 
-Declaration IDs and generated action/view URLs follow their new namespaces. GET URLs and persisted RDF identifiers are unchanged. Restart the development REPL and reload open browser tabs after this namespace migration.
+Release gates include all eight operations, heavy lineage/replay coverage, concurrent/stale/selective submissions, durable draft recovery, duplicate/lost-response handling and tenant isolation. Run two-member browser flows and real confirmation/invitation/recovery email checks against the production-shaped stack. Rehearse backup restoration and verify readiness/TLS/SMTP on the configured host. Unit tests alone do not establish deployment readiness.
 
 ## Repository boundaries
 
-[Current specifications](docs/README.md) describe the planned product. [Legacy contracts](docs/legacy-contracts/README.md) retain identity, Ozon and import behavior without the old application implementation. SQL migrations and independent disposable-Postgres checks remain unchanged. The [RDF experiment](experiments/inventory-rdf/README.md) is historical evidence, with an older containment model.
+`src/tover` groups Auth, Workspaces, Teams, Stock, Operations and inventory services. `src/bel` owns rendering/declaration/transport infrastructure; shared application infrastructure is under `tover.shared`. Production resources include browser assets and the semantic package. `dev` contains REPL tooling and isolated fixtures; `test` mirrors domains and contains browser/deployment checks.
 
-Milestone 1 moved code and tooling. Milestone 2 adds identity, workspace isolation and the local self-hosted integration profile. Real grid submission, the new inventory model and production packaging remain later work. Existing local prototype data moved from `tover_v2/app/.data` to root `.data`; it was not reset or assigned to a workspace. A source/data recovery copy for that migration remains in the ignored `.migration-backups/2026-10-19-milestone-1/` directory.
+Imports, marketplace integrations, evidence uploads and accounting reports are deferred. [Legacy contracts](docs/legacy-contracts/README.md) retain historical integration behavior. The [offline RDF experiment](experiments/inventory-rdf/README.md) uses a superseded containment model. Keep credentials, private captures, generated dependencies and all persistent stores out of Git.

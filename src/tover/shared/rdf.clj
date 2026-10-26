@@ -1,17 +1,21 @@
 (ns tover.shared.rdf
   (:require [bel.validation :as validation]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [com.yetanalytics.flint :as flint]
             [malli.transform :as mt])
-  (:import [java.io File]
+  (:import [java.io File StringReader]
            [java.math BigDecimal BigInteger]
            [java.net URI]
+           [java.security MessageDigest]
            [org.eclipse.rdf4j.common.transaction IsolationLevels]
            [org.eclipse.rdf4j.model.datatypes XMLDatatypeUtil]
            [org.eclipse.rdf4j.model.impl SimpleValueFactory]
-           [org.eclipse.rdf4j.model.vocabulary XSD]
+           [org.eclipse.rdf4j.model.vocabulary RDF4J XSD]
            [org.eclipse.rdf4j.repository.sail SailRepository]
-           [org.eclipse.rdf4j.sail.nativerdf NativeStore]))
+           [org.eclipse.rdf4j.rio RDFFormat]
+           [org.eclipse.rdf4j.sail.nativerdf NativeStore]
+           [org.eclipse.rdf4j.sail.shacl ShaclSail]))
 
 
 (def Repository [:fn #(instance? org.eclipse.rdf4j.repository.Repository %)])
@@ -151,13 +155,52 @@
   (try (cleanup) (catch Throwable cleanup-error (.addSuppressed ^Throwable error cleanup-error))))
 
 
+(defn- install-semantics!
+  "Install the immutable semantic package once; refuse silent schema replacement."
+  {:malli/schema [:=> [:cat Repository] :nil]}
+  [repo]
+  (let [ontology  (slurp (io/resource "inventory/ontology.ttl"))
+        shapes    (slurp (io/resource "inventory/shapes.ttl"))
+        rules     (mapv #(slurp (io/resource (str "inventory/queries/" % ".rq")))
+                        ["effects" "balances" "timeline" "lineage"])
+        checksum  (apply str (map #(format "%02x" (bit-and % 255))
+                                  (.digest (MessageDigest/getInstance "SHA-256")
+                                           (.getBytes (str/join "\n" (into [ontology shapes] rules)) "UTF-8"))))
+        graph     (iri "urn:tover:inventory-v1:ontology")
+        marker    (iri "urn:tover:inventory-v1:package")
+        predicate (iri "urn:tover:inventory-v1:packageChecksum")
+        contexts  (into-array org.eclipse.rdf4j.model.Resource [graph])]
+    (with-open [conn (.getConnection ^org.eclipse.rdf4j.repository.Repository repo)]
+      (.begin conn IsolationLevels/SERIALIZABLE)
+      (try
+        (with-open [existing (.getStatements conn marker predicate nil false contexts)]
+          (if (.hasNext existing)
+            (when-not (= checksum (.stringValue (.getObject (.next existing))))
+              (throw (ex-info "The stored semantic package differs; apply an explicit model migration."
+                              {:type :configuration})))
+            (do
+              (.add conn (StringReader. ontology) "urn:tover:inventory-v1:" RDFFormat/TURTLE contexts)
+              (.add conn (StringReader. shapes) "urn:tover:inventory-v1:" RDFFormat/TURTLE
+                    (into-array org.eclipse.rdf4j.model.Resource [RDF4J/SHACL_SHAPE_GRAPH]))
+              (.add conn marker predicate (literal checksum) contexts))))
+        (.commit conn)
+        (catch Throwable error
+          (when (.isActive conn) (.rollback conn))
+          (throw error)))))
+  nil)
+
+
 (defn native-store
   "Open a persistent NativeStore with force-sync enabled; never seed or initialize domain data."
   {:malli/schema [:=> [:cat Path] Repository]}
   [path]
   (validation/check! Path path)
-  (let [repo (SailRepository. (doto (NativeStore. (File. (str path))) (.setForceSync true)))]
-    (try (.init repo) repo
+  (let [native (doto (NativeStore. (File. (str path))) (.setForceSync true))
+        sail   (doto (ShaclSail. native)
+                 (.setParallelValidation false)
+                 (.setValidationResultsLimitTotal 100))
+        repo   (SailRepository. sail)]
+    (try (.init repo) (install-semantics! repo) repo
          (catch Throwable error
            (suppress-cleanup! #(.shutDown repo) error)
            (throw error)))))

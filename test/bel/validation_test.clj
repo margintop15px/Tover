@@ -12,7 +12,7 @@
 
 
 (deftest invalid-value-reports-structured-validation-error
-  (let [data {:quantity "oops"}
+  (let [data      {:quantity "oops"}
         exception (try (validation/check! [:map [:quantity :int]] data)
                        (catch ExceptionInfo exception exception))]
     (is (instance? ExceptionInfo exception))
@@ -23,7 +23,7 @@
 
 
 (deftest invalid-numeric-key-reports-structured-validation-error
-  (let [data {1 "x"}
+  (let [data      {1 "x"}
         exception (try (validation/check! [:map-of :keyword :any] data)
                        (catch ExceptionInfo exception exception))]
     (is (instance? ExceptionInfo exception))

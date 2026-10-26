@@ -17,6 +17,8 @@
     create-workspace! [provider access-token name])
   (^{:malli/schema [:=> [:cat :any :string :uuid] :map]}
     team [provider access-token workspace-id])
+  (^{:malli/schema [:=> [:cat :any :string :uuid [:vector :uuid]] [:map-of :string :string]]}
+    actor-labels [provider access-token workspace-id actor-ids])
   (^{:malli/schema [:=> [:cat :any :string :map] :map]}
     manage-invitation! [provider access-token input])
   (^{:malli/schema [:=> [:cat :any :string :uuid :uuid] :nil]}

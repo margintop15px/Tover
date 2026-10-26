@@ -1,0 +1,2 @@
+# Preserve checksum-pinned upstream asset bytes and whitespace.
+resources/public/vendor/jspreadsheet-ce/** -text whitespace=-trailing-space

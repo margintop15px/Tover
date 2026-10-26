@@ -1,0 +1,158 @@
+@prefix t: <urn:tover:inventory-v1:> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+t:Shapes a owl:Ontology ; owl:versionInfo "inventory-v1.0.0" .
+t:Integer a sh:NodeShape ; sh:or (
+  [ sh:datatype xsd:integer ] [ sh:datatype xsd:long ] [ sh:datatype xsd:int ]) .
+t:RequiredText a sh:NodeShape ; sh:datatype xsd:string ; sh:minLength 1 ; sh:maxLength 500 .
+t:DisjointTypes a sh:NodeShape ; sh:targetSubjectsOf rdf:type ;
+  sh:sparql [ sh:message "An inventory resource cannot belong to disjoint OWL classes." ; sh:select """
+    PREFIX owl: <http://www.w3.org/2002/07/owl#>
+    SELECT $this WHERE { $this a ?class, ?other . ?class owl:disjointWith ?other }
+  """ ] .
+t:Scoped a sh:NodeShape ; sh:targetSubjectsOf t:workspace ;
+  sh:property [ sh:path t:workspace ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:sparql [ sh:message "Inventory relationships must stay inside their workspace." ; sh:select """
+    PREFIX t: <urn:tover:inventory-v1:>
+    SELECT $this WHERE {
+      $this t:workspace ?workspace ; ?relation ?other .
+      FILTER (?relation IN (t:operation, t:item, t:location, t:fromLocation, t:toLocation, t:line, t:input, t:output, t:receipt))
+      ?other t:workspace ?otherWorkspace . FILTER (?workspace != ?otherWorkspace)
+    }
+  """ ] .
+t:RecordShape a sh:NodeShape ; sh:targetClass t:Record ;
+  sh:property [ sh:path t:id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:RequiredText ] ;
+  sh:property [ sh:path t:entityId ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:RequiredText ] ;
+  sh:property [ sh:path t:revision ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:Integer ; sh:minInclusive 1 ] ;
+  sh:property [ sh:path t:sequence ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:Integer ; sh:minInclusive 1 ] ;
+  sh:property [ sh:path t:businessOrder ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:Integer ; sh:minInclusive 1 ] ;
+  sh:property [ sh:path t:actor ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:RequiredText ] ;
+  sh:property [ sh:path t:recordedAt ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+  sh:property [ sh:path t:cancelled ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:property [ sh:path t:operation ; sh:minCount 1 ; sh:maxCount 1 ; sh:class t:InventoryEntry ] ;
+  sh:sparql [ sh:message "Accepted facts and arrivals cannot occur after their recording time. Keep future facts in the draft." ; sh:select """
+    PREFIX t: <urn:tover:inventory-v1:>
+    SELECT $this WHERE {
+      $this t:recordedAt ?recorded ; t:operation ?entry .
+      { ?entry t:occurredAt ?occurred } UNION { ?entry t:receipt/t:occurredAt ?occurred }
+      FILTER (?occurred > ?recorded)
+    }
+  """ ] ;
+  sh:sparql [ sh:message "Accepted revisions must form a unique, consecutive chain." ; sh:select """
+    PREFIX t: <urn:tover:inventory-v1:>
+    SELECT $this WHERE {
+      $this t:workspace ?w ; t:entityId ?id ; t:revision ?revision .
+      { ?other t:workspace ?w ; t:entityId ?id ; t:revision ?revision . FILTER (?other != $this) }
+      UNION { FILTER (?revision > 1) FILTER NOT EXISTS {
+        $this t:previousRevision ?previous . ?prior t:workspace ?w ; t:entityId ?id ; t:revision ?previous .
+        FILTER (?previous = ?revision - 1)
+      } }
+    }
+  """ ] .
+t:EntryShape a sh:NodeShape ; sh:targetClass t:InventoryEntry ;
+  sh:property [ sh:path t:kind ; sh:minCount 1 ; sh:maxCount 1 ; sh:in (t:operation t:opening t:correction) ] ;
+  sh:property [ sh:path t:occurredAt ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+  sh:property [ sh:path t:amount ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0 ] ;
+  sh:property [ sh:path t:currency ; sh:maxCount 1 ; sh:pattern "^[A-Z]{3}$" ] ;
+  sh:property [ sh:path t:direction ; sh:maxCount 1 ; sh:in (t:incoming t:outgoing) ] ;
+  sh:sparql [ sh:message "Line identifiers must be unique within each input, output or item list." ; sh:select """
+    PREFIX t: <urn:tover:inventory-v1:>
+    SELECT $this WHERE {
+      $this ?relation ?a, ?b . FILTER (?relation IN (t:line, t:input, t:output))
+      ?a t:lineId ?id . ?b t:lineId ?id . FILTER (?a != ?b)
+    }
+  """ ] .
+t:OperationShape a sh:NodeShape ; sh:targetClass t:Operation ;
+  sh:property [ sh:path t:operationType ; sh:minCount 1 ; sh:maxCount 1 ;
+    sh:in (t:purchase t:return t:transfer t:production t:defect t:sale t:write-off t:payment) ] ;
+  sh:sparql [ sh:message "The operation type and its RDF class must agree." ; sh:select """
+    PREFIX t: <urn:tover:inventory-v1:>
+    SELECT $this WHERE { $this t:operationType ?type . ?type t:entryClass ?class . FILTER NOT EXISTS { $this a ?class } }
+  """ ] .
+t:ItemShape a sh:NodeShape ; sh:targetClass t:Item ;
+  sh:property [ sh:path t:itemId ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:RequiredText ] .
+t:LocationShape a sh:NodeShape ; sh:targetClass t:Location ;
+  sh:property [ sh:path t:locationName ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:RequiredText ] .
+t:LineShape a sh:NodeShape ; sh:targetClass t:Line ;
+  sh:property [ sh:path t:item ; sh:minCount 1 ; sh:maxCount 1 ; sh:class t:Item ] ;
+  sh:property [ sh:path t:lineId ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:RequiredText ] ;
+  sh:property [ sh:path t:position ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:Integer ; sh:minInclusive 0 ] ;
+  sh:property [ sh:path t:quantity ; sh:minCount 1 ; sh:maxCount 1 ; sh:node t:Integer ; sh:minInclusive 0 ; sh:maxInclusive 9223372036854775807 ] ;
+  sh:property [ sh:path t:location ; sh:maxCount 1 ; sh:class t:Location ] ;
+  sh:property [ sh:path t:name ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:maxLength 500 ] ;
+  sh:property [ sh:path t:unit ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:maxLength 500 ] ;
+  sh:sparql [ sh:message "Business operations require positive item quantities." ; sh:select """
+    PREFIX t: <urn:tover:inventory-v1:>
+    SELECT $this WHERE {
+      $this t:quantity ?quantity . FILTER (?quantity <= 0)
+      { ?operation a t:Operation ; ?relation $this . FILTER (?relation IN (t:line, t:input, t:output)) }
+      UNION { ?receipt a t:Receipt ; t:line $this }
+    }
+  """ ] .
+t:LocatedLine a sh:NodeShape ;
+  sh:property [ sh:path t:location ; sh:minCount 1 ; sh:maxCount 1 ; sh:class t:Location ] .
+t:InputShape a sh:NodeShape ; sh:targetClass t:InputLine ; sh:node t:LocatedLine .
+t:OutputShape a sh:NodeShape ; sh:targetClass t:OutputLine ; sh:node t:LocatedLine .
+t:StockEditShape a sh:NodeShape ; sh:targetClass t:OpeningBalance, t:ManualCorrection ;
+  sh:property [ sh:path t:line ; sh:minCount 1 ; sh:node t:LocatedLine ] .
+t:CorrectionShape a sh:NodeShape ; sh:targetClass t:ManualCorrection ;
+  sh:property [ sh:path t:reason ; sh:minCount 1 ; sh:node t:RequiredText ] .
+t:OrdinaryMovementShape a sh:NodeShape ; sh:targetClass t:Return, t:Sale, t:Defect, t:WriteOff ;
+  sh:property [ sh:path t:line ; sh:minCount 1 ; sh:node t:LocatedLine ] .
+t:ReasonShape a sh:NodeShape ; sh:targetClass t:Defect, t:WriteOff ;
+  sh:property [ sh:path t:reason ; sh:minCount 1 ; sh:node t:RequiredText ] .
+t:PartyShape a sh:NodeShape ; sh:targetClass t:Purchase, t:Sale, t:Payment ;
+  sh:property [ sh:path t:party ; sh:minCount 1 ; sh:node t:RequiredText ] .
+t:DirectionShape a sh:NodeShape ; sh:targetClass t:Return, t:Payment ;
+  sh:property [ sh:path t:direction ; sh:minCount 1 ; sh:maxCount 1 ; sh:in (t:incoming t:outgoing) ] .
+t:PaymentShape a sh:NodeShape ; sh:targetClass t:Payment ;
+  sh:property [ sh:path t:amount ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minExclusive 0 ] ;
+  sh:property [ sh:path t:currency ; sh:minCount 1 ; sh:maxCount 1 ; sh:pattern "^[A-Z]{3}$" ] ;
+  sh:property [ sh:path t:line ; sh:maxCount 0 ] ;
+  sh:property [ sh:path t:input ; sh:maxCount 0 ] ;
+  sh:property [ sh:path t:output ; sh:maxCount 0 ] ;
+  sh:property [ sh:path t:receipt ; sh:maxCount 0 ] .
+t:TransferShape a sh:NodeShape ; sh:targetClass t:Transfer ;
+  sh:property [ sh:path t:line ; sh:minCount 1 ] ;
+  sh:property [ sh:path t:fromLocation ; sh:minCount 1 ; sh:maxCount 1 ; sh:class t:Location ] ;
+  sh:property [ sh:path t:toLocation ; sh:minCount 1 ; sh:maxCount 1 ; sh:class t:Location ] ;
+  sh:sparql [ sh:message "A transfer needs different source and destination locations." ; sh:select """
+    PREFIX t: <urn:tover:inventory-v1:>
+    SELECT $this WHERE { $this t:fromLocation ?location ; t:toLocation ?location }
+  """ ] .
+t:ProductionShape a sh:NodeShape ; sh:targetClass t:Production ;
+  sh:property [ sh:path t:input ; sh:minCount 1 ; sh:class t:InputLine ] ;
+  sh:property [ sh:path t:output ; sh:minCount 1 ; sh:class t:OutputLine ] ;
+  sh:property [ sh:path t:line ; sh:maxCount 0 ] .
+t:PurchaseShape a sh:NodeShape ; sh:targetClass t:Purchase ;
+  sh:property [ sh:path t:line ; sh:minCount 1 ] ;
+  sh:property [ sh:path t:hasReceipts ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:sparql [ sh:message "A directly received purchase needs a location for every item." ; sh:select """
+    PREFIX t: <urn:tover:inventory-v1:>
+    SELECT $this WHERE {
+      FILTER NOT EXISTS { $this t:hasReceipts true }
+      $this t:line ?line . FILTER NOT EXISTS { ?line t:location ?location }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "Arrivals cannot precede the purchase date." ; sh:select """
+    PREFIX t: <urn:tover:inventory-v1:>
+    SELECT $this WHERE { $this t:occurredAt ?purchase ; t:receipt/t:occurredAt ?arrival . FILTER (?arrival < ?purchase) }
+  """ ] ;
+  sh:sparql [ sh:message "Received quantities cannot exceed ordered quantities for an item." ; sh:select """
+    PREFIX t: <urn:tover:inventory-v1:>
+    SELECT $this WHERE {
+      { SELECT $this ?item (SUM(?quantity) AS ?received) WHERE {
+          $this t:receipt/t:line ?line . ?line t:item ?item ; t:quantity ?quantity
+        } GROUP BY $this ?item }
+      OPTIONAL { SELECT $this ?item (SUM(?quantity) AS ?ordered) WHERE {
+          $this t:line ?line . ?line t:item ?item ; t:quantity ?quantity
+        } GROUP BY $this ?item }
+      FILTER (?received > COALESCE(?ordered, 0))
+    }
+  """ ] .
+t:ReceiptShape a sh:NodeShape ; sh:targetClass t:Receipt ;
+  sh:property [ sh:path t:occurredAt ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+  sh:property [ sh:path t:line ; sh:minCount 1 ; sh:node t:LocatedLine ] .
