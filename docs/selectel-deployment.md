@@ -16,14 +16,14 @@ Configure a verified email sender and SPF/DKIM/DMARC records with your SMTP prov
 
 Build on a machine that can reach GitHub, Maven and the pinned image registries, such as the development machine outside Russia. Use Docker Engine 29+ with its containerd image store and Buildx. The builder always selects `linux/amd64`, including on an Apple Silicon Mac. Use a committed, tested release and a new image tag; the manifest records the Git revision, dirty-tree flag and build-input checksum.
 
-To commit all pending repository changes and publish a verified GitHub prerelease, install Git and an authenticated `gh` CLI, then run:
+To commit all pending repository changes and publish a verified GitHub release, install Git and an authenticated `gh` CLI, then run:
 
 ```sh
-python3 deployment/production/publish.py v0.1.0-tester.1 \
-  --message "Release first tester deployment" --output /tmp/tover-v0.1.0-tester.1
+python3 deployment/production/publish.py v0.1.0 \
+  --message "Release v0.1.0" --output /tmp/tover-v0.1.0
 ```
 
-The command commits all nonignored changes, creates an annotated tag, atomically pushes the branch and tag to `origin`, builds/loads the bundle, rehearses fresh installation and backup/restore, then uploads only the public archive, checksum and release manifest. GitHub notes include generated changes. Keep other writers idle; source changes abort publication. `TOVER_REHEARSAL_NETWORK_BASE` remains available for the existing isolated-network override. Reused tags, images or output paths are refused. A failure preserves commits, tags and artifacts; inspect it before choosing a new tag. Private rehearsal data stays local.
+The command commits all nonignored changes, creates an annotated tag, atomically pushes the branch and tag to `origin`, builds/loads the bundle, rehearses fresh installation and backup/restore, then uploads only the public archive, checksum and release manifest. Plain `vMAJOR.MINOR.PATCH` tags create normal releases; other tags create prereleases. GitHub notes include generated changes. Keep other writers idle; source changes abort publication. `TOVER_REHEARSAL_NETWORK_BASE` remains available for the existing isolated-network override. Reused tags, images or output paths are refused. A failure preserves commits, tags and artifacts; inspect it before choosing a new tag. Private rehearsal data stays local.
 
 For a local bundle without Git publication, choose a new directory outside the checkout:
 
@@ -83,24 +83,20 @@ Retain the previous bundle and images. Switching back is safe only when its data
 
 ## Enable daily backups
 
-Create a VDS API token in the account panel and record this VM's numeric server ID. Store the token in a root-owned mode-0600 file, outside the checkout. It must contain only the token and an optional final newline. Restrict the token's permissions if the panel offers that capability. The published [VDS API](https://developers.vds.selectel.ru/documentation/api/v1/) still uses `https://api.vscale.io/v1`; the helper fixes that endpoint and refuses redirects.
+The default `TOVER_BACKUP_MODE=local` captures application data: closed RDF and Postgres stores, database dumps, private configuration, release metadata and checksums. It excludes the OS, Docker images and unused VM disk space. Set this VM's numeric `SELECTEL_SERVER_ID` to scope backup names; local mode needs no API token. A local copy remains on the same server: arrange an encrypted off-server copy before relying on it for VM or disk loss.
 
 ```sh
 install -d -m 0700 /etc/tover /srv/tover-backups
-install -m 0600 /dev/null /etc/tover/selectel.token
-# Edit /etc/tover/selectel.token privately; do not paste the token into shell commands.
 install -m 0600 deployment/production/backup.env.example /etc/tover/backup.env
 ```
 
-Edit `/etc/tover/backup.env`: set `SELECTEL_SERVER_ID`, check the token path, and keep the default installation/environment paths unless you deliberately changed them. Check the token file without calling the API:
+Edit `/etc/tover/backup.env`: keep `TOVER_BACKUP_MODE=local`, set `SELECTEL_SERVER_ID`, and check the environment and backup paths. The default retains seven completed local backups. Then install the units:
 
 ```sh
-python3 deployment/production/selectel-backup.py \
-  --server-id YOUR_NUMERIC_SERVER_ID --token-file /etc/tover/selectel.token --check
 install -m 0644 deployment/production/systemd/tover-backup.service /etc/systemd/system/
 install -m 0644 deployment/production/systemd/tover-backup.timer /etc/systemd/system/
 systemctl daemon-reload
-# First run requires a maintenance window and creates a billed Selectel backup.
+# First run requires a maintenance window.
 systemctl start tover-backup.service
 journalctl -u tover-backup.service -n 50 --no-pager
 systemctl enable --now tover-backup.timer
@@ -112,14 +108,17 @@ The timer runs at **03:00 UTC** daily. Change `OnCalendar` to your agreed mainte
 1. Locks the backup directory to prevent overlapping jobs.
 2. Stops writers, dumps Postgres, closes both stores and captures matching data, secrets and a checksum manifest.
 3. Restarts the previously running services and waits for their health checks.
-4. Requests one Selectel VM backup, prints its UUID and waits up to 30 minutes for `finished`, available and unlocked status.
-5. Keeps seven completed provider backups with this helper's exact server-specific names and two complete local backups. Unrelated/incomplete backups are preserved. A failed provider job does not prune local recovery points.
+4. Keeps the configured number of completed local backups with this helper's exact server-specific names. Unrelated/incomplete backups are preserved; failed captures do not prune older recovery points.
 
-The local backup is a service interruption. Online VM backup upload can continue after services restart because the complete local recovery directory already exists on disk. The provider snapshot's live database directories are not our consistency proof; use the complete local backup inside it when rehearsing recovery. Repeated jobs that fail can consume disk: investigate failed units and old incomplete backups rather than ignoring them.
+The local backup is a service interruption. Repeated jobs that fail can consume disk: investigate failed units and old incomplete backups rather than ignoring them. Copy only completed backups off-server, retain the matching release bundle separately, and rehearse restoration as described in the production guide.
+
+For a scheduler update on an existing immutable bundle, install the new `scheduled-backup.py` separately, for example under `/usr/local/lib/tover/`. Set `TOVER_BACKUP_PROFILE=/srv/tover/deployment/production` in the private backup environment and override the unit's `ExecStart` to use the updated helper. Leave the original release files unchanged so its manifest checks remain valid.
+
+Full-VM backups remain available with `TOVER_BACKUP_MODE=selectel`. Create a VDS API token in the account panel and store only the token in `/etc/tover/selectel.token`, owned by root with mode 0600. The published [VDS API](https://developers.vds.selectel.ru/) uses `https://api.vscale.io/v1`; the helper fixes that endpoint and refuses redirects. Validate the file with `selectel-backup.py --server-id YOUR_NUMERIC_SERVER_ID --token-file /etc/tover/selectel.token --check`. This mode creates a billed VM backup after services restart, waits up to 30 minutes for completion, and retains seven matching provider backups. Provider failure preserves every local recovery point. Its live database directories are not the consistency proof; use the complete local backup inside the VM copy for recovery.
 
 The unit allows five minutes to stop so the helper can restart services after cancellation. After a forced kill, host failure or power loss, inspect `production.sh status` and run `production.sh up` if needed. An incomplete local backup is never a restore source.
 
-Provider copies contain application data, API credentials and session secrets. Protect the VDS account accordingly. Keep enough disk space for live data plus a new complete backup before retention removes old copies. Retain a separate encrypted recovery copy outside this account if recovery from loss of account access is required.
+Application backups contain credentials and session secrets. Protect every copy accordingly. Keep enough disk space for live data plus a new complete backup before retention removes old copies. Retain a separate encrypted recovery copy outside this account if recovery from loss of account access is required.
 
 ## Verify before inviting testers
 

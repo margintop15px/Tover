@@ -24,7 +24,11 @@ Integrant owns HTTP, realtime, identity/session adapters and RDF. The developmen
 (user/refresh!)
 ```
 
-Development enables loopback nREPL, Malli instrumentation and hot reload. Route/hierarchy/policy changes require `user/refresh!`; dependency changes require a REPL restart. Production has no development namespaces, seeds, examples or instrumentation. Isolated test fixtures remain under the test/development tooling.
+Development enables loopback nREPL, Malli instrumentation and hot reload. Route/hierarchy/policy changes require `user/refresh!`; dependency changes require a REPL restart. Production has no development namespaces, seeds, examples or schema instrumentation. Isolated test fixtures remain under the test/development tooling.
+
+Bel emits μ/log traces for HTTP processing, page/view queries, rendering, actions, fragment writes and realtime delivery. Integrant owns the publisher: development writes JSON lines to ignored `logs/events.jsonl`; production writes JSON to stdout for Docker log rotation. Query recent development events with `(bel.log/recent 20)`. Durations use nanoseconds, and `:request-id`, `:mulog/root-trace` and `:mulog/parent-trace` correlate nested spans across SSE callbacks. Published fields exclude request payloads, URLs, identities, credentials and exception messages/data.
+
+Every response carries `X-Request-Id` and `Server-Timing: app;dur=...` in milliseconds. This measures server processing through response preparation, including authentication and session middleware. Datastar fragment writes have separate spans; network latency and browser rendering are outside the server timer. In DevTools, use the response request ID to locate its JSON trace and compare the server duration with TTFB.
 
 ## Inventory workflow
 
@@ -56,13 +60,13 @@ RDF stores workspace items, immutable accepted operation/correction revisions, s
 
 Use the [production deployment guide](docs/production-deployment.md) for a single-host Compose installation with HTTPS, real SMTP, private Supabase ingress, pinned images, persistent RDF/Postgres volumes and backup/restore helpers.
 
-The selected fresh tester host is [VDS by Selectel](docs/selectel-deployment.md), with an 8 GiB memory budget, bounded logs and scheduled consistent local plus provider backups. Build an amd64 release bundle outside Russia and transfer it over SSH. The server loads all five images locally; installation and upgrades require no GitHub, Maven or registry access. The runbook includes bundle creation, server, DNS, SMTP and private API settings.
+The selected fresh tester host is [VDS by Selectel](docs/selectel-deployment.md), with an 8 GiB memory budget, bounded logs and scheduled consistent app-data backups. Arrange an encrypted off-server copy; full-VM backups remain an optional billed mode. Build an amd64 release bundle outside Russia and transfer it over SSH. The server loads all five images locally; installation and upgrades require no GitHub, Maven or registry access. The runbook includes bundle creation, server, DNS, SMTP and private API settings.
 
-On the connected build machine, commit all pending changes, push an annotated release tag and publish the verified bundle as a GitHub prerelease:
+On the connected build machine, commit all pending changes, push an annotated release tag and publish the verified bundle as a GitHub release. Plain `vMAJOR.MINOR.PATCH` tags create normal releases; other tags create prereleases:
 
 ```sh
-python3 deployment/production/publish.py v0.1.0-tester.1 \
-  --message "Release first tester deployment" --output /tmp/tover-v0.1.0-tester.1
+python3 deployment/production/publish.py v0.1.0 \
+  --message "Release v0.1.0" --output /tmp/tover-v0.1.0
 ```
 
 This requires authenticated Git/`gh`, Docker and Buildx. It checks the bundle and rehearses fresh installation plus backup/restore before creating the GitHub release. See the [release runbook](docs/selectel-deployment.md#install-the-release) for failure handling and private evidence.

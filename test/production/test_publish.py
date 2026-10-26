@@ -38,6 +38,7 @@ class Commands:
         self.added = False
         self.fail_staged_check = False
         self.origin = "git@github.com:owner/Tover.git"
+        self.tag = TAG
 
     def __call__(self, args, *, capture=False, check=True, env=None):
         self.calls.append((args, env))
@@ -63,7 +64,7 @@ class Commands:
             elif operation == "ls-files":
                 result.stdout = "\0".join(self.names) + "\0"
             elif operation == "ls-remote":
-                result.stdout = "a" * 40 + "\trefs/tags/" + TAG if self.remote_tag else ""
+                result.stdout = "a" * 40 + "\trefs/tags/" + self.tag if self.remote_tag else ""
             elif command == ["diff", "--cached", "--quiet"]:
                 result.returncode = 1 if self.pending else 0
             elif operation == "commit":
@@ -86,7 +87,7 @@ class Commands:
             result.returncode = 0 if self.release_status == 200 else 1
             result.stdout = f"HTTP/2.0 {self.release_status} response\n\n{{}}\n"
         elif args[:3] == ["gh", "release", "create"]:
-            result.stdout = "https://github.com/owner/Tover/releases/tag/" + TAG + "\n"
+            result.stdout = "https://github.com/owner/Tover/releases/tag/" + self.tag + "\n"
         elif len(args) > 2 and Path(args[1]).name == "release.py":
             if args[2] == self.fail:
                 raise subprocess.CalledProcessError(1, args)
@@ -95,7 +96,7 @@ class Commands:
                 output.mkdir()
                 (output / "release.json").write_text(json.dumps({
                     "source": {"revision": self.head, "dirty": self.bad_manifest},
-                    "images": {"app": {"reference": "tover:" + TAG}}}))
+                    "images": {"app": {"reference": "tover:" + self.tag}}}))
                 (output / "runtime.txt").write_text("Public runtime bundle\n")
                 self.changed = self.change_after == "package"
         elif len(args) > 1 and Path(args[1]).name == "rehearse.py":
@@ -184,6 +185,12 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(result["commit"], "a" * 40)
         self.assertFalse(any(call[0] == "commit" for call in self.git_calls()))
 
+    def test_plain_version_is_a_normal_release(self):
+        self.commands.tag = "v0.1.0"
+        result = PUBLISH.publish("v0.1.0", "Release v0.1.0", self.output, root=self.root)
+        self.assertTrue(result["url"].endswith("/v0.1.0"))
+        self.assertNotIn("--prerelease", self.release_calls()[0])
+
     def test_newly_staged_whitespace_failure_stops_before_commit_tag_or_push(self):
         self.commands.fail_staged_check = True
         with self.assertRaises(subprocess.CalledProcessError):
@@ -229,7 +236,7 @@ class PublishTest(unittest.TestCase):
                 setattr(self.commands, attribute, original)
 
     def test_private_paths_are_rejected_before_staging(self):
-        for name in ("deployment/production/.env", ".data/store", "captures/private/file.json", "selectel.token", "secret.key"):
+        for name in ("deployment/production/.env", ".data/store", "captures/private/file.json", "selectel.token", "secret.key", "logs/events.jsonl"):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("private")

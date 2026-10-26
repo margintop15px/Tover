@@ -61,6 +61,7 @@ playwright/.auth/
 /.cpcache/
 /.nrepl-port
 /.data/
+/logs/
 /.clj-kondo/.cache/
 /.clj-kondo/imports/
 /.migration-backups/

@@ -3,7 +3,9 @@
   (:require
     [bel.core :as core]
     [bel.handler :as handler]
+    [bel.log :as log]
     [bel.validation :as validation]
+    [com.brunobonacci.mulog :as mu]
     [malli.core :as m]
     [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
     [starfederation.datastar.clojure.api :as d*])
@@ -105,20 +107,20 @@
   {:malli/schema [:=> [:cat Realtime :map :uuid :uuid :map Event] :nil]}
   [realtime context session-id tab-id connection {:keys [topic data]}]
   (try
-    (when (identical? (:sse connection) (get-in @(:state realtime) [:connections session-id tab-id :sse]))
-      (if-let [recipient-context (if-let [authorize (:authorize realtime)]
-                                   (authorize (assoc connection :session-id session-id :tab-id tab-id))
-                                   context)]
-        (let [context    (assoc recipient-context :session-id session-id :tab-id tab-id)
-              definition (stream-definition topic)
-              result     (validation/check! (:bel/output definition)
-                                            ((or (:render realtime) (fn [_ render] (render)))
-                                             context #((:bel/fn definition) context data)))]
-          (handler/send-result! context (:sse connection) result))
-        (close-connection! realtime session-id tab-id (:sse connection))))
+    (mu/trace ::deliver [:topic topic]
+      (when (identical? (:sse connection) (get-in @(:state realtime) [:connections session-id tab-id :sse]))
+        (if-let [recipient-context (if-let [authorize (:authorize realtime)]
+                                     (authorize (assoc connection :session-id session-id :tab-id tab-id))
+                                     context)]
+          (let [context    (assoc recipient-context :session-id session-id :tab-id tab-id)
+                definition (stream-definition topic)
+                result     (validation/check! (:bel/output definition)
+                                              ((or (:render realtime) (fn [_ render] (render)))
+                                               context #((:bel/fn definition) context data)))]
+            (handler/send-result! context (:sse connection) result))
+          (close-connection! realtime session-id tab-id (:sse connection)))))
     (catch Throwable error
-      (binding [*out* *err*]
-        (println "Bel realtime delivery failed:" (.getMessage error)))
+      (mu/log ::delivery-error :topic topic :error-type (.getName (class error)))
       (close-connection! realtime session-id tab-id (:sse connection))))
   nil)
 
@@ -130,13 +132,14 @@
   (check-event event)
   (when (:stopped? @(:state realtime))
     (throw (ex-info "Realtime is stopped" {:type :realtime-stopped})))
-  (let [{:keys [topic session-id tab-id scope-id]} event
-        connections (:connections @(:state realtime))]
-    (doseq [[sid tabs]       (if session-id (select-keys connections [session-id]) connections)
-            [tid connection] (if tab-id (select-keys tabs [tab-id]) tabs)
-            :when            (and (= scope-id (:scope-id connection))
-                                  (contains? (:topics connection) topic))]
-      (deliver! realtime context sid tid connection event)))
+  (mu/trace ::publish [:topic (:topic event)]
+    (let [{:keys [topic session-id tab-id scope-id]} event
+          connections (:connections @(:state realtime))]
+      (doseq [[sid tabs]       (if session-id (select-keys connections [session-id]) connections)
+              [tid connection] (if tab-id (select-keys tabs [tab-id]) tabs)
+              :when            (and (= scope-id (:scope-id connection))
+                                    (contains? (:topics connection) topic))]
+        (deliver! realtime context sid tid connection event))))
   nil)
 
 
@@ -212,6 +215,7 @@
     (try
       (let [{:keys [tabId topics]} (validation/decode-input StreamInput (handler/parse-signals request))
             session-id             (validation/check! :uuid (get-in request [:session :bel/session-id]))
+            trace-context          (log/capture-context)
             connection-context     (select-keys
                                      (validation/check! ConnectionContext (or (:bel/realtime-context request) {}))
                                      [:scope-id :auth-session-id :auth-version :locale])]
@@ -222,15 +226,24 @@
           request
           {:headers        {"Content-Type" "text/event-stream; charset=utf-8"}
            hk/on-open      (fn [sse]
-                             (open! realtime session-id tabId topics sse connection-context)
-                             ;; Register first, then resnapshot: a reconnect must recover missed updates.
-                             (when-let [connection (get-in @(:state realtime) [:connections session-id tabId])]
-                               (doseq [topic topics]
-                                 (when (:bel/resnapshot-on-open? (stream-definition topic))
-                                   (deliver! realtime {} session-id tabId connection
-                                             {:topic topic :data {}})))))
-           hk/on-close     (fn [sse _status] (remove-connection! realtime session-id tabId sse))
-           hk/on-exception (fn [sse _error _event] (close-connection! realtime session-id tabId sse) false)}))
+                             (mu/with-context trace-context
+                               (mu/trace ::open [:topics (count topics)]
+                                 (open! realtime session-id tabId topics sse connection-context)
+                                 ;; Register first, then resnapshot: a reconnect must recover missed updates.
+                                 (when-let [connection (get-in @(:state realtime) [:connections session-id tabId])]
+                                   (doseq [topic topics]
+                                     (when (:bel/resnapshot-on-open? (stream-definition topic))
+                                       (deliver! realtime {} session-id tabId connection
+                                                 {:topic topic :data {}})))))))
+           hk/on-close     (fn [sse _status]
+                             (mu/with-context trace-context
+                               (mu/log ::closed)
+                               (remove-connection! realtime session-id tabId sse)))
+           hk/on-exception (fn [sse error _event]
+                             (mu/with-context trace-context
+                               (mu/log ::stream-error :error-type (.getName (class error))))
+                             (close-connection! realtime session-id tabId sse)
+                             false)}))
       (catch Exception _
         {:status  400
          :headers {"content-type" "text/plain"}

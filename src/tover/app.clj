@@ -2,6 +2,7 @@
   (:require
     [bel.core :as bel]
     [bel.handler :as handler]
+    [bel.log :as log]
     [bel.realtime :as realtime]
     [bel.session :as session]
     [bel.validation :as validation]
@@ -73,6 +74,7 @@
    [::auth :any]
    [::workspaces :any]
    [::session-store :any]
+   [::logging {:optional true} StopFn]
    [::handler schema/Handler]
    [::server StopFn]])
 
@@ -165,6 +167,7 @@
         (session/wrap-session {:store        session-store :cookie-name "tover-session"
                                :cookie-attrs {:http-only true               :same-site :lax :path "/"
                                               :secure    (not development?)}})
+        log/wrap-request-context
         hk/wrap-start-responding)))
 
 
@@ -226,7 +229,10 @@
                    (and development? (re-matches #"http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?" origin)))
        (throw (ex-info "Production origin must be an HTTPS origin" {:type :configuration})))
      (-> configuration
-         (assoc ::auth provider ::workspaces provider)
+         (assoc ::auth provider ::workspaces provider
+                ::logging {:env (if development? :dev :prod)})
+         (assoc-in [::handler :logging] (ig/ref ::logging))
+         (assoc-in [::realtime :logging] (ig/ref ::logging))
          (assoc-in [::handler :identity-health]
                    (merge (select-keys provider [:auth-url :rest-url :api-key])
                           {:jdbc-url (required "TOVER_JDBC_URL")
@@ -277,6 +283,12 @@
   (or instance (sessions/jdbc-store options)))
 
 
+(defn logging
+  {:malli/schema [:=> [:cat :map] StopFn]}
+  [options]
+  (log/start! options))
+
+
 (defn handler
   {:malli/schema
    [:=> [:cat HandlerOptions] schema/Handler]}
@@ -318,11 +330,19 @@
   (rdf/close! repository))
 
 
+(defmethod ig/halt-key! ::logging [_ stop]
+  (stop))
+
+
 (defn stop!
   {:malli/schema
    [:=> [:cat SystemState] :nil]}
   [system]
-  (ig/halt! system))
+  (when-let [error (cleanup-error nil
+                                  [#(ig/halt! system)
+                                   #(when-let [stop (::logging system)] (stop))])]
+    (throw error))
+  nil)
 
 
 (defn start!
@@ -338,7 +358,8 @@
           (cleanup-error error
                          (cond-> []
                            (::realtime partial-system) (conj #(realtime/stop! (::realtime partial-system)))
-                           (::repo partial-system) (conj #(rdf/close! (::repo partial-system)))))))
+                           (::repo partial-system) (conj #(rdf/close! (::repo partial-system)))
+                           (::logging partial-system) (conj #((::logging partial-system)))))))
       (throw error))))
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Commit all pending changes, tag/push, verify an offline bundle and publish a GitHub prerelease."""
+"""Commit all pending changes, tag/push, verify an offline bundle and publish a GitHub release."""
 import argparse
 import hashlib
 import json
@@ -21,7 +21,7 @@ def run(arguments, *, capture=False, check=True, env=None):
 
 def guard_private_paths(root, names):
     private = {".git", ".data", ".aws", ".ssh", ".cpcache", ".migration-backups", ".pal",
-               "node_modules", "__pycache__", "test-results", "playwright-report", "private", "backups"}
+               "node_modules", "__pycache__", "test-results", "playwright-report", "private", "backups", "logs"}
     for name in names:
         path = Path(name)
         if not (root / path).exists() and not (root / path).is_symlink():
@@ -147,8 +147,9 @@ def publish(tag, message, output, *, root=ROOT):
                     "closed-store backup and restore. Private rehearsal evidence stays on the build machine.\n\n"
                     "Public TLS, external SMTP and Selectel recovery still require host checks.\n")
     clean_commit(commit)
+    prerelease = [] if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag) else ["--prerelease"]
     published = run(["gh", "release", "create", tag, str(archive), str(checksum_file), str(output / "release.json"),
-                     "--repo", "github.com/" + repository, "--verify-tag", "--prerelease", "--generate-notes",
+                     "--repo", "github.com/" + repository, "--verify-tag", *prerelease, "--generate-notes",
                      "--title", tag, "--notes-file", str(notes_file)], capture=True)
     return {"url": published.stdout.strip(), "commit": commit, "tag": tag, "bundle": str(output),
             "archive": str(archive), "checksum": str(checksum_file)}

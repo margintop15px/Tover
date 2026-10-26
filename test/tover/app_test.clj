@@ -4,6 +4,8 @@
             [bel.realtime :as realtime]
             [clojure.java.io :as io]
             [clojure.test :refer [deftest is]]
+            [com.brunobonacci.mulog :as mu]
+            [integrant.core :as ig]
             [org.httpkit.server :as http]
             [tover.app :as app]
             [tover.auth.security :as security]
@@ -263,6 +265,29 @@
             (app/stop! system)
             (is @joined?)
             (is (not (.isInitialized (::app/repo system))))))))))
+
+
+(deftest publisher-is-stopped-on-normal-and-failed-startup
+  (doseq [fail-start? [false true]]
+    (with-data-path
+      (fn [path]
+        (let [started       (atom 0)
+              stopped       (atom 0)
+              before        (mu/global-context)
+              configuration (-> (fixture-config 3031 path)
+                                (assoc ::app/logging {:env :prod})
+                                (assoc-in [::app/handler :logging] (ig/ref ::app/logging)))]
+          (with-redefs [mu/start-publisher! (fn [_] (swap! started inc) #(swap! stopped inc))
+                        http/run-server     (fn [& _]
+                                              (if fail-start?
+                                                (throw (ex-info "startup failed" {}))
+                                                (Object.)))
+                        http/server-stop!   (fn [& _] (delay true))]
+            (if fail-start?
+              (is (thrown? clojure.lang.ExceptionInfo (app/start! configuration)))
+              (app/stop! (app/start! configuration)))
+            (is (= 1 @started @stopped))
+            (is (= before (mu/global-context)))))))))
 
 
 (deftest realtime-stop-failure-still-stops-http-before-closing-rdf

@@ -2,9 +2,11 @@
 (ns bel.handler
   (:require
     [bel.core :as core]
+    [bel.log :as log]
     [bel.validation :as validation]
     [charred.api :as charred]
     [clojure.string :as str]
+    [com.brunobonacci.mulog :as mu]
     [dev.onionpancakes.chassis.core :as chassis]
     [reitit.core :as reitit]
     [reitit.ring :as ring]
@@ -40,17 +42,19 @@
   (if-let [definition (core/get-view id)]
     (let [{:bel/keys [query fn output schema]} definition
           input (validation/decode-input schema input)
-          data (query context input)]
-      (validation/check! output (fn data)))
+          data (mu/trace ::view-query [:view id] (query context input))]
+      (mu/trace ::view-render [:view id]
+        (validation/check! output (fn data))))
     (throw (ex-info "Undeclared view" {:type :validation :id id}))))
 
 
 (defn render-html
   {:malli/schema [:=> [:cat :any] :string]}
   [hiccup]
-  (if (string? hiccup)
-    hiccup
-    (chassis/html hiccup)))
+  (mu/trace ::html-render {:pairs [] :capture (fn [html] {:characters (count html)})}
+    (if (string? hiccup)
+      hiccup
+      (chassis/html hiccup))))
 
 
 (defn- patch-options
@@ -93,17 +97,19 @@
                             :page (throw (ex-info "Page instructions require an action response"
                                                   {:type :validation})))))
                       result')))]
-    (vec (prepare result {}))))
+    (mu/trace ::prepare-result []
+      (vec (prepare result {})))))
 
 
 (defn send-prepared!
   {:malli/schema [:=> [:cat :any Prepared] :nil]}
   [sse prepared]
-  (doseq [{:keys [type html options json]} prepared]
-    (when (false? (case type
-                    :elements (datastar/patch-elements! sse html options)
-                    :signals (datastar/patch-signals! sse json)))
-      (throw (IOException. "SSE connection closed before delivery"))))
+  (mu/trace ::send-prepared [:patches (count prepared)]
+    (doseq [{:keys [type html options json]} prepared]
+      (when (false? (case type
+                      :elements (datastar/patch-elements! sse html options)
+                      :signals (datastar/patch-signals! sse json)))
+        (throw (IOException. "SSE connection closed before delivery")))))
   nil)
 
 
@@ -124,15 +130,15 @@
                     (if (= :validation (:type (ex-data error)))
                       (throw (ex-info (.getMessage error) (assoc (ex-data error) :bel/input-error? true) error))
                       (throw error))))]
-      (validation/check! core/ActionResult (validation/check! output (fn context input))))
+      (mu/trace ::action [:action id]
+        (validation/check! core/ActionResult (validation/check! output (fn context input)))))
     (throw (ex-info "Undeclared action" {:type :validation :id id}))))
 
 
 (defn- log-error!
   {:malli/schema [:=> [:cat :any] :nil]}
   [exception]
-  (binding [*out* *err*]
-    (println "Datastar request failed:" (.getMessage exception) (:errors (ex-data exception))))
+  (mu/log ::request-error :error-type (.getName (class exception)))
   nil)
 
 
@@ -149,17 +155,19 @@
 (defn- short-response
   {:malli/schema [:=> [:cat :map Prepared] :map]}
   [request prepared]
-  (hk/->sse-response
-    request
-    {hk/write-profile hk/buffered-writer-profile
-     hk/on-open
-     (fn [sse]
-       (try
-         (send-prepared! sse prepared)
-         (catch Exception exception
-           (log-error! exception))
-         (finally
-           (datastar/close-sse! sse))))}))
+  (let [trace-context (log/capture-context)]
+    (hk/->sse-response
+      request
+      {hk/write-profile hk/buffered-writer-profile
+       hk/on-open
+       (fn [sse]
+         (mu/with-context trace-context
+           (try
+             (send-prepared! sse prepared)
+             (catch Exception exception
+               (log-error! exception))
+             (finally
+               (datastar/close-sse! sse)))))})))
 
 
 (defn- request-context
@@ -174,14 +182,16 @@
     [:vector :any]]}
   [context id input pages]
   (let [pages (mapv (fn [{:bel/keys [query schema] :as page}]
-                      [page (query context (validation/decode-input schema input))])
+                      [page (mu/trace ::page-query [:page (:bel/id page)]
+                              (query context (validation/decode-input schema input)))])
                     pages)]
-    (reduce (fn [child [{:bel/keys [fn output]} data]]
-              (let [result (validation/check! output (if child (fn data child) (fn data)))]
-                (validation/check! core/PageResult result)
-                (when-not (and (vector? (:html result)) (chassis/element-vector? (:html result)))
-                  (throw (ex-info "Page must render one rooted element" {:type :validation :id id})))
-                (:html result)))
+    (reduce (fn [child [{:bel/keys [fn output] :as page} data]]
+              (mu/trace ::page-render [:page (:bel/id page)]
+                (let [result (validation/check! output (if child (fn data child) (fn data)))]
+                  (validation/check! core/PageResult result)
+                  (when-not (and (vector? (:html result)) (chassis/element-vector? (:html result)))
+                    (throw (ex-info "Page must render one rooted element" {:type :validation :id id})))
+                  (:html result))))
             nil (rseq pages))))
 
 

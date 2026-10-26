@@ -71,6 +71,41 @@ class ScheduledBackupTest(unittest.TestCase):
             self.run_job(fail_provider)
         self.assertTrue(old.exists())
 
+    def test_local_mode_needs_no_provider_token_and_prunes_only_its_backups(self):
+        self.environment["TOVER_BACKUP_MODE"] = "local"
+        self.environment.pop("SELECTEL_TOKEN_FILE")
+        oldest = self.backup("tover-123-20200101T000000Z")
+        self.backup("tover-123-20200102T000000Z")
+        foreign = self.backup("tover-456-20200101T000000Z")
+        self.run_job()
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][0], str(PROFILE / "production.sh"))
+        self.assertIn("backup", self.calls[0])
+        self.assertFalse(oldest.exists())
+        self.assertTrue(foreign.exists())
+
+    def test_failed_local_mode_preserves_existing_backups(self):
+        self.environment["TOVER_BACKUP_MODE"] = "local"
+        oldest = self.backup("tover-123-20200101T000000Z")
+        self.backup("tover-123-20200102T000000Z")
+
+        def fail_local(arguments, **options):
+            self.calls.append(arguments)
+            raise subprocess.CalledProcessError(1, arguments)
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_job(fail_local)
+        self.assertTrue(oldest.exists())
+        self.assertEqual(len(self.calls), 1)
+
+    def test_updated_scheduler_can_use_an_unchanged_release_profile(self):
+        profile = self.root / "original-profile"
+        profile.mkdir()
+        (profile / "production.sh").touch()
+        self.environment.update(TOVER_BACKUP_MODE="local", TOVER_BACKUP_PROFILE=str(profile))
+        self.run_job()
+        self.assertEqual(self.calls[0][0], str(profile / "production.sh"))
+
     def test_local_failure_never_requests_provider_backup(self):
         def fail_local(arguments, **options):
             self.calls.append(arguments)
@@ -83,7 +118,8 @@ class ScheduledBackupTest(unittest.TestCase):
 
     def test_refuses_unsafe_configuration_before_stopping_services(self):
         for key, value in (("SELECTEL_SERVER_ID", "../123"), ("SELECTEL_TOKEN_FILE", "relative"),
-                           ("TOVER_BACKUP_ROOT", "relative"), ("TOVER_BACKUP_KEEP_LOCAL", "1")):
+                           ("TOVER_BACKUP_ROOT", "relative"), ("TOVER_BACKUP_KEEP_LOCAL", "1"),
+                           ("TOVER_BACKUP_MODE", "invalid"), ("TOVER_BACKUP_PROFILE", "relative")):
             with self.subTest(key=key), patch.dict(self.environment, {key: value}):
                 with self.assertRaises(ValueError):
                     self.run_job()

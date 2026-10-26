@@ -1,5 +1,5 @@
 [Unit]
-Description=Tover consistent local and Selectel VM backup
+Description=Tover consistent application-data backup
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
