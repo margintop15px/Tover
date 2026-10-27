@@ -191,6 +191,30 @@ class PublishTest(unittest.TestCase):
         self.assertTrue(result["url"].endswith("/v0.1.0"))
         self.assertNotIn("--prerelease", self.release_calls()[0])
 
+    def test_skip_rehearsal_keeps_bundle_checks_and_reports_skipped_validation(self):
+        result = PUBLISH.publish(TAG, "Focused release", self.output, root=self.root, skip_rehearsal=True)
+        calls = [args for args, _ in self.commands.calls]
+        self.assertFalse(any(len(args) > 1 and Path(args[1]).name == "rehearse.py" for args in calls))
+        package_index = next(index for index, args in enumerate(calls) if len(args) > 2 and args[2] == "package")
+        load_index = next(index for index, args in enumerate(calls) if len(args) > 2 and args[2] == "load")
+        release = self.release_calls()[0]
+        self.assertLess(package_index, load_index)
+        self.assertLess(load_index, calls.index(release))
+        archive = Path(result["archive"])
+        self.assertEqual(Path(result["checksum"]).read_text(),
+                         f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
+        notes = Path(release[release.index("--notes-file") + 1]).read_text()
+        self.assertIn("Verified image checksums/identities", notes)
+        self.assertIn("Full release rehearsal was skipped", notes)
+        self.assertNotIn("production-shaped fresh installation", notes)
+        self.assertNotIn("closed-store backup and restore", notes)
+
+    def test_cli_forwards_skip_rehearsal(self):
+        with patch.object(PUBLISH, "publish", return_value={}) as publish, patch("builtins.print"):
+            self.assertEqual(PUBLISH.main([TAG, "--message", "Focused release", "--output", str(self.output),
+                                           "--skip-rehearsal"]), 0)
+        publish.assert_called_once_with(TAG, "Focused release", str(self.output), skip_rehearsal=True)
+
     def test_newly_staged_whitespace_failure_stops_before_commit_tag_or_push(self):
         self.commands.fail_staged_check = True
         with self.assertRaises(subprocess.CalledProcessError):

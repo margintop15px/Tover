@@ -33,7 +33,7 @@ def guard_private_paths(root, names):
             raise ValueError(f"Refusing to publish a private/generated path: {name}")
 
 
-def publish(tag, message, output, *, root=ROOT):
+def publish(tag, message, output, *, root=ROOT, skip_rehearsal=False):
     root = Path(root).resolve()
     output = Path(output)
     if (not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag) or tag == "latest"
@@ -127,9 +127,10 @@ def publish(tag, message, output, *, root=ROOT):
             or manifest["images"]["app"]["reference"] != "tover:" + tag):
         raise ValueError("The bundle does not identify the clean release commit and image")
     run([*release, "load", str(output)])
-    environment = {**os.environ, "TOVER_REHEARSAL_RELEASE": str(output)}
-    environment.pop("PYTHONOPTIMIZE", None)
-    run([sys.executable, str(root / PROFILE / "rehearse.py")], env=environment)
+    if not skip_rehearsal:
+        environment = {**os.environ, "TOVER_REHEARSAL_RELEASE": str(output)}
+        environment.pop("PYTHONOPTIMIZE", None)
+        run([sys.executable, str(root / PROFILE / "rehearse.py")], env=environment)
     clean_commit(commit)
     with archive.open("xb") as raw:
         with tarfile.open(fileobj=raw, mode="w:gz") as bundle:
@@ -140,12 +141,14 @@ def publish(tag, message, output, *, root=ROOT):
             checksum.update(chunk)
     with checksum_file.open("x") as target:
         target.write(f"{checksum.hexdigest()}  {archive.name}\n")
+    validation = ("Verified image checksums/identities. Full release rehearsal was skipped for this release.\n\n"
+                  if skip_rehearsal else
+                  "Verified image checksums/identities and production-shaped fresh installation, signup, "
+                  "closed-store backup and restore. Private rehearsal evidence stays on the build machine.\n\n")
     with notes_file.open("x") as notes:
         notes.write(f"{message}\n\nCommit: `{commit}`\n\n"
                     f"Offline Linux amd64 bundle: `{archive.name}`; application image: `tover:{tag}`.\n\n"
-                    "Verified image checksums/identities and production-shaped fresh installation, signup, "
-                    "closed-store backup and restore. Private rehearsal evidence stays on the build machine.\n\n"
-                    "Public TLS, external SMTP and Selectel recovery still require host checks.\n")
+                    + validation + "Public TLS, external SMTP and Selectel recovery still require host checks.\n")
     clean_commit(commit)
     prerelease = [] if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag) else ["--prerelease"]
     published = run(["gh", "release", "create", tag, str(archive), str(checksum_file), str(output / "release.json"),
@@ -160,9 +163,11 @@ def main(arguments=None):
     parser.add_argument("tag")
     parser.add_argument("--message", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--skip-rehearsal", action="store_true",
+                        help="Skip the full installation/backup/restore rehearsal; retain bundle checks")
     args = parser.parse_args(arguments)
     try:
-        print(json.dumps(publish(args.tag, args.message, args.output), indent=2))
+        print(json.dumps(publish(args.tag, args.message, args.output, skip_rehearsal=args.skip_rehearsal), indent=2))
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Publication stopped: {error}\nExisting commits, tags and artifacts were preserved.", file=sys.stderr)

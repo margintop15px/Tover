@@ -2,6 +2,8 @@
 
 The application selects Auth, workspace and session services through Integrant. Hosted Supabase and self-hosted Supabase use the same HTTP adapters. Workspace authorization stays in Postgres RPCs and the application checks current membership on each protected request. Browser cookies contain an opaque session identifier; encrypted tokens remain in the private session database.
 
+Both self-hosted Compose profiles give Auth a fixed database pool: at most 8 open connections and up to 4 idle connections retained for reuse. This is separate from the Clojure JDBC pool. Auth must be recreated after changing these environment settings; existing sessions remain in Postgres.
+
 ## Local integration profile
 
 Requirements: Docker Compose v2, Python 3 and the repository’s Clojure CLI/JDK setup. The profile publishes only loopback ports and creates its own `tover-identity` project and `identity-data` volume.

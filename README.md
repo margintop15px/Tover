@@ -71,7 +71,7 @@ python3 deployment/production/publish.py v0.1.0 \
   --message "Release v0.1.0" --output /tmp/tover-v0.1.0
 ```
 
-This requires authenticated Git/`gh`, Docker and Buildx. It checks the bundle and rehearses fresh installation plus backup/restore before creating the GitHub release. See the [release runbook](docs/selectel-deployment.md#install-the-release) for failure handling and private evidence.
+This requires authenticated Git/`gh`, Docker and Buildx. It checks the bundle and, by default, rehearses fresh installation plus backup/restore before creating the GitHub release. For small changes, run focused checks and add `--skip-rehearsal` for a fast release; its notes record that the rehearsal was skipped. Use the full rehearsal for schema, storage, dependency-version or recovery changes. See the [release runbook](docs/selectel-deployment.md#install-the-release) for failure handling and private evidence.
 
 Inside the extracted bundle on the server:
 

@@ -464,6 +464,20 @@ if sys.argv[1] == 'check' and os.environ.get('MISSING_BUNDLE_IMAGE'):
         self.assertNotIn("COPY test", dockerfile)
         self.assertIn("USER 10001:10001", dockerfile)
 
+    def test_auth_pool_limits_are_explicit(self):
+        for profile in (PROFILE, ROOT / "deployment/local-identity"):
+            with self.subTest(profile=profile.name):
+                result = subprocess.run(
+                    ["docker", "compose", "--project-directory", str(profile),
+                     "--env-file", str(self.environment), "-f", str(profile / "compose.yaml"),
+                     "config", "--format", "json"],
+                    env={**os.environ, "TO_DEV_APP_PASSWORD": "synthetic-app-password"},
+                    capture_output=True, check=True)
+                auth = json.loads(result.stdout)["services"]["auth"]["environment"]
+                self.assertEqual(auth["GOTRUE_DB_MAX_POOL_SIZE"], "8")
+                self.assertEqual(auth["GOTRUE_DB_MAX_IDLE_POOL_SIZE"], "4")
+                self.assertEqual(auth["GOTRUE_DB_CONN_PERCENTAGE"], "0")
+
     def test_rehearsal_has_only_loopback_ingress_and_no_tls_issuer(self):
         result = subprocess.run(["docker", "compose", "--project-directory", str(PROFILE),
                                  "--env-file", str(self.environment), "-f", str(PROFILE / "compose.yaml"),

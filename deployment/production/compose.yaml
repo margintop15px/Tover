@@ -40,6 +40,9 @@ services:
       API_EXTERNAL_URL: ${TOVER_ORIGIN:?Configure HTTPS origin}/auth/v1
       GOTRUE_DB_DRIVER: postgres
       GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      GOTRUE_DB_MAX_POOL_SIZE: '8'
+      GOTRUE_DB_MAX_IDLE_POOL_SIZE: '4'
+      GOTRUE_DB_CONN_PERCENTAGE: '0'
       GOTRUE_SITE_URL: ${TOVER_ORIGIN}
       GOTRUE_URI_ALLOW_LIST: ${TOVER_ORIGIN}/auth/confirm
       GOTRUE_DISABLE_SIGNUP: 'false'

@@ -70,7 +70,7 @@ Validate an existing user's login, memberships, accepted operation IDs, stock to
 ## Upgrade
 
 1. Record the current source revision and image IDs. Complete and copy a backup off-host.
-2. Build the next release under a new application tag. For a bundle installation, build on the connected release machine and transfer/load the new bundle over SSH. Run Clojure, browser and deployment configuration checks against it; rehearse restore with the pinned dependency versions.
+2. Build the next release under a new application tag. For a bundle installation, build on the connected release machine and transfer/load the new bundle over SSH. Run checks relevant to the change. Small changes can use `publish.py --skip-rehearsal`; release notes record the skipped rehearsal. Rehearse restoration when changing schemas, storage, dependency versions or recovery behavior.
 3. Stop public access and application writers for any schema migration. Review the new consecutive SQL migration and its compatibility before applying it. This release requires 034 for workspace-scoped actor display labels; it preserves identity and inventory records. `production.sh migrate` applies only the reviewed, idempotent 033 → 034 chain, not arbitrary future SQL. A changed RDF semantic package also requires an explicit reviewed migration: startup refuses an existing store whose installed ontology/shapes/query checksum differs. Do not overwrite the installed package automatically. Rehearse that migration against a restored backup first.
 4. Change `TOVER_APP_IMAGE` to the verified release, run `production.sh up`, verify readiness and repeat the smoke workflow. Keep the old image and backup.
 5. Roll back the application image only when the new release's data format is compatible. Otherwise restore the complete pre-upgrade backup into a new project and switch the public host after validation. Never combine one backup's RDF directory with another backup's database or secrets.
@@ -85,7 +85,7 @@ Configuration and backup failure guards have automated checks:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test/production -v
 ```
 
-Run the reproducible production-shaped rehearsal before a release:
+Run the reproducible production-shaped rehearsal for schema, storage, dependency-version or recovery changes:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 deployment/production/rehearse.py
