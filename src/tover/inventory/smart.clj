@@ -49,7 +49,7 @@
             nodes  (filter map? (tree-seq coll? seq (select-keys snapshot [:rows :operations :drafts])))
             values (case leaf
                      :direction ["incoming" "outgoing"]
-                     :currency (concat ["EUR" "USD" "GBP"] (keep :currency nodes))
+                     :currency (concat ["EUR" "USD" "GBP" "RUB"] (keep :currency nodes))
                      :name (map :name (vals (:items snapshot)))
                      (keep #(get % leaf) nodes))]
         (if (= :name leaf)
