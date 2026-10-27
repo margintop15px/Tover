@@ -7,6 +7,7 @@
             [com.brunobonacci.mulog :as mu]
             [integrant.core :as ig]
             [org.httpkit.server :as http]
+            [ring.middleware.session.store :as ring-store]
             [tover.app :as app]
             [tover.auth.security :as security]
             [tover.identity :as identity]
@@ -89,6 +90,61 @@
               (is (= 503 (:status response)))
               (is (= "unavailable\n" (:body response)))))
           (finally (realtime/stop! rt) (rdf/close! repo)))))))
+
+
+(deftest static-assets-revalidate-only-in-production-and-bypass-sessions
+  (doseq [development? [false true]]
+    (with-data-path
+      (fn [path]
+        (let [repo     (rdf/native-store path)
+              rt       (realtime/start!)
+              services (fixture-services)
+              delegate (:session-store services)
+              calls    (atom [])
+              sessions (reify ring-store/SessionStore
+                         (read-session [_ key]
+                           (swap! calls conj :read)
+                           (ring-store/read-session delegate key))
+                         (write-session [_ key data]
+                           (swap! calls conj :write)
+                           (ring-store/write-session delegate key data))
+                         (delete-session [_ key]
+                           (swap! calls conj :delete)
+                           (ring-store/delete-session delegate key)))]
+          (try
+            (let [handler     (app/create-handler (assoc services :repo repo :realtime rt
+                                                         :session-store sessions :development? development?))
+                  request     {:request-method :get :uri "/app.css" :headers {"cookie" "tover-session=unused"}}
+                  response    (handler request)
+                  modified    (get-in response [:headers "Last-Modified"])
+                  conditional (handler (assoc-in request [:headers "if-modified-since"] modified))
+                  head        (handler (assoc request :request-method :head))]
+              (is (= 200 (:status response)))
+              (is (some? (:body response)))
+              (is (= "text/css" (get-in response [:headers "Content-Type"])))
+              (is (string? modified))
+              (is (= (if development? "no-store" "public, no-cache")
+                     (get-in response [:headers "cache-control"])))
+              (is (= (if development? 200 304) (:status conditional)))
+              (when-not development?
+                (is (nil? (:body conditional)))
+                (is (nil? (get-in conditional [:headers "Content-Length"]))))
+              (is (= 200 (:status head)))
+              (is (nil? (:body head)))
+              (is (nil? (get-in response [:headers "Set-Cookie"])))
+              (is (empty? @calls) "Static requests never touch the session store")
+              (is (= 200 (:status (handler (assoc-in request [:headers "if-modified-since"]
+                                                     "Thu, 01 Jan 1970 00:00:00 GMT")))))
+              (let [protected (handler (assoc request :uri "/operations"))
+                    missing   (handler (assoc request :uri "/missing-asset.js"))
+                    post      (handler (assoc request :request-method :post))]
+                (is (= 303 (:status protected)))
+                (is (= "private, no-store" (get-in protected [:headers "cache-control"])))
+                (is (= 404 (:status missing)))
+                (is (= "private, no-store" (get-in missing [:headers "cache-control"])))
+                (is (= 403 (:status post)))
+                (is (seq @calls))))
+            (finally (realtime/stop! rt) (rdf/close! repo))))))))
 
 
 (deftest operational-handlers-are-built-once-with-current-verified-request-context

@@ -11,7 +11,9 @@
     [org.httpkit.server :as http]
     [reitit.ring :as ring]
     [ring.middleware.anti-forgery :refer [wrap-anti-forgery]]
+    [ring.middleware.head :refer [wrap-head]]
     [ring.middleware.keyword-params :refer [wrap-keyword-params]]
+    [ring.middleware.not-modified :refer [wrap-not-modified]]
     [ring.middleware.params :refer [wrap-params]]
     [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
     [tover.auth.core :as auth]
@@ -125,6 +127,19 @@
        :body    (if (= :head (:request-method request)) "" (if ready? "ok\n" "unavailable\n"))})))
 
 
+(defn- resource-handler
+  {:malli/schema [:=> [:cat :boolean] schema/Handler]}
+  [development?]
+  (let [resources (ring/create-resource-handler {:path "/" :root "public" :index-files []})
+        handler   (fn [request]
+                    (when (contains? #{:get :head} (:request-method request))
+                      (when-let [response (resources request)]
+                        (update response :headers merge
+                                {"cache-control"   (if development? "no-store" "public, no-cache")
+                                 "referrer-policy" "strict-origin"}))))]
+    (wrap-head (if development? handler (wrap-not-modified handler)))))
+
+
 (defn create-handler
   {:malli/schema
    [:=> [:cat HandlerOptions] schema/Handler]}
@@ -142,25 +157,25 @@
                                :data {:middleware [wrap-keyword-params
                                                    (security/identity-middleware context)
                                                    errors/form-exception-middleware]}})
-                 (ring/routes
-                   (ring/create-resource-handler {:path "/" :root "public"})
-                   (ring/create-default-handler)))
+                 (ring/create-default-handler))
         secured (fn [request]
                   (let [response (if (contains? #{"/healthz" "/readyz"} (:uri request))
                                    (health-response options request)
                                    (routed request))]
                     (update response :headers merge
-                            {"cache-control" "private, no-store" "referrer-policy" "strict-origin"})))]
-    (-> secured
-        (wrap-anti-forgery {:error-handler (fn [_request]
-                                             {:status 403 :headers {"content-type" "text/plain; charset=utf-8"}
-                                              :body   (i18n/t "Invalid anti-forgery token")})})
-        (security/wrap-origin origin)
-        i18n/wrap-locale
-        wrap-params
-        (session/wrap-session {:store        session-store :cookie-name "tover-session"
-                               :cookie-attrs {:http-only true               :same-site :lax :path "/"
-                                              :secure    (not development?)}})
+                            {"cache-control" "private, no-store" "referrer-policy" "strict-origin"})))
+        application (-> secured
+                        (wrap-anti-forgery {:error-handler (fn [_request]
+                                                             {:status 403 :headers {"content-type" "text/plain; charset=utf-8"}
+                                                              :body   (i18n/t "Invalid anti-forgery token")})})
+                        (security/wrap-origin origin)
+                        i18n/wrap-locale
+                        wrap-params
+                        (session/wrap-session {:store        session-store :cookie-name "tover-session"
+                                               :cookie-attrs {:http-only true               :same-site :lax :path "/"
+                                                              :secure    (not development?)}}))
+        resources (resource-handler (boolean development?))]
+    (-> (fn [request] (or (resources request) (application request)))
         log/wrap-request-context
         hk/wrap-start-responding)))
 

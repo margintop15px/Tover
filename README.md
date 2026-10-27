@@ -32,6 +32,8 @@ Identity spans measure JDBC connection acquisition, session transactions, change
 
 Every response carries `X-Request-Id` and `Server-Timing: app;dur=...` in milliseconds. This measures server processing through response preparation, including authentication and session middleware. Datastar fragment writes have separate spans; network latency and browser rendering are outside the server timer. In DevTools, use the response request ID to locate its JSON trace and compare the server duration with TTFB.
 
+Static assets bypass sessions. Production uses browser caching with `Cache-Control: public, no-cache` and Ring's `Last-Modified`/304 revalidation, so unchanged files reuse the browser's stored copy while changed files are downloaded on the next request. Development sends `no-store` and does not return conditional 304 responses. Application pages and streams remain `private, no-store`.
+
 ## Inventory workflow
 
 Stock shows quantities by stable item ID and location. A purchase adds its item quantities to stock when accepted. Purchases have one item list with no separate arrival step or delivery status. Article/barcode edits retain the item's history. Different suppliers can contribute to the same balance. Operations shows accepted business history for Purchase, Return, Transfer, Production, Defect, Sale, Write-off and Payment. Financial amounts remain exact facts; Payment has no stock effect.
