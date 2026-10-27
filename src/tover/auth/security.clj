@@ -1,6 +1,7 @@
 (ns tover.auth.security
   (:require
     [bel.validation :as validation]
+    [com.brunobonacci.mulog :as mu]
     [ring.middleware.session.store :as ring-store]
     [tover.auth.core :as auth]
     [tover.auth.sessions :as sessions]
@@ -33,8 +34,10 @@
                                                      tokens)
                                             row    (assoc row :tokens tokens)]
                                         (try
-                                          (let [user        (auth/current-user auth (:access-token tokens))
-                                                memberships (workspaces/list-memberships workspaces (:access-token tokens))
+                                          (let [user        (mu/trace ::current-user {:pairs []}
+                                                              (auth/current-user auth (:access-token tokens)))
+                                                memberships (mu/trace ::memberships {:pairs []}
+                                                              (workspaces/list-memberships workspaces (:access-token tokens)))
                                                 selected    (or (some #(when (= workspace-id (:workspace-id %)) %) memberships)
                                                                 (first memberships))
                                                 selected-id (:workspace-id selected)

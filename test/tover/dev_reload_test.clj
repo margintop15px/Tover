@@ -142,11 +142,15 @@
                                                            :admin-key (get environment "TOVER_AUTH_ADMIN_KEY")}
                                                           (:tover.app/auth development)
                                                           (:tover.app/workspaces development))
-                           :jdbc-sessions?             (= {:jdbc-url       (get environment "TOVER_JDBC_URL")
-                                                           :user           (get environment "TOVER_DB_USER")
-                                                           :password       (get environment "TOVER_DB_PASSWORD")
-                                                           :encryption-key (get environment "TOVER_SESSION_KEY")}
-                                                          (:tover.app/session-store development))
+                           :jdbc-sessions?             (and (= {:jdbc-url (get environment "TOVER_JDBC_URL")
+                                                                :user     (get environment "TOVER_DB_USER")
+                                                                :password (get environment "TOVER_DB_PASSWORD")}
+                                                               (:tover.app/datasource development))
+                                                            (= {:datasource     (ig/ref :tover.app/datasource)
+                                                                :encryption-key (get environment "TOVER_SESSION_KEY")}
+                                                               (:tover.app/session-store development))
+                                                            (= (ig/ref :tover.app/datasource)
+                                                               (get-in development [:user/handler :identity-health :datasource])))
                            :fixture-auth?              (satisfies? auth/Auth (get-in development [:tover.app/auth :instance]))
                            :fixture-workspaces?        (satisfies? workspaces/Directory (get-in development [:tover.app/workspaces :instance]))
                            :fixture-sessions?          (satisfies? ring/SessionStore (get-in development [:tover.app/session-store :instance]))

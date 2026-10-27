@@ -7,6 +7,7 @@
     [bel.session :as session]
     [bel.validation :as validation]
     [integrant.core :as ig]
+    [next.jdbc :as jdbc]
     [org.httpkit.server :as http]
     [reitit.ring :as ring]
     [ring.middleware.anti-forgery :refer [wrap-anti-forgery]]
@@ -19,6 +20,7 @@
     [tover.auth.supabase :as auth-supabase]
     [tover.inventory.smart-web]
     [tover.shared.i18n :as i18n]
+    [tover.shared.jdbc :as database]
     [tover.shared.rdf :as rdf]
     [tover.shared.schema :as schema]
     [tover.shared.supabase :as supabase]
@@ -26,9 +28,7 @@
     [tover.workspaces.core :as workspaces]
     [tover.workspaces.supabase :as workspace-supabase])
   (:import
-    [clojure.lang ExceptionInfo]
-    [java.sql DriverManager]
-    [java.util Properties]))
+    [clojure.lang ExceptionInfo]))
 
 
 (def Config
@@ -74,6 +74,7 @@
    [::auth :any]
    [::workspaces :any]
    [::session-store :any]
+   [::datasource {:optional true} :any]
    [::logging {:optional true} StopFn]
    [::handler schema/Handler]
    [::server StopFn]])
@@ -103,16 +104,9 @@
   (rdf/with-transaction [connection {:repo repo :level :snapshot}]
     (.size ^org.eclipse.rdf4j.repository.RepositoryConnection connection
            (make-array org.eclipse.rdf4j.model.Resource 0)))
-  (when-let [{:keys [jdbc-url user password auth-url rest-url api-key]} identity-health]
-    (let [properties (doto (Properties.)
-                       (.setProperty "user" user)
-                       (.setProperty "password" password)
-                       (.setProperty "connectTimeout" "2")
-                       (.setProperty "socketTimeout" "2"))]
-      (with-open [connection (DriverManager/getConnection jdbc-url properties)
-                  statement  (.createStatement connection)
-                  result     (.executeQuery statement "select 1 from app_private.sessions limit 1")]
-        (.next result)))
+  (when-let [{:keys [datasource auth-url rest-url api-key]} identity-health]
+    (with-open [connection (database/connection datasource)]
+      (jdbc/execute-one! connection ["select 1 from app_private.sessions limit 1"] {:timeout 2}))
     (doseq [url [(str auth-url "/health") (str rest-url "/")]]
       (supabase/request! {:client (supabase/client) :api-key api-key :timeout-ms 2000}
                          {:url url :method :get})))
@@ -235,11 +229,10 @@
          (assoc-in [::realtime :logging] (ig/ref ::logging))
          (assoc-in [::handler :identity-health]
                    (merge (select-keys provider [:auth-url :rest-url :api-key])
-                          {:jdbc-url (required "TOVER_JDBC_URL")
-                           :user     (required "TOVER_DB_USER")
-                           :password (required "TOVER_DB_PASSWORD")}))
-         (assoc ::session-store {:jdbc-url       (required "TOVER_JDBC_URL")
-                                 :user           (required "TOVER_DB_USER")     :password (required "TOVER_DB_PASSWORD")
+                          {:datasource (ig/ref ::datasource)}))
+         (assoc ::datasource {:jdbc-url (required "TOVER_JDBC_URL")
+                              :user     (required "TOVER_DB_USER")  :password (required "TOVER_DB_PASSWORD")})
+         (assoc ::session-store {:datasource     (ig/ref ::datasource)
                                  :encryption-key (required "TOVER_SESSION_KEY")})))))
 
 
@@ -281,6 +274,12 @@
 (defn session-store
   {:malli/schema [:=> [:cat :map] :any]} [{:keys [instance] :as options}]
   (or instance (sessions/jdbc-store options)))
+
+
+(defn datasource
+  {:malli/schema [:=> [:cat :map] :any]}
+  [options]
+  (database/datasource options))
 
 
 (defn logging
@@ -330,6 +329,10 @@
   (rdf/close! repository))
 
 
+(defmethod ig/halt-key! ::datasource [_ datasource]
+  (database/close! datasource))
+
+
 (defmethod ig/halt-key! ::logging [_ stop]
   (stop))
 
@@ -340,6 +343,7 @@
   [system]
   (when-let [error (cleanup-error nil
                                   [#(ig/halt! system)
+                                   #(when-let [datasource (::datasource system)] (database/close! datasource))
                                    #(when-let [stop (::logging system)] (stop))])]
     (throw error))
   nil)
@@ -359,6 +363,7 @@
                          (cond-> []
                            (::realtime partial-system) (conj #(realtime/stop! (::realtime partial-system)))
                            (::repo partial-system) (conj #(rdf/close! (::repo partial-system)))
+                           (::datasource partial-system) (conj #(database/close! (::datasource partial-system)))
                            (::logging partial-system) (conj #((::logging partial-system)))))))
       (throw error))))
 

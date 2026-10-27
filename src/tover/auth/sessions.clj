@@ -1,22 +1,28 @@
 (ns tover.auth.sessions
   "Opaque Ring sessions. Credential changes run under the same database row lock."
   (:require
+    [buddy.core.codecs :as codecs]
+    [buddy.core.crypto :as crypto]
+    [buddy.core.nonce :as nonce]
     [clojure.edn :as edn]
-    [ring.middleware.session.store :as ring])
+    [clojure.string :as str]
+    [com.brunobonacci.mulog :as mu]
+    [next.jdbc :as jdbc]
+    [next.jdbc.date-time :as date-time]
+    [next.jdbc.result-set :as result-set]
+    [ring.middleware.session.store :as ring]
+    [tover.shared.jdbc :as database])
   (:import
-    [java.security SecureRandom]
-    [java.sql DriverManager Timestamp]
     [java.time Instant]
-    [java.util Base64 Properties UUID]
-    [javax.crypto Cipher]
-    [javax.crypto.spec GCMParameterSpec SecretKeySpec]))
+    [java.util UUID]))
+
+
+(date-time/read-as-instant)
 
 
 (defn random-key
   {:malli/schema [:=> [:cat] :string]} []
-  (let [bytes (byte-array 32)]
-    (.nextBytes (SecureRandom.) bytes)
-    (.encodeToString (.withoutPadding (Base64/getUrlEncoder)) bytes)))
+  (codecs/bytes->b64-str (nonce/random-bytes (long 32)) true))
 
 
 (defn- expired?
@@ -92,63 +98,51 @@
                        [row row]))))
 
 
-(defn- crypt
-  {:malli/schema [:=> [:cat :int :any :string] :string]} [mode key input]
-  (let [cipher  (Cipher/getInstance "AES/GCM/NoPadding")
-        encoder (Base64/getEncoder)
-        decoder (Base64/getDecoder)]
-    (if (= mode Cipher/ENCRYPT_MODE)
-      (let [nonce (byte-array 12)]
-        (.nextBytes (SecureRandom.) nonce)
-        (.init cipher mode (SecretKeySpec. key "AES") (GCMParameterSpec. 128 nonce))
-        (str (.encodeToString encoder nonce) "."
-             (.encodeToString encoder (.doFinal cipher (.getBytes ^String input "UTF-8")))))
-      (let [[nonce encrypted] (.split ^String input "\\." 2)]
-        (.init cipher mode (SecretKeySpec. key "AES") (GCMParameterSpec. 128 (.decode decoder ^String nonce)))
-        (String. (.doFinal cipher (.decode decoder ^String encrypted)) "UTF-8")))))
+(defn- encrypt
+  {:malli/schema [:=> [:cat :any :string] :string]}
+  [key input]
+  (let [iv (nonce/random-bytes (long 12))]
+    (str (codecs/bytes->b64-str iv) "."
+         (codecs/bytes->b64-str (crypto/encrypt (codecs/str->bytes input) key iv {:alg :aes256-gcm})))))
+
+
+(defn- decrypt
+  {:malli/schema [:=> [:cat :any :string] :string]}
+  [key input]
+  (let [[iv encrypted] (str/split input #"\." 2)]
+    (codecs/bytes->str
+      (crypto/decrypt (codecs/b64->bytes encrypted) key (codecs/b64->bytes iv) {:alg :aes256-gcm}))))
 
 
 (defn jdbc-store
-  {:malli/schema [:=> [:cat :map] :map]} [{:keys [jdbc-url user password encryption-key]}]
-  (let [key   (try (.decode (Base64/getDecoder) ^String encryption-key)
-                   (catch Exception _ (throw (ex-info "Invalid session encryption key" {:type :configuration}))))
-        props (doto (Properties.)
-                (.setProperty "user" user)
-                (.setProperty "password" password)
-                (.setProperty "connectTimeout" "15")
-                (.setProperty "socketTimeout" "15"))]
+  {:malli/schema [:=> [:cat :map] :map]} [{:keys [datasource encryption-key]}]
+  (let [key (try (codecs/b64->bytes encryption-key)
+                 (catch Exception _ (throw (ex-info "Invalid session encryption key" {:type :configuration}))))]
     (when-not (= 32 (alength key))
       (throw (ex-info "Session encryption key must contain 32 bytes" {:type :configuration})))
     (->Store
       (fn [id f]
-        (with-open [connection (DriverManager/getConnection jdbc-url props)]
-          (.setAutoCommit connection false)
-          (try
-            (let [row             (with-open [statement (.prepareStatement connection "select data,tokens,user_id,workspace_id,version,expires_at from app_private.sessions where id=? for update")]
-                                    (.setString statement 1 id)
-                                    (with-open [result (.executeQuery statement)]
-                                      (when (.next result)
-                                        {:id      id :data (edn/read-string (.getString result "data"))
-                                         :tokens  (some->> (.getString result "tokens") (crypt Cipher/DECRYPT_MODE key) edn/read-string)
-                                         :user-id (.getObject result "user_id") :workspace-id (.getObject result "workspace_id")
-                                         :version (.getObject result "version") :expires-at   (.toInstant (.getTimestamp result "expires_at"))})))
-                  [updated value] (f row)]
-              (if updated
-                (with-open [statement (.prepareStatement connection "insert into app_private.sessions(id,data,tokens,user_id,workspace_id,version,expires_at) values(?,?,?,?,?,?,?) on conflict(id) do update set data=excluded.data,tokens=excluded.tokens,user_id=excluded.user_id,workspace_id=excluded.workspace_id,version=excluded.version,expires_at=excluded.expires_at,updated_at=now()")]
-                  (.setString statement 1 id)
-                  (.setString statement 2 (pr-str (:data updated)))
-                  (.setString statement 3 (when (:tokens updated) (crypt Cipher/ENCRYPT_MODE key (pr-str (:tokens updated)))))
-                  (.setObject statement 4 (:user-id updated))
-                  (.setObject statement 5 (:workspace-id updated))
-                  (.setObject statement 6 (:version updated))
-                  (.setTimestamp statement 7 (Timestamp/from (:expires-at updated)))
-                  (.executeUpdate statement))
-                (when row
-                  (with-open [statement (.prepareStatement connection "delete from app_private.sessions where id=?")]
-                    (.setString statement 1 id)
-                    (.executeUpdate statement))))
-              (.commit connection)
-              value)
-            (catch Throwable error
-              (.rollback connection)
-              (throw error))))))))
+        (mu/trace ::transaction {:pairs []}
+          (with-open [connection (database/connection datasource)]
+            (jdbc/with-transaction [tx connection]
+              (let [stored          (jdbc/execute-one! tx
+                                                       ["select data,tokens,user_id,workspace_id,version,expires_at from app_private.sessions where id=? for update" id]
+                                                       {:builder-fn result-set/as-unqualified-lower-maps})
+                    row             (when stored
+                                      {:id      id :data (edn/read-string (:data stored))
+                                       :tokens  (some->> (:tokens stored) (decrypt key) edn/read-string)
+                                       :user-id (:user_id stored) :workspace-id (:workspace_id stored)
+                                       :version (:version stored) :expires-at   (:expires_at stored)})
+                    [updated value] (f row)]
+                (cond
+                  (and updated (not= row updated))
+                  (mu/trace ::persist {:pairs [:operation :write]}
+                    (jdbc/execute-one! tx
+                                       ["insert into app_private.sessions(id,data,tokens,user_id,workspace_id,version,expires_at) values(?,?,?,?,?,?,?) on conflict(id) do update set data=excluded.data,tokens=excluded.tokens,user_id=excluded.user_id,workspace_id=excluded.workspace_id,version=excluded.version,expires_at=excluded.expires_at,updated_at=now()"
+                                        id (pr-str (:data updated)) (when (:tokens updated) (encrypt key (pr-str (:tokens updated))))
+                                        (:user-id updated) (:workspace-id updated) (:version updated) (:expires-at updated)]))
+
+                  (and row (nil? updated))
+                  (mu/trace ::persist {:pairs [:operation :delete]}
+                    (jdbc/execute-one! tx ["delete from app_private.sessions where id=?" id])))
+                value))))))))

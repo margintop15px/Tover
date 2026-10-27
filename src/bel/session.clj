@@ -11,13 +11,16 @@
   {:malli/schema [:=> [:cat [:fn ifn?]] [:fn ifn?]]}
   [handler]
   (fn [request]
-    (let [current (:session request)
-          id      (:bel/session-id current)
-          current (assoc current :bel/session-id (if (m/validate :uuid id) id (UUID/randomUUID)))]
+    (let [current   (:session request)
+          id        (:bel/session-id current)
+          existing? (m/validate :uuid id)
+          current   (assoc current :bel/session-id (if existing? id (UUID/randomUUID)))]
       (when-let [response (handler (assoc request :session current))]
-        (if (and (contains? response :session) (nil? (:session response)))
-          response
-          (update response :session #(with-meta (merge current %) (meta %))))))))
+        (cond
+          (and (contains? response :session) (nil? (:session response))) response
+          (or (not existing?) (contains? response :session))
+          (update response :session #(with-meta (merge current %) (meta %)))
+          :else response)))))
 
 
 (defn wrap-session

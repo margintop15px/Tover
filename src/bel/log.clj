@@ -18,7 +18,7 @@
   [:mulog/event-name :mulog/trace-id :mulog/root-trace :mulog/parent-trace
    :mulog/timestamp :mulog/duration :mulog/outcome :mulog/namespace
    :app-name :env :request-id :method :datastar? :status
-   :page :view :action :topic :patches :characters :topics :error-type])
+   :page :view :action :topic :patches :characters :topics :operation :error-type])
 
 
 (defn- safe-events

@@ -28,6 +28,8 @@ Development enables loopback nREPL, Malli instrumentation and hot reload. Route/
 
 Bel emits μ/log traces for HTTP processing, page/view queries, rendering, actions, fragment writes and realtime delivery. Integrant owns the publisher: development writes JSON lines to ignored `logs/events.jsonl`; production writes JSON to stdout for Docker log rotation. Query recent development events with `(bel.log/recent 20)`. Durations use nanoseconds, and `:request-id`, `:mulog/root-trace` and `:mulog/parent-trace` correlate nested spans across SSE callbacks. Published fields exclude request payloads, URLs, identities, credentials and exception messages/data.
 
+Identity spans measure JDBC connection acquisition, session transactions, changed-row persistence, Auth user verification and membership lookup. Session storage and readiness share an Integrant-owned HikariCP pool with 2 idle connections, at most 8 connections and a 2-second acquisition timeout. Unchanged sessions do not rewrite encrypted credentials; every protected request still verifies the current Auth user and workspace membership.
+
 Every response carries `X-Request-Id` and `Server-Timing: app;dur=...` in milliseconds. This measures server processing through response preparation, including authentication and session middleware. Datastar fragment writes have separate spans; network latency and browser rendering are outside the server timer. In DevTools, use the response request ID to locate its JSON trace and compare the server duration with TTFB.
 
 ## Inventory workflow

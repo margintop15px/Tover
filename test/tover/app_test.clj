@@ -11,6 +11,7 @@
             [tover.auth.security :as security]
             [tover.identity :as identity]
             [tover.session-store :as session-store]
+            [tover.shared.jdbc :as database]
             [tover.shared.rdf :as rdf]
             [tover.stock.store :as store])
   (:import [java.nio.file Files]))
@@ -342,19 +343,65 @@
 (deftest stop-waits-for-http-drain-before-closing-rdf
   (with-data-path
     (fn [path]
-      (let [stopping (promise)
-            drained  (promise)]
-        (with-redefs [http/run-server   (fn [_ _] (Object.))
-                      http/server-stop! (fn [_ _] (deliver stopping true) drained)]
-          (let [system  (app/start! (fixture-config 3031 path))
+      (let [stopping      (promise)
+            drained       (promise)
+            pool          (Object.)
+            closed?       (atom false)
+            configuration (-> (fixture-config 3031 path)
+                              (assoc ::app/datasource {})
+                              (assoc-in [::app/session-store :datasource] (ig/ref ::app/datasource)))]
+        (with-redefs [http/run-server     (fn [_ _] (Object.))
+                      http/server-stop!   (fn [_ _] (deliver stopping true) drained)
+                      database/datasource (constantly pool)
+                      database/close!     (fn [value] (is (identical? pool value)) (reset! closed? true) nil)]
+          (let [system  (app/start! configuration)
                 stopped (future (app/stop! system))]
             (try
               (is (= true (deref stopping 2000 :timeout)))
               (is (.isInitialized (::app/repo system)))
+              (is (false? @closed?))
               (is (= :waiting (deref stopped 20 :waiting)))
               (finally (deliver drained true)))
             (is (nil? (deref stopped 2000 :timeout)))
+            (is @closed?)
             (is (not (.isInitialized (::app/repo system))))))))))
+
+
+(deftest pool-is-released-after-http-on-normal-and-failed-lifecycle
+  (doseq [failure [nil :start :stop]]
+    (with-data-path
+      (fn [path]
+        (let [pool          (Object.)
+              calls         (atom [])
+              closed?       (atom false)
+              configuration (-> (fixture-config 3031 path)
+                                (assoc ::app/datasource {})
+                                (assoc-in [::app/session-store :datasource] (ig/ref ::app/datasource)))]
+          (with-redefs [database/datasource (fn [_] (swap! calls conj :pool-open) pool)
+                        database/close!     (fn [value]
+                                              (is (identical? pool value))
+                                              (when (compare-and-set! closed? false true)
+                                                (swap! calls conj :pool-close))
+                                              nil)
+                        http/run-server     (fn [& _]
+                                              (swap! calls conj :http-start)
+                                              (when (= :start failure) (throw (IllegalStateException. "start failed")))
+                                              (Object.))
+                        http/server-stop!   (fn [& _]
+                                              (swap! calls conj :http-stop)
+                                              (when (= :stop failure) (throw (IllegalStateException. "stop failed")))
+                                              (delay true))]
+            (if (= :start failure)
+              (is (thrown? clojure.lang.ExceptionInfo (app/start! configuration)))
+              (let [system (app/start! configuration)]
+                (if (= :stop failure)
+                  (is (thrown? clojure.lang.ExceptionInfo (app/stop! system)))
+                  (is (nil? (app/stop! system))))))
+            (is @closed?)
+            (is (= (if (= :start failure)
+                     [:pool-open :http-start :pool-close]
+                     [:pool-open :http-start :http-stop :pool-close])
+                   @calls))))))))
 
 
 (deftest domain-declarations-preserve-routes-without-obsolete-ids

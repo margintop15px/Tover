@@ -4,12 +4,17 @@
     [bel.core :as bel]
     [clojure.string :as str]
     [clojure.test :refer [deftest is run-tests]]
+    [next.jdbc :as jdbc]
+    [next.jdbc.result-set :as result-set]
+    [org.httpkit.client :as client]
+    [org.httpkit.server :as server]
     [ring.middleware.session.store :as ring]
     [tover.auth.core :as auth]
     [tover.auth.security :as security]
     [tover.auth.sessions :as sessions]
     [tover.auth.sessions-test :as session-tests]
     [tover.auth.supabase :as supabase]
+    [tover.shared.jdbc :as database]
     [tover.shared.supabase :as http]
     [tover.support :as support]
     [tover.workspaces.core :as workspaces]
@@ -49,6 +54,22 @@
                   :encryption-key (value "IDENTITY_TEST_SESSION_KEY" (get local "SESSION_ENCRYPTION_KEY"))})}))
 
 
+(defn- check-datastar!
+  [handler browser]
+  (let [http-server (server/run-server handler {:port 0 :legacy-return-value? false})]
+    (try
+      (doseq [uri ["/operations" "/"]]
+        (let [response @(client/request
+                          {:url     (str "http://127.0.0.1:" (server/server-port http-server) uri "?datastar=%7B%7D")
+                           :method  :get :timeout 5000
+                           :headers {"datastar-request" "true"
+                                     "cookie"           (:cookie @(:state browser))
+                                     "x-tover-context"  (:context @(:state browser))}})]
+          (is (= 200 (:status response)))
+          (is (str/includes? (:body response) "datastar-patch-elements"))))
+      (finally @(server/server-stop! http-server {:timeout 2000})))))
+
+
 (deftest live-clojure-provider-contract
   (let [provider    (:provider *options*)
         auth        (supabase/auth provider)
@@ -70,12 +91,22 @@
     (when-let [settings (:session *options*)]
       (support/with-application
         #(assoc % :auth auth :workspaces directory :session-store (sessions/jdbc-store settings))
-        (fn [{:keys [browser]}]
+        (fn [{:keys [browser handler]}]
           (let [request! (:request! browser)]
             (is (= 200 (:status (request! :get "/auth/login"))))
             (is (= 303 (:status (request! :post (bel/action-url :tover.auth.web/sign-in) {"email" email "password" password}))))
             (is (= 200 (:status (request! :get "/workspace"))))
             (is (= 200 (:status (request! :get "/"))))
+            (let [snapshot #(jdbc/execute! (:datasource settings)
+                                           ["select updated_at,md5(data) as data,md5(tokens) as tokens from app_private.sessions where user_id=? order by id"
+                                            (get-in tokens [:user :user-id])]
+                                           {:builder-fn result-set/as-unqualified-lower-maps})
+                  before   (snapshot)]
+              (dotimes [_ 3]
+                (is (= 200 (:status (request! :get "/operations"))))
+                (is (= 200 (:status (request! :get "/")))))
+              (check-datastar! handler browser)
+              (is (= before (snapshot)) "Authenticated navigation does not rewrite the session"))
             (is (= 303 (:status (request! :post (bel/action-url :tover.workspaces.web/create-workspace) {"name" "Live Clojure workspace"}))))
             (is (= 200 (:status (request! :get "/workspace"))))
             (is (= 303 (:status (request! :post (bel/action-url :tover.auth.web/sign-out)))))
@@ -105,7 +136,13 @@
 
 
 (defn -main [& _]
-  (binding [*options* (options)]
-    (let [result (run-tests 'identity-integration)]
-      (shutdown-agents)
-      (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))))
+  (let [settings   (options)
+        datasource (some-> (:session settings) database/datasource)
+        result     (try
+                     (binding [*options* (cond-> settings
+                                           datasource (assoc-in [:session :datasource] datasource))]
+                       (run-tests 'identity-integration))
+                     (finally
+                       (when datasource (database/close! datasource))))]
+    (shutdown-agents)
+    (when (pos? (+ (:fail result) (:error result))) (System/exit 1))))
