@@ -463,6 +463,31 @@ test.describe('local date presentation', () => {
   });
 });
 
+test('idle realtime streams receive keepalives without inventory changes', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+    try {
+      const query = new URLSearchParams({ datastar: JSON.stringify({ tabId: crypto.randomUUID(), topics: [] }) });
+      const response = await fetch(`/_bel/realtime/stream?${query}`, {
+        headers: { 'datastar-request': 'true' }, signal: controller.signal,
+      });
+      const reader = response.body.getReader(), decoder = new TextDecoder();
+      let body = '';
+      while (!/data: signals \{\}\r?\n\r?\n/.test(body)) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        body += decoder.decode(value, { stream: true });
+      }
+      return { status: response.status, contentType: response.headers.get('content-type'), body };
+    } finally { clearTimeout(timeout); controller.abort(); }
+  });
+  expect(result.status).toBe(200);
+  expect(result.contentType).toContain('text/event-stream');
+  expect(result.body).toContain('event: datastar-patch-signals');
+  expect(result.body).toMatch(/data: signals \{\}\r?\n\r?\n/);
+});
+
 test('returning online reloads accepted changes missed by failed snapshot requests', async ({ page, browser }) => {
   const memberContext = await browser.newContext({ baseURL: new URL(page.url()).origin });
   try {

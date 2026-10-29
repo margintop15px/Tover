@@ -19,6 +19,22 @@ async function action(page, name, payload) {
   return signals;
 }
 
+for (const locale of ['en', 'ru']) test(`grid filter icons render valid SVG in ${locale}`, async ({ page }) => {
+  const errors = [];
+  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+  await signIn(page); await language(page, locale);
+  for (const url of ['/', '/operations']) {
+    await page.goto(url);
+    const filters = page.locator('.inventory-column-filter');
+    await expect(filters.first()).toBeVisible();
+    for (const path of await filters.locator('path').all()) await expect(path).toHaveAttribute('d', /^[Mm]/);
+    await filters.first().click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.getByRole('button', { name: locale === 'ru' ? 'Закрыть' : 'Close', exact: true }).click();
+  }
+  expect(errors).toEqual([]);
+});
+
 test('guest language covers every authentication screen and persists after reload', async ({ browser, baseURL }) => {
   const context = await browser.newContext({ baseURL, locale: 'ru-RU' });
   const page = await context.newPage();

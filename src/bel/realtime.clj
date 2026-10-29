@@ -10,7 +10,8 @@
     [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
     [starfederation.datastar.clojure.api :as d*])
   (:import
-    [clojure.lang Atom]))
+    [clojure.lang Atom]
+    [java.util.concurrent Executors ScheduledExecutorService TimeUnit]))
 
 
 (def Topic
@@ -43,6 +44,7 @@
   (let [valid-state? (m/validator State)]
     [:map
      [:state [:fn #(and (instance? Atom %) (valid-state? @%))]]
+     [:heartbeat {:optional true} [:fn #(instance? ScheduledExecutorService %)]]
      [:authorize {:optional true} [:fn ifn?]]
      [:render {:optional true} [:fn ifn?]]]))
 
@@ -143,6 +145,21 @@
   nil)
 
 
+(defn- heartbeat!
+  {:malli/schema [:=> [:cat Realtime] :nil]}
+  [realtime]
+  (doseq [[session-id tabs]   (:connections @(:state realtime))
+          [tab-id connection] tabs]
+    (let [sse (:sse connection)]
+      (try
+        ;; An empty patch keeps idle streams alive without querying or changing inventory.
+        (when (false? (d*/patch-signals! sse "{}"))
+          (close-connection! realtime session-id tab-id sse))
+        (catch Throwable _
+          (close-connection! realtime session-id tab-id sse)))))
+  nil)
+
+
 (defn start!
   "Optionally reauthorize a connection before each delivery. Return its recipient context or nil."
   {:malli/schema [:function
@@ -152,15 +169,21 @@
    (start! {}))
 
   ([options]
-   (cond-> {:state (atom {:connections {} :stopped? false})}
-     (:authorize options) (assoc :authorize (:authorize options))
-     (:render options) (assoc :render (:render options)))))
+   (let [heartbeat (Executors/newSingleThreadScheduledExecutor (.factory (Thread/ofVirtual)))
+         realtime  (cond-> {:state     (atom {:connections {} :stopped? false})
+                            :heartbeat heartbeat}
+                     (:authorize options) (assoc :authorize (:authorize options))
+                     (:render options) (assoc :render (:render options)))]
+     (.scheduleWithFixedDelay heartbeat ^Runnable #(heartbeat! realtime) 15 15 TimeUnit/SECONDS)
+     realtime)))
 
 
 (defn stop!
   {:malli/schema [:=> [:cat Realtime] :nil]}
   [realtime]
   (let [[before _] (swap-vals! (:state realtime) assoc :stopped? true :connections {})]
+    (when-let [heartbeat (:heartbeat realtime)]
+      (.shutdownNow ^ScheduledExecutorService heartbeat))
     (doseq [[session-id tabs]   (:connections before)
             [tab-id connection] tabs]
       (close-connection! realtime session-id tab-id (:sse connection))))

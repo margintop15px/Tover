@@ -9,7 +9,8 @@
     [starfederation.datastar.clojure.api :as d*]
     [starfederation.datastar.clojure.protocols :as p])
   (:import
-    [java.util UUID]))
+    [java.util UUID]
+    [java.util.concurrent ScheduledExecutorService]))
 
 
 (core/defstream events
@@ -80,7 +81,7 @@
         tid        (UUID/randomUUID)
         connection {:sse :stream :topics #{::events}}
         state      {:connections {sid {tid connection}} :stopped? false}]
-    (is (m/validate realtime/Realtime (realtime/start!)))
+    (with-realtime #(is (m/validate realtime/Realtime %)))
     (is (m/validate realtime/Realtime {:state (atom state)}))
     (is (not (m/validate realtime/Realtime {:state state})))
     (is (not (m/validate realtime/Realtime {:state (delay state)})))
@@ -95,6 +96,29 @@
                      (assoc-in state [:connections sid tid :topics] [::events])
                      (update-in state [:connections sid tid] dissoc :sse)]]
       (is (not (m/validate realtime/Realtime {:state (atom invalid)}))))))
+
+
+(deftest heartbeats-keep-idle-streams-alive-and-remove-failed-connections
+  (with-realtime
+    (fn [realtime]
+      (let [sid     (UUID/randomUUID)
+            healthy (connection realtime sid (UUID/randomUUID) [::events])
+            broken  (mapv (fn [failure]
+                            (let [tab (connection realtime sid (UUID/randomUUID) [::events])]
+                              (reset! (:failure tab) failure)
+                              tab))
+                          [:false :throw :assert])]
+        (with-redefs [events (fn [& _] (throw (AssertionError. "Heartbeats must not render inventory")))]
+          (#'realtime/heartbeat! realtime)
+          (#'realtime/heartbeat! realtime))
+        (is (= [{} {}] (messages (:events healthy))))
+        (is (not @(:closed healthy)))
+        (doseq [tab broken] (is @(:closed tab)))
+        (is (= 1 (count (get-in @(:state realtime) [:connections sid]))))
+        (realtime/stop! realtime)
+        (is (.isShutdown ^ScheduledExecutorService (:heartbeat realtime)))
+        (#'realtime/heartbeat! realtime)
+        (is (= [{} {}] (messages (:events healthy))))))))
 
 
 (deftest topics-are-attached-at-open-and-reconnect-without-delivery

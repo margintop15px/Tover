@@ -927,7 +927,7 @@ export class InventoryGrid extends HTMLElement {
       td.append(label);
       if (column.filterKey) {
         const filter = button(t("Filter {p0}", {p0: column.label}), `inventory-column-filter${this._acceptedFilters[column.filterKey]?.length ? ' is-active' : ''}`, '', () => this._filterUI.open(column));
-        filter.append(gridIcon(t('filter'))); td.append(filter);
+        filter.append(gridIcon('filter')); td.append(filter);
       }
     }
   }
