@@ -32,6 +32,7 @@
     [:link {:rel "stylesheet" :href "/vendor/jspreadsheet-ce/jsuites.css" :data-inventory-asset "jsuites.css"}]
     [:link {:rel "stylesheet" :href "/inventory-grid.css?v=ce-1"}]
     [:link {:rel "stylesheet" :href "/inventory-timeline.css?v=ce-1"}]
+    [:script {:type "module" :src "/realtime.js"}]
     [:script {:type "module" :src "/navigation.js"}]
     [:script {:type "module" :src "/dates.js"}]
     [:script {:type "module" :src "/inventory-grid.js"}]
@@ -40,12 +41,10 @@
     [:script {:type "module" :src "/stock-operations.js?v=workflow-2"}]]
    (into [:body
           (when (get-in request [:tover/identity :workspace-id])
-            {:data-init (->expr (@get "/_bel/realtime/stream"
-                                      {:payload        {:tabId  ~(str (random-uuid))
-                                                        :topics ["tover.stock.web/changed"
-                                                                 "tover.stock.web/draft-changed"
-                                                                 "tover.operations.web/changed"]}
-                                       :openWhenHidden true}))})]
+            {:data-init (->expr (@realtime {:tabId  ~(str (random-uuid))
+                                            :topics ["tover.stock.web/changed"
+                                                     "tover.stock.web/draft-changed"
+                                                     "tover.operations.web/changed"]}))})]
          children)])
 
 
