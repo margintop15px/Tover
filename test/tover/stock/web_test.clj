@@ -13,7 +13,8 @@
     [tover.shared.rdf :as rdf]
     [tover.stock.web :as web])
   (:import
-    [java.nio.file Files]))
+    [java.nio.file Files]
+    [java.time Instant]))
 
 
 (def scope
@@ -51,6 +52,288 @@
   {:malli/schema [:=> [:cat :map :string :int] :map]}
   [context name quantity]
   (store/save-entry! (:repo context) context {:entry (opening name quantity) :actor (str (:user-id context))}))
+
+
+(def ^:private copy-payment
+  {:kind      :operation :type   :payment                    :occurred-at "2026-10-21T12:00:00Z" :party  "Copy supplier"
+   :direction :outgoing  :amount "12345678901234567890.1234" :currency    "EUR"                  :reason "Business reason"})
+
+
+(deftest copying-all-eight-types-preserves-business-fields-and-accepted-inventory
+  (with-context
+    (fn [context]
+      (let [a      {:item-id "a" :name "Goods A" :article "A-1" :barcode "00123" :unit "pcs" :quantity 2 :location "Shelf"}
+            b      (assoc a :item-id "b" :name "Goods B" :article "B-1" :barcode "00456" :quantity 1)
+            common {:kind :operation :occurred-at "2026-10-21T12:00:00Z" :reason "Business reason"}]
+        (historical/accept-history!
+          (:repo context) context
+          [(assoc (opening "a" 100) :lines [(assoc a :quantity 100) (assoc b :quantity 20)])
+           (merge common {:type :purchase :party "Supplier" :amount "120.50" :currency "EUR" :lines [a b]})
+           (merge common {:type :return :direction :incoming :lines [a]})
+           (merge common {:type :transfer :from-location "Shelf" :to-location "Shop" :lines [(dissoc a :location)]})
+           (merge common {:type :production :inputs [a b] :outputs [(assoc a :item-id "kit" :name "Kit" :quantity 1)
+                                                                    (assoc b :item-id "offcut" :name "Offcut")]})
+           (merge common {:type :defect :lines [a]})
+           (merge common {:type :sale :party "Customer" :amount "35.75" :currency "USD" :lines [a]})
+           (merge common {:type :write-off :lines [a]})
+           copy-payment])
+        (let [snapshot (store/snapshot (:repo context) context)
+              purchase (first (filter #(= :purchase (:type %)) (:operations snapshot)))
+              linked   (for [operation (:operations snapshot) :when (#{:return :payment} (:type operation))]
+                         (store/save-entry! (:repo context) context
+                                            {:actor "old-editor" :entry {:kind        :revision :target-id (:id operation) :reason "Audit correction"
+                                                                         :replacement (assoc (:entry (last (store/operation-records (:repo context) context (:id operation))))
+                                                                                             :original-operation-id (:id purchase))}}))]
+          (store/submit! (:repo context) context {:selected                 (mapv #(select-keys % [:id :revision]) linked)
+                                                  :expected-ledger-revision (:ledger-revision snapshot)                    :command-id "link-copy-sources" :actor "old-reviewer"}))
+        (save-opening context "Unrelated pending" 1)
+        (store/save-composition! (:repo context) context {:actor (str (:user-id context)) :entry (web/new-entry :operation :payment)})
+        (let [before  (store/snapshot (:repo context) context)
+              sources (filterv #(= :operation (:kind %)) (:operations before))
+              records (into {} (map (fn [source] [(:id source) (store/operation-records (:repo context) context (:id source))]) sources))]
+          (is (= #{:purchase :return :transfer :production :defect :sale :write-off :payment} (set (map :type sources))))
+          (doseq [source sources]
+            (let [prior-ids       (set (map :id (:drafts (store/snapshot (:repo context) context))))
+                  started         (Instant/now)
+                  reads           (atom [])
+                  read-records    store/operation-records
+                  result          (with-redefs [store/snapshot          (fn [& _] (throw (ex-info "Full snapshot forbidden" {})))
+                                                store/operation-records (fn [repo scope id] (swap! reads conj id) (read-records repo scope id))]
+                                    (web/copy-entry context {:targetId (:id source) :view "operations" :actor "forged"}))
+                  copied          (first (remove #(contains? prior-ids (:id %)) (:drafts (store/snapshot (:repo context) context))))
+                  entry           (:entry copied)
+                  original        (:entry (last (get records (:id source))))
+                  occurred        (Instant/parse (:occurred-at entry))
+                  business-fields [:kind :type :party :direction :amount :currency :reason :from-location :to-location]]
+              (is (some #(= "Saved" (get-in % [:data :saveStatus])) result))
+              (is (= [(:id source)] @reads))
+              (is (= (select-keys original business-fields) (select-keys entry business-fields)))
+              (is (not (.isBefore occurred started)))
+              (is (not (.isAfter occurred (Instant/now))))
+              (is (not= (:occurred-at original) (:occurred-at entry)))
+              (is (not-any? #(contains? entry %) [:id :target-id :original-operation-id :actor :created-by :recorded-at :revision :business-order :sequence]))
+              (is (= (str (:user-id context)) (:actor copied) (:created-by copied)))
+              (is (= 1 (:revision copied)))
+              (doseq [field [:lines :inputs :outputs]]
+                (let [old-lines (get original field [])
+                      new-lines (get entry field [])]
+                  (is (= (mapv #(dissoc % :id) old-lines) (mapv #(dissoc % :id) new-lines)))
+                  (is (not-any? (set (map :id old-lines)) (map :id new-lines)))))
+              (let [ids (mapv :id (mapcat #(get entry % []) [:lines :inputs :outputs]))]
+                (is (= (count ids) (count (set ids)))))))
+          (let [after (store/snapshot (:repo context) context)]
+            (is (= (select-keys before [:ledger-revision :items :rows :operations :history :compositions])
+                   (select-keys after [:ledger-revision :items :rows :operations :history :compositions])))
+            (is (= (first (:drafts before)) (first (filter #(= (:id %) (:id (first (:drafts before)))) (:drafts after)))))
+            (is (= 9 (count (:drafts after))))
+            (is (= "Audit correction" (:reason (last (get records (:id (first (filter #(= :payment (:type %)) sources))))))))
+            (let [ids (set (map :id (:drafts (store/snapshot (:repo context) context))))]
+              (web/copy-entry context {:targetId (:id (first sources))})
+              (let [next-ids (set (map :id (:drafts (store/snapshot (:repo context) context))))]
+                (is (= (inc (count ids)) (count next-ids)))))))))))
+
+
+(deftest copy-rejects-unavailable-cancelled-and-nonbusiness-sources
+  (with-context
+    (fn [context]
+      (historical/accept-history! (:repo context) context [(opening "a" 3)
+                                                           (assoc (opening "a" 4) :kind :correction :reason "Stock correction")
+                                                           copy-payment])
+      (let [snapshot (store/snapshot (:repo context) context)
+            payment  (first (filter #(= :payment (:type %)) (:operations snapshot)))
+            pending  (save-opening context "Pending only" 1)]
+        (doseq [request (concat [{:targetId "missing"} {:targetId (:id pending)}]
+                                (map #(hash-map :targetId (:id %)) (filter #(#{:opening :correction} (:kind %)) (:operations snapshot))))]
+          (let [before (store/snapshot (:repo context) context)
+                result (web/copy-entry context request)]
+            (is (some #(= "Failed" (get-in % [:data :saveStatus])) result))
+            (is (= before (store/snapshot (:repo context) context)))))
+        (let [foreign (assoc context :workspace-id (random-uuid))
+              result  (web/copy-entry foreign {:targetId (:id payment)})]
+          (is (some #(= "Failed" (get-in % [:data :saveStatus])) result))
+          (is (empty? (:drafts (store/snapshot (:repo context) foreign)))))
+        (let [cancel (store/save-entry! (:repo context) context
+                                        {:actor "owner" :entry {:kind :cancellation :target-id (:id payment) :reason "Cancelled source"}})]
+          (store/submit! (:repo context) context {:selected                 [(select-keys cancel [:id :revision])]
+                                                  :expected-ledger-revision (:ledger-revision snapshot)            :command-id "cancel-copy-source" :actor "owner"})
+          (let [before (store/snapshot (:repo context) context)
+                result (web/copy-entry context {:targetId (:id payment)})]
+            (is (some #(= "Failed" (get-in % [:data :saveStatus])) result))
+            (is (= before (store/snapshot (:repo context) context)))))))))
+
+
+(deftest copy-uses-the-latest-business-entry-and-applies-stock-only-on-submit
+  (with-context
+    (fn [context]
+      (historical/accept-history! (:repo context) context
+                                  [(assoc (opening "Goods" 3) :kind :operation :type :purchase :party "Old supplier")])
+      (let [before   (store/snapshot (:repo context) context)
+            source   (first (:operations before))
+            entry    (:entry (last (store/operation-records (:repo context) context (:id source))))
+            revision (store/save-entry! (:repo context) context
+                                        {:actor "editor" :entry {:kind        :revision :target-id (:id source) :reason "Audit explanation"
+                                                                 :replacement (assoc entry :party "New supplier" :reason "Repeat purchase")}})]
+        (store/submit! (:repo context) context {:selected                 [(select-keys revision [:id :revision])]
+                                                :expected-ledger-revision 1 :command-id "revise-copy-source" :actor "reviewer"})
+        (let [records (store/operation-records (:repo context) context (:id source))]
+          (web/copy-entry context {:targetId (:id source)})
+          (let [snapshot (store/snapshot (:repo context) context)
+                copy     (first (:drafts snapshot))
+                request  {:selected [(select-keys copy [:id :revision])] :expected-ledger-revision 2}
+                preview  (store/preview (:repo context) context request)]
+            (is (= "New supplier" (get-in copy [:entry :party])))
+            (is (= "Repeat purchase" (get-in copy [:entry :reason])))
+            (is (= [3] (mapv :quantity (:rows snapshot))))
+            (is (:valid? preview))
+            (is (= [6] (mapv :quantity (:rows preview))))
+            (store/submit! (:repo context) context (assoc request :command-id "submit-copy" :actor "owner"))
+            (let [accepted (store/snapshot (:repo context) context)]
+              (is (= [6] (mapv :quantity (:rows accepted))))
+              (is (= #{(:id source) (:id copy)} (set (map :id (:operations accepted)))))
+              (is (= records (store/operation-records (:repo context) context (:id source)))))))))))
+
+
+(deftest copied-drafts-survive-a-store-reopen
+  (let [path (.toFile (Files/createTempDirectory "tover-copy-reopen-" (make-array java.nio.file.attribute.FileAttribute 0)))]
+    (try
+      (let [expected (let [repo    (rdf/native-store path)
+                           context (assoc scope :repo repo :user-id #uuid "00000000-0000-0000-0000-000000000002" :role :owner)]
+                       (try
+                         (historical/accept-history! repo context [copy-payment])
+                         (web/copy-entry context {:targetId (:id (first (:operations (store/snapshot repo context))))})
+                         (first (:drafts (store/snapshot repo context)))
+                         (finally (rdf/close! repo))))
+            reopened (rdf/native-store path)]
+        (try
+          (is (map? expected))
+          (is (= expected (first (:drafts (store/snapshot reopened scope)))))
+          (finally (rdf/close! reopened))))
+      (finally
+        (doseq [file (reverse (file-seq path))] (io/delete-file file))))))
+
+
+(deftest a-copied-sale-remains-a-draft-when-stock-is-no-longer-available
+  (with-context
+    (fn [context]
+      (historical/accept-history! (:repo context) context [(opening "Goods" 1)
+                                                           (assoc (opening "Goods" 1) :kind :operation :type :sale :party "Customer")])
+      (let [source (first (filter #(= :sale (:type %)) (:operations (store/snapshot (:repo context) context))))]
+        (web/copy-entry context {:targetId (:id source)})
+        (let [before  (store/snapshot (:repo context) context)
+              copy    (first (:drafts before))
+              preview (store/preview (:repo context) context {:selected [(select-keys copy [:id :revision])] :expected-ledger-revision 1})]
+          (is (map? copy))
+          (is (false? (:valid? preview)))
+          (is (= before (store/snapshot (:repo context) context))))))))
+
+
+(deftest historical-purchase-copy-uses-displayed-received-lines-with-fresh-identities
+  (with-context
+    (fn [context]
+      (historical/accept-history! (:repo context) context
+                                  [{:kind     :operation :type :purchase :party "Legacy supplier" :occurred-at "2026-10-20T12:00:00Z"
+                                    :lines    [{:item-id "goods" :name "Goods" :quantity 10 :unit "pcs" :location "Shelf"}]
+                                    :receipts [{:occurred-at "2026-10-20T13:00:00Z" :lines [{:item-id "goods" :name "Goods" :quantity 3 :unit "pcs" :location "Shelf"}]}
+                                               {:occurred-at "2026-10-20T14:00:00Z" :lines [{:item-id "goods" :name "Goods" :quantity 2 :unit "pcs" :location "Shelf"}]}]}])
+      (let [before (store/snapshot (:repo context) context)
+            source (first (:operations before))]
+        (web/copy-entry context {:targetId (:id source)})
+        (let [copy  (first (:drafts (store/snapshot (:repo context) context)))
+              lines (get-in copy [:entry :lines])]
+          (is (= [3 2] (mapv :quantity lines)))
+          (is (= 2 (count (set (map :id lines)))))
+          (is (not (contains? (:entry copy) :receipts)))
+          (is (= (:history before) (:history (store/snapshot (:repo context) context))))
+          (is (:valid? (store/preview (:repo context) context {:selected [(select-keys copy [:id :revision])] :expected-ledger-revision 1}))))))))
+
+
+(deftest edited-field-types-preserve-exact-values-and-reject-malformed-input
+  (doseq [[field value expected] [[:quantity "0" 0] [:quantity "9223372036854775807" Long/MAX_VALUE]
+                                  [:stock-count "4" 4] [:amount "12345678901234567890,1234" "12345678901234567890.1234"]
+                                  [:currency "eur" "EUR"] [:direction "incoming" :incoming] [:type "payment" :payment]
+                                  [:occurred-at "2026-11-02" "2026-11-02"]
+                                  [:occurred-at "2026-11-02T12:00:00.123456789Z" "2026-11-02T12:00:00.123456789Z"]]]
+    (is (= expected (web/field-value [field] value))))
+  (doseq [field [:quantity :stock-count :amount :currency :occurred-at :direction]]
+    (is (= "" (web/field-value [field] ""))))
+  (doseq [[field values] [[:quantity ["text" "1.5" "-1" "+1" "1e3" " 1" "9223372036854775808"]]
+                          [:stock-count ["text" "-1"]]
+                          [:amount ["text" "-1" "1e3" "1,2.3" "1 000" "12." "0.1234567890123" "123456789012345678901234567890123456789"]]
+                          [:currency ["EU" "EURO" "E1R" "eß"]]
+                          [:occurred-at ["yesterday" "2026-02-30"]]
+                          [:type ["unknown" ""]] [:direction ["sideways"]]]
+          value          values]
+    (is (thrown? clojure.lang.ExceptionInfo (web/field-value [field] value)) (str field " " value))))
+
+
+(deftest invalid-field-saves-do-not-change-the-shared-draft
+  (with-context
+    (fn [context]
+      (let [draft  (store/save-entry! (:repo context) context {:actor "owner" :entry (web/new-entry :operation :purchase)})
+            before (store/snapshot (:repo context) context)]
+        (doseq [[path value] [["lines/0/quantity" "1.5"] ["amount" "12abc"] ["currency" "EU"]
+                              ["occurred-at" "2026-02-30"] ["direction" "sideways"] ["type" "unknown"]
+                              ["original-operation-id" "missing"]]]
+          (let [result (web/save-field context {:id (:id draft) :revision 1 :path path :value value})]
+            (is (some #(= "Failed" (get-in % [:data :saveStatus])) result))
+            (is (= before (store/snapshot (:repo context) context)))))
+        (doseq [[path value] [["amount" "12,50"] ["currency" "eur"] ["lines/0/quantity" "0"] ["occurred-at" ""]]]
+          (let [current (first (:drafts (store/snapshot (:repo context) context)))]
+            (web/save-field* context {:id (:id current) :revision (:revision current) :path path :value value})))
+        (let [entry (:entry (first (:drafts (store/snapshot (:repo context) context))))]
+          (is (= "12.50" (:amount entry)))
+          (is (= "EUR" (:currency entry)))
+          (is (= 0 (get-in entry [:lines 0 :quantity])))
+          (is (= "" (:occurred-at entry))))))))
+
+
+(deftest inline-stock-quantity-rejection-preserves-openings-and-corrections
+  (with-context
+    (fn [context]
+      (let [draft  (save-opening context "Goods" 4)
+            row    (first (get-in (workbench/query-stock context {}) [:model :rows]))
+            before (store/snapshot (:repo context) context)]
+        (web/edit-stock context {:rowId (:id row)  :draftId (:id draft) :draftRevision  1
+                                 :field "quantity" :value   "wrong"     :ledgerRevision 0})
+        (is (= before (store/snapshot (:repo context) context)))
+        (store/submit! (:repo context) context {:selected                 [(select-keys draft [:id :revision])]
+                                                :expected-ledger-revision 0 :command-id "typed-opening" :actor "owner"})
+        (let [accepted (store/snapshot (:repo context) context)
+              row      (first (:rows accepted))]
+          (web/edit-stock context {:rowId (:id row) :field "quantity" :value "1e3" :ledgerRevision 1})
+          (is (= accepted (store/snapshot (:repo context) context)))
+          (web/edit-stock context {:rowId (:id row) :field "quantity" :value "5" :ledgerRevision 1})
+          (let [correction (first (:drafts (store/snapshot (:repo context) context)))
+                before     (store/snapshot (:repo context) context)]
+            (web/save-field context {:id (:id correction) :revision 1 :path "stock-count" :value "1.5"})
+            (is (= before (store/snapshot (:repo context) context)))))))))
+
+
+(deftest original-operation-references-use-scoped-id-lookups-and-shared-pending-entries
+  (with-context
+    (fn [context]
+      (let [entry   (assoc (opening "Goods" 2) :kind :operation :type :purchase :party "Supplier")
+            draft   (store/save-entry! (:repo context) context {:actor "owner" :entry entry})
+            foreign (assoc context :workspace-id (random-uuid))
+            private (store/save-composition! (:repo context) context {:actor (str (:user-id context)) :entry entry})]
+        (is (nil? (web/check-reference! context (:id draft))))
+        (is (= [(:id draft)] (mapv :value (web/reference-choices context "Supplier"))))
+        (is (empty? (web/reference-choices foreign "Supplier")))
+        (is (nil? (web/check-reference! context "")))
+        (is (thrown? clojure.lang.ExceptionInfo (web/check-reference! foreign (:id draft))))
+        (is (thrown? clojure.lang.ExceptionInfo (web/check-reference! context (:id private))))
+        (let [payment (store/save-entry! (:repo context) context {:actor "owner" :entry (web/new-entry :operation :payment)})]
+          (web/save-field* context {:id (:id payment) :revision 1 :path "original-operation-id" :value (:id draft)})
+          (is (= [(:id draft)] (mapv :id (:operation-catalog (workbench/draft-snapshot context))))))
+        (store/submit! (:repo context) context {:selected                 [(select-keys draft [:id :revision])]
+                                                :expected-ledger-revision 0 :command-id "reference-purchase" :actor "owner"})
+        (with-redefs [store/snapshot (fn [& _] (throw (ex-info "Full snapshot forbidden" {})))]
+          (is (nil? (web/check-reference! context (:id draft))))
+          (is (= [(:id draft)] (mapv :value (web/reference-choices context "Supplier")))))
+        (let [cancel (store/save-entry! (:repo context) context {:actor "owner" :entry {:kind :cancellation :target-id (:id draft) :reason "Cancel"}})]
+          (store/submit! (:repo context) context {:selected                 [(select-keys cancel [:id :revision])]
+                                                  :expected-ledger-revision 1 :command-id "cancel-reference" :actor "owner"})
+          (is (thrown? clojure.lang.ExceptionInfo (web/check-reference! context (:id draft)))))))))
 
 
 (deftest column-layouts-follow-the-authenticated-user-without-changing-inventory
@@ -253,7 +536,7 @@
 (deftest declarations-are-workspace-protected-and-use-one-authoritative-refresh
   (bel/init! {:scan-ns ['tover]})
   (doseq [id [:tover.stock.web/add-entry :tover.stock.web/save-field :tover.stock.web/draft-command
-              :tover.stock.web/edit-stock :tover.stock.web/revise-entry :tover.stock.web/preview
+              :tover.stock.web/edit-stock :tover.stock.web/revise-entry :tover.stock.web/copy-entry :tover.stock.web/preview
               :tover.stock.web/submit :tover.stock.web/open-history]]
     (is (= :workspace (get-in (bel/get-action id) [:bel/route-data :tover/access]))))
   (is (string? (get-in (web/changed {} {}) [:data :inventoryChanged])))

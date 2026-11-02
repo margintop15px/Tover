@@ -43,6 +43,89 @@
           (web/complete* context (input {} {:kind "type" :type type})) values))
 
 
+(deftest done-readiness-includes-the-active-value-without-saving-it
+  (with-context
+    (fn [context]
+      (let [created (compose context "payment" [["party" "Supplier"] ["amount" "12.34"]])
+            state   (assoc (:state created) :field "currency")
+            before  (store/snapshot (:repo context) context)
+            suggest (fn [value]
+                      (with-redefs [store/snapshot (fn [& _] (throw (ex-info "Full snapshot forbidden" {})))]
+                        (response-model (web/suggest context (assoc (input state {}) :text value)))))]
+        (doseq [value ["EUR" "eur"]]
+          (let [model (suggest value)]
+            (is (:canDone model))
+            (is (= "done" (get-in model [:options 0 :kind])))))
+        (doseq [value ["" "EU" "EU1"]]
+          (let [model (suggest value)]
+            (is (not (:canDone model)))
+            (is (not-any? #(= "done" (:kind %)) (:options model)))))
+        (is (= before (store/snapshot (:repo context) context)))
+        (let [done (web/complete* context (assoc (input state {:kind "done" :commandId "active-currency-done"}) :text "eur"))]
+          (is (= "EUR" (get-in done [:completed :entry :currency]))))))))
+
+
+(deftest done-readiness-honors-selected-item-location-defaults-without-history-reads
+  (with-context
+    (fn [context]
+      (let [opening (store/save-entry! (:repo context) context
+                                       {:actor "owner" :entry {:kind  :opening :occurred-at "2026-10-20T12:00:00Z"
+                                                               :lines [{:item-id "known" :name "Known goods" :quantity 5 :location "Main"}]}})]
+        (store/submit! (:repo context) context {:selected                 [(select-keys opening [:id :revision])]
+                                                :expected-ledger-revision 0 :command-id "known-for-done" :actor "owner"})
+        (store/save-entry! (:repo context) context
+                           {:actor "owner" :entry {:kind  :operation :type :purchase :occurred-at "2026-10-21T12:00:00Z" :party "Other supplier"
+                                                   :lines (mapv (fn [index] {:item-id  (str "a-" index) :name     (str "Known goods extra " index)
+                                                                             :quantity 1                :location "Other"}) (range 31))}})
+        (let [created (compose context "sale" [["party" "Customer"] ["lines/0/quantity" "1"]])
+              state   (assoc (:state created) :field "lines/0/name")
+              before  (store/snapshot (:repo context) context)
+              model   (with-redefs [store/snapshot (fn [& _] (throw (ex-info "Full snapshot forbidden" {})))]
+                        (response-model (web/suggest context (assoc (input state {}) :text "Known goods"))))]
+          (is (:canDone model))
+          (is (= "done" (get-in model [:options 0 :kind])))
+          (is (= before (store/snapshot (:repo context) context)))
+          (let [done (with-redefs [store/snapshot (fn [& _] (throw (ex-info "Full snapshot forbidden" {})))]
+                       (web/complete* context (assoc (input state {:kind "done" :commandId "active-item-done"}) :text "Known goods")))]
+            (is (= "known" (get-in done [:completed :entry :lines 0 :item-id])))
+            (is (= "Main" (get-in done [:completed :entry :lines 0 :location])))))))))
+
+
+(deftest smart-field-saves-and-active-done-enforce-types-without-losing-drafts
+  (with-context
+    (fn [context]
+      (let [created (compose context "payment" [["party" "Supplier"] ["amount" "12345678901234567890,1234"] ["currency" "eur"]])
+            state   (:state created)
+            before  (store/snapshot (:repo context) context)]
+        (is (= "12345678901234567890.1234" (get-in before [:compositions 0 :entry :amount])))
+        (is (= "EUR" (get-in before [:compositions 0 :entry :currency])))
+        (doseq [[key value] [["amount" "12abc"] ["currency" "EU"] ["direction" "sideways"]
+                             ["occurred-at" "2026-02-30"] ["original-operation-id" "missing"]]]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (web/complete* context (input state {:kind "value" :key key :value value}))))
+          (is (= before (store/snapshot (:repo context) context))))
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (web/complete* context (assoc (input (assoc state :field "amount") {:kind "done" :commandId "invalid-active-amount"}) :text "1e3"))))
+        (is (= before (store/snapshot (:repo context) context)))
+        (let [done (web/complete* context (assoc (input (assoc state :field "amount") {:kind "done" :commandId "valid-active-amount"}) :text "12,50"))]
+          (is (= "12.50" (get-in done [:completed :entry :amount]))))))))
+
+
+(deftest smart-production-quantity-restrictions-allow-empty-unfinished-values
+  (with-context
+    (fn [context]
+      (let [created (compose context "production" [])
+            state   (:state created)
+            before  (store/snapshot (:repo context) context)]
+        (doseq [key ["inputs/0/quantity" "outputs/0/quantity"]]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (web/complete* context (input state {:kind "value" :key key :value "1.5"})))))
+        (is (= before (store/snapshot (:repo context) context)))
+        (let [saved (web/complete* context (input state {:kind "value" :key "inputs/0/quantity" :value ""}))]
+          (is (= "" (get-in (store/snapshot (:repo context) context) [:compositions 0 :entry :inputs 0 :quantity])))
+          (is (> (get-in saved [:state :revision]) (:revision state))))))))
+
+
 (deftest add-flow-autosaves-private-fields-without-shared-changes-or-stock
   (with-context
     (fn [context]

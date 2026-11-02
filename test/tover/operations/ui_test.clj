@@ -101,7 +101,7 @@
 
 
 (deftest sheet-binds-server-sort-and-revision-actions
-  (let [sheet      (ui/sheet {:init "el.entries = $_operationRows" :on-sort "sort" :on-filter "filter" :on-revise "revise"})
+  (let [sheet      (ui/sheet {:init "el.entries = $_operationRows" :on-sort "sort" :on-filter "filter" :on-revise "revise" :on-copy "copy"})
         element    (second (rest sheet))
         attributes (second element)]
     (is (= :section.inventory-operations (first sheet)))
@@ -109,6 +109,7 @@
     (is (contains? attributes :data-on:operations-sort))
     (is (= "filter" (:data-on:operations-filter attributes)))
     (is (contains? attributes :data-on:operation-revise))
+    (is (= "copy" (:data-on:operation-copy attributes)))
     (is (re-find #"_operationRows" (:data-effect attributes)))
     (is (not (re-find #"lineage|examples" (pr-str sheet))))))
 

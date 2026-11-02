@@ -140,13 +140,23 @@
           (concat entries cancelled))))
 
 
+(def SheetProps
+  [:map
+   [:init :any]
+   [:on-sort :any]
+   [:on-filter :any]
+   [:on-revise :any]
+   [:on-copy :any]])
+
+
 (defn sheet
-  {:malli/schema [:=> [:cat :map] schema/Hiccup]}
-  [{:keys [init on-sort on-filter on-revise]}]
+  {:malli/schema [:=> [:cat SheetProps] schema/Hiccup]}
+  [{:keys [init on-sort on-filter on-revise on-copy]}]
   [:section.inventory-operations {:aria-label (i18n/t "Accepted operations")}
    [:stock-operations#operations-history
     {:aria-label                (i18n/t "Operations history spreadsheet") :data-ignore-morph ""
      :data-effect               init
      :data-on:operations-sort   on-sort
      :data-on:operations-filter on-filter
-     :data-on:operation-revise  on-revise}]])
+     :data-on:operation-revise  on-revise
+     :data-on:operation-copy    on-copy}]])

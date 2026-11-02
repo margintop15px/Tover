@@ -62,6 +62,8 @@ RDF stores workspace items, immutable accepted operation/correction revisions, s
 
 ## Production
 
+Start with the [deployment quick-start](deployment/README.md) for publishing and updating a release.
+
 Use the [production deployment guide](docs/production-deployment.md) for a single-host Compose installation with HTTPS, real SMTP, private Supabase ingress, pinned images, persistent RDF/Postgres volumes and backup/restore helpers.
 
 The selected fresh tester host is [VDS by Selectel](docs/selectel-deployment.md), with an 8 GiB memory budget, bounded logs and scheduled consistent app-data backups. Arrange an encrypted off-server copy; full-VM backups remain an optional billed mode. Build an amd64 release bundle outside Russia and transfer it over SSH. The server loads all five images locally; installation and upgrades require no GitHub, Maven or registry access. The runbook includes bundle creation, server, DNS, SMTP and private API settings.

@@ -43,18 +43,31 @@
     (assoc snapshot :items (workbench/item-catalog snapshot))))
 
 
+(declare active-entry)
+
+
+(defn completion-snapshot
+  {:malli/schema [:=> [:cat :map :map :string] :map]}
+  [context state text]
+  (let [current (workbench/draft-snapshot context)]
+    (if (and (= "add" (:mode state)) (= "name" (last (str/split (or (:field state) "") #"/"))))
+      (update current :items merge
+              (store/read-snapshot (:repo context) context
+                                   (fn [conn _] (read-query/exact-items conn context text))))
+      current)))
+
+
 (defn model-response
   {:malli/schema [:=> [:cat :map :map] :map]}
   [context {:keys [state text filters request failed? view errors closeMenu]}]
-  (let [current  (workbench/draft-snapshot context)
+  (let [current  (completion-snapshot context (or state {}) (or text ""))
         field    (when-not (str/blank? (:field state)) (keyword (last (str/split (:field state) #"/"))))
         current  (cond
                    (= :original-operation-id field)
                    (assoc-in current [:field-options (:field state)]
                              (mapv (fn [{:keys [value label]}]
                                      {:kind "value" :key (:field state) :value value :label label :description (i18n/t "Existing operation")})
-                                   (store/read-snapshot (:repo context) context
-                                                        (fn [conn _] (read-query/suggest-operations conn context (or text "") 30)))))
+                                   (stock/reference-choices context (or text ""))))
                    (= :name field)
                    (update current :items merge
                            (store/read-snapshot (:repo context) context
@@ -65,6 +78,12 @@
                                 (store/read-snapshot (:repo context) context
                                                      (fn [conn _] (read-query/values conn context (name field) (or text "") 30)))))
                    :else current)
+        current  (if (= "add" (:mode state))
+                   (assoc current :completion-check
+                          (try
+                            (when-let [entry (active-entry context current state (or text ""))]
+                              (completion/check entry (set (keys (:items current)))))
+                            (catch ExceptionInfo _ {:valid? false :errors []}))) current)
         base     (smart/model current (assoc (or state {}) :view (or view "stock")) (or text "") (or filters {}) (or request 0))
         conflict (:conflict state)
         model    (cond-> (assoc base :closeMenu (boolean closeMenu))
@@ -105,25 +124,45 @@
 
 
 (defn with-value
-  {:malli/schema [:=> [:cat :map :map :string :string :map] :map]}
-  [context entry key value option]
-  (let [path     (stock/path-parts key)
-        snapshot (snapshot context)
-        items    (:items snapshot)
-        item-id  (when (= :name (last path))
+  {:malli/schema [:function
+                  [:=> [:cat :map :map :string :string :map] :map]
+                  [:=> [:cat :map :map :map :string :string :map] :map]]}
+  ([context entry key value option]
+   (with-value context (snapshot context) entry key value option))
+
+  ([context snapshot entry key value option]
+   (let [path    (stock/path-parts key)
+         _       (when (= :original-operation-id (last path)) (stock/check-reference! context value))
+         items   (:items snapshot)
+         item-id (when (= :name (last path))
                    (or (:itemId option)
                        (let [matches (filter #(= value (get-in % [1 :name])) items)]
                          (when (= 1 (count matches)) (ffirst matches)))))]
-    (if item-id
-      (item-selection/select-item snapshot entry (pop path) item-id)
-      (let [entry        (assoc-in entry path (if (str/blank? value) "" (stock/field-value path value)))
-            item-path    (conj (pop path) :item-id)
-            current-item (get items (get-in entry item-path))
-            entry        (if (and (= :name (last path))
-                                  (or (str/blank? value) (and current-item (not= value (:name current-item)))))
-                           (assoc-in entry item-path (str (random-uuid))) entry)]
-        (if (and (str/blank? value) (#{:original-operation-id :amount :currency} (last path)))
-          (if (seq (pop path)) (update-in entry (pop path) dissoc (last path)) (dissoc entry (last path))) entry)))))
+     (if item-id
+       (let [rows (store/read-snapshot (:repo context) context
+                                       (fn [conn _] (read-query/item-stock-rows conn context item-id)))]
+         (item-selection/select-item (assoc snapshot :rows rows) entry (pop path) item-id))
+       (let [entry        (assoc-in entry path (stock/field-value path value))
+             item-path    (conj (pop path) :item-id)
+             current-item (get items (get-in entry item-path))
+             entry        (if (and (= :name (last path))
+                                   (or (str/blank? value) (and current-item (not= value (:name current-item)))))
+                            (assoc-in entry item-path (str (random-uuid))) entry)]
+         (if (and (empty? value) (#{:original-operation-id :amount :currency} (last path)))
+           (if (seq (pop path)) (update-in entry (pop path) dissoc (last path)) (dissoc entry (last path))) entry))))))
+
+
+(defn active-entry
+  "Apply the active input without saving, using the same candidate for Done and its availability."
+  {:malli/schema [:=> [:cat :map :map :map :string] [:maybe :map]]}
+  [context snapshot state text]
+  (when-let [draft (smart/composition snapshot (:id state))]
+    (if (and (:field state) (not (str/blank? text)))
+      (let [field   (checked-field context state (:field state))
+            options (or (get-in field [:editor :options]) (get-in snapshot [:field-options (:field state)]))
+            value   (or (some #(when (or (= text (:value %)) (= text (:label %))) (:value %)) options) text)]
+        (with-value context snapshot (:entry draft) (:field state) value {}))
+      (:entry draft))))
 
 
 (defn complete*
@@ -152,14 +191,9 @@
                      (current-composition context state)
                      (store/discard-composition! (:repo context) context {:id (:id state) :expected-revision (:revision state)}))
                    (assoc (clean {:mode "filter"}) :private-saved? true :closeMenu true))
-      "done" (let [draft (smart/composition (snapshot context) (:id state))
-                   entry (when draft
-                           (let [active? (and (:field state) (not (str/blank? text)))]
-                             (if active?
-                               (do (checked-field context state (:field state))
-                                   (with-value context (:entry draft) (:field state) text {}))
-                               (:entry draft))))
-                   check (when entry (completion/check entry (set (keys (:items (snapshot context))))))]
+      "done" (let [current (completion-snapshot context state text)
+                   entry   (active-entry context current state text)
+                   check   (when entry (completion/check entry (set (keys (:items current)))))]
                (when (and check (not (:valid? check)))
                  (throw (ex-info "Complete the highlighted fields before Done."
                                  {:type :incomplete-composition :errors (:errors check)})))

@@ -42,6 +42,71 @@ test.beforeEach(async ({ page }) => {
 });
 test.afterEach(async ({ page }) => expect(browserErrors.get(page)).toEqual([]));
 
+test('Done appears for the last active required value with a green check on its left', async ({ page }) => {
+  await smartInput(page).fill('add'); await choose(page, 'Payment');
+  await field(page, 'Party', 'Ready without extra Enter');
+  await field(page, 'Amount', '12.34');
+  await smartInput(page).fill('Currency'); await choose(page, 'Currency');
+  await smartInput(page).fill('EU');
+  await expect.poll(() => page.locator('stock-entry').evaluate(element => element.model.text)).toBe('EU');
+  await expect(smartOption(page, 'Done')).toHaveCount(0);
+  await smartInput(page).fill('EUR');
+  const done = smartOption(page, 'Done');
+  await expect(done).toBeVisible();
+  const icon = done.locator('.stock-entry-option-icon');
+  await expect(icon).toHaveText('✓');
+  const green = await page.locator('stock-entry').evaluate(element => {
+    const probe = document.createElement('span'); probe.style.color = 'var(--iw-green)'; element.append(probe);
+    const color = getComputedStyle(probe).color; probe.remove(); return color;
+  });
+  await expect(icon).toHaveCSS('color', green);
+  expect((await icon.boundingBox()).x).toBeLessThan((await done.locator('.stock-entry-option-field').boundingBox()).x);
+  await done.click();
+  await expect(page.getByRole('button', { name: 'Edit Add: Payment', exact: true })).toHaveCount(0);
+  await review(page);
+  const id = (await draftIds(page))[0];
+  await expect(draftCell(page, id, 'currency')).toHaveText('EUR');
+});
+
+test('Done stays available during valid edits and Enter still saves the active field', async ({ page }) => {
+  await smartInput(page).fill('add'); await choose(page, 'Payment');
+  await field(page, 'Party', 'Edit a complete payment');
+  await field(page, 'Amount', '12.34'); await field(page, 'Currency', 'EUR');
+  await page.getByRole('button', { name: 'Edit Currency: EUR', exact: true }).click();
+  await expect(smartOption(page, 'Done')).toBeVisible();
+  await smartInput(page).fill('EU');
+  await expect.poll(() => page.locator('stock-entry').evaluate(element => element.model.text)).toBe('EU');
+  await expect(smartOption(page, 'Done')).toHaveCount(0);
+  await smartInput(page).fill('USD'); await expect(smartOption(page, 'Done')).toBeVisible();
+  await smartInput(page).press('Enter');
+  await expect(page.getByRole('button', { name: 'Edit Currency: USD', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Edit Add: Payment', exact: true })).toBeVisible();
+  expect(await draftIds(page)).toEqual([]);
+});
+
+test('smart input applies numeric and currency types and rejects invalid fixed choices', async ({ page }) => {
+  await smartInput(page).fill('add'); await choose(page, 'Payment');
+  await smartInput(page).fill('Amount'); await choose(page, 'Amount');
+  await expect(smartInput(page)).toHaveAttribute('inputmode', 'decimal');
+  await smartInput(page).pressSequentially('abc-+e');
+  await expect(smartInput(page)).toHaveValue('');
+  await smartInput(page).fill('12.'); await smartInput(page).press('Enter');
+  await expect(page.locator('stock-entry .stock-entry-feedback')).toContainText('Enter an exact nonnegative decimal amount.');
+  await expect(smartInput(page)).toHaveValue('12.');
+  await smartInput(page).fill('12345678901234567890,1234'); await smartInput(page).press('Enter');
+  await expect(page.getByRole('button', { name: 'Edit Amount: 12345678901234567890.1234', exact: true })).toBeVisible();
+  await smartInput(page).fill('Currency'); await choose(page, 'Currency');
+  await smartInput(page).fill('eur'); await expect(smartInput(page)).toHaveValue('EUR');
+  await smartInput(page).press('Tab');
+  await expect(page.getByRole('button', { name: 'Edit Currency: EUR', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Edit Direction: Outgoing', exact: true }).click();
+  await smartInput(page).fill('sideways'); await smartInput(page).press('Enter');
+  await expect(page.locator('stock-entry .stock-entry-feedback')).toContainText('Choose incoming or outgoing.');
+  await expect(page.getByRole('button', { name: 'Edit Direction: Outgoing', exact: true })).toBeVisible();
+  await smartInput(page).fill('incoming'); await smartInput(page).press('Enter');
+  await expect(page.getByRole('button', { name: 'Edit Direction: Incoming', exact: true })).toBeVisible();
+});
+
 test('smart composition hides filled fields, clears partial values and makes incomplete Done actionable', async ({ page }) => {
   const completions = [];
   page.on('request', request => {

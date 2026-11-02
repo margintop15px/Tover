@@ -16,6 +16,7 @@
 #inventory-evidence-workbench button.stock-entry-option.is-active,#inventory-evidence-workbench button.stock-entry-option:hover{background:var(--iw-blue-fill)}
 #inventory-evidence-workbench .stock-entry-menu-heading{padding:6px 9px 3px;color:var(--iw-muted);font-size:10px;letter-spacing:.06em;text-transform:uppercase}
 #inventory-evidence-workbench .stock-entry-option-icon{flex:0 0 16px;color:var(--iw-muted);font:15px ui-monospace,monospace;text-align:center}
+#inventory-evidence-workbench .stock-entry-option-icon.is-done{color:var(--iw-green);font-weight:700}
 #inventory-evidence-workbench .stock-entry-option-content{display:flex;align-items:center;gap:1px;min-width:0;font:12px ui-monospace,SFMono-Regular,monospace}
 #inventory-evidence-workbench .stock-entry-option-field{flex-shrink:0;color:light-dark(#7555a1,#b79ad9)}
 #inventory-evidence-workbench .stock-entry-option-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--iw-green)}

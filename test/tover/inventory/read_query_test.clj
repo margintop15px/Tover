@@ -225,6 +225,29 @@
       (is (= ["purchase"] (mapv :id (read-query/operations conn scope ["unknown" "purchase"])))))))
 
 
+(deftest exact-item-matches-are-not-lost-beyond-the-prefix-suggestion-limit
+  (with-store
+    (fn [conn scope]
+      (doseq [index (range 32)]
+        (let [id   (if (zero? index) "zz-exact" (str "a-" index))
+              name (if (zero? index) "Needle" (str "Needle extra " index))
+              node (rdf/iri (str (graph scope) ":item:" id))]
+          (rdf/add! conn (graph scope) node RDF/TYPE (term "Item"))
+          (doseq [[key value] {"id" id "name" name "f-name" (str/lower-case name) "payload" (pr-str {:id id :name name})}]
+            (rdf/add! conn (graph scope) node (term key) value))))
+      (is (not (contains? (read-query/suggest-items conn scope "Needle" 30) "zz-exact")))
+      (is (= #{"zz-exact"} (set (keys (read-query/exact-items conn scope "Needle")))))
+      (is (= {} (read-query/exact-items conn scope "needle")))
+      (is (= {} (read-query/exact-items conn (assoc scope :workspace-id (random-uuid)) "Needle")))
+      (doseq [index (range 3)]
+        (let [id   (str "duplicate-" index)
+              node (rdf/iri (str (graph scope) ":item:" id))]
+          (rdf/add! conn (graph scope) node RDF/TYPE (term "Item"))
+          (doseq [[key value] {"id" id "name" "Needle" "payload" (pr-str {:id id :name "Needle"})}]
+            (rdf/add! conn (graph scope) node (term key) value))))
+      (is (= 2 (count (read-query/exact-items conn scope "Needle")))))))
+
+
 (deftest operation-suggestions-read-only-bounded-effective-reference-scalars
   (with-store
     (fn [conn scope]

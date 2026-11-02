@@ -57,7 +57,11 @@ class StockOperations extends HTMLElement {
   get acceptedFilters() { return this._acceptedFilters; }
   set acceptedFilters(value) { this._acceptedFilters = value || {}; if (this.grid) this.grid.acceptedFilters = this._acceptedFilters; }
   get saveStatus() { return this._saveStatus; }
-  set saveStatus(value) { this._saveStatus = value || 'Saved'; if (this.grid) this.grid.saveStatus = this._saveStatus; }
+  set saveStatus(value) {
+    this._saveStatus = value || 'Saved';
+    if (this.grid) this.grid.saveStatus = this._saveStatus;
+    for (const button of this.querySelectorAll('[data-operation-copy]')) button.disabled = this._saveStatus === 'Saving';
+  }
   openColumnFilter(column) { this.grid?.openColumnFilter(column); }
   connectedCallback() {
     for (const property of ['entries', 'model', 'acceptedSort', 'acceptedFilters', 'saveStatus', 'windowResponse', 'operationDetailResponse']) {
@@ -171,6 +175,17 @@ class StockOperations extends HTMLElement {
           bubbles: true, detail: { targetId: model.id, kind },
         })));
         header.append(button);
+      }
+      if (['purchase', 'return', 'transfer', 'production', 'defect', 'sale', 'write-off', 'payment'].includes(model.type)) {
+        const copy = element('button', 'operation-record-action', t('Copy'));
+        copy.type = 'button'; copy.dataset.operationCopy = '';
+        copy.disabled = this._saveStatus === 'Saving';
+        copy.addEventListener('click', () => {
+          if (copy.disabled || this._saveStatus === 'Saving') return;
+          copy.disabled = true;
+          this.dispatchEvent(new CustomEvent('operation-copy', { bubbles: true, detail: { targetId: model.id } }));
+        });
+        header.append(copy);
       }
     }
     panel.append(this.renderMetadata(detail['summary-metadata']), header);

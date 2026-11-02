@@ -326,6 +326,24 @@
                {"graph" (graph scope) "needle" (str/lower-case text)})))
 
 
+(defn exact-items
+  "Read at most two exact names, enough to distinguish a unique item from an ambiguous name."
+  {:malli/schema [:=> [:cat rdf/Connection shared/Scope :string] [:map-of :string :map]]}
+  [conn scope name]
+  (into {} (map (fn [row] [(:id row) (payload (:payload row))]))
+        (query conn "SELECT ?id ?payload WHERE { GRAPH ?graph { ?item a r:Item; r:id ?id; r:name ?name; r:payload ?payload . } } ORDER BY ?id LIMIT 2"
+               {"graph" (graph scope) "name" name})))
+
+
+(defn item-stock-rows
+  "Read only the accepted stock rows needed to prefill one selected item."
+  {:malli/schema [:=> [:cat rdf/Connection shared/Scope :string] [:vector :map]]}
+  [conn scope item-id]
+  (mapv #(payload (:payload %))
+        (query conn "SELECT ?payload WHERE { GRAPH ?graph { ?row a r:AcceptedStock; r:itemId ?itemId; r:payload ?payload . } }"
+               {"graph" (graph scope) "itemId" item-id})))
+
+
 (defn suggest-operations
   "Suggest bounded effective purchases and sales using only scalar reference fields."
   {:malli/schema [:=> [:cat rdf/Connection shared/Scope :string :int] [:vector :map]]}

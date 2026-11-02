@@ -133,7 +133,7 @@ test('account language follows devices; inventory, review, history, filters and 
   await typeFilter.getByRole('button', { name: 'Закрыть', exact: true }).click();
   await page.getByRole('button', { name: /Показать сведения об операции/ }).first().click();
   await expect(page.locator('.operation-details')).toContainText('Принял');
-  await expect(page.locator('.operation-details')).toContainText('Скорректировать');
+  await expect(page.locator('.operation-details').getByRole('button')).toHaveText(['Скорректировать', 'Отменить', 'Копировать']);
   await page.getByRole('link', { name: 'Команда', exact: true }).click();
   await expect(page).toHaveTitle('Команда · Tover');
   await expect(page.getByRole('heading', { name: 'Участники', exact: true })).toBeVisible();

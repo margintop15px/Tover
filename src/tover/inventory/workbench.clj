@@ -97,7 +97,13 @@
                          (let [snapshot      (visible-drafts context state)
                                items         (into {} (mapcat #(read-query/items conn context %) (partition-all 500 (referenced-ids snapshot :item-id))))
                                operation-ids (vec (distinct (concat (referenced-ids snapshot :target-id) (referenced-ids snapshot :original-operation-id))))
-                               operations    (vec (mapcat #(read-query/operations conn context %) (partition-all 500 operation-ids)))]
+                               pending       (keep (fn [id]
+                                                     (let [draft (get-in state [:drafts id])
+                                                           entry (:entry draft)]
+                                                       (when (and draft (not= :composing (:phase draft))
+                                                                  (= :operation (:kind entry :operation)) (#{:purchase :sale} (:type entry)))
+                                                         (assoc entry :id id :revision (:revision draft))))) operation-ids)
+                               operations    (into (vec (mapcat #(read-query/operations conn context %) (partition-all 500 operation-ids))) pending)]
                            (assoc snapshot :items (item-catalog (assoc snapshot :items items))
                                   :rows [] :history [] :operations operations :operation-catalog operations)))))
 
@@ -365,9 +371,9 @@
        (sheet-icon :preview)]
       [:button.sheet-icon-button.is-submit
        {:type               "button" :title (i18n/t "Submit reviewed changes") :aria-label (i18n/t "Submit changes") :disabled true
-        :data-attr:disabled "$_reviewPending || !$_review || $_draftIds.length === 0 || $saveStatus !== 'Saved'"
+        :data-attr:disabled "$_reviewPending || !$_review || $_draftIds.length === 0 || $saveStatus !== 'Saved' || $_unresolvedDraftEdits > 0 || $_unresolvedStockEdits > 0"
         :data-on:click
-        (->expr (when (and $_review (not $_reviewPending) (= $saveStatus "Saved"))
+        (->expr (when (and $_review (not $_reviewPending) (= $saveStatus "Saved") (= 0 $_unresolvedDraftEdits) (= 0 $_unresolvedStockEdits))
                   (set! $saveStatus "Saving")
                   (@action :tover.stock.web/submit
                            {:review $_review :view ~(name view) :query $query :filters $_filters :filterRequest $_filterRequest :sort $sort :direction $direction :operationType $operationType}
@@ -401,6 +407,10 @@
    :on-revise  (->expr (set! $_draftPreview true) (set! $saveStatus "Saving")
                  (@action :tover.stock.web/revise-entry
                           {:targetId evt.detail.targetId :kind evt.detail.kind :view ~(name view) :filters $_filters :filterRequest $_filterRequest :sort $sort :direction $direction}
+                          {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0}))
+   :on-copy    (->expr (set! $_draftPreview true) (set! $saveStatus "Saving")
+                 (@action :tover.stock.web/copy-entry
+                          {:targetId evt.detail.targetId :view ~(name view) :query $query :filters $_filters :filterRequest $_filterRequest :sort $sort :direction $direction :operationType $operationType}
                           {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0}))})
 
 
@@ -424,11 +434,11 @@
     :aria-label (i18n/t "Tover inventory workbench")
     :data-signals__ifmissing             (validation/signal-json :map {:query              (or query "")         :sort             (or sort "name") :direction            (or direction "asc")
                                                                        :operationType      (or operationType "") :_inventoryView   (name view)      :_selectedEntries     []                   :_review            nil
-                                                                       :_draftPreview      false                 :_reviewPending   false            :_reviewDirty         false                :_draftGridJson     "null" :_stockGridJson  "null" :_operationsGridJson   "null" :_draftIds [] :_draftSelection [] :_smartModelJson "null" :_operationRows []
+                                                                       :_draftPreview      false                 :_reviewPending   false            :_reviewDirty         false                :_draftGridJson     "null" :_stockGridJson  "null" :_operationsGridJson   "null" :_draftIds             [] :_draftSelection [] :_smartModelJson "null" :_operationRows []
                                                                        :saveStatus         "Saved"               :inventoryChanged ""               :_stockRows           []
                                                                        :_itemOptionsJson   "null"                :_gridWindowJson  "null"           :_operationDetailJson "null"
                                                                        :_columnLayoutsJson "{}"                  :_layoutStatus    "Saved"          :_layoutScope         nil
-                                                                       :_filters           {}                    :_acceptedFilters {}               :_filterRequest       0                    :_inventorySnapshot nil    :_ledgerRevision 0      :_unresolvedDraftEdits 0})
+                                                                       :_filters           {}                    :_acceptedFilters {}               :_filterRequest       0                    :_inventorySnapshot nil    :_ledgerRevision 0      :_unresolvedDraftEdits 0      :_unresolvedStockEdits 0})
     :data-init (str "$_inventoryView = " (charred/write-json-str (name view)) "; $sort = " (charred/write-json-str (or sort "name"))
                     "; $direction = " (charred/write-json-str (or direction "asc"))
                     (when initial? "; $_filterRequest = 0; $_filters = {}; $_acceptedFilters = {}")
@@ -481,7 +491,8 @@
                        {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0})
               (fn [_error] (set! $_layoutStatus "Failed"))))
     :data-on:inventory-conflict-resolved "if(!evt.detail.remaining){$saveStatus='Saved'; $_review=null; $_reviewDirty=true; const n=el.querySelector('#inventory-notice'); n.replaceChildren(); n.classList.remove('error'); n.setAttribute('role','status')}"
-    :data-on:inventory-unresolved        "if(evt.target.id==='pending-draft-grid') $_unresolvedDraftEdits=evt.detail.count"
+    :data-on:inventory-validation-error  "$saveStatus='Failed'; $_review=null; $_reviewDirty=true"
+    :data-on:inventory-unresolved        "if(evt.target.id==='pending-draft-grid') $_unresolvedDraftEdits=evt.detail.count; if(evt.target.id==='stock-grid') $_unresolvedStockEdits=evt.detail.count"
     :data-on:inventory-row-detail-close  "const h=document.getElementById('history-panel'); if(h){h.removeAttribute('data-init'); delete h.dataset.rowId; h.dataset.requestId=crypto.randomUUID(); h.replaceChildren()}"
     :data-on:draft-edit
     (->expr (set! $saveStatus "Saving") (@action :tover.stock.web/save-field
@@ -517,8 +528,8 @@
            {:aria-label (i18n/t "Resulting stock") :data-init (str "el.model = " (charred/write-json-str (configured-grid preview model)))}]
           [:p.quiet.inventory-grid-empty (i18n/t "No stock changes.")]))
       [:div.sheet-preview-actions
-       [:button.sheet-submit-preview {:data-attr:disabled "$_reviewPending || !$_review || $saveStatus !== 'Saved'" :type "button" :data-on:click
-                                      (->expr (when (and $_review (not $_reviewPending) (= $saveStatus "Saved"))
+       [:button.sheet-submit-preview {:data-attr:disabled "$_reviewPending || !$_review || $saveStatus !== 'Saved' || $_unresolvedDraftEdits > 0 || $_unresolvedStockEdits > 0" :type "button" :data-on:click
+                                      (->expr (when (and $_review (not $_reviewPending) (= $saveStatus "Saved") (= 0 $_unresolvedDraftEdits) (= 0 $_unresolvedStockEdits))
                                                 (set! $saveStatus "Saving")
                                                 (@action :tover.stock.web/submit {:review $_review :view $_inventoryView :query $query :filters $_filters :filterRequest $_filterRequest :sort $sort :direction $direction :operationType $operationType}
                                                          {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0})))} (i18n/t "Submit selected")]]]

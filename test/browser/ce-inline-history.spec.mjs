@@ -52,6 +52,97 @@ async function mount(page) {
 const stockBody = page => page.locator('#inline-stock > .inventory-grid-sheet table.jss_worksheet').first().locator(':scope > tbody');
 const stockCell = (page, row, column) => stockBody(page).locator(`:scope > tr[data-row-id="stock-${row}"] > td[data-column-key="${column}"]`);
 
+async function mountTyped(page, type, value, options = []) {
+  await mount(page);
+  await page.locator('#inline-stock').evaluate((grid, { type, value, options }) => {
+    grid.rowDetail = null;
+    grid.model = { id: 'stock', columns: [{ key: 'value', label: 'Value', width: 250 }], merges: [],
+      rows: [{ id: 'typed-row', cells: [{ value, target: { id: 'typed', path: type, revision: 1 }, editor: { type, options } }] }] };
+  }, { type, value, options });
+  await expect(page.locator('#inline-stock tbody td[data-column-key="value"]')).toHaveAttribute('data-entry-id', 'typed');
+}
+const typedCell = page => page.locator('#inline-stock tbody td[data-column-key="value"]');
+const typedInput = page => page.locator('#inline-stock .inventory-cell-editor > input');
+async function pasteOnCell(page, value) {
+  await page.locator('#inline-stock').evaluate((grid, value) => {
+    const clipboardData = new DataTransfer(); clipboardData.setData('text/plain', value);
+    grid.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+  }, value);
+}
+
+test('quantity typing, editor paste and dropped text cannot insert malformed values', async ({ page, context }) => {
+  await mountTyped(page, 'quantity', '5');
+  await typedCell(page).click();
+  const input = typedInput(page);
+  await expect(input).toHaveAttribute('inputmode', 'numeric');
+  await input.press('End');
+  await input.pressSequentially('e-+.abc');
+  await expect(input).toHaveValue('5');
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(() => navigator.clipboard.writeText('12abc'));
+  await input.press('ControlOrMeta+V');
+  await expect(input).toHaveValue('5');
+  await input.evaluate(node => { node.value = '2bad'; node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromDrop' })); });
+  await expect(input).toHaveValue('5');
+  expect(await page.evaluate(() => window.stockWrites)).toEqual([]);
+  await input.fill('0'); await input.press('Tab');
+  expect(await page.evaluate(() => window.stockWrites)).toEqual([{ id: 'typed', path: 'quantity', revision: 1, value: '0' }]);
+});
+
+test('amount commit keeps an incomplete decimal editable and normalizes comma input exactly', async ({ page }) => {
+  await mountTyped(page, 'decimal', '1.00');
+  await typedCell(page).click();
+  const input = typedInput(page);
+  await expect(input).toHaveAttribute('inputmode', 'decimal');
+  await input.fill('12.'); await input.press('Enter');
+  await expect(input).toBeFocused();
+  await expect(input).toHaveAttribute('aria-invalid', 'true');
+  expect(await page.evaluate(() => window.stockWrites)).toEqual([]);
+  await input.fill('12345678901234567890,1234'); await input.press('Tab');
+  expect(await page.evaluate(() => window.stockWrites)).toEqual([{ id: 'typed', path: 'decimal', revision: 1, value: '12345678901234567890.1234' }]);
+});
+
+test('an invalid opening keystroke preserves the quantity and an unchanged date preserves its precision', async ({ page }) => {
+  await mountTyped(page, 'quantity', '5');
+  await page.locator('#inline-stock').evaluate(grid => { grid.focus(); grid.worksheet.updateSelectionFromCoords(0, 0, 0, 0); });
+  await page.keyboard.press('x');
+  await expect(typedInput(page)).toHaveValue('5');
+  await typedInput(page).press('Escape');
+  expect(await page.evaluate(() => window.stockWrites)).toEqual([]);
+  await mountTyped(page, 'date', '2026-11-02T12:00:00.123456789Z');
+  await typedCell(page).click(); await typedInput(page).press('Enter');
+  expect(await page.evaluate(() => window.stockWrites)).toEqual([]);
+});
+
+test('invalid decimal on blur stays as a repairable failed edit without a save request', async ({ page }) => {
+  await mountTyped(page, 'decimal', '1.00');
+  await typedCell(page).click(); await typedInput(page).fill('12.');
+  await page.locator('#inline-stock').focus();
+  await expect(typedCell(page)).toHaveAttribute('data-save-state', 'failed');
+  await expect(typedCell(page)).toContainText('12.');
+  expect(await page.evaluate(() => window.stockWrites)).toEqual([]);
+  await typedCell(page).click(); await typedInput(page).fill('12,50'); await typedInput(page).press('Enter');
+  expect(await page.evaluate(() => window.stockWrites)).toEqual([{ id: 'typed', path: 'decimal', revision: 1, value: '12.50' }]);
+});
+
+for (const [type, original, invalid, valid, expected, options] of [
+  ['quantity', '5', '12abc', '', '', []],
+  ['decimal', '1.00', '1e3', '12,50', '12.50', []],
+  ['currency', 'EUR', 'E1R', 'usd', 'USD', []],
+  ['date', '2026-11-02T12:00:00Z', '2026-02-30', '2026-11-01T12:34:00Z', '2026-11-01T12:34:00Z', []],
+  ['select', 'incoming', 'sideways', 'Outgoing', 'outgoing', [{ value: 'incoming', label: 'Incoming' }, { value: 'outgoing', label: 'Outgoing' }]],
+  ['operation-reference', '', 'missing', 'Purchase · Supplier', 'purchase-1', [{ value: 'purchase-1', label: 'Purchase · Supplier' }]],
+]) test(`${type} validates paste directly onto a selected cell`, async ({ page }) => {
+  await mountTyped(page, type, original, options);
+  await page.locator('#inline-stock').evaluate(grid => { grid.focus(); grid.worksheet.updateSelectionFromCoords(0, 0, 0, 0); });
+  const originalText = await typedCell(page).locator('.inventory-cell-value').innerText();
+  await pasteOnCell(page, invalid);
+  await expect(typedCell(page).locator('.inventory-cell-value')).toHaveText(originalText);
+  expect(await page.evaluate(() => window.stockWrites)).toEqual([]);
+  await pasteOnCell(page, valid);
+  expect(await page.evaluate(() => window.stockWrites)).toEqual([{ id: 'typed', path: type, revision: 1, value: expected }]);
+});
+
 test('inline history follows its stable location row and isolates nested keyboard and paste', async ({ page }) => {
   await mount(page);
   await expect(stockBody(page).locator(':scope > tr').nth(1)).toHaveAttribute('data-detail-for', 'stock-A');
@@ -183,6 +274,48 @@ for (const kind of ['stock', 'operations']) test(`${kind} grows with every row a
   await page.getByRole('button', { name: 'History row 29', exact: true }).click();
   await expect(stockBody(page).locator(':scope > tr').last()).toHaveAttribute('data-detail-for', 'stock-29');
   expect(await page.evaluate(() => window.stockWrites)).toEqual([]);
+});
+
+test('Copy is the third action for all eight business operations and stays disabled while saving', async ({ page }) => {
+  await page.goto(origin);
+  await page.evaluate(async () => {
+    await import('/stock-operations.js');
+    const operations = document.createElement('stock-operations'); operations.id = 'copy-operations';
+    document.body.append(operations); window.copies = [];
+    operations.addEventListener('operation-copy', event => window.copies.push(event.detail));
+    for (const type of ['purchase', 'return', 'transfer', 'production', 'defect', 'sale', 'write-off', 'payment']) {
+      const panel = operations.renderDetails({ id: `source-${type}`, type, detail: {} });
+      panel.dataset.type = type; operations.append(panel);
+    }
+  });
+  for (const type of ['purchase', 'return', 'transfer', 'production', 'defect', 'sale', 'write-off', 'payment']) {
+    const panel = page.locator(`#copy-operations .operation-details[data-type="${type}"]`);
+    await expect(panel.getByRole('button')).toHaveText(['Correct', 'Cancel', 'Copy']);
+  }
+  const copies = page.locator('#copy-operations [data-operation-copy]');
+  await copies.first().click();
+  await expect(copies.first()).toBeDisabled();
+  await copies.first().evaluate(button => button.click());
+  expect(await page.evaluate(() => window.copies)).toEqual([{ targetId: 'source-purchase' }]);
+  await page.locator('#copy-operations').evaluate(operations => { operations.saveStatus = 'Saving'; });
+  for (const copy of await copies.all()) await expect(copy).toBeDisabled();
+  await page.locator('#copy-operations').evaluate(operations => { operations.saveStatus = 'Failed'; });
+  for (const copy of await copies.all()) await expect(copy).toBeEnabled();
+  await copies.first().click();
+  expect(await page.evaluate(() => window.copies)).toEqual([{ targetId: 'source-purchase' }, { targetId: 'source-purchase' }]);
+});
+
+test('Copy is absent for cancelled, unavailable and nonbusiness operation details', async ({ page }) => {
+  await page.goto(origin);
+  const buttons = await page.evaluate(async () => {
+    await import('/stock-operations.js');
+    const operations = document.createElement('stock-operations');
+    return [{ kind: 'opening' }, { kind: 'correction' }, { type: 'unsupported' },
+      { type: 'purchase', detail: { cancelled: true } }, { type: 'purchase', detail: { loading: true } },
+      { type: 'purchase', detail: { failed: true } }]
+      .map(model => operations.renderDetails(model).querySelectorAll('[data-operation-copy]').length);
+  });
+  expect(buttons).toEqual([0, 0, 0, 0, 0, 0]);
 });
 
 test('operation gutter merges each group and keeps detail rows unnumbered through snapshots', async ({ page }) => {

@@ -14,6 +14,16 @@
   {:mode "add" :id "private" :revision 2})
 
 
+(deftest editable-smart-fields-declare-types-and-do-not-offer-arbitrary-choices
+  (let [entry  {:kind :operation :type :payment :direction :outgoing}
+        fields (into {} (map (juxt :key :editor)) (smart/entry-fields entry))]
+    (is (= "decimal" (get-in fields ["amount" :type])))
+    (is (= "currency" (get-in fields ["currency" :type])))
+    (is (= "date" (get-in fields ["occurred-at" :type])))
+    (doseq [field ["direction" "original-operation-id"]]
+      (is (empty? (:options (smart/model (composing entry) (assoc composer-state :field field) "invalid choice" {} 1)))))))
+
+
 (deftest suggestions-come-from-server-columns-and-operation-choices
   (let [snapshot {:items {"item-a" {:name "Notebook"}} :rows [{:name "Notebook" :location "Main"}] :drafts []}
         goods    (smart/model snapshot {} "goo" {} 1)
@@ -59,6 +69,16 @@
     (is (= "done" (get-in model [:options 0 :kind])))
     (is (not-any? #(= "field" (:kind %)) (:options (smart/model (composing entry) composer-state "party" {} 2))))
     (is (some #(= "direction" (:key %)) (:chips model)))))
+
+
+(deftest done-remains-first-while-a-complete-operation-field-is-active
+  (let [entry {:kind      :operation :type   :payment :occurred-at "2026-10-21T10:00:00Z" :party "Supplier"
+               :direction :outgoing  :amount "12.34"  :currency    "EUR"}
+        state (assoc composer-state :field "currency")]
+    (is (= "done" (get-in (smart/model (composing entry) state "EUR" {} 1) [:options 0 :kind])))
+    (let [model (smart/model (composing entry) (assoc state :conflict {:key "currency"}) "EUR" {} 1)]
+      (is (not (:canDone model)))
+      (is (not-any? #(= "done" (:kind %)) (:options model))))))
 
 
 (deftest production-and-payment-have-their-own-fields

@@ -1,5 +1,6 @@
 import { t } from './i18n.js';
 import { formatDate, inputDateValue, toLocalDateTime } from './dates.js';
+import { constrainInput, fieldError, normalizeFieldValue } from './field-input.js';
 
 class StockEntry extends HTMLElement {
   constructor() {
@@ -40,12 +41,14 @@ class StockEntry extends HTMLElement {
         delete this.input.dataset.dateValue;
         this.input.removeAttribute('step');
         this.input.value = '';
+        this._syncInput?.();
         this.input.readOnly = this.busy;
         this.render();
       }
       return;
     }
     if (!value || value.request < this._request) return;
+    const inputError = this._inputError && value.field?.key === this._model?.field?.key && value.text === this.currentText() ? this._inputError : '';
     this._request = Math.max(this._request, value.request);
     if (value.state?.id !== this._model?.state?.id || !['add', 'unavailable'].includes(value.state?.mode)) this._doneCommandId = null;
     this._model = JSON.parse(JSON.stringify(value));
@@ -62,6 +65,10 @@ class StockEntry extends HTMLElement {
       this.input.removeAttribute('step');
     }
     this.input.value = this.modelText(value);
+    this._syncInput?.();
+    if (inputError) {
+      this._inputError = inputError; this.input.setCustomValidity(inputError); this.input.setAttribute('aria-invalid', 'true');
+    }
     this.render();
   }
   get model() { return this._model; }
@@ -90,6 +97,9 @@ class StockEntry extends HTMLElement {
     this.fieldLabel = this.querySelector('.stock-entry-field');
     this.menu = this.querySelector('.stock-entry-menu');
     this.feedback = this.querySelector('.stock-entry-feedback');
+    this._syncInput = constrainInput(this.input, () => this.inputEditor, message => {
+      this._inputError = message; this.render();
+    });
     this.clearButton = this.querySelector('.stock-entry-clear');
     this.clearButton.addEventListener('click', () => this.choose({ kind: 'clear-field' }));
     this.cancelButton = this.querySelector('.stock-entry-cancel');
@@ -150,6 +160,10 @@ class StockEntry extends HTMLElement {
     return !!this._model?.field && this._model.field.key.split('/').at(-1) === 'occurred-at';
   }
 
+  get inputEditor() {
+    return this._model?.state?.mode === 'add' ? this._model.field?.editor : null;
+  }
+
   modelText(model = this._model) {
     const date = model?.field?.key.split('/').at(-1) === 'occurred-at';
     return date ? toLocalDateTime(model?.text || '') : model?.text || '';
@@ -159,7 +173,7 @@ class StockEntry extends HTMLElement {
     return this.isDateField ? inputDateValue(this.input) : this.input.value;
   }
 
-  send(name, option) {
+  send(name, option, text = this.currentText()) {
     clearTimeout(this._timer);
     this._hasSent = true;
     const request = ++this._request;
@@ -170,7 +184,7 @@ class StockEntry extends HTMLElement {
     }
     this.dispatchEvent(new CustomEvent(name, {
       bubbles: true,
-      detail: { state, text: this.currentText(), option, request },
+      detail: { state, text, option, request },
     }));
   }
 
@@ -181,6 +195,17 @@ class StockEntry extends HTMLElement {
 
   complete(option = null) {
     if (this.busy) return;
+    let text = this.currentText();
+    if (this.inputEditor && (!option || ['value', 'done'].includes(option.kind))) {
+      const value = option?.kind === 'value' ? option.value : text;
+      const error = option?.kind !== 'value' && this.input.validity.badInput ? t('Enter an occurrence date or an ISO timestamp.') : fieldError(this.inputEditor, value);
+      if (error) {
+        this._inputError = error; this.input.setCustomValidity(error); this.input.setAttribute('aria-invalid', 'true'); this.render(); return;
+      }
+      this.input.setCustomValidity(''); this.input.removeAttribute('aria-invalid'); this._inputError = '';
+      if (option?.kind === 'value') option = { ...option, value: normalizeFieldValue(this.inputEditor, value) };
+      else text = normalizeFieldValue(this.inputEditor, value);
+    }
     if (option?.kind === 'done') {
       this._doneCommandId ||= crypto.randomUUID();
       option = { ...option, commandId: this._doneCommandId };
@@ -189,8 +214,9 @@ class StockEntry extends HTMLElement {
     this.input.readOnly = true;
     this.open = true;
     this.activeIndex = 0;
+    this._navigated = false;
     this.render();
-    this.send('smart-complete', option);
+    this.send('smart-complete', option, text);
   }
 
   choose(option) {
@@ -294,6 +320,7 @@ class StockEntry extends HTMLElement {
           addFeedback(t('This unfinished operation is no longer available.'), t('Start again'), { kind: 'restart' });
         }
       } else {
+        if (this._inputError) addFeedback(this._inputError);
         for (const error of model.errors || []) {
           const key = (error.path || []).join('/');
           addFeedback(error.message, key ? t('Fix field') : null, { kind: 'field', key });
@@ -320,8 +347,9 @@ class StockEntry extends HTMLElement {
         button.tabIndex = -1;
         const icon = document.createElement('span');
         icon.className = 'stock-entry-option-icon';
+        if (option.kind === 'done') icon.classList.add('is-done');
         icon.setAttribute('aria-hidden', 'true');
-        icon.textContent = option.kind === 'add' || option.kind === 'line' ? '+' : option.kind === 'type' ? '↗' : '≡';
+        icon.textContent = option.kind === 'done' ? '✓' : option.kind === 'add' || option.kind === 'line' ? '+' : option.kind === 'type' ? '↗' : '≡';
         const content = document.createElement('span');
         content.className = 'stock-entry-option-content';
         const label = document.createElement('span');

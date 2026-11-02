@@ -11,6 +11,7 @@
     [tover.inventory.layouts :as layouts]
     [tover.inventory.ledger :as ledger]
     [tover.inventory.read-query :as read-query]
+    [tover.inventory.schema :as schema]
     [tover.inventory.store :as inventory-store]
     [tover.inventory.windows :as windows]
     [tover.inventory.workbench :as workbench]
@@ -149,9 +150,63 @@
   {:malli/schema [:=> [:cat [:vector :any] :string] :any]}
   [path value]
   (case (last path)
-    (:type :direction) (keyword value)
-    :quantity (if (re-matches #"\d+" value) (try (Long/parseLong value) (catch NumberFormatException _ value)) value)
+    :type (let [type (keyword value)]
+            (when-not (schema/OperationTypes type)
+              (schema/fail! :validation "Choose an available operation type." {:field :type}))
+            type)
+    :direction (if (empty? value) ""
+                   (let [direction (keyword value)]
+                     (when-not (#{:incoming :outgoing} direction)
+                       (schema/fail! :validation "Choose incoming or outgoing." {:field :direction}))
+                     direction))
+    (:quantity :stock-count) (if (empty? value) "" (schema/quantity! value true))
+    :amount (if (empty? value) ""
+                (let [amount (str/replace value "," ".")]
+                  (schema/money! amount)
+                  amount))
+    :currency (if (empty? value) ""
+                  (let [currency (str/upper-case value)]
+                    (when-not (re-matches #"[A-Za-z]{3}" value)
+                      (schema/fail! :validation "Use a three-letter uppercase currency code." {:field :currency}))
+                    currency))
+    :occurred-at (if (empty? value) "" (do (schema/timestamp! value) value))
     value))
+
+
+(defn reference-choices
+  {:malli/schema [:=> [:cat :map :string] [:vector :map]]}
+  [context text]
+  (inventory-store/read-snapshot
+    (:repo context) context
+    (fn [conn state]
+      (let [term     (str/lower-case text)
+            pending  (for [draft (sort-by :saved-at #(compare %2 %1) (vals (:drafts state)))
+                           :let  [entry (:entry draft)
+                                  type (:type entry)]
+                           :when (and (not= :composing (:phase draft)) (= :operation (:kind entry :operation)) (#{:purchase :sale} type))
+                           :let  [title (i18n/t (if (= :purchase type) "Purchase" "Sale"))]
+                           :when (some #(str/starts-with? (str/lower-case (str %)) term) [(:id draft) (:party entry) (name type) title])]
+                       {:value (:id draft) :label (str title " · " (:party entry))})
+            ids      (set (map :value pending))
+            accepted (read-query/suggest-operations conn context text 30)]
+        (vec (take 30 (concat pending (remove #(contains? ids (:value %)) accepted))))))))
+
+
+(defn check-reference!
+  {:malli/schema [:=> [:cat :map :string] :nil]}
+  [context value]
+  (when-not (empty? value)
+    (when-not
+      (inventory-store/read-snapshot
+        (:repo context) context
+        (fn [conn state]
+          (let [pending  (get-in state [:drafts value])
+                entry    (:entry pending)
+                accepted (first (read-query/operations conn context [value]))]
+            (or (and pending (not= :composing (:phase pending))
+                     (= :operation (:kind entry :operation)) (#{:purchase :sale} (:type entry)))
+                (and accepted (not (:cancelled? accepted)) (#{:purchase :sale} (:type accepted)))))))
+      (schema/fail! :validation "The referenced purchase or sale is unavailable." {:field :original-operation-id}))))
 
 
 (defn save-stock-correction!
@@ -211,13 +266,14 @@
   [context {:keys [id revision path value]}]
   (let [current     (draft context id revision)
         path        (path-parts path)
+        _           (when (= :original-operation-id (last path)) (check-reference! context value))
         stock-field (get {:stock-count "quantity" :stock-location "location" :name "name" :article "article" :barcode "barcode" :unit "unit" :quantity "quantity" :location "location"} (last path))
         entry       (assoc-in (:entry current) path (field-value path value))
         entry       (if (= :type (last path))
                       (let [prefix      (pop path)
                             replacement (switch-type (get-in (:entry current) prefix (:entry current)) (keyword value))]
                         (if (seq prefix) (assoc-in entry prefix replacement) replacement)) entry)
-        entry       (if (and (str/blank? value) (#{:original-operation-id :amount :currency} (last path)))
+        entry       (if (and (empty? value) (#{:original-operation-id :amount :currency} (last path)))
                       (if (seq (pop path)) (update-in entry (pop path) dissoc (last path)) (dissoc entry (last path))) entry)
         entry       (if (= :item-id (last path))
                       (let [snapshot (inventory-store/snapshot (:repo context) context)]
@@ -305,8 +361,7 @@
                 [:text [:string {:max 2000}]]]
    :query      (fn [context input] {:context context :input input})}
   [{:keys [context input]}]
-  (let [options (inventory-store/read-snapshot (:repo context) context
-                                               (fn [conn _] (read-query/suggest-operations conn context (:text input) 30)))]
+  (let [options (reference-choices context (:text input))]
     {:type :signals :data {:_referenceOptionsJson (charred/write-json-str {:requestId (:requestId input) :status "ok" :options options})}}))
 
 
@@ -412,6 +467,39 @@
                             [:lines (max 0 (dec (count (:lines entry)))) field])
                       [:lines 0 field])]
         (failure (ex-info (.getMessage error) (assoc (ex-data error) :attempt {:path path :value (:value input)})))))))
+
+
+(defn copy-operation
+  {:malli/schema [:=> [:cat :map] :map]}
+  [entry]
+  (let [entry     (if (and (= :purchase (:type entry)) (contains? entry :receipts))
+                    (assoc entry :lines (vec (mapcat :lines (:receipts entry)))) entry)
+        copy-line (fn [line]
+                    (assoc (select-keys line [:item-id :name :article :barcode :unit :quantity :location :amount])
+                           :id (str (UUID/randomUUID))))]
+    (reduce (fn [copy field]
+              (cond-> copy
+                (contains? entry field) (assoc field (mapv copy-line (get entry field)))))
+            (assoc (select-keys entry [:type :party :direction :amount :currency :reason :from-location :to-location])
+                   :kind :operation :occurred-at (str (Instant/now)))
+            [:lines :inputs :outputs])))
+
+
+(defaction copy-entry
+  {:route-data {:tover/access :workspace}
+   :schema     [:map [:targetId [:string {:min 1 :max 500}]] [:view {:optional true} :string] [:query {:optional true} :string]]}
+  [context {:keys [targetId] :as input}]
+  (try
+    (let [repo (:repo context)]
+      (locking repo
+        (let [source (last (inventory-store/operation-records repo context targetId))
+              entry  (:entry source)]
+          (when-not (and source (not (:cancelled? source))
+                         (= :operation (:kind entry :operation)) (schema/OperationTypes (:type entry)))
+            (throw (ex-info "The accepted operation is no longer effective." {:type :validation})))
+          (save! context nil nil (copy-operation entry)))))
+    (saved context input)
+    (catch ExceptionInfo error (failure error))))
 
 
 (defaction revise-entry

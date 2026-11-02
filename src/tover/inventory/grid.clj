@@ -122,7 +122,7 @@
                       "original-operation-id" (#{:return :payment} type)
                       ("from-location" "to-location") (= :transfer type)
                       true)
-        cell        (when applicable? (editable-cell draft [(keyword key)] value (case key "occurred-at" "date" "amount" "decimal" "text")))
+        cell        (when applicable? (editable-cell draft [(keyword key)] value (case key "occurred-at" "date" "amount" "decimal" "currency" "currency" "text")))
         result      (case key
                       "select" {:value false :selection {:id (:id draft)}}
                       "reason" (assoc (editable-cell draft [:reason] (get-in draft [:entry :reason]) "text")
@@ -134,7 +134,7 @@
                                {:value (str (when (#{:revision :cancellation} kind) (str (if (= :revision kind) (i18n/t "Correction") (label kind)) " · "))
                                             (label (if (= :operation (:kind entry)) type (:kind entry))))})
                       "direction" (if applicable? (assoc cell :value (some-> value name) :display (label value)
-                                                         :editor {:type "select" :options [{:value "incoming" :label (i18n/t "Incoming")} {:value "outgoing" :label (i18n/t "Outgoing")}]}) {})
+                                                         :editor {:type "select" :allowEmpty true :options [{:value "incoming" :label (i18n/t "Incoming")} {:value "outgoing" :label (i18n/t "Outgoing")}]}) {})
                       "original-operation-id" (if applicable?
                                                 (let [options (into [{:value "" :label (i18n/t "None")}]
                                                                     (for [operation (or (:operation-catalog model) (:operations model)) :when (#{:purchase :sale} (:type operation))]

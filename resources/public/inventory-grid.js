@@ -1,6 +1,7 @@
 import { t } from './i18n.js';
 import { formatDate, toLocalDateTime, inputDateValue } from './dates.js';
 import { installServerFilters } from './grid-filters.js';
+import { constrainInput, fieldError, normalizeFieldValue } from './field-input.js';
 
 // Coordinates belong to CE; persistent identities, merges and values come from the server.
 const assetRoot = '/vendor/jspreadsheet-ce/';
@@ -1033,26 +1034,35 @@ export class InventoryGrid extends HTMLElement {
       }
       input.value = raw;
     } else {
-      input.type = type === 'date' ? 'datetime-local' : ['quantity', 'decimal'].includes(type) ? 'number' : 'text';
-      if (type === 'quantity') input.step = '1';
-      if (type === 'decimal') input.step = 'any';
+      input.type = type === 'date' ? 'datetime-local' : 'text';
       if (type === 'date') { input.step = '60'; input.dataset.dateValue = raw; input.value = toLocalDateTime(raw); }
-      else input.value = event?.type === 'keydown' && event.key?.length === 1 ? event.key : raw;
+      else input.value = raw;
       if (type === 'operation-reference' && event?.key?.length !== 1) input.value = raw ? (attempt?.display ?? cell.display ?? cell.editor.options?.find(option => option.value === raw)?.label ?? raw) : '';
     }
     input.setAttribute('aria-label', t("{p0} for {p1}", {p0: this._model.columns[x]?.label || t('Value'), p1: this._rows[y]?.label || t('operation')}));
+    if (type !== 'select') {
+      constrainInput(input, () => cell.editor, message => { this._notice.textContent = message; })();
+      if (type !== 'date' && event?.type === 'keydown' && event.key?.length === 1) {
+        input.value = event.key; input.dispatchEvent(new InputEvent('input'));
+      }
+    }
     input.addEventListener('input', () => input.setAttribute('data-unsaved-edit', ''));
     input.addEventListener('keydown', e => {
       e.stopPropagation();
       if (e.key === 'Escape') { e.preventDefault(); worksheet.closeEditor(td, false); }
       if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault(); this._nextSelection = { x: Number(x), y: Number(y), backwards: e.shiftKey, vertical: e.key === 'Enter' };
+        e.preventDefault();
         if (type === 'operation-reference') {
           const state = this._active?.referenceOptions;
           const selected = e.key === 'Enter' && (state?.options.find(option => input.value === option.label || (option.value && input.value === option.value)) || (input.value === t('None') ? { value: '', label: '' } : null));
           if (!selected) { worksheet.closeEditor(td, false); return; }
           state.chosenValue = selected.value; state.chosenLabel = selected.label;
         }
+        const error = input.validity.badInput ? t('Enter an occurrence date or an ISO timestamp.')
+          : fieldError(type === 'operation-reference' ? { ...cell.editor, options: [{ value: '', label: t('None') }, ...this._active.referenceOptions.options] }
+            : cell.editor, type === 'operation-reference' ? this._active.referenceOptions.chosenValue : type === 'date' ? inputDateValue(input) : input.value);
+        if (error) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); this._notice.textContent = error; return; }
+        this._nextSelection = { x: Number(x), y: Number(y), backwards: e.shiftKey, vertical: e.key === 'Enter' };
         worksheet.closeEditor(td, true);
       }
     });
@@ -1111,11 +1121,20 @@ export class InventoryGrid extends HTMLElement {
     clearTimeout(active.itemOptions?.timer);
     clearTimeout(active.referenceOptions?.timer);
     const input = td.querySelector('.inventory-cell-editor > input,.inventory-cell-editor > select');
-    const value = active.referenceOptions ? (active.referenceOptions.chosenValue ?? active.original) : input ? (input.type === 'datetime-local' ? inputDateValue(input) : input.value) : active.original;
+    const editor = { ...this._cell(Number(x), Number(y)).editor,
+      ...(active.referenceOptions ? { options: [{ value: '', label: t('None') }, ...active.referenceOptions.options] } : {}) };
+    const raw = active.referenceOptions ? (active.referenceOptions.chosenValue ?? active.original) : input ? (input.type === 'datetime-local' ? inputDateValue(input) : input.value) : active.original;
+    const error = input?.validity.badInput ? t('Enter an occurrence date or an ISO timestamp.') : fieldError(editor, raw);
+    const value = error ? raw : normalizeFieldValue(editor, raw);
     this._closedTarget = save && !sameValue(value, active.original) ? active.target : null;
     this._closedContext = this._closedTarget ? { fieldLabel: active.fieldLabel, editorType: active.editorType,
+      ...(error ? { validationError: error } : {}),
+      ...(active.referenceOptions ? { editorOptions: editor.options } : {}),
       ...(active.referenceOptions ? { display: active.referenceOptions.chosenLabel } : {}) } : null;
     this._active = null;
+    if (save && !error && sameValue(value, active.original) && this._attempts.has(pathKey(active.target))) {
+      this._dismissAttempt(pathKey(active.target), active.target);
+    }
     td.classList.remove('inventory-cell-editing');
     this._present(td, x, y, save ? value : active.original);
     if (!save) this._scheduleRender();
@@ -1125,15 +1144,20 @@ export class InventoryGrid extends HTMLElement {
   _save(x, y, value) {
     const location = this._cell(x, y), target = this._closedTarget || location.target;
     const context = this._closedContext || { fieldLabel: this._model.columns[x]?.label, editorType: location.editor?.type };
+    const editor = { ...location.editor, ...(context.editorOptions ? { options: context.editorOptions } : {}) };
+    const error = context.validationError || fieldError(editor, value);
+    if (!error) value = normalizeFieldValue(editor, value);
     const cell = this._targetCells().findLast(candidate => pathKey(candidate.target) === pathKey(target));
     this._closedTarget = null; this._closedContext = null;
     if (!target || (cell && sameValue(value, cell.value))) { this._scheduleRender(); return; }
     const conflict = cell && versionKey(cell.target) !== versionKey(target);
     this._acknowledgedWrite = null;
     this._attempts.set(pathKey(target), { target: { ...target }, value: String(value ?? ''), ...context,
-      state: !cell && !this._model.viewport ? 'orphan' : conflict ? 'conflict' : 'saving', ...(conflict ? { saved: cell.value, currentTarget: cell.target } : {}) });
+      state: error ? 'failed' : !cell && !this._model.viewport ? 'orphan' : conflict ? 'conflict' : 'saving', ...(conflict ? { saved: cell.value, currentTarget: cell.target } : {}) });
     this._attemptsChanged();
-    if (cell || this._model.viewport) this._emit(target.type || 'draft-edit', { ...target, value: String(value ?? '') });
+    this._notice.textContent = error;
+    if (error) this._emit('inventory-validation-error', { message: error });
+    else if (cell || this._model.viewport) this._emit(target.type || 'draft-edit', { ...target, value: String(value ?? '') });
     this._scheduleRender();
   }
   _saveItem(cell, value, display) {
@@ -1185,7 +1209,10 @@ export class InventoryGrid extends HTMLElement {
     const selected = this._singleSelection();
     if (!selected) return;
     const { x, y } = selected;
-    if (!this._editable(this._cell(x, y))) return;
+    const cell = this._cell(x, y);
+    if (!this._editable(cell)) return;
+    const error = fieldError(cell.editor, value);
+    if (error) { this._notice.textContent = error; return; }
     this._notice.textContent = ''; this._save(x, y, value);
   }
   _key(event) {

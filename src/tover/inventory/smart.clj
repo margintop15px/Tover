@@ -18,20 +18,25 @@
   (let [prefix  (if (= :revision (:kind entry)) "replacement/" "")
         entry   (if (= :revision (:kind entry)) (:replacement entry) entry)
         type    (:type entry)
-        common  [{:key "occurred-at" :label (i18n/t "Occurred at") :description (i18n/t "Local date and time") :date true}
+        common  [{:key "occurred-at" :label (i18n/t "Occurred at") :description (i18n/t "Local date and time") :date true :editor {:type "date"}}
                  {:key "reason" :label (i18n/t "Reason") :description (i18n/t "Reason for this record")}]
         headers (concat
                   (when (#{:purchase :sale :return :payment} type) [{:key "party" :label (i18n/t "Party")}])
-                  (when (#{:return :payment} type) [{:key "direction" :label (i18n/t "Direction")} {:key "original-operation-id" :label (i18n/t "Original operation")}])
-                  (when (#{:purchase :sale :payment} type) [{:key "amount" :label (i18n/t "Amount")} {:key "currency" :label (i18n/t "Currency")}])
+                  (when (#{:return :payment} type)
+                    [{:key    "direction" :label (i18n/t "Direction")
+                      :editor {:type "select" :allowEmpty true :options [{:value "incoming" :label (i18n/t "Incoming")} {:value "outgoing" :label (i18n/t "Outgoing")}]}}
+                     {:key "original-operation-id" :label (i18n/t "Original operation") :editor {:type "operation-reference"}}])
+                  (when (#{:purchase :sale :payment} type) [{:key "amount" :label (i18n/t "Amount") :editor {:type "decimal"}}
+                                                            {:key "currency" :label (i18n/t "Currency") :editor {:type "currency"}}])
                   (when (= :transfer type) [{:key "from-location" :label (i18n/t "From location")} {:key "to-location" :label (i18n/t "To location")}])
                   common)
         lines   (for [group       (if (= :production type) [:inputs :outputs] [:lines])
                       [index _]   (map-indexed vector (get entry group))
                       [key label] [["name" (i18n/t "Goods")] ["quantity" (i18n/t "Quantity")] ["location" (i18n/t "Location")] ["article" (i18n/t "Article")] ["barcode" (i18n/t "Barcode")] ["unit" (i18n/t "Unit")]]]
-                  {:key   (str (name group) "/" index "/" key)
-                   :label (str (when (= :production type) (if (= :inputs group) (str (i18n/t "Input {field}" {:field ""})) (str (i18n/t "Output {field}" {:field ""})))) label
-                               (when (pos? index) (str " " (inc index))))})]
+                  {:key    (str (name group) "/" index "/" key)
+                   :editor {:type (if (= key "quantity") "quantity" "text")}
+                   :label  (str (when (= :production type) (if (= :inputs group) (str (i18n/t "Input {field}" {:field ""})) (str (i18n/t "Output {field}" {:field ""})))) label
+                                (when (pos? index) (str " " (inc index))))})]
     (mapv #(update % :key (partial str prefix)) (concat headers lines))))
 
 
@@ -97,12 +102,17 @@
         available    (if draft (remove #(populated? (get-in (:entry draft) (path (:key %)))) fields) fields)
         values       (when field (filter matching? (field-values snapshot field)))
         replacement? (and (not draft) (column-filters/complex? filters (or (:key field) "name")))
-        typed        (when (and field (not (str/blank? text)) (not-any? #(= text (:value %)) values))
+        field        (cond-> field
+                       (and draft (= "operation-reference" (get-in field [:editor :type])))
+                       (assoc-in [:editor :options] (into [{:value "" :label (i18n/t "None")}]
+                                                          (map #(select-keys % [:value :label]) values))))
+        typed        (when (and field (not (str/blank? text)) (not-any? #(= text (:value %)) values)
+                                (not (and draft (#{"select" "operation-reference"} (get-in field [:editor :type])))))
                        [{:kind        "value" :key (:key field) :value text
                          :label       (if (= :unit (last (path (:key field)))) (i18n/unit-label text) text)
                          :description (i18n/t "Use this value")}])
-        check        (when draft (completion/check (:entry draft) (set (keys (:items snapshot)))))
-        done?        (boolean (:valid? check))
+        check        (or (:completion-check snapshot) (when draft (completion/check (:entry draft) (set (keys (:items snapshot))))))
+        done?        (boolean (and (:valid? check) (not (:conflict state))))
         options      (cond
                        unavailable? [{:kind "restart" :label (i18n/t "Start again") :description (i18n/t "This unfinished operation is no longer available")}]
                        (= "types" (:mode state))
@@ -119,8 +129,6 @@
                        [{:kind "add" :label (i18n/t "Add operation") :description (i18n/t "Choose an operation type")}]
                        :else
                        (concat
-                         (when (and (= "add" (:mode state)) done?)
-                           [{:kind "done" :label (i18n/t "Done") :description (i18n/t "Add complete operation to pending changes · ⌘/Ctrl Enter")}])
                          (when (and (= "filter" (:mode state)) (or (str/blank? term) (str/starts-with? "add" term) (= "ass" term)))
                            [{:kind "add" :label (i18n/t "Add operation") :description (i18n/t "Choose an operation type")}])
                          (for [item available :when (matching? item)] (assoc item :kind "field"))
@@ -139,6 +147,9 @@
                                {:kind        "remove-line" :key (str (name group) "/" index)
                                 :label       (str (i18n/t "Remove {type}" {:type (i18n/t (case group :inputs "input" :outputs "output" "item"))}) " " (inc index))
                                 :description (i18n/t "Remove this extra line")})))))
+        options      (cond->> options
+                       (and (= "add" (:mode state)) done?)
+                       (cons {:kind "done" :label (i18n/t "Done") :description (i18n/t "Add complete operation to pending changes · ⌘/Ctrl Enter")}))
         chips        (if draft
                        (into [{:key "" :label (i18n/t "Add") :value (or (some #(when (= (first %) (get-in draft [:entry :type])) (i18n/t (second %))) operation-types) (i18n/t "Operation")) :kind "composition"}]
                              (for [item fields :let [value (get-in (:entry draft) (path (:key item)))] :when (populated? value)]
