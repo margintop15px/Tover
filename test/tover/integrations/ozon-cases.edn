@@ -1,0 +1,84 @@
+{:synthetic true
+ :products
+ [{:case :all-identifiers
+   :endpoint "/v3/product/info/list"
+   :provider {:id 9223372036854775807 :offer_id "00042" :sku 100
+              :barcodes ["0000000012345" "OZN999"]
+              :sources [{:sku 100 :source "sds"} {:sku 99 :source "fbo"}]}
+   :identifiers [{:type :product-id :value "9223372036854775807"}
+                 {:type :article :value "00042"}
+                 {:type :sku :value "100" :role :primary}
+                 {:type :sku :value "100" :role :source}
+                 {:type :sku :value "99" :role :historical}
+                 {:type :barcode :value "0000000012345"}
+                 {:type :barcode :value "OZN999"}]}
+  {:case :missing-identifiers
+   :endpoint "/v3/product/info/list"
+   :provider {:id 101 :offer_id "NO-BARCODE" :sku 0 :barcodes [] :sources []}
+   :identifiers [{:type :product-id :value "101"} {:type :article :value "NO-BARCODE"}]}]
+ :attributes
+ {:endpoint "/v4/product/info/attributes"
+  :provider {:id 101 :description_category_id 200 :type_id 300
+             :attributes [{:id 4295 :values [{:value "56"} {:value "58"}]}]
+             :complex_attributes [{:attributes [{:id 700 :values [{:dictionary_value_id 8 :value "Cotton"}]}]}
+                                  {:attributes [{:id 700 :values [{:dictionary_value_id 9 :value "Wool"}]}]}]}
+  :normalized [{:attribute-id "4295" :values [{:value "56"} {:value "58"}]}
+               {:attribute-id "700" :group-id "composition" :group-index 0
+                :values [{:dictionary-id "8" :value "Cotton"}]}
+               {:attribute-id "700" :group-id "composition" :group-index 1
+                :values [{:dictionary-id "9" :value "Wool"}]}]}
+ :events
+ [{:case :multi-line-dispatch
+   :endpoint "/v3/posting/fbs/get"
+   :provider {:result {:posting_number "SYNTHETIC-1" :status "delivering"
+                       :delivering_date "2026-11-05T10:00:00Z"
+                       :products [{:sku 100 :quantity 2} {:sku 100 :quantity 3}]}}
+   :domain :posting :complete? true
+   :candidate {:effect :sale :evidence :dispatch :occurred-at "2026-11-05T10:00:00Z"
+               :lines [{:id "line-1" :identifiers [{:type :sku :value "100"}] :product-id "p" :warehouse-id "wh" :quantity 2}
+                       {:id "line-2" :identifiers [{:type :sku :value "100"}] :product-id "p" :warehouse-id "wh" :quantity 3}]}
+   :expected #{}}
+  {:case :missing-actual-timestamp
+   :endpoint "/v3/posting/fbs/get"
+   :provider {:result {:posting_number "SYNTHETIC-2" :status "delivered"
+                       :in_process_at "2026-11-04T10:00:00Z" :shipment_date "2026-11-05T10:00:00Z"
+                       :delivering_date nil :products [{:sku 100 :quantity 2}]}}
+   :domain :posting :complete? true
+   :candidate {:effect :sale :evidence :dispatch
+               :lines [{:id "line-1" :identifiers [{:type :sku :value "100"}] :product-id "p" :warehouse-id "wh" :quantity 2}]}
+   :expected #{"physical-event"}}
+  {:case :partial-response
+   :endpoint "/v3/posting/fbs/get"
+   :provider {:result {:posting_number "SYNTHETIC-3" :products [{:sku 100}]}}
+   :domain :posting :complete? false
+   :candidate {:effect :sale
+               :lines [{:id "line-1" :identifiers [{:type :sku :value "100"}] :product-id "p" :warehouse-id "wh"}]}
+   :expected #{"source-response" "physical-event" "line-quantity"}}
+  {:case :late-partial-return
+   :endpoint "/v1/returns/list"
+   :provider {:returns [{:id "SYNTHETIC-RETURN-1" :posting_number "SYNTHETIC-1"
+                         :visual {:status {:sys_name "ReceivedBySeller"}}
+                         :logistic {:return_date "2026-10-29T10:00:00Z" :final_moment "2026-11-05T12:00:00Z"}
+                         :product {:sku 100 :quantity 1}}] :has_next false}
+   :domain :return :complete? true
+   :candidate {:effect :return :evidence :receipt :occurred-at "2026-11-05T12:00:00Z"
+               :lines [{:id "line-1" :identifiers [{:type :sku :value "100"}] :product-id "p" :warehouse-id "wh" :quantity 1}]}
+   :expected #{}}
+  {:case :return-initiated
+   :endpoint "/v2/returns/rfbs/get"
+   :provider {:returns {:created_at "2026-11-05T10:00:00Z" :state {:state "ON_APPROVAL"} :product {:sku 100}}}
+   :domain :return :complete? true
+   :candidate {:effect :return :lines [{:id "line-1" :identifiers [{:type :sku :value "100"}]}]}
+   :expected #{"physical-event" "line-quantity" "line-mapping"}}
+  {:case :supply-plan-is-not-receipt
+   :endpoint "/v1/supply-order/bundle"
+   :provider {:items [{:sku 100 :quantity 5}] :has_next false :total_count 1}
+   :domain :supply :complete? true
+   :candidate {:effect :transfer :lines [{:id "line-1" :identifiers [{:type :sku :value "100"}] :product-id "p" :warehouse-id "wh"}]}
+   :expected #{"physical-event" "line-quantity" "transfer-locations"}}
+  {:case :removal-plan-is-not-disposal
+   :endpoint "/v1/removal/from-stock/list"
+   :provider {:returns_summary_report_rows [{:sku "100" :quantity_for_return 4 :utilization_date ""}] :last_id ""}
+   :domain :removal :complete? true
+   :candidate {:effect :write-off :lines [{:id "line-1" :identifiers [{:type :sku :value "100"}] :product-id "p" :warehouse-id "wh"}]}
+   :expected #{"physical-event" "line-quantity"}}]}

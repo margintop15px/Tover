@@ -70,6 +70,20 @@ Release only after operation/replay/lineage correctness checks, two-member brows
 
 Imports, marketplace integrations, file/evidence uploads, automatic matching, valuation, debt reports, generalized report snapshots and multi-instance operation are deferred. Do not simulate them in the tester interface.
 
+## External identity contract (M1)
+
+M1 defines offline schemas, semantic validation and synthetic source contracts. Live fetching, persistence, Review integration and synchronization are later milestones in the [execution plan](marketplace-integration-plan.md).
+
+The workspace-local goods ID is the only inventory identity. External products are scoped to a connection/account and may have changing names, articles, multiple barcodes and primary/source/historical SKU aliases. Warehouses and suppliers do not create additional goods identities. Several external listings may refer to one goods ID after explicit confirmation. Names or identifier similarity never confirm this relationship automatically.
+
+Keep imported facts and revisions separate from user-controlled catalogue metadata. Preserve incomplete/conflicting source evidence. Validate mapping and catalogue decisions against the connection's versioned policy and all competing active bindings. Default policy permits a barcode to resolve to one internal goods ID within a connection; the strict preset permits one listing. Optional name/article/barcode/unit requirements apply at acceptance. Historical bindings remain evidence; policies do not erase them or disable workspace isolation.
+
+Article/name changes retain confirmed identity. Changes to the confirmed variant or whole-unit counting basis require review before further automatic acceptance. Mapping corrections affect future proposals; accepted operations require reviewed revisions. Never infer unit conversion or merge same-name variants.
+
+Goods will support multiple Store memberships in M2. External field definitions preserve provider category/type/attribute identities, value types, multiplicity, dictionary IDs and complex groups. Later view preferences select optional imported columns; required TOVER columns remain visible. M1 does not change the current single-Store catalogue UI.
+
+The [Ozon source contracts](ozon-source-contracts.md) distinguish observations from physical events. New events need confirmed goods/location mappings and complete evidence before automatic acceptance. Corrections require Review. Stock snapshots support cutover/reconciliation; actual dispatch creates Sale, actual return receipt creates Return, and transportation updates have no second stock effect. Missing actual quantities, time or location remain incomplete.
+
 
 ## Workspace catalogues
 

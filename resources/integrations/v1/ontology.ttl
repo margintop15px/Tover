@@ -1,0 +1,102 @@
+@prefix e: <urn:tover:integrations:v1:> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+e:ontology a owl:Ontology ; owl:versionInfo "integrations-v1.0.0" ;
+  rdfs:comment "External evidence and explicit decisions; no inferred identity equivalence or stock effects." .
+
+e:connection a rdfs:Class .
+e:product a rdfs:Class .
+e:warehouse a rdfs:Class .
+e:source-revision a rdfs:Class .
+e:identifier-binding a rdfs:Class .
+e:mapping a rdfs:Class .
+e:proposal a rdfs:Class .
+e:acceptance-provenance a rdfs:Class .
+e:policy a rdfs:Class .
+e:field-definition a rdfs:Class .
+e:view-preference a rdfs:Class .
+e:goods a rdfs:Class ; rdfs:comment "Validation context projected from the existing goods catalogue." .
+e:location a rdfs:Class ; rdfs:comment "Validation context projected from existing immutable location keys." .
+e:store a rdfs:Class ; rdfs:comment "Validation context from the existing Store catalogue, distinct from account identity." .
+e:validation-context a rdfs:Class .
+e:attribute a rdfs:Class .
+e:attribute-value a rdfs:Class .
+e:line a rdfs:Class .
+
+e:id a rdf:Property .
+e:workspace-id a rdf:Property .
+e:revision a rdf:Property .
+e:provider a rdf:Property .
+e:account-id a rdf:Property .
+e:store-id a rdf:Property .
+e:enabled a rdf:Property .
+e:policy-id a rdf:Property .
+e:connection-id a rdf:Property .
+e:source-id a rdf:Property ; rdfs:comment "Opaque provider identity; never an internal goods ID." .
+e:current-revision-id a rdf:Property .
+e:domain a rdf:Property .
+e:entity-id a rdf:Property .
+e:observed-at a rdf:Property ; rdfs:comment "Local observation time, not the beginning of provider validity." .
+e:provider-updated-at a rdf:Property .
+e:occurred-at a rdf:Property .
+e:payload-hash a rdf:Property .
+e:adapter-version a rdf:Property .
+e:complete a rdf:Property .
+e:facts a rdf:Property .
+e:identifiers a rdf:Property .
+e:attributes a rdf:Property .
+e:lines a rdf:Property .
+e:identity-basis a rdf:Property ; rdfs:comment "Confirmed variant/counting-basis signature; excludes names and articles." .
+e:product-id a rdf:Property .
+e:source-revision-id a rdf:Property .
+e:type a rdf:Property .
+e:value a rdf:Property .
+e:role a rdf:Property ; rdfs:comment "Primary/source/historical is provenance of a SKU, not a different identifier namespace." .
+e:active a rdf:Property .
+e:last-observed-at a rdf:Property .
+e:target-id a rdf:Property .
+e:state a rdf:Property .
+e:confirmed-by a rdf:Property .
+e:confirmed-at a rdf:Property .
+e:action a rdf:Property .
+e:source-revision-ids a rdf:Property .
+e:dependencies a rdf:Property .
+e:mapping-ids a rdf:Property .
+e:entry a rdf:Property .
+e:findings a rdf:Property .
+e:source-event-key a rdf:Property .
+e:accepted-entity-id a rdf:Property .
+e:accepted-revision a rdf:Property .
+e:receipt-id a rdf:Property .
+e:accepted-at a rdf:Property .
+e:mapping-revisions a rdf:Property .
+e:policy-revision a rdf:Property .
+e:preset a rdf:Property .
+e:required-fields a rdf:Property .
+e:category-id a rdf:Property .
+e:type-id a rdf:Property .
+e:attribute-id a rdf:Property .
+e:name a rdf:Property .
+e:article a rdf:Property .
+e:barcode a rdf:Property .
+e:unit a rdf:Property .
+e:value-type a rdf:Property .
+e:multiple a rdf:Property .
+e:complex a rdf:Property .
+e:dictionary-id a rdf:Property .
+e:group-id a rdf:Property .
+e:group-index a rdf:Property .
+e:values a rdf:Property .
+e:position a rdf:Property .
+e:quantity a rdf:Property .
+e:warehouse-id a rdf:Property .
+e:user-id a rdf:Property .
+e:table a rdf:Property .
+e:optional-field-ids a rdf:Property .
+e:selected a rdf:Property .
+e:effect a rdf:Property .
+e:evidence a rdf:Property .
+e:from-location a rdf:Property .
+e:to-location a rdf:Property .

@@ -22,6 +22,22 @@ Use ordinary RDF nodes and a versioned declarative semantic package for durable 
 
 Install the semantic package on a fresh store. Retain its version/checksum with the store and refuse an incompatible package on reopen. Changes to ontology, shapes or rule/query resources require an explicit reviewed migration and a restored-backup rehearsal; do not silently replace stored semantics.
 
+### External semantic contract (M1)
+
+`tover.integrations.schema` defines open maps for connections, external products/warehouses, source revisions, typed identifier bindings, mappings, proposals, acceptance provenance, client policies, external field definitions and personal view preferences. No production serializer, repository installation or application wiring is included in M1.
+
+The separate `integrations-v1.0.0` vocabulary and source/acceptance shapes live under `resources/integrations/v1`. They do not enter the installed inventory shape graph or its checksum. `tover.integrations.semantics/validate` accepts Turtle plus `{:workspace-id ..., :phase :source|:acceptance, :selected [absolute-record-IRI ...]}` and returns `{:valid? ..., :semantic-version ..., :findings [...]}`. Each finding has a category (`ambiguous`, `incomplete`, `contradictory`), stable code, focus node, property path when available and shape. A valid result is not ledger acceptance or authorization.
+
+Source validation checks structural, reference-type, workspace and connection invariants. Missing provider identifiers can remain in unattached source revisions; do not invent a product or event identity. Acceptance additionally walks selected mappings/proposal dependencies, checks confirmation evidence, variant/counting-basis compatibility, required fields and active barcode conflicts. The input must contain every competing active binding/mapping in the connection, plus referenced catalogue records projected as goods/location/Store context. M2 must construct that graph from trusted scope; an incomplete caller-supplied graph cannot prove uniqueness. Use current mapping/policy/entity versions plus the referenced source revisions in this validation snapshot; superseded decisions remain durable history outside its effective conflict set. Validation and persistence must share the transaction in later milestones.
+
+RDF terms mirror schema keys; boolean predicate names omit `?`. Foreign record keys are RDF relationships. Source IDs and accepted ledger IDs remain literal strings. Attribute values retain position and complex-group identity. The M1 graph builder is test-only and does not define a production serialization format for arbitrary `facts`, receipts or user preferences. `goods`, `location` and `store` terms are validation context for existing catalogue identities, not new durable identities.
+
+Identifier type/value is separate from role. Active primary/source/historical SKU aliases share the `sku` namespace; historical observations and inactive bindings are retained. Observation time is not a fabricated validity start. An identity-basis signature covers the explicitly confirmed variant and whole-unit basis, excludes names/articles, and must be supplied by the later normalizer. Unknown identity basis blocks mapping acceptance. External data never creates `owl:sameAs` or OWL-key merges.
+
+Only the two fixed barcode presets and optional required-field list are executable policy choices. Source conflicts survive ingestion; selected decisions report them. Core scope/reference constraints always run. No arbitrary client SPARQL/rule editor or reasoning engine is introduced.
+
+Proposal `entry` contains normalized candidate evidence, not an accepted ledger record. Its physical-effect checks do not replace ledger normalization, chronology validation, cutover, deduplication or replay. These remain the existing acceptance machinery's responsibility in M4/M5. The [source-contract matrix](ozon-source-contracts.md) records provider evidence gaps and the [execution plan](marketplace-integration-plan.md) tracks integration gates.
+
 ## Operations and replay
 
 Use exactly `purchase`, `return`, `transfer`, `production`, `defect`, `sale`, `write-off` and `payment`. Manual corrections remain separate accepted history records. Packing/unpacking/repacking are Production.

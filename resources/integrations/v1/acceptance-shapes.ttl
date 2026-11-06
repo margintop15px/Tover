@@ -1,0 +1,184 @@
+@prefix e: <urn:tover:integrations:v1:> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+e:Selection a sh:NodeShape ; sh:targetClass e:validation-context ;
+  sh:property [ sh:path e:selected ; sh:minCount 1 ; sh:or ([ sh:class e:mapping ] [ sh:class e:proposal ]) ] .
+
+# Constraints walk selected dependencies, but compare against all active evidence in scope.
+e:Decision a sh:NodeShape ; sh:targetObjectsOf e:selected ;
+  sh:sparql [ sh:message "incomplete:disabled-connection" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?decision . ?decision e:connection-id ?connection .
+      FILTER NOT EXISTS { ?connection e:enabled true }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "incomplete:source-response" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?decision .
+      ?decision (e:source-revision-id|e:source-revision-ids) ?revision .
+      FILTER NOT EXISTS { ?revision e:complete true ; e:source-id ?sourceId }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "incomplete:mapping-confirmation" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?mapping . ?mapping a e:mapping .
+      FILTER NOT EXISTS {
+        ?mapping e:state ?state ; e:confirmed-by ?actor ; e:confirmed-at ?time .
+        FILTER (?state IN (e:proposed, e:confirmed) && STRLEN(STR(?actor)) > 0)
+      }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "contradictory:mapping-target" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?mapping .
+      ?mapping a e:mapping ; e:entity-id ?entity ; e:target-id ?target .
+      ?other a e:mapping ; e:entity-id ?entity ; e:target-id ?different ; e:state ?state .
+      FILTER (?other != ?mapping && ?different != ?target)
+      FILTER (?state = e:confirmed || EXISTS { e:validation e:selected/(e:dependencies|e:mapping-ids)* ?other })
+    }
+  """ ] ;
+  sh:sparql [ sh:message "incomplete:identity-basis" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?mapping .
+      ?mapping a e:mapping ; e:entity-id ?product . ?product a e:product ; e:current-revision-id ?current .
+      FILTER NOT EXISTS { ?mapping e:identity-basis ?basis . ?current e:identity-basis ?currentBasis }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "contradictory:identity-changed" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?mapping .
+      ?mapping a e:mapping ; e:entity-id ?product ; e:identity-basis ?basis .
+      ?product e:current-revision-id/e:identity-basis ?currentBasis . FILTER (?basis != ?currentBasis)
+    }
+  """ ] ;
+  sh:sparql [ sh:message "incomplete:counting-basis" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?mapping .
+      ?mapping a e:mapping ; e:entity-id ?product ; e:target-id ?goods . ?product a e:product .
+      FILTER NOT EXISTS { ?product e:current-revision-id/e:facts/e:unit ?unit . ?goods e:unit ?unit }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "contradictory:unavailable-identifier" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?mapping . ?mapping a e:mapping ; e:entity-id ?product .
+      ?binding a e:identifier-binding ; e:product-id ?product ; e:active true ; e:type ?type ; e:value ?value .
+      ?product e:source-id ?id .
+      FILTER ((?type = e:sku && ?value = "0") || (?type = e:product-id && ?id != ?value))
+    }
+  """ ] ;
+  sh:sparql [ sh:message "ambiguous:barcode-goods" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?mapping .
+      ?mapping a e:mapping ; e:entity-id ?product ; e:target-id ?goods ; e:connection-id ?connection .
+      ?binding a e:identifier-binding ; e:product-id ?product ; e:active true ; e:type e:barcode ; e:value ?barcode .
+      ?otherBinding a e:identifier-binding ; e:connection-id ?connection ; e:product-id ?otherProduct ;
+        e:active true ; e:type e:barcode ; e:value ?barcode .
+      ?otherMapping a e:mapping ; e:entity-id ?otherProduct ; e:target-id ?otherGoods ; e:state ?state .
+      FILTER (?otherGoods != ?goods)
+      FILTER (?state = e:confirmed || EXISTS { e:validation e:selected/(e:dependencies|e:mapping-ids)* ?otherMapping })
+    }
+  """ ] ;
+  sh:sparql [ sh:message "ambiguous:barcode-listing" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?mapping .
+      ?mapping a e:mapping ; e:entity-id ?product ; e:connection-id ?connection .
+      ?connection e:policy-id/e:preset e:barcode-per-listing .
+      ?binding a e:identifier-binding ; e:product-id ?product ; e:active true ; e:type e:barcode ; e:value ?barcode .
+      ?otherBinding a e:identifier-binding ; e:connection-id ?connection ; e:product-id ?otherProduct ;
+        e:active true ; e:type e:barcode ; e:value ?barcode . FILTER (?otherProduct != ?product)
+    }
+  """ ] ;
+  sh:sparql [ sh:message "incomplete:required-field" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?decision . ?decision e:connection-id/e:policy-id/e:required-fields ?field .
+      ?decision a e:mapping ; e:entity-id ?product . ?product a e:product ; e:current-revision-id/e:facts ?facts .
+      FILTER NOT EXISTS {
+        { ?facts ?field ?value . FILTER (?field IN (e:name, e:unit) && STRLEN(STR(?value)) > 0) }
+        UNION { ?binding a e:identifier-binding ; e:product-id ?product ; e:type ?field ; e:active true ; e:value ?value .
+          FILTER (?field IN (e:article, e:barcode) && STRLEN(STR(?value)) > 0) }
+      }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "incomplete:required-field" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this (e:dependencies|e:mapping-ids)* ?decision .
+      ?decision a e:proposal ; e:action e:catalogue ; e:entry ?facts ; e:connection-id/e:policy-id/e:required-fields ?field .
+      FILTER NOT EXISTS { ?facts ?field ?value . FILTER (STRLEN(STR(?value)) > 0) }
+    }
+  """ ] .
+
+e:Movement a sh:NodeShape ; sh:targetObjectsOf e:selected ;
+  sh:sparql [ sh:message "contradictory:source-effect" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:dependencies* ?proposal .
+      ?proposal e:action e:operation ; e:entry/e:effect ?effect .
+      FILTER NOT EXISTS { ?proposal e:source-revision-ids/e:domain ?domain .
+        FILTER ((?effect = e:sale && ?domain = e:posting) || (?effect = e:return && ?domain = e:return) ||
+          (?effect = e:transfer && ?domain IN (e:supply, e:removal)) || (?effect = e:write-off && ?domain = e:removal)) }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "incomplete:physical-event" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+    SELECT $this WHERE {
+      $this e:dependencies* ?proposal .
+      ?proposal e:action e:operation ; e:entry ?entry .
+      FILTER NOT EXISTS {
+        ?entry e:effect ?effect ; e:evidence ?evidence ; e:occurred-at ?time ; e:lines ?line .
+        FILTER (DATATYPE(?time) = xsd:dateTime)
+        FILTER ((?effect = e:sale && ?evidence = e:dispatch) || (?effect = e:return && ?evidence = e:receipt) ||
+          (?effect = e:transfer && ?evidence = e:transfer-completed) || (?effect = e:write-off && ?evidence = e:disposal))
+      }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "incomplete:line-quantity" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+    SELECT $this WHERE {
+      $this e:dependencies* ?proposal .
+      ?proposal e:action e:operation ; e:entry/e:lines ?line .
+      FILTER NOT EXISTS { ?line e:quantity ?quantity .
+        FILTER (DATATYPE(?quantity) IN (xsd:long, xsd:int, xsd:integer) && ?quantity > 0 && ?quantity <= 9223372036854775807) }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "incomplete:line-mapping" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:dependencies* ?proposal .
+      ?proposal e:action e:operation ; e:entry/e:lines ?line .
+      FILTER NOT EXISTS {
+        ?line e:product-id ?product ; e:warehouse-id ?warehouse .
+        ?proposal e:mapping-ids ?productMapping, ?warehouseMapping .
+        ?productMapping e:entity-id ?product ; e:target-id ?goods . ?goods a e:goods .
+        ?warehouseMapping e:entity-id ?warehouse ; e:target-id ?location . ?location a e:location .
+      }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "incomplete:transfer-locations" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:dependencies* ?proposal .
+      ?proposal e:action e:operation ; e:entry ?entry . ?entry e:effect e:transfer .
+      FILTER NOT EXISTS { ?entry e:from-location ?from ; e:to-location ?to .
+        ?from a e:location . ?to a e:location . FILTER (?from != ?to) }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "contradictory:duplicate-line" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:dependencies* ?proposal . ?proposal e:entry/e:lines ?a, ?b . ?a e:id ?id . ?b e:id ?id . FILTER (?a != ?b) }
+  """ ] .

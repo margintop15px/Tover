@@ -1,6 +1,6 @@
 # Goods identity and Ozon integration execution plan
 
-Status: **M0 complete; M1 next**. Approved on 2026-11-06. M1–M9 are planned, not implemented.
+Status: **M0 and M1 complete; M2 next**. Approved on 2026-11-06. M2–M9 are planned, not implemented.
 
 This is the resumption entry point for work spanning multiple coding sessions. Read it with [AGENTS.md](../AGENTS.md), [product requirements](product-requirements.md), [RDF machinery](rdf-machinery.md), and [client UI](client-ui-spec.md). Requirements describe intended behavior; milestone evidence and deployment checks establish what has actually shipped.
 
@@ -24,8 +24,9 @@ This is the resumption entry point for work spanning multiple coding sessions. R
 | Release archive | `tover-v0.3.0.tar.gz`, 580,093,415 bytes |
 | Archive SHA-256 | `e90ae22f72a6d4dfc64c423d8f294e50ce972703ac782984b87ef63b911797b1` |
 | Release manifest SHA-256 | `f7c0d1a16a4d7345b7f6607c2d8b84670e1cab2816dd2b7abd133eaa3f4739eb` |
-| Documentation commit | The commit containing this checkpoint; resolve with `git log -1 -- docs/marketplace-integration-plan.md` |
-| Next action | Begin M1: specify the external records, invariants, source-contract matrix, and sanitized executable fixtures |
+| M0 documentation commits | `9cff9b4` (plan), `ff78c47` (authenticated catalogue verification) |
+| M1 implementation commit | This commit; resolve with `git log -1 --format=%H --grep='^Define external identity and Ozon source contracts$'` |
+| Next action | Begin M2: persist the external records with bounded identity/conflict lookups, and migrate Goods Store relationships additively |
 
 The catalogue feature was pre-existing uncommitted work when planning began: 33 tracked modifications and 9 new files. All 42 files were committed and published in v0.3.0 before this document was created. This document is a separate documentation change after deployment; the release tag must continue to identify `d96fb3a83d394a75be2098f87c0347d158beabd8`.
 
@@ -201,7 +202,9 @@ Completion gate: another session can identify the exact baseline, active milesto
 
 ### M1 — External model and executable source contracts
 
-**Status: next. Depends on M0.**
+**Status: complete. Depends on M0.**
+
+Delivered: open schemas in `tover.integrations.schema`, the standalone validator in `tover.integrations.semantics`, separately versioned resources under `resources/integrations/v1`, the [Ozon contract matrix](ozon-source-contracts.md), and synthetic fixture/contract tests under `test/tover/integrations`. See the M1 session log for the final gate and limitations. No production connector or persistence wiring was added.
 
 Define the records and invariants above with open Malli schemas, RDF vocabulary, and separate SHACL constraints. Write the Ozon contract matrix: identity, pagination, required fields, event time, terminal states, and resulting operation/proposal for each included domain.
 
@@ -218,7 +221,7 @@ Completion gate: fixtures distinguish valid, ambiguous, incomplete, and contradi
 
 ### M2 — External persistence and catalogue relationships
 
-**Status: pending. Depends on M1.**
+**Status: next. Depends on M1.**
 
 Persist external records, source revisions, identifier bindings, field definitions, and confirmed mappings in the existing RDF repository. Meaningful changes create revisions; repeated identical fetches update observation/progress information without multiplying identical records.
 
@@ -385,8 +388,8 @@ Release limitations and operational notes:
 | Milestone | State | Completion evidence / next requirement |
 | --- | --- | --- |
 | M0 | **Complete** | v0.3.0 committed/deployed; verified backup/health and bilingual authenticated catalogues; complete plan/context saved separately |
-| M1 | **Next** | Define source model, invariants, contract matrix, policies, and sanitized fixtures |
-| M2 | Pending | Persistence, bounded lookups, Store collection, reopen/rebuild evidence |
+| M1 | **Complete** | Open schemas, separate RDF/SHACL package, policy presets, source matrix and 13 contract tests; full suite 537 tests / 9,163 assertions passed |
+| M2 | **Next** | Persistence, bounded lookups, Store collection, reopen/rebuild evidence |
 | M3 | Pending | Reviewed linking/creation, stable provisional IDs, mixed acceptance |
 | M4 | Pending | Normalization, shared atomic acceptance, provenance, deduplication/races |
 | M5 | Pending | Reviewed cutover/reconciliation, transit projection, boundary tests |
@@ -452,3 +455,32 @@ Next action:
 - Performed no catalogue cell edits, record creation, or inventory submission. Returned to the original Stock page and restored the original Russian language preference. Existing pending-change indicators matched the initial state.
 - Saved bilingual screenshots only to the private temporary paths above; no live record contents or images were added to the repository.
 - Updated this execution record in a separate documentation commit. M0 remains complete; **M1 remains next**. The full production-shaped restore rehearsal and live mutation workflows were not rerun for this documentation-only follow-up.
+
+### 2026-11-06 — M1 external model and executable source contracts
+
+- Starting commit: `ff78c47`, clean `main`. Implemented the approved M1 scope; this milestone is committed as `Define external identity and Ozon source contracts`. Resolve its full hash with the checkpoint command above.
+- Added open Malli contracts for all eleven record kinds, typed identifier/attribute/line contracts, and candidate/validation result types. Preserved opaque string IDs, SKU roles, multiple barcodes, observation/provider/event timestamps, revision and policy provenance, structured attributes and optional-column preferences. Unidentified source fragments can remain unattached incomplete revisions.
+- Added `integrations-v1.0.0` vocabulary with separate source and acceptance SHACL resources. The standalone validator takes Turtle and trusted workspace/selection context and returns structured findings. No installed inventory resource, checksum loader, application wiring, catalogue schema or ledger API changed.
+- Source validation preserves barcode collisions and incomplete evidence while enforcing structure and scope. Acceptance walks selected dependencies, checks confirmation/counting/variant evidence and whole quantities, evaluates both barcode presets against competing active records, and blocks missing physical evidence. Stock observations cannot serve as Sale evidence. Required article/barcode fields use active typed bindings.
+- Added thirteen contract tests, including article evolution, conflicting/proposed mappings, cross-connection reuse, cross-workspace/type rejection, sentinel/mistyped IDs, same-name/pack changes, multiple warehouses, attribute groups, all shipment lines, partial/late returns, incomplete responses and dependent proposals. An isolated native-store test compares all repository statements and the accepted inventory snapshot before/after external validation, then reopens the store successfully.
+- Recorded the current [Ozon contract matrix](ozon-source-contracts.md) and updated the product/RDF specifications. The matrix separates documented fields from unsupported physical-event interpretations; the synthetic normalized candidates do not claim a working provider adapter.
+
+Verification:
+
+| Check | Result |
+| --- | --- |
+| Worktree nREPL and `(user/start!)` | Passed; schema/SHACL examples evaluated directly and development lifecycle completed |
+| Focused `clojure -M:dev:test --focus tover.integrations.contracts-test` | Passing development run: 12 tests, 127 assertions; final added dependency/domain case is included in the full run below |
+| Final `clojure -M:dev:test` | **537 tests, 9,163 assertions, zero failures/errors**, including all 13 integration contract tests |
+| `clojure -M:fmt check` | Passed |
+| `clj-kondo --lint src dev .clj-kondo/hooks/datastar.clj` | Zero errors/warnings; existing informational notes only |
+| `clj-kondo --lint test/tover/integrations` | Zero errors/warnings |
+| `git diff --check` | Passed |
+| Publisher `guard_private_paths` over tracked/nonignored files | Passed, 342 paths |
+| Local documentation links | Passed |
+| Inventory resources, inventory source, shared RDF and app composition diff | Empty; installed semantics and runtime integration unchanged |
+
+- Earlier focused runs exposed two SPARQL UNION scope mistakes that missed invalid mapping/identifier facts, plus test/schema setup defects. These were corrected; the final full suite covers the negative cases. A clean nREPL restart cleared a stale Malli protocol instance during initial setup; do not reload dependency protocols during application edits.
+- No migration, production deployment, remote database inspection/mutation, live Ozon fetch, credentials, scheduler or browser/UI changes were performed. Browser checks and a new release rehearsal were outside this milestone. The v0.3.0 deployment and its recorded restore-rehearsal limitation remain unchanged.
+- Limits for later milestones: M2 must provide the complete competing effective bindings/mappings and catalogue context inside the transaction; the test graph builder is not a production codec. M4 supplies real normalization, stable event/line identity, ledger validation and deduplication. M6 must verify account permissions/current pagination and the unresolved FBO dispatch, return receipt, supply acceptance and removal completion evidence before enabling conversion. No legacy local mappings are accepted as truth.
+- **Gate: M1 complete. Next: M2.** Implement external persistence and bounded queries in the existing repository, preserve source revisions and observed identifier history, then add the Store-collection migration and prove reopen/rebuild preservation. Keep live fetching deferred to M6.

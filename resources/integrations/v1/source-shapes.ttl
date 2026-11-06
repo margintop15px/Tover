@@ -1,0 +1,183 @@
+@prefix e: <urn:tover:integrations:v1:> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+e:Text a sh:NodeShape ; sh:datatype xsd:string ; sh:minLength 1 ; sh:maxLength 500 ; sh:pattern "\\S" .
+e:Integer a sh:NodeShape ; sh:or ([ sh:datatype xsd:integer ] [ sh:datatype xsd:long ] [ sh:datatype xsd:int ]) .
+e:Scoped a sh:NodeShape ; sh:targetSubjectsOf e:workspace-id ;
+  sh:property [ sh:path e:workspace-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:sparql [ sh:message "contradictory:workspace" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      e:validation e:workspace-id ?scope . $this e:workspace-id ?workspace . FILTER (?workspace != ?scope)
+    }
+  """ ] ;
+  sh:sparql [ sh:message "contradictory:relationship-scope" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:workspace-id ?workspace ; ?relation ?other .
+      FILTER (?relation IN (e:connection-id, e:store-id, e:policy-id, e:current-revision-id, e:entity-id,
+        e:product-id, e:source-revision-id, e:target-id, e:source-revision-ids, e:dependencies,
+        e:mapping-ids, e:optional-field-ids))
+      FILTER NOT EXISTS { ?other e:workspace-id ?workspace }
+    }
+  """ ] ;
+  sh:sparql [ sh:message "contradictory:connection-scope" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:connection-id ?connection ; ?relation ?other .
+      FILTER (?relation IN (e:current-revision-id, e:entity-id, e:product-id, e:source-revision-id,
+        e:source-revision-ids, e:dependencies, e:mapping-ids))
+      ?other e:connection-id ?different . FILTER (?different != ?connection)
+    }
+  """ ] .
+
+e:Record a sh:NodeShape ;
+  sh:targetClass e:connection, e:product, e:warehouse, e:source-revision, e:identifier-binding,
+    e:mapping, e:proposal, e:acceptance-provenance, e:policy, e:field-definition, e:view-preference,
+    e:goods, e:location, e:store ;
+  sh:property [ sh:path e:id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:workspace-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:revision ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Integer ; sh:minInclusive 1 ] ;
+  sh:sparql [ sh:message "contradictory:record-kind" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this a ?kind, ?other . FILTER (?kind != ?other)
+      FILTER (?kind IN (e:connection, e:product, e:warehouse, e:source-revision, e:identifier-binding,
+        e:mapping, e:proposal, e:acceptance-provenance, e:policy, e:field-definition, e:view-preference, e:goods, e:location, e:store))
+      FILTER (?other IN (e:connection, e:product, e:warehouse, e:source-revision, e:identifier-binding,
+        e:mapping, e:proposal, e:acceptance-provenance, e:policy, e:field-definition, e:view-preference, e:goods, e:location, e:store))
+    }
+  """ ] .
+
+e:Connected a sh:NodeShape ; sh:targetClass e:product, e:warehouse, e:source-revision,
+    e:identifier-binding, e:mapping, e:proposal, e:acceptance-provenance, e:field-definition ;
+  sh:property [ sh:path e:connection-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class e:connection ] .
+
+e:Connection a sh:NodeShape ; sh:targetClass e:connection ;
+  sh:property [ sh:path e:provider ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:account-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:store-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class e:store ] ;
+  sh:property [ sh:path e:enabled ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:property [ sh:path e:policy-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class e:policy ] .
+
+e:ExternalEntity a sh:NodeShape ; sh:targetClass e:product, e:warehouse ;
+  sh:property [ sh:path e:source-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:current-revision-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class e:source-revision ] ;
+  sh:sparql [ sh:message "contradictory:source-identity" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this a ?kind ; e:source-id ?id ; e:connection-id ?connection .
+      FILTER (?kind IN (e:product, e:warehouse))
+      ?other a ?kind ; e:source-id ?id ; e:connection-id ?connection . FILTER (?other != $this)
+    }
+  """ ] ;
+  sh:sparql [ sh:message "contradictory:revision-owner" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:source-id ?id ; e:current-revision-id ?revision .
+      FILTER NOT EXISTS { ?revision e:entity-id $this ; e:source-id ?id }
+    }
+  """ ] .
+
+e:SourceRevision a sh:NodeShape ; sh:targetClass e:source-revision ;
+  sh:property [ sh:path e:domain ; sh:minCount 1 ; sh:maxCount 1 ; sh:in (e:product e:warehouse e:stock e:posting e:return e:supply e:removal) ] ;
+  sh:property [ sh:path e:source-id ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:observed-at ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+  sh:property [ sh:path e:provider-updated-at ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+  sh:property [ sh:path e:occurred-at ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+  sh:property [ sh:path e:payload-hash ; sh:minCount 1 ; sh:maxCount 1 ; sh:pattern "^[a-f0-9]{64}$" ] ;
+  sh:property [ sh:path e:adapter-version ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:complete ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:property [ sh:path e:facts ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path e:entity-id ; sh:maxCount 1 ; sh:or ([ sh:class e:product ] [ sh:class e:warehouse ]) ] ;
+  sh:sparql [ sh:message "contradictory:revision-domain" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:entity-id ?entity ; e:domain ?domain .
+      FILTER NOT EXISTS { ?entity a ?domain . FILTER (?domain IN (e:product, e:warehouse)) }
+    }
+  """ ] .
+
+e:Binding a sh:NodeShape ; sh:targetClass e:identifier-binding ;
+  sh:property [ sh:path e:product-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class e:product ] ;
+  sh:property [ sh:path e:source-revision-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class e:source-revision ] ;
+  sh:property [ sh:path e:type ; sh:minCount 1 ; sh:maxCount 1 ; sh:in (e:product-id e:article e:barcode e:sku) ] ;
+  sh:property [ sh:path e:value ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:role ; sh:maxCount 1 ; sh:in (e:primary e:source e:historical) ] ;
+  sh:property [ sh:path e:active ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:property [ sh:path e:observed-at ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+  sh:property [ sh:path e:last-observed-at ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+  sh:sparql [ sh:message "contradictory:binding-owner" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:product-id ?product ; e:source-revision-id ?revision .
+      FILTER NOT EXISTS { ?revision e:entity-id ?product }
+    }
+  """ ] .
+
+e:Mapping a sh:NodeShape ; sh:targetClass e:mapping ;
+  sh:property [ sh:path e:entity-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:or ([ sh:class e:product ] [ sh:class e:warehouse ]) ] ;
+  sh:property [ sh:path e:target-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:or ([ sh:class e:goods ] [ sh:class e:location ]) ] ;
+  sh:property [ sh:path e:source-revision-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class e:source-revision ] ;
+  sh:property [ sh:path e:state ; sh:minCount 1 ; sh:maxCount 1 ; sh:in (e:proposed e:confirmed e:suspended e:retired) ] ;
+  sh:property [ sh:path e:confirmed-at ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+  sh:sparql [ sh:message "contradictory:mapping-kind" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:entity-id ?entity ; e:target-id ?target .
+      FILTER ((EXISTS { ?entity a e:product } && NOT EXISTS { ?target a e:goods }) ||
+        (EXISTS { ?entity a e:warehouse } && NOT EXISTS { ?target a e:location }))
+    }
+  """ ] ;
+  sh:sparql [ sh:message "contradictory:mapping-evidence" ; sh:select """
+    PREFIX e: <urn:tover:integrations:v1:>
+    SELECT $this WHERE {
+      $this e:entity-id ?entity ; e:source-revision-id ?revision .
+      FILTER NOT EXISTS { ?revision e:entity-id ?entity }
+    }
+  """ ] .
+
+e:Proposal a sh:NodeShape ; sh:targetClass e:proposal ;
+  sh:property [ sh:path e:action ; sh:minCount 1 ; sh:maxCount 1 ; sh:in (e:catalogue e:mapping e:opening e:correction e:operation e:cancellation) ] ;
+  sh:property [ sh:path e:source-revision-ids ; sh:minCount 1 ; sh:class e:source-revision ] ;
+  sh:property [ sh:path e:entry ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path e:dependencies ; sh:or ([ sh:class e:mapping ] [ sh:class e:proposal ]) ] ;
+  sh:property [ sh:path e:mapping-ids ; sh:class e:mapping ] .
+
+e:Policy a sh:NodeShape ; sh:targetClass e:policy ;
+  sh:property [ sh:path e:preset ; sh:minCount 1 ; sh:maxCount 1 ; sh:in (e:barcode-per-goods e:barcode-per-listing) ] ;
+  sh:property [ sh:path e:required-fields ; sh:in (e:name e:article e:barcode e:unit) ] .
+
+e:Field a sh:NodeShape ; sh:targetClass e:field-definition ;
+  sh:property [ sh:path e:category-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:type-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:attribute-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:name ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:value-type ; sh:minCount 1 ; sh:maxCount 1 ; sh:in (e:string e:integer e:decimal e:boolean e:date e:dictionary e:unknown) ] ;
+  sh:property [ sh:path e:multiple ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:boolean ] ;
+  sh:property [ sh:path e:complex ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:boolean ] .
+
+e:ViewPreference a sh:NodeShape ; sh:targetClass e:view-preference ;
+  sh:property [ sh:path e:user-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:table ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:optional-field-ids ; sh:class e:field-definition ] .
+
+e:Attribute a sh:NodeShape ; sh:targetObjectsOf e:attributes ;
+  sh:property [ sh:path e:attribute-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:group-id ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:group-index ; sh:maxCount 1 ; sh:node e:Integer ; sh:minInclusive 0 ] .
+
+e:AttributeValue a sh:NodeShape ; sh:targetObjectsOf e:values ;
+  sh:property [ sh:path e:value ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+  sh:property [ sh:path e:dictionary-id ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:position ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Integer ; sh:minInclusive 0 ] .
+
+e:Provenance a sh:NodeShape ; sh:targetClass e:acceptance-provenance ;
+  sh:property [ sh:path e:source-event-key ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:source-revision-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class e:source-revision ] ;
+  sh:property [ sh:path e:accepted-entity-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:accepted-revision ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Integer ; sh:minInclusive 1 ] ;
+  sh:property [ sh:path e:receipt-id ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Text ] ;
+  sh:property [ sh:path e:accepted-at ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+  sh:property [ sh:path e:policy-revision ; sh:minCount 1 ; sh:maxCount 1 ; sh:node e:Integer ; sh:minInclusive 1 ] .
