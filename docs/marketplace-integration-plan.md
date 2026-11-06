@@ -18,6 +18,7 @@ This is the resumption entry point for work spanning multiple coding sessions. R
 | Application image | `tover:v0.3.0`, Linux amd64 |
 | Verified image ID | `sha256:91e8ad1e2f75bea08364bbd00d625caff1d140a41a8ad226e31139ae58288289` |
 | Deployment verified | `2026-11-06T00:35:39Z` (01:35 Europe/Madrid) |
+| Authenticated catalogue smoke | Completed `2026-11-06T08:27:27Z` (09:27 Europe/Madrid): all five catalogues in English/Russian; original Stock view and Russian preference restored |
 | Pre-upgrade backup | `/srv/tover-backups/2026-11-06-before-v0.3.0` |
 | Backup evidence | `COMPLETE` present, all `SHA256SUMS` verified, manifest identifies v0.2.0 and its commit |
 | Release archive | `tover-v0.3.0.tar.gz`, 580,093,415 bytes |
@@ -332,7 +333,7 @@ Run focused checks at each milestone. At integration/release gates run the full 
 
 ## M0 release evidence
 
-The following checks passed against the catalogue release candidate before publication on 2026-11-06:
+Release-candidate checks passed before publication on 2026-11-06. The later rows record deployment checks and the authenticated production follow-up:
 
 | Check | Result |
 | --- | --- |
@@ -349,6 +350,7 @@ The following checks passed against the catalogue release candidate before publi
 | Activation | `/srv/tover` and image setting select v0.3.0; runtime image ID matches the release manifest |
 | Live health | App healthy; `/healthz` and `/readyz` both HTTP 200 / `ok` |
 | Live public UI | English and Russian sign-in rendering verified; language preference restored to English |
+| Live authenticated UI | Follow-up on 2026-11-06: Goods, Warehouses, Suppliers, Categories and Stores loaded in both English/Russian; translated grids, headers, search and Saved state verified; no browser console errors observed |
 
 Browser commands ran from `test/browser`:
 
@@ -370,8 +372,9 @@ python3 deployment/production/publish.py v0.3.0 \
 Release limitations and operational notes:
 
 - Full production-shaped installation/restore rehearsal was explicitly skipped for the fast release. The consistent pre-upgrade backup was still taken and verified.
-- Live authenticated catalogue navigation/rendering was not verified: access to the existing Zen session was declined and the available in-app production session was signed out. Isolated catalogue and English/Russian browser coverage passed. Do not describe this as a successful authenticated production smoke test.
+- The initial authenticated-check gap was resolved by the follow-up below after the user signed in to the in-app browser. This was navigation/rendering verification; live edit/save, validation, retry and concurrency scenarios remain covered by the isolated suites rather than production mutations.
 - Local public-UI screenshots were saved to `/private/tmp/tover-v0.3.0-production-login-en.jpg` and `/private/tmp/tover-v0.3.0-production-login-ru.jpg`; these temporary files are optional local evidence, not durable prerequisites for resuming the plan.
+- Authenticated catalogue screenshots are local at `/private/tmp/tover-v0.3.0-live-catalogues-en.jpg` and `/private/tmp/tover-v0.3.0-live-catalogues-ru.jpg`. They contain live business data: keep them out of Git. The bilingual outcome and scope are recorded below so resuming work does not depend on temporary images.
 - Backup off-host copying and a restore from this particular backup were not performed in this session. The earlier catalogue unit suite does include reopen/rebuild and restored-store preservation tests; that does not replace a full production-shaped rehearsal.
 - `source-revision` is a multi-line release metadata file: commit on the first line, `build-sha256` on the next. Compare the first line with `release.json` when verifying a commit. An initial pre-activation assertion assumed the whole file was a hash; it was corrected before any deployment-setting changes.
 - Remote helper calls from a streamed shell script should receive `</dev/null` unless they deliberately need input. Docker exec inside the backup helper can otherwise consume the remaining outer script. The backup itself completed, and its verification was performed explicitly afterward.
@@ -381,7 +384,7 @@ Release limitations and operational notes:
 
 | Milestone | State | Completion evidence / next requirement |
 | --- | --- | --- |
-| M0 | **Complete** | v0.3.0 committed/deployed; verified backup/health; complete plan/context saved separately |
+| M0 | **Complete** | v0.3.0 committed/deployed; verified backup/health and bilingual authenticated catalogues; complete plan/context saved separately |
 | M1 | **Next** | Define source model, invariants, contract matrix, policies, and sanitized fixtures |
 | M2 | Pending | Persistence, bounded lookups, Store collection, reopen/rebuild evidence |
 | M3 | Pending | Reviewed linking/creation, stable provisional IDs, mixed acceptance |
@@ -426,7 +429,26 @@ Next action:
 
 - Starting point: main at v0.2.0 commit `4e923ce6f10defce6beaca55c59819a3b32656f8` plus the existing catalogue/inventory work (33 tracked changes, 9 new files).
 - Committed all current work in `d96fb3a83d394a75be2098f87c0347d158beabd8`, published v0.3.0, transferred and verified the offline bundle, backed up the previous closed stores, and activated v0.3.0.
-- Verified running image identity, healthy application, both public health endpoints, and public English/Russian rendering. Authenticated live catalogue check remains unverified for the access reason recorded above.
+- Verified running image identity, healthy application, both public health endpoints, and public English/Russian rendering. The authenticated check was initially pending and was completed in the follow-up below.
 - Saved this full execution record after deployment, with a separate documentation commit and a link from the documentation index. No external-model, fetcher, or M1 implementation was added.
-- Gate: M0 complete; release rehearsal/authenticated smoke limitations are explicit rather than represented as passed checks.
+- Gate: M0 complete; the full release rehearsal limitation remains explicit, and the initial authenticated-smoke gap was resolved in the follow-up below.
 - Next action: **M1**. Read the current catalogue/acceptance contracts, define the external model and source-to-operation contract matrix, and implement sanitized executable cases before introducing live fetching.
+
+### 2026-11-06 — M0 authenticated production follow-up
+
+- Starting commit: `9cff9b46bc0dbe23dc754275822dbab1a4091cf5`. The user completed sign-in to the existing in-app production tab.
+- Reconfirmed `/srv/tover-releases/v0.3.0`, application image `tover:v0.3.0`, the recorded image ID, and healthy application state. No application deployment or code change was needed.
+- Completed ten unique catalogue/locale combinations. Navigation, populated and empty grids, translated column headers, search, and Saved/Сохранено status rendered successfully:
+
+| Catalogue | English headers | Russian headers | Result |
+| --- | --- | --- | --- |
+| Goods / Товар | Name, Article, Barcode, Unit, Category, Store | Название, Артикул, Штрихкод, Единица, Категория, Магазин | Passed in both languages |
+| Warehouses / Склады | Name, Description, Purpose | Название, Описание, Назначение | Passed in both languages |
+| Suppliers / Поставщики | Name, Address, Contact information | Название, Адрес, Контактная информация | Passed in both languages |
+| Categories / Категории | Name | Название | Passed in both languages |
+| Stores / Магазины | Name, Default warehouse | Название, Склад по умолчанию | Passed in both languages |
+
+- No browser console errors were observed. An early English screenshot caught incomplete page rendering; it was replaced after waiting for document load and the named grid. The fully loaded English and Russian Goods layouts were visually checked.
+- Performed no catalogue cell edits, record creation, or inventory submission. Returned to the original Stock page and restored the original Russian language preference. Existing pending-change indicators matched the initial state.
+- Saved bilingual screenshots only to the private temporary paths above; no live record contents or images were added to the repository.
+- Updated this execution record in a separate documentation commit. M0 remains complete; **M1 remains next**. The full production-shaped restore rehearsal and live mutation workflows were not rerun for this documentation-only follow-up.
