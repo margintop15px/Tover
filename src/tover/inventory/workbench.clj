@@ -5,6 +5,7 @@
     [bel.validation :as validation]
     [charred.api :as charred]
     [clojure.string :as str]
+    [tover.catalogues.store :as catalogue]
     [tover.inventory.filters :as filtering]
     [tover.inventory.grid :as grid]
     [tover.inventory.layouts :as layouts]
@@ -104,7 +105,10 @@
                                                                   (= :operation (:kind entry :operation)) (#{:purchase :sale} (:type entry)))
                                                          (assoc entry :id id :revision (:revision draft))))) operation-ids)
                                operations    (into (vec (mapcat #(read-query/operations conn context %) (partition-all 500 operation-ids))) pending)]
-                           (assoc snapshot :items (item-catalog (assoc snapshot :items items))
+                           (assoc snapshot :catalogue-revision (catalogue/revision conn context) :items (item-catalog (assoc snapshot :items items))
+                                  :location-labels (into {} (for [key  (distinct (mapcat #(referenced-ids snapshot %) [:location :stock-location :from-location :to-location]))
+                                                                  :let [row (catalogue/find-alias conn context :warehouses key)] :when row]
+                                                              [key (select-keys row [:name :aliases])]))
                                   :rows [] :history [] :operations operations :operation-catalog operations)))))
 
 
@@ -112,24 +116,27 @@
   {:malli/schema [:=> [:cat :any :map :map :map] [:maybe :map]]}
   [conn context query input]
   (when-let [page (read-query/page conn context (merge query input))]
-    (let [operation? (= :operations (:view query))
-          rows       (if operation?
-                       (mapv #(assoc % :operation (operations-ui/operation-title %)) (:rows page))
-                       (:rows page))
-          references (when operation?
-                       (read-query/operations conn context (vec (distinct (keep :original-operation-id rows)))))
-          sheet      (if operation?
-                       (tables/operations rows {:column-keys (:columns page) :operation-catalog references})
-                       (tables/stock rows))
-          grouped    (partition-by :groupId (:rows sheet))
-          indexed    (mapcat (fn [group-index group]
-                               (map #(assoc % :groupIndex group-index) group))
-                             (range (:groupStart page) (+ (:groupStart page) (count grouped))) grouped)
-          states     (mapcat :cells (:rows (tables/stock (:pendingRows page))))]
+    (let [with-location (fn [row]
+                          (if-let [warehouse (and (:location row) (catalogue/find-alias conn context :warehouses (:location row)))]
+                            (assoc row :location-label (:name warehouse) :location-aliases (:aliases warehouse)) row))
+          operation?    (= :operations (:view query))
+          rows          (if operation?
+                          (mapv #(assoc % :operation (operations-ui/operation-title %)) (:rows page))
+                          (mapv with-location (:rows page)))
+          references    (when operation?
+                          (read-query/operations conn context (vec (distinct (keep :original-operation-id rows)))))
+          sheet         (if operation?
+                          (tables/operations rows {:column-keys (:columns page) :operation-catalog references})
+                          (tables/stock rows))
+          grouped       (partition-by :groupId (:rows sheet))
+          indexed       (mapcat (fn [group-index group]
+                                  (map #(assoc % :groupIndex group-index) group))
+                                (range (:groupStart page) (+ (:groupStart page) (count grouped))) grouped)
+          states        (mapcat :cells (:rows (tables/stock (mapv with-location (:pendingRows page)))))]
       (-> sheet
           (dissoc :details)
           (assoc :rows (mapv #(assoc %1 :rowIndex %2) indexed (range (:start page) (:end page)))
-                 :editStates (mapv #(select-keys % [:target :value]) (filter :target states))
+                 :editStates (mapv #(select-keys % [:target :value :display :aliases :itemTarget :itemValue]) (filter :target states))
                  :missingRows (:missingRows page)
                  :viewport (select-keys page [:totalRows :totalGroups :start :end :groupStart :anchorFound :detailFound]))
           (with-meta {:source-rows rows})))))
@@ -264,7 +271,7 @@
   (let [visible (set (map :id rows))
         hidden  (remove #(visible (:id %)) stock-catalog)]
     (assoc (tables/stock (or rows []))
-           :editStates (mapv #(select-keys % [:target :value])
+           :editStates (mapv #(select-keys % [:target :value :display :aliases :itemTarget :itemValue])
                              (filter :target (mapcat :cells (:rows (tables/stock hidden))))))))
 
 
@@ -432,13 +439,13 @@
   [:div#inventory-evidence-workbench.inventory-workbench
    {:data-view (name view) :data-attr:data-filter-request "$_filterRequest"
     :aria-label (i18n/t "Tover inventory workbench")
-    :data-signals__ifmissing             (validation/signal-json :map {:query              (or query "")         :sort             (or sort "name") :direction            (or direction "asc")
-                                                                       :operationType      (or operationType "") :_inventoryView   (name view)      :_selectedEntries     []                   :_review            nil
-                                                                       :_draftPreview      false                 :_reviewPending   false            :_reviewDirty         false                :_draftGridJson     "null" :_stockGridJson  "null" :_operationsGridJson   "null" :_draftIds             [] :_draftSelection [] :_smartModelJson "null" :_operationRows []
-                                                                       :saveStatus         "Saved"               :inventoryChanged ""               :_stockRows           []
-                                                                       :_itemOptionsJson   "null"                :_gridWindowJson  "null"           :_operationDetailJson "null"
-                                                                       :_columnLayoutsJson "{}"                  :_layoutStatus    "Saved"          :_layoutScope         nil
-                                                                       :_filters           {}                    :_acceptedFilters {}               :_filterRequest       0                    :_inventorySnapshot nil    :_ledgerRevision 0      :_unresolvedDraftEdits 0      :_unresolvedStockEdits 0})
+    :data-signals__ifmissing             (validation/signal-json :map {:query                 (or query "")         :sort             (or sort "name") :direction        (or direction "asc")
+                                                                       :operationType         (or operationType "") :_inventoryView   (name view)      :_selectedEntries []                   :_review              nil
+                                                                       :_draftPreview         false                 :_reviewPending   false            :_reviewDirty     false                :_draftGridJson       "null" :_stockGridJson  "null" :_operationsGridJson   "null" :_draftIds             [] :_draftSelection [] :_smartModelJson "null" :_operationRows []
+                                                                       :saveStatus            "Saved"               :inventoryChanged ""               :_stockRows       []
+                                                                       :_catalogueChoicesJson "null"                :_itemOptionsJson "null"           :_gridWindowJson  "null"               :_operationDetailJson "null"
+                                                                       :_columnLayoutsJson    "{}"                  :_layoutStatus    "Saved"          :_layoutScope     nil
+                                                                       :_filters              {}                    :_acceptedFilters {}               :_filterRequest   0                    :_inventorySnapshot   nil    :_ledgerRevision 0      :_unresolvedDraftEdits 0      :_unresolvedStockEdits 0})
     :data-init (str "$_inventoryView = " (charred/write-json-str (name view)) "; $sort = " (charred/write-json-str (or sort "name"))
                     "; $direction = " (charred/write-json-str (or direction "asc"))
                     (when initial? "; $_filterRequest = 0; $_filters = {}; $_acceptedFilters = {}")
@@ -446,7 +453,7 @@
                     (when initial? (str "; $_smartModelJson = " (charred/write-json-str (charred/write-json-str (smart/initial-model model (or (:filters props) {}))))))
                     "; $_draftIds = " (charred/write-json-str (mapv :id (:drafts model)))
                     "; $_draftSelection = " (charred/write-json-str (mapv #(select-keys % [:id :revision]) (:drafts model))))
-    :data-effect (str "const s=$_inventorySnapshot; if(s && s.view===$_inventoryView && s.request===$_filterRequest && el.dataset.snapshotId!==s.id){el.dataset.snapshotId=s.id; $_ledgerRevision=s.ledgerRevision; $_stockRows=s.rows; $_operationRows=s.operationRows; $_draftIds=s.draftIds; $_draftSelection=s.draftSelection; $_selectedEntries=$_selectedEntries.filter(id=>s.draftIds.includes(id)); $_draftGridJson=s.draftGridJson; $_stockGridJson=s.stockGridJson; $_operationsGridJson=s.operationsGridJson; $_columnLayoutsJson=s.columnLayoutsJson; if($_layoutScope!==s.layoutScope){$_layoutScope=s.layoutScope; $_layoutStatus='Saved'}; $_acceptedFilters=JSON.parse(s.filtersJson); $_filters=JSON.parse(s.filtersJson); if($_draftPreview){$_review=null; $_reviewDirty=true}; const strip=el.querySelector('#inventory-filters'); if(strip && strip.innerHTML!==s.filterHtml) strip.innerHTML=s.filterHtml}; const layouts=JSON.parse($_columnLayoutsJson || '{}'); for(const g of el.querySelectorAll('inventory-grid')){if(g.model?.id){g.columnLayout=layouts[g.model.id] || {widths:{},order:[],version:0}; g.layoutStatus=$_layoutStatus}}; for(const g of el.querySelectorAll('inventory-grid')){g.itemOptionsResponse=JSON.parse($_itemOptionsJson || 'null');g.referenceOptionsResponse=JSON.parse($_referenceOptionsJson || 'null')}; const host=el.querySelector('#operations-history,#stock-grid'); if(host){host.windowResponse=JSON.parse($_gridWindowJson || 'null'); host.operationDetailResponse=JSON.parse($_operationDetailJson || 'null')}; if($_review && ($_review['expected-ledger-revision']!==$_ledgerRevision || $_review.selected.some(r=>!$_draftSelection.some(d=>d.id===r.id && d.revision===r.revision)))){$_review=null; $_reviewDirty=true}; "
+    :data-effect (str "const s=$_inventorySnapshot; if(s && s.view===$_inventoryView && s.request===$_filterRequest && el.dataset.snapshotId!==s.id){el.dataset.snapshotId=s.id; $_ledgerRevision=s.ledgerRevision; $_stockRows=s.rows; $_operationRows=s.operationRows; $_draftIds=s.draftIds; $_draftSelection=s.draftSelection; $_selectedEntries=$_selectedEntries.filter(id=>s.draftIds.includes(id)); $_draftGridJson=s.draftGridJson; $_stockGridJson=s.stockGridJson; $_operationsGridJson=s.operationsGridJson; $_columnLayoutsJson=s.columnLayoutsJson; if($_layoutScope!==s.layoutScope){$_layoutScope=s.layoutScope; $_layoutStatus='Saved'}; $_acceptedFilters=JSON.parse(s.filtersJson); $_filters=JSON.parse(s.filtersJson); if($_draftPreview){$_review=null; $_reviewDirty=true}; const strip=el.querySelector('#inventory-filters'); if(strip && strip.innerHTML!==s.filterHtml) strip.innerHTML=s.filterHtml}; const layouts=JSON.parse($_columnLayoutsJson || '{}'); for(const g of el.querySelectorAll('inventory-grid')){if(g.model?.id){g.columnLayout=layouts[g.model.id] || {widths:{},order:[],version:0}; g.layoutStatus=$_layoutStatus}}; for(const g of el.querySelectorAll('inventory-grid')){g.itemOptionsResponse=JSON.parse($_itemOptionsJson || 'null');g.referenceOptionsResponse=JSON.parse($_referenceOptionsJson || 'null');g.referenceOptionsResponse=JSON.parse($_catalogueChoicesJson || 'null')}; const host=el.querySelector('#operations-history,#stock-grid'); if(host){host.windowResponse=JSON.parse($_gridWindowJson || 'null'); host.operationDetailResponse=JSON.parse($_operationDetailJson || 'null')}; if($_review && ($_review['expected-ledger-revision']!==$_ledgerRevision || $_review.selected.some(r=>!$_draftSelection.some(d=>d.id===r.id && d.revision===r.revision)))){$_review=null; $_reviewDirty=true}; "
                       (->expr (when (and $_draftPreview $_reviewDirty (not $_reviewPending) (= $saveStatus "Saved"))
                                 (set! $_reviewDirty false) (set! $_reviewPending true)
                                 (@action :tover.stock.web/preview
@@ -459,6 +466,12 @@
                                                {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0})
                                         (fn [_error] nil)))))
     :data-on:inventory-resnapshot        (->expr (set! $inventoryChanged (js* "String(Date.now())")))
+    :data-on:inventory-catalogue-options
+    (->expr (.catch (@view :tover.catalogues.web/choices
+                           {:kind evt.detail.target.lookupKind :requestId evt.detail.requestId :text evt.detail.text}
+                           {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0})
+                    (fn [_error]
+                      (set! $_catalogueChoicesJson (js* "JSON.stringify({requestId:evt.detail.requestId,status:'failed',options:[]})")))))
     :data-on:inventory-reference-options
     (->expr (.catch (@view :tover.stock.web/reference-options
                            {:requestId evt.detail.requestId :text evt.detail.text}

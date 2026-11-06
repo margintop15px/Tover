@@ -47,6 +47,57 @@ async function chooseItem(page, id, itemId) {
   await select.selectOption(itemId); return saved;
 }
 
+for (const [originalType, invalidDirection, validDirection, englishError, russianError] of [
+  ['purchase', 'incoming', 'outgoing', 'A return linked to a purchase must be outgoing.', 'Возврат, связанный с закупкой, должен быть исходящим.'],
+  ['sale', 'outgoing', 'incoming', 'A return linked to a sale must be incoming.', 'Возврат, связанный с продажей, должен быть входящим.'],
+]) test(`a Return linked to a ${originalType} requires the matching direction in English and Russian`, async ({ page }) => {
+  await signIn(page);
+  const pending = await signals(page, '_draftSelection') || [];
+  if (pending.length) await action(page, 'revert-drafts', { selected: pending });
+  const name = `Return direction ${originalType} ${Date.now()}`;
+  const purchase = await seed(page, undefined, 'purchase', [
+    ['party', 'Return supplier'], ['lines/0/name', name], ['lines/0/quantity', '5'], ['lines/0/location', 'Return shelf'],
+  ]);
+  const accepted = await accept(page, purchase);
+  const item = accepted._inventorySnapshot.rows.find(row => row.name === name);
+  let original = purchase;
+  if (originalType === 'sale') {
+    original = await seed(page, undefined, 'sale', [
+      ['party', 'Return customer'], ['lines/0/item-id', item['item-id']], ['lines/0/quantity', '2'], ['lines/0/location', 'Return shelf'],
+    ]);
+    await accept(page, original);
+  }
+  const returned = await seed(page, undefined, 'return', [
+    ['direction', invalidDirection], ['original-operation-id', original], ['lines/0/item-id', item['item-id']],
+    ['lines/0/quantity', '1'], ['lines/0/location', 'Return shelf'],
+  ]);
+  await page.reload(); await openReview(page);
+  await expect(page.locator('#inventory-review')).toContainText(englishError);
+  await expect(page.locator('#inventory-toolbar .is-submit')).toBeDisabled();
+  try {
+    await Promise.all([page.waitForNavigation(), page.locator('.language-toggle[value=ru]').click()]);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
+    await page.getByRole('button', { name: 'Предпросмотр изменений', exact: true }).click();
+    await expect(page.locator('#inventory-review')).toContainText(russianError);
+    const submit = page.locator('#inventory-toolbar .is-submit');
+    await expect(submit).toBeDisabled();
+    await ready(draftGrid(page));
+    const editor = await openDraftCell(page, returned, 'direction');
+    const saved = saving(page, 'direction');
+    await editor.selectOption(validDirection); await editor.press('Enter'); await saved;
+    await expect(submit).toBeEnabled();
+    await expect(page.locator('#inventory-review')).not.toContainText(russianError);
+    const submitted = saving(page, null, 'submit');
+    await submit.click(); await submitted;
+    await expect.poll(() => signals(page, '_draftIds')).toEqual([]);
+    await expect(stockCell(page, name, 'quantity').locator('.inventory-cell-value')).toHaveText('4');
+  } finally {
+    if (await page.locator('html').getAttribute('lang') === 'ru') {
+      await Promise.all([page.waitForNavigation(), page.locator('.language-toggle[value=en]').click()]);
+    }
+  }
+});
+
 test('Copy opens an editable shared draft and preserves filters, selection and other drafts through failures', async ({ page }) => {
   await signIn(page);
   const pending = await signals(page, '_draftSelection') || [];

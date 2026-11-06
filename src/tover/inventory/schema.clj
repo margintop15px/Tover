@@ -79,11 +79,11 @@
 
 
 (def ReviewRequest
-  [:map [:selected Selection] [:expected-ledger-revision :int]])
+  [:map [:selected Selection] [:expected-ledger-revision :int] [:expected-catalogue-revision {:optional true} :int]])
 
 
 (def SubmitRequest
-  [:map [:selected Selection] [:expected-ledger-revision :int] [:actor Id] [:command-id Id]])
+  [:map [:selected Selection] [:expected-ledger-revision :int] [:expected-catalogue-revision {:optional true} :int] [:actor Id] [:command-id Id]])
 
 
 (def SaveRequest
@@ -126,7 +126,7 @@
 
 
 (def Preview
-  [:map [:valid? :boolean] [:errors [:vector :map]] [:selected Selection] [:expected-ledger-revision :int]])
+  [:map [:valid? :boolean] [:errors [:vector :map]] [:selected Selection] [:expected-ledger-revision :int] [:expected-catalogue-revision {:optional true} :int]])
 
 
 (def Receipt

@@ -69,7 +69,7 @@
           (:repo context) context
           [(assoc (opening "a" 100) :lines [(assoc a :quantity 100) (assoc b :quantity 20)])
            (merge common {:type :purchase :party "Supplier" :amount "120.50" :currency "EUR" :lines [a b]})
-           (merge common {:type :return :direction :incoming :lines [a]})
+           (merge common {:type :return :direction :outgoing :lines [a]})
            (merge common {:type :transfer :from-location "Shelf" :to-location "Shop" :lines [(dissoc a :location)]})
            (merge common {:type :production :inputs [a b] :outputs [(assoc a :item-id "kit" :name "Kit" :quantity 1)
                                                                     (assoc b :item-id "offcut" :name "Offcut")]})
@@ -516,7 +516,8 @@
             (is (= (:id accepted) (get-in article [:target :rowId])))
             (is (= 1 (get-in article [:target :draftRevision])))
             (is (= 1 (get-in article [:target :ledgerRevision])))
-            (is (every? #(= #{:target :value} (set (keys %))) (:editStates model)))
+            (is (every? #(and (contains? % :target) (contains? % :value)
+                              (every? #{:target :value :display :aliases :itemTarget :itemValue} (keys %))) (:editStates model)))
             (is (empty? (:editStates (workbench/accepted-grid
                                        (workbench/query-stock (assoc context :workspace-id (random-uuid)) (assoc input :ackRowId (:id accepted)))))))))))))
 

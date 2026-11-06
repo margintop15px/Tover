@@ -3,6 +3,7 @@
   (:require
     [clojure.edn :as edn]
     [clojure.string :as str]
+    [tover.catalogues.store :as catalogue]
     [tover.inventory.filters :as filters]
     [tover.inventory.model :as model]
     [tover.inventory.semantics :as semantics]
@@ -54,12 +55,16 @@
                                    :when (= :correction (get-in draft [:entry :kind]))]
                                [(get-in draft [:entry :stock-row-id]) draft]))
         accepted    (mapv (fn [row]
-                            (let [draft    (get corrections (:id row))
-                                  entry    (:entry draft)
-                                  proposed (when draft
-                                             (merge (select-keys (last (:lines entry)) [:name :article :barcode :unit])
-                                                    {:quantity (:stock-count entry)
-                                                     :location (:stock-location entry)}))]
+                            (let [draft           (get corrections (:id row))
+                                  entry           (:entry draft)
+                                  metadata-fields (if (contains? entry :catalogue-edits)
+                                                    (:fields (some #(when (= (:item-id row) (:id %)) %) (:catalogue-edits entry)))
+                                                    [:name :article :barcode :unit])
+                                  proposed        (when draft
+                                                    (merge (select-keys row [:name :article :barcode :unit])
+                                                           (select-keys (last (:lines entry)) metadata-fields)
+                                                           {:quantity (:stock-count entry)
+                                                            :location (:stock-location entry)}))]
                               (cond-> (assoc (merge row proposed)
                                              :ledger-revision ledger-revision
                                              :draft-id (:id draft)
@@ -110,7 +115,7 @@
     (and (= :operations view) (= "name" column))
     (into [] (keep :name) (mapcat #(get row % []) [:lines :inputs :outputs]))
     (and (= :operations view) (= "type" column)) [(or (:operation row) (:type row))]
-    :else [(get row (keyword column))]))
+    :else [(if (and (= view :stock) (= column "location")) (or (:location-label row) (:location row)) (get row (keyword column)))]))
 
 
 (defn- remove-group!
@@ -135,7 +140,8 @@
 (defn- stage-group!
   {:malli/schema [:=> [:cat rdf/Connection shared/Scope :keyword :map :map] :nil]}
   [conn scope view row items]
-  (let [row     (if (and (= :operations view) (= :purchase (:type row)) (contains? row :receipts))
+  (let [row     (if (= :stock view) (merge (catalogue/stock-row conn scope row) (select-keys row (map keyword (:_changedFields row)))) row)
+        row     (if (and (= :operations view) (= :purchase (:type row)) (contains? row :receipts))
                   (assoc (dissoc row :receipts) :lines (vec (mapcat :lines (:receipts row))))
                   row)
         graph   (graph scope)
@@ -162,7 +168,7 @@
       (rdf/add! conn graph group (term (str "v-" column)) (text value)))
     (doseq [column (if stock? ["name" "article" "barcode" "unit" "location" "quantity"]
                        ["occurred-at" "items" "type" "party" "summary" "context" "reason"])]
-      (let [value (get row (keyword column))
+      (let [value (if (and (= view :stock) (= column "location")) (or (:location-label row) (:location row)) (get row (keyword column)))
             value (cond
                     (and stock? (= "quantity" column)) (if (number? value) value (text value))
                     stock? (text value)
@@ -270,7 +276,8 @@
     (let [node (subject scope kind (:id row))]
       (rdf/add! conn (graph scope) node RDF/TYPE (term kind))
       (rdf/add! conn (graph scope) node (term "itemId") (if (= kind "AcceptedItem") (:id row) (:item-id row)))
-      (rdf/add! conn (graph scope) node (term "payload") (pr-str row))))
+      (rdf/add! conn (graph scope) node (term "payload") (pr-str row))
+      (when (= kind "AcceptedStock") (rdf/add! conn (graph scope) node (term "locationKey") (:location row)))))
   nil)
 
 
@@ -322,18 +329,19 @@
   "Replace disposable Stock rows and lightweight draft state in the caller's transaction."
   {:malli/schema [:=> [:cat rdf/Connection shared/Scope :map] :nil]}
   [conn scope current]
+  (catalogue/register-projection! conn scope (:projection current) "bootstrap")
   (let [graph           (graph scope)
         state           (state-subject scope)
         generation      (inc (or (rdf/value-at conn graph state (term "generation")) 0))
         epoch           (or (rdf/value-at conn graph state (term "epoch")) (str (random-uuid)))
         drafts          (pending-drafts current)
         draft-items     (draft-items drafts)
-        items           (merge draft-items (get-in current [:projection :items]))
+        items           (merge draft-items (get-in current [:projection :items]) (catalogue/goods conn scope nil))
         stock-signature (pr-str [(:ledger-revision current) (filterv #(#{:opening :correction} (get-in % [:entry :kind])) drafts)])
         item-signature  (pr-str [(:ledger-revision current) draft-items])]
     (when-not (= stock-signature (rdf/value-at conn graph state (term "stockSignature")))
       (remove-type! conn graph (term "Stock"))
-      (doseq [row (stock-rows (merge (:projection current) {:drafts drafts :ledger-revision (:ledger-revision current)}))]
+      (doseq [row (stock-rows (merge (update (:projection current) :rows #(mapv (partial catalogue/stock-row conn scope) %)) {:drafts drafts :ledger-revision (:ledger-revision current)}))]
         (stage-group! conn scope :stock row items)))
     (when-not (= item-signature (rdf/value-at conn graph state (term "itemSignature")))
       (remove-type! conn graph (term "Item"))
@@ -356,7 +364,7 @@
     (rdf/add! conn graph state (term "draftPayload") (pr-str (select-keys current [:drafts :ledger-revision])))
     (rdf/add! conn graph state (term "stockSignature") stock-signature)
     (rdf/add! conn graph state (term "itemSignature") item-signature)
-    (rdf/add! conn graph state (term "version") 7))
+    (rdf/add! conn graph state (term "version") 8))
   nil)
 
 
@@ -375,7 +383,8 @@
 (defn- stage-item!
   {:malli/schema [:=> [:cat rdf/Connection shared/Scope :string :map [:maybe :map]] :nil]}
   [conn scope id item accepted]
-  (let [node (subject scope "item" id)]
+  (let [item (catalogue/item conn scope item)
+        node (subject scope "item" id)]
     (rdf/add! conn (graph scope) node RDF/TYPE (term "Item"))
     (rdf/add! conn (graph scope) node (term "id") id)
     (rdf/add! conn (graph scope) node (term "payload") (pr-str item))
@@ -400,9 +409,9 @@
         changed-items  (set (keys (draft-items (vec changed))))
         ids            (into accepted-ids changed-items)
         accepted-items (into {} (map (juxt :id identity)) (read-payloads conn scope "AcceptedItem" "r:itemId" ids))
-        accepted-rows  (read-payloads conn scope "AcceptedStock" "r:itemId" ids)
+        accepted-rows  (mapv #(catalogue/stock-row conn scope %) (read-payloads conn scope "AcceptedStock" "r:itemId" ids))
         drafts         (pending-drafts current)
-        items          (merge (select-keys (draft-items drafts) ids) accepted-items)
+        items          (merge (select-keys (draft-items drafts) ids) accepted-items (catalogue/goods conn scope ids))
         stock-rows     (filterv (comp ids :item-id)
                                 (stock-rows {:rows accepted-rows :drafts drafts :ledger-revision (:ledger-revision current)}))]
     (remove-matching! conn scope "Stock" "r:itemId" ids)
@@ -424,10 +433,27 @@
         item-signature  (pr-str [(:ledger-revision current) (draft-items drafts)])]
     (rdf/remove! conn (graph scope) node nil nil)
     (doseq [[field value] {"generation"      generation "epoch"                   epoch          "ledgerRevision" (:ledger-revision current)
-                           "historyRevision" (:ledger-revision current) "version" 7
+                           "historyRevision" (:ledger-revision current) "version" 8
                            "draftPayload"    (pr-str (select-keys current [:drafts :ledger-revision]))
                            "stockSignature"  stock-signature "itemSignature"      item-signature}]
       (rdf/add! conn (graph scope) node (term field) value)))
+  nil)
+
+
+(defn refresh-catalogue!
+  "Refresh only the affected display rows; accepted payloads and effects remain untouched."
+  {:malli/schema [:=> [:cat rdf/Connection shared/Scope :map :keyword :map] :nil]}
+  [conn scope current kind row]
+  (let [ids (case kind
+              :goods #{(:id row)}
+              :warehouses (set (map (comp rdf/value :id)
+                                    (select conn "SELECT DISTINCT ?id WHERE { GRAPH ?graph { ?row a r:AcceptedStock; r:itemId ?id; r:locationKey ?key. }}"
+                                            {:graph (graph scope) :key (:location-key row)})))
+              :stores (set (map :id (catalogue/query conn "SELECT ?id WHERE { GRAPH ?graph { ?row c:kind \"goods\"; c:id ?id; c:store-id ?store. }}"
+                                                     {:graph (catalogue/graph scope) :store (:id row)})))
+              #{})]
+    (refresh-overlay! conn scope current ids)
+    (stage-light-state! conn scope current))
   nil)
 
 
@@ -452,6 +478,7 @@
   {:malli/schema [:=> [:cat rdf/Connection shared/Scope [:sequential :map] :map] :nil]}
   [conn scope records items]
   (doseq [{:keys [entity-id revision sequence business-order actor recorded-at entry cancelled?] :as record} records]
+    (catalogue/register-operation! conn scope entry (or actor "bootstrap"))
     (let [entry (cond-> (assoc entry :id entity-id :revision revision :business-order business-order
                                :accepted-order sequence :actor actor :recorded-at recorded-at)
                   cancelled? (assoc :cancelled? true))
@@ -464,7 +491,7 @@
 (defn ready?
   {:malli/schema [:=> [:cat rdf/Connection shared/Scope] :boolean]}
   [conn scope]
-  (= 7 (rdf/value-at conn (graph scope) (state-subject scope) (term "version"))))
+  (= 8 (rdf/value-at conn (graph scope) (state-subject scope) (term "version"))))
 
 
 (defn ensure!

@@ -36,6 +36,7 @@
     [:script {:type "module" :src "/navigation.js"}]
     [:script {:type "module" :src "/dates.js"}]
     [:script {:type "module" :src "/inventory-grid.js"}]
+    [:script {:type "module" :src "/catalogues.js"}]
     [:script {:type "module" :src "/stock-grids.js?v=workflow-2"}]
     [:script {:type "module" :src "/stock-entry.js?v=workflow-2"}]
     [:script {:type "module" :src "/stock-operations.js?v=workflow-2"}]]

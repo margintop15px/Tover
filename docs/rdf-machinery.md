@@ -84,3 +84,18 @@ Draft state has a separate lightweight payload. Its generation and the read proj
 Item history queries the selected item's effects and all revisions of operations that ever mentioned it, including replacements and cancellations. Lineage traverses only relevant earlier producers and limits parent effects to consumption cutoffs. History mode skips parent effects and metadata. Clicked parent details fetch one authorized immutable revision. No on-demand history or lineage request reconstructs the workspace ledger. Read-cache version upgrades backfill from the saved accepted projection and retain canonical records.
 
 Accepted projection records are stored individually by item and operation. State retains drafts, revision markers and the projection-storage format, rather than a complete aggregate payload. Older aggregate stores bootstrap the new cache; if that cache is lost, canonical history rebuilds it once. Keep full rebuilds as an explicit verification and recovery path. Normal Preview and Submit load only affected canonical records and projection payloads. The semantic package and ledger rules remain unchanged.
+
+
+## Catalogue metadata
+
+A separate workspace `catalogue-v1` RDF graph stores mutable reference records, their scalar query fields, stable IDs, revisions, last editor/time and durable save receipts. Goods reuse ledger item IDs. Category, Store and default-warehouse links reference records in the same workspace. Warehouse records retain immutable location keys plus old-name aliases; renames change display metadata, never ledger keys.
+
+Keep the installed ledger semantic package and accepted records unchanged. Add catalogue records idempotently from accepted items, locations and purchase parties. The disposable inventory read projection version 8 includes current catalogue metadata and scalar warehouse keys. Rebuild it from canonical ledger records plus catalogue records; catalogue metadata is not a disposable cache.
+
+A catalogue save checks the record revision and request identity, validates relationships and alias ownership, and commits the record, retry receipt and affected display projections atomically. Publish invalidations after commit. Queries use server filters, scalar counts and bounded windows; relation choices return at most 30 matches.
+
+Relationship saves accept either an existing record ID or `referenceName` with an empty value. Derive the target catalogue from the parent field. Check the parent revision before creating anything. Resolve exact names and warehouse aliases inside the same transaction; reject ambiguity. Include the typed name in the retry fingerprint. Commit creation, link, receipt and projection updates together.
+
+Table goods-name resolution uses workspace-scoped catalogue matches and stable draft item IDs. Mark unmatched table names with draft-only `catalogue-new?` metadata. Preview and Submit recheck those names against the current catalogue; reject new collisions instead of silently rebinding the item. Strip this marker before accepted ledger serialization. Warehouse choices expose canonical keys and current labels; supplier choices preserve operation text.
+
+Inventory web review tokens include the catalogue revision. Reject a Submit whose reviewed catalogue changed. Shared Stock corrections retain explicit metadata field intentions and base record revisions in draft data; remove that coordination metadata before writing immutable ledger records. Check conflicts and apply accepted metadata patches in the inventory transaction. Preserve unedited metadata and private compositions. Backups must retain the catalogue graph alongside the ledger; rehearse restoration before deployment.

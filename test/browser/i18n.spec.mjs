@@ -3,7 +3,7 @@ import { signIn, pageContext } from './auth.fixture.mjs';
 
 async function language(page, value) {
   if (await page.locator('html').getAttribute('lang') === value) return;
-  await Promise.all([page.waitForNavigation(), page.locator('.language-toggle').click()]);
+  await Promise.all([page.waitForNavigation(), page.locator(`.language-toggle[value="${value}"]`).click()]);
   await expect(page.locator('html')).toHaveAttribute('lang', value);
 }
 async function action(page, name, payload) {
@@ -43,8 +43,9 @@ test('guest language covers every authentication screen and persists after reloa
     await page.goto(url);
     await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
-    await expect(page.locator('.language-toggle')).toHaveText('RU');
-    await expect(page.locator('.language-toggle')).toHaveAccessibleName('Переключить на английский');
+    await expect(page.getByRole('group', { name: 'Язык', exact: true }).getByRole('button')).toHaveCount(2);
+    await expect(page.locator('.language-toggle[aria-pressed=true]')).toHaveText('RU');
+    await expect(page.locator('.language-toggle[value=en]')).toHaveAccessibleName('Английский');
     await expect(page.locator('#theme-toggle')).toHaveAttribute('aria-label', /тему/);
   }
   await language(page, 'en'); await page.reload();

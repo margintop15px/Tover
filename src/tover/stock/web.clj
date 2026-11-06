@@ -4,6 +4,7 @@
     [bel.realtime :as realtime]
     [charred.api :as charred]
     [clojure.string :as str]
+    [tover.catalogues.store :as catalogue]
     [tover.inventory.actors :as actors]
     [tover.inventory.completion :as completion]
     [tover.inventory.filters :as filtering]
@@ -212,6 +213,8 @@
 (defn save-stock-correction!
   {:malli/schema [:=> [:cat :map :map] :map]}
   [context {:keys [rowId field value ledgerRevision draftId draftRevision]}]
+  (when (= field "item-id")
+    (schema/fail! :validation "An existing stock row keeps its goods identity." {}))
   (let [draftId       (not-empty draftId)
         draftRevision (when (pos? (or draftRevision 0)) draftRevision)
         snapshot      (inventory-store/snapshot (:repo context) context)
@@ -230,7 +233,10 @@
                                              :stock-count  (:quantity row) :stock-location (:location row)
                                              :lines        [(select-keys row [:item-id :name :article :barcode :unit :location :quantity])]})
           counted     (if (= field "quantity") (field-value [:quantity] value) (:stock-count base))
-          location    (if (= field "location") value (:stock-location base))
+          location    (if (= field "location")
+                        (inventory-store/read-snapshot (:repo context) context
+                                                       (fn [conn _] (or (:location-key (catalogue/find-alias conn context :warehouses value)) value)))
+                        (:stock-location base))
           item        (cond-> (select-keys (last (:lines base)) [:item-id :name :article :barcode :unit])
                         (#{"name" "article" "barcode" "unit"} field) (assoc (keyword field) value))
           destination (some #(when (and (= (:item-id row) (:item-id %)) (= location (:location %))) %) (:rows snapshot))
@@ -261,24 +267,45 @@
            {:type type})))
 
 
+(defn table-goods
+  "Resolve table names before saving a draft; selecting an ID remains explicit."
+  {:malli/schema [:=> [:cat :map :map [:vector :any] :string :boolean] :map]}
+  [context entry line-path value selected?]
+  (inventory-store/read-snapshot
+    (:repo context) context
+    (fn [conn _]
+      (let [items (if selected? (read-query/items conn context [value])
+                      (read-query/exact-items conn context value true))]
+        (when (> (count items) 1)
+          (schema/fail! :validation "Several goods have this name. Choose a catalogue item." {}))
+        (if (or selected? (seq items))
+          (let [id (if selected? value (first (keys items)))]
+            (item-selection/select-item {:items items :rows (read-query/item-stock-rows conn context id)} entry line-path id))
+          (let [line  (get-in entry line-path)
+                known (when (:item-id line) (catalogue/record conn context :goods (:item-id line)))
+                id    (if (or (nil? (:item-id line)) known) (str (random-uuid)) (:item-id line))]
+            (assoc-in entry line-path (assoc line :item-id id :name value :catalogue-new? true))))))))
+
+
 (defn save-field*
   {:malli/schema [:=> [:cat :map :map] :map]}
   [context {:keys [id revision path value]}]
-  (let [current     (draft context id revision)
-        path        (path-parts path)
-        _           (when (= :original-operation-id (last path)) (check-reference! context value))
-        stock-field (get {:stock-count "quantity" :stock-location "location" :name "name" :article "article" :barcode "barcode" :unit "unit" :quantity "quantity" :location "location"} (last path))
-        entry       (assoc-in (:entry current) path (field-value path value))
-        entry       (if (= :type (last path))
-                      (let [prefix      (pop path)
-                            replacement (switch-type (get-in (:entry current) prefix (:entry current)) (keyword value))]
-                        (if (seq prefix) (assoc-in entry prefix replacement) replacement)) entry)
-        entry       (if (and (empty? value) (#{:original-operation-id :amount :currency} (last path)))
-                      (if (seq (pop path)) (update-in entry (pop path) dissoc (last path)) (dissoc entry (last path))) entry)
-        entry       (if (= :item-id (last path))
-                      (let [snapshot (inventory-store/snapshot (:repo context) context)]
-                        (item-selection/select-item (assoc snapshot :items (workbench/item-catalog snapshot)) entry (pop path) value))
-                      entry)]
+  (let [current           (draft context id revision)
+        path              (path-parts path)
+        _                 (when (= :original-operation-id (last path)) (check-reference! context value))
+        stock-field       (get {:stock-count "quantity" :stock-location "location" :name "name" :article "article" :barcode "barcode" :unit "unit" :quantity "quantity" :location "location"} (last path))
+        entry             (assoc-in (:entry current) path (field-value path value))
+        entry             (if (= :type (last path))
+                            (let [prefix      (pop path)
+                                  replacement (switch-type (get-in (:entry current) prefix (:entry current)) (keyword value))]
+                              (if (seq prefix) (assoc-in entry prefix replacement) replacement)) entry)
+        entry             (if (and (empty? value) (#{:original-operation-id :amount :currency} (last path)))
+                            (if (seq (pop path)) (update-in entry (pop path) dissoc (last path)) (dissoc entry (last path))) entry)
+        stock-correction? (and (= :correction (get-in current [:entry :kind])) (get-in current [:entry :stock-row-id]))
+        _                 (when (and stock-correction? (= :item-id (last path)))
+                            (schema/fail! :validation "An existing stock row keeps its goods identity." {}))
+        entry             (if (and (not stock-correction?) (#{:name :item-id} (last path)))
+                            (table-goods context (:entry current) (pop path) value (= :item-id (last path))) entry)]
     (try
       (if (and stock-field (= :correction (get-in current [:entry :kind])) (get-in current [:entry :stock-row-id]))
         (save-stock-correction! context {:rowId          (get-in current [:entry :stock-row-id])          :field   stock-field :value         value
@@ -440,7 +467,7 @@
 
 (defaction edit-stock
   {:route-data {:tover/access :workspace}
-   :schema     [:map [:rowId :string] [:field [:enum "name" "article" "barcode" "unit" "location" "quantity"]]
+   :schema     [:map [:rowId :string] [:field [:enum "name" "item-id" "article" "barcode" "unit" "location" "quantity"]]
                 [:value [:string {:max 500}]] [:ledgerRevision :int]
                 [:draftId {:optional true} [:maybe :string]] [:draftRevision {:optional true} :int]
                 [:draftKind {:optional true} :string]
@@ -455,7 +482,9 @@
           (throw (ex-info "This new stock row is no longer available." {:type :stale-draft})))
         (let [field (keyword (:field input))]
           (save! context (:id current) (:revision current)
-                 (assoc-in (:entry current) [:lines index field] (field-value [field] (:value input))))))
+                 (if (#{:name :item-id} field)
+                   (table-goods context (:entry current) [:lines index] (:value input) (= field :item-id))
+                   (assoc-in (:entry current) [:lines index field] (field-value [field] (:value input)))))))
       (save-stock-correction! context input))
     (saved context (assoc input :ackRowId (:rowId input)))
     (catch ExceptionInfo error
@@ -552,14 +581,14 @@
                                           (map #(assoc % :entry-id (:id draft))
                                                (:errors (completion/check (:entry draft) (set (keys (workbench/item-catalog snapshot))))))) drafts)))
           result   (if (seq errors)
-                     {:valid? false :errors errors :selected selected :expected-ledger-revision (:ledger-revision snapshot)}
-                     (inventory-store/preview (:repo context) context {:selected selected :expected-ledger-revision (:ledger-revision snapshot)}))
+                     {:valid? false :errors errors :selected selected :expected-ledger-revision (:ledger-revision snapshot) :expected-catalogue-revision (:catalogue-revision snapshot)}
+                     (inventory-store/preview (:repo context) context {:selected selected :expected-ledger-revision (:ledger-revision snapshot) :expected-catalogue-revision (:catalogue-revision snapshot)}))
           result   (update result :errors
                            (fn [errors]
                              (mapv (fn [error]
                                      (if-let [draft (some #(when (= (:operation-id error) (or (get-in % [:entry :target-id]) (:id %))) %) drafts)]
                                        (assoc error :entry-id (:id draft)) error)) errors)))
-          review   (assoc (select-keys result [:selected :expected-ledger-revision]) :command-id (str (random-uuid)))]
+          review   (assoc (select-keys result [:selected :expected-ledger-revision :expected-catalogue-revision]) :command-id (str (random-uuid)))]
       (if (empty? (:drafts snapshot))
         (close-preview context {})
         [{:type :signals :data {:_review (when (:valid? result) review) :_draftPreview true :_reviewPending false :_reviewDirty false :_selectedEntries (mapv :id selected)}}
@@ -572,7 +601,7 @@
 (defaction submit
   {:route-data {:tover/access :workspace}
    :schema     [:map [:review [:map [:selected [:vector [:map [:id :string] [:revision :int]]]]
-                               [:expected-ledger-revision :int] [:command-id :string]]]
+                               [:expected-ledger-revision :int] [:expected-catalogue-revision :int] [:command-id :string]]]
                 [:view {:optional true} :string] [:query {:optional true} :string]]}
   [context {:keys [review] :as input}]
   (try

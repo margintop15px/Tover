@@ -31,7 +31,7 @@
 (deftest merged-operation-fields-have-one-stable-edit-target
   (let [model (grid/drafts {:items {} :drafts [(draft purchase)]})]
     (is (= 1 (count (at-path model "party"))))
-    (is (= {:id "draft-a" :revision 7 :path "party"} (:target (first (at-path model "party")))))
+    (is (= {:id "draft-a" :revision 7 :path "party" :lookupKind "suppliers"} (:target (first (at-path model "party")))))
     (is (= ["2" "4"] (mapv #(-> (at-path model %) first :value) ["lines/0/quantity" "lines/1/quantity"])))
     (is (= 2 (count (:rows model))))
     (is (some #(> (:rowspan %) 1) (:merges model)))

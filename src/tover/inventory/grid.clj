@@ -135,6 +135,15 @@
                                             (label (if (= :operation (:kind entry)) type (:kind entry))))})
                       "direction" (if applicable? (assoc cell :value (some-> value name) :display (label value)
                                                          :editor {:type "select" :allowEmpty true :options [{:value "incoming" :label (i18n/t "Incoming")} {:value "outgoing" :label (i18n/t "Outgoing")}]}) {})
+                      ("from-location" "to-location") (if applicable?
+                                                        (-> cell
+                                                            (assoc :display (get-in model [:location-labels value :name] value)
+                                                                   :aliases (get-in model [:location-labels value :aliases])
+                                                                   :editor {:type "catalogue-reference" :valueType "key"})
+                                                            (assoc-in [:target :lookupKind] "warehouses")) {})
+                      "party" (if (= :purchase type)
+                                (-> cell (assoc :editor {:type "catalogue-reference" :valueType "name"})
+                                    (assoc-in [:target :lookupKind] "suppliers")) (or cell {}))
                       "original-operation-id" (if applicable?
                                                 (let [options (into [{:value "" :label (i18n/t "None")}]
                                                                     (for [operation (or (:operation-catalog model) (:operations model)) :when (#{:purchase :sale} (:type operation))]
@@ -165,10 +174,15 @@
     (cond
       (not line) {}
       (and (= key "location") (= :transfer (:type entry))) {}
-      (= key "name") (assoc cell :itemTarget (target draft (conj path :item-id)) :itemValue (:item-id line)
-                            :editor {:type "goods" :options (mapv (fn [[id item]]
-                                                                    {:value id :label (str (:name item) (when-not (str/blank? (:article item)) (str " · " (:article item))))})
-                                                                  (sort-by #(get-in % [1 :name]) (:items model)))})
+      (and (= key "name") (not correction?)) (assoc cell :itemTarget (target draft (conj path :item-id)) :itemValue (:item-id line)
+                                                    :editor {:type "goods" :options (mapv (fn [[id item]]
+                                                                                            {:value id :label (str (:name item) (when-not (str/blank? (:article item)) (str " · " (:article item))))})
+                                                                                          (sort-by #(get-in % [1 :name]) (:items model)))})
+      (= key "location") (-> cell
+                             (assoc :display (get-in model [:location-labels value :name] value)
+                                    :aliases (get-in model [:location-labels value :aliases])
+                                    :editor {:type "catalogue-reference" :valueType "key"})
+                             (assoc-in [:target :lookupKind] "warehouses"))
       (and (= key "unit") (not= value (i18n/unit-label value))) (assoc cell :display (i18n/unit-label value))
       :else cell)))
 

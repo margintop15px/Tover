@@ -2,6 +2,7 @@
   (:require
     [bel.validation :as validation]
     [clojure.string :as str]
+    [tover.catalogues.schema :as catalogue]
     [tover.inventory.schema :as schema]
     [tover.shared.i18n :as i18n])
   (:import
@@ -45,7 +46,9 @@
   (case (keyword view)
     :stock (i18n/translate-labels stock-columns)
     :operations (i18n/translate-labels operation-columns)
-    (schema/fail! :validation "Choose Stock or Operations filters." {:field :view})))
+    (if-let [columns (get catalogue/columns (keyword (str/replace (name view) #"^catalogue-" "")))]
+      (i18n/translate-labels (mapv (fn [[key label]] {:key (name key) :label label}) columns))
+      (schema/fail! :validation "Choose Stock or Operations filters." {:field :view}))))
 
 
 (defn check!

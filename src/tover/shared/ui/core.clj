@@ -1,6 +1,7 @@
 (ns tover.shared.ui.core
   (:require
     [bel.nav :as nav]
+    [clojure.string :as str]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]))
 
@@ -20,17 +21,16 @@
 (defn language-switch
   {:malli/schema [:=> [:cat :map] schema/Hiccup]}
   [request]
-  (let [english? (= "en" i18n/*locale*)
-        label    (i18n/t (if english? "Switch to Russian" "Switch to English"))]
-    [:form.language-switch {:method "post" :action "/action/tover.auth.web/set-language"}
-     [:input {:type "hidden" :name "__anti-forgery-token" :value (force (:anti-forgery-token request))}]
-     [:input {:type "hidden" :name "return-to" :value (or (get-in request [:params :return-to])
-                                                          (str (:uri request) (when-let [query (:query-string request)] (str "?" query))))}]
-     [:button.language-toggle {:type       "submit" :name  "locale" :value (if english? "ru" "en")
-                               :aria-label label    :title label}
-      [:svg {:viewBox "0 0 24 24" :aria-hidden true}
-       [:path {:d "M2 5h12M7 2v3m-2 3 6 6m-7 0 6-6m4 14 4-11 4 11m-6.5-4h5"}]]
-      [:span {:aria-hidden true} (if english? "EN" "RU")]]]))
+  [:form.language-switch {:method "post"  :action     "/action/tover.auth.web/set-language"
+                          :role   "group" :aria-label (i18n/t "Language")}
+   [:input {:type "hidden" :name "__anti-forgery-token" :value (force (:anti-forgery-token request))}]
+   [:input {:type "hidden" :name "return-to" :value (or (get-in request [:params :return-to])
+                                                        (str (:uri request) (when-let [query (:query-string request)] (str "?" query))))}]
+   (for [[locale text label] [["en" "EN" (i18n/t "English")] ["ru" "RU" (i18n/t "Russian")]]]
+     [:button.language-toggle {:type         "submit" :name "locale" :value locale
+                               :aria-label   label :title   label
+                               :aria-pressed (str (= locale i18n/*locale*))}
+      text])])
 
 
 (defn app-shell
@@ -40,9 +40,10 @@
    [:nav.app-nav {:aria-label (i18n/t "Application")}
     [:div.app-nav-pages
      (when (:workspace-id identity)
-       (for [[url label] [["/" (i18n/t "Stock")] ["/operations" (i18n/t "Operations")]]]
-         [:a (nav/link url {:class        (when (= url path) "active")
-                            :aria-current (when (= url path) "page")}) label]))]
+       (for [[url label] [["/" (i18n/t "Stock")] ["/operations" (i18n/t "Operations")] ["/catalogues/goods" (i18n/t "Catalogues")]]
+             :let        [active? (if (= url "/catalogues/goods") (str/starts-with? path "/catalogues") (= url path))]]
+         [:a (nav/link url {:class        (when active? "active")
+                            :aria-current (when active? "page")}) label]))]
     [:div.app-nav-tools
      [:a.nav-icon (nav/link "/workspace" {:aria-label   (i18n/t "Workspaces")               :title (i18n/t "Workspaces")
                                           :aria-current (when (= path "/workspace") "page")})

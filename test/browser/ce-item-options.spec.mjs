@@ -131,6 +131,94 @@ const referenceReply = (page, request, options, status = 'ok') => page.evaluate(
   window.fixture.grid.referenceOptionsResponse = { requestId: request.requestId, options, status };
 }, { request, options, status });
 
+async function mountCatalogue(page, valueType = 'id') {
+  await mountReference(page);
+  await page.evaluate(valueType => {
+    const { grid } = window.fixture;
+    grid.addEventListener('inventory-catalogue-options', event => window.fixture.requests.push(structuredClone(event.detail)));
+    const cell = { value: 'old-id', display: 'Known record', aliases: ['old-id', 'Previous name', 'Known record'],
+      target: { id: 'row', revision: 4, path: 'reference', lookupKind: valueType === 'id' ? 'categories' : 'warehouses' },
+      editor: { type: 'catalogue-reference', valueType, options: [{ value: 'old-id', label: 'Known record' }] } };
+    grid.model = { id: 'shared-draft', columns: [{ key: 'reference', label: 'Reference', width: 400 }],
+      rows: [{ id: 'row', cells: [cell] }], merges: [] };
+  }, valueType);
+  await expect(referenceCell(page, 'row')).toBeVisible();
+}
+
+test('catalogue free text survives failed lookups and acknowledges the resolved relationship once', async ({ page }) => {
+  await mountCatalogue(page); await referenceCell(page, 'row').click();
+  const [opening] = await requests(page);
+  await input(page).fill('New category');
+  await referenceReply(page, opening, [{ value: 'stale', label: 'Stale record' }]);
+  const picker = page.getByLabel('Choose record', { exact: true });
+  await expect(picker.locator('option[value="stale"]')).toHaveCount(0);
+  await expect.poll(async () => (await requests(page)).length).toBe(2);
+  await referenceReply(page, (await requests(page))[1], [], 'failed');
+  await input(page).press('Tab');
+  await expect.poll(async () => (await writes(page)).length).toBe(1);
+  const [request] = await writes(page);
+  expect(request).toEqual({ id: 'row', revision: 4, path: 'reference', lookupKind: 'categories', value: '', referenceName: 'New category' });
+  await page.evaluate(request => {
+    const { grid } = window.fixture;
+    grid.acknowledgeReference(request, 'new-id');
+    const cell = grid.model.rows[0].cells[0];
+    grid.model = { ...grid.model, rows: [{ id: 'row', cells: [{ ...cell, value: 'new-id', display: 'New category', target: { ...cell.target, revision: 5 } }] }] };
+  }, request);
+  await expect.poll(() => page.evaluate(() => window.fixture.grid._attempts.size)).toBe(0);
+  await expect(referenceCell(page, 'row')).toContainText('New category');
+});
+
+test('warehouse aliases acknowledge canonical keys and catalogue paste keeps a typed name', async ({ page }) => {
+  await mountCatalogue(page, 'key'); await referenceCell(page, 'row').click();
+  await input(page).fill('Previous name'); await page.locator('#outside').click();
+  await expect.poll(async () => (await writes(page)).length).toBe(1);
+  expect((await writes(page))[0].value).toBe('Previous name');
+  await page.evaluate(() => { window.fixture.grid.saveStatus = 'Failed'; });
+  await referenceCell(page, 'row').click();
+  await expect(input(page)).toHaveValue('Previous name');
+  await input(page).press('Escape');
+  await page.evaluate(() => {
+    const { grid } = window.fixture, cell = grid.model.rows[0].cells[0];
+    grid.model = { ...grid.model, rows: [{ id: 'row', cells: [{ ...cell, target: { ...cell.target, revision: 5 } }] }] };
+  });
+  await expect.poll(() => page.evaluate(() => window.fixture.grid._attempts.size)).toBe(0);
+  await mountCatalogue(page);
+  await page.evaluate(() => {
+    const { grid } = window.fixture;
+    grid.worksheet.updateSelectionFromCoords(0, 0, 0, 0);
+    const clipboardData = new DataTransfer(); clipboardData.setData('text/plain', 'Pasted category');
+    grid.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+  });
+  await expect.poll(async () => (await writes(page)).length).toBe(1);
+  expect((await writes(page))[0]).toMatchObject({ value: '', referenceName: 'Pasted category' });
+});
+
+for (const commit of ['Enter', 'Tab', 'blur']) test(`catalogue choices allow arrow navigation before ${commit} commits a keyboard selection`, async ({ page }) => {
+  await mountCatalogue(page); await referenceCell(page, 'row').click();
+  await referenceReply(page, (await requests(page))[0], [{ value: 'old-id', label: 'Known record' }, { value: 'next-id', label: 'Next record' }]);
+  await input(page).press('ArrowDown');
+  const picker = page.getByLabel('Choose record', { exact: true });
+  await expect(picker).toBeFocused();
+  await picker.press('ArrowDown');
+  await expect(input(page)).toBeVisible();
+  expect(await writes(page)).toEqual([]);
+  await picker.press('End');
+  if (commit === 'blur') await page.locator('#outside').click(); else await picker.press(commit);
+  await expect.poll(async () => (await writes(page)).length).toBe(1);
+  expect((await writes(page))[0]).toMatchObject({ value: 'next-id' });
+  expect((await writes(page))[0].referenceName).toBeUndefined();
+});
+
+test('leaving a keyboard-selected goods choice saves its ID once', async ({ page }) => {
+  await mount(page); await goods(page).click();
+  await reply(page, (await requests(page))[0], [{ value: 'selected', label: 'Selected goods' }]);
+  await input(page).press('ArrowDown');
+  await picker(page).press('End');
+  await page.locator('#outside').click();
+  await expect.poll(async () => (await writes(page)).length).toBe(1);
+  expect((await writes(page))[0]).toMatchObject({ path: 'lines/line-1/item-id', value: 'selected' });
+});
+
 test('operation references display the known label and save one selected operation ID', async ({ page }) => {
   await mountReference(page); await referenceCell(page).click();
   await expect(input(page)).toHaveValue('Sale · Existing buyer');

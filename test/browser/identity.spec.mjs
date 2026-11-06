@@ -117,7 +117,7 @@ test('Russian signup and recovery preserve account language across real sessions
   const selectLanguage = async (target, locale) => {
     await target.waitForLoadState();
     const saved = target.waitForResponse(response => new URL(response.url()).pathname.endsWith('/set-language') && response.request().method() === 'POST');
-    await Promise.all([target.waitForNavigation(), target.locator('.language-toggle').click()]);
+    await Promise.all([target.waitForNavigation(), target.locator(`.language-toggle[value="${locale}"]`).click()]);
     expect((await saved).status(), await target.locator('body').innerText()).toBe(303);
     await expect(target.locator('html')).toHaveAttribute('lang', locale);
   };

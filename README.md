@@ -36,6 +36,10 @@ Static assets bypass sessions. Production uses browser caching with `Cache-Contr
 
 ## Inventory workflow
 
+Catalogues contains separate editable Goods, Warehouses, Suppliers, Categories and Stores tables at `/catalogues/<kind>`. Active members save fields directly with revision checks and safe retries. Catalogue goods are selectable without stock; editable warehouse names retain immutable balance keys and previous-name aliases. Current metadata lives in a separate RDF graph, while accepted history remains unchanged. Existing accepted references bootstrap additively on first access.
+
+Table cells suggest goods, warehouses and purchase suppliers. Unique exact goods names reuse catalogue identities; new inventory references register on Submit. Category, Store and Default warehouse cells can create and link missing records directly in one save.
+
 Stock shows quantities by stable item ID and location. A purchase adds its item quantities to stock when accepted. Purchases have one item list with no separate arrival step or delivery status. Article/barcode edits retain the item's history. Different suppliers can contribute to the same balance. Operations shows accepted business history for Purchase, Return, Transfer, Production, Defect, Sale, Write-off and Payment. Financial amounts remain exact facts; Payment has no stock effect.
 
 Both pages share the header and combined search/add-operation input. Choose an operation type to receive its server-defined fields. Operations Add row creates a business-operation draft; Stock Add row declares preexisting stock. Inline Stock edits become manual corrections. Production consumes input quantities and creates outputs atomically, including packing, unpacking and repacking.
@@ -58,7 +62,7 @@ The header switches between English and Russian and reloads the current page. Si
 
 Signup, email confirmation, login/logout, recovery, workspace creation, invitations, joining and workspace switching use the real identity adapters. Every protected request and realtime delivery checks current membership. Managers administer Team; active members can edit and submit inventory drafts. Provider tokens stay encrypted in private Postgres sessions; cookies contain opaque identifiers. Mutations require CSRF and the configured origin/page context.
 
-RDF stores workspace items, immutable accepted operation/correction revisions, shared drafts, projection revisions and submission receipts. A versioned RDF/OWL/SHACL/SPARQL package defines domain relationships and constraints wherever practical. Clojure coordinates authorization, transactions, concurrency, semantic validation and delivery. Stock/history rebuild from effective accepted records. Existing prototype stores and anonymous graphs are preserved; they are not assigned to new workspaces.
+RDF stores workspace items, immutable accepted operation/correction revisions, shared drafts, projection revisions and submission receipts. A versioned RDF/OWL/SHACL/SPARQL package defines domain relationships and constraints wherever practical. Clojure coordinates authorization, transactions, concurrency, semantic validation and delivery. Stock quantities and history rebuild from effective accepted records; current labels come from the canonical catalogue graph. Existing prototype stores and anonymous graphs are preserved; they are not assigned to new workspaces.
 
 ## Production
 
@@ -117,6 +121,7 @@ cd ../..
 npm --prefix test/browser test
 cd test/browser && npx playwright test --config ce.config.mjs
 npx playwright test --config i18n.config.mjs
+npx playwright test --config catalogues.config.mjs
 npx playwright test --config identity.config.mjs
 npx playwright test --config viewport.config.mjs
 npx playwright test --config viewport-app.config.mjs

@@ -4,6 +4,8 @@
     [bel.validation :as validation]
     [clojure.edn :as edn]
     [clojure.string :as str]
+    [tover.catalogues.query :as catalog-query]
+    [tover.catalogues.store :as catalogue]
     [tover.inventory.filters :as filtering]
     [tover.inventory.grid :as grid]
     [tover.inventory.schema :as schema]
@@ -328,11 +330,13 @@
 
 (defn exact-items
   "Read at most two exact names, enough to distinguish a unique item from an ambiguous name."
-  {:malli/schema [:=> [:cat rdf/Connection shared/Scope :string] [:map-of :string :map]]}
-  [conn scope name]
-  (into {} (map (fn [row] [(:id row) (payload (:payload row))]))
-        (query conn "SELECT ?id ?payload WHERE { GRAPH ?graph { ?item a r:Item; r:id ?id; r:name ?name; r:payload ?payload . } } ORDER BY ?id LIMIT 2"
-               {"graph" (graph scope) "name" name})))
+  {:malli/schema [:=> [:cat rdf/Connection shared/Scope :string [:? :boolean]] [:map-of :string :map]]}
+  [conn scope name & [catalogue-only?]]
+  (if catalogue-only?
+    (catalogue/goods conn scope (set (map :id (catalogue/exact-records conn scope :goods name))))
+    (into {} (map (fn [row] [(:id row) (payload (:payload row))]))
+          (query conn "SELECT ?id ?payload WHERE { GRAPH ?graph { ?item a r:Item; r:id ?id; r:name ?name; r:payload ?payload . } } ORDER BY ?id LIMIT 2"
+                 {"graph" (graph scope) "name" name}))))
 
 
 (defn item-stock-rows
@@ -364,7 +368,7 @@
                 "purchaseLabel" (str/lower-case (i18n/t "Purchase")) "saleLabel" (str/lower-case (i18n/t "Sale"))})))
 
 
-(defn values
+(defn- inventory-values
   "Suggest bounded distinct display values without reading their group payloads."
   {:malli/schema [:=> [:cat rdf/Connection shared/Scope [:or :keyword :string] :string :int] [:vector :string]]}
   [conn scope field text limit]
@@ -380,3 +384,15 @@
                         "FILTER(STR(?value) != \"\" && STRSTARTS(LCASE(STR(?value)), ?needle)) } } "
                         "ORDER BY ?value LIMIT " (checked-limit limit))
                    {"graph" (graph scope) "needle" (str/lower-case text)})))))
+
+
+(defn values
+  "Include catalogue-only locations and suppliers in the existing bounded suggestions."
+  {:malli/schema [:=> [:cat rdf/Connection shared/Scope [:or :keyword :string] :string :int] [:vector :string]]}
+  [conn scope field text limit]
+  (let [kind       (case (name field) ("location" "from-location" "to-location") :warehouses "party" :suppliers nil)
+        references (when kind (mapv :label (catalog-query/choices conn scope kind text)))
+        previous   (inventory-values conn scope field text limit)
+        previous   (if kind (map #(or (:name (catalogue/find-alias conn scope kind %)) %) previous) previous)]
+    (into [] (comp (distinct) (filter #(str/starts-with? (str/lower-case %) (str/lower-case text))) (take (checked-limit limit)))
+          (concat references previous))))

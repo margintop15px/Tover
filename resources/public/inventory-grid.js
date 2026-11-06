@@ -264,11 +264,12 @@ export class InventoryGrid extends HTMLElement {
     if (!response || !state || response.requestId !== state.requestId) return;
     this._referenceOptionsResponse = response;
     state.select.setAttribute('aria-busy', 'false');
-    state.select.title = response.status === 'ok' ? t('Choose operation') : t('Could not load operations. Type to retry.');
+    state.select.title = response.status === 'ok' ? t(state.catalogue ? 'Choose record' : 'Choose operation') : t(state.catalogue ? 'Could not load records. Type to retry.' : 'Could not load operations. Type to retry.');
     if (response.status === 'ok') {
-      state.options = (response.options || []).filter(option => option.value !== '').slice(0, 30);
+      state.options = (response.options || []).filter(option => option.value !== '').slice(0, 30).map(option => ({ ...option,
+        value: state.valueType === 'key' ? option.locationKey : state.valueType === 'name' ? option.label : option.value }));
       if (state.requestText === '' && state.selectedOption && !state.options.some(option => option.value === state.selectedOption.value)) state.options.unshift(state.selectedOption);
-      state.select.replaceChildren(new Option(t('Choose operation…'), state.placeholder), new Option(t('None'), ''),
+      state.select.replaceChildren(new Option(t(state.catalogue ? 'Choose record…' : 'Choose operation…'), state.placeholder), new Option(t('None'), ''),
         ...state.options.map(option => new Option(option.label, option.value)));
     }
   }
@@ -276,8 +277,12 @@ export class InventoryGrid extends HTMLElement {
     if (this._active?.referenceOptions !== state) return;
     state.requestText = text;
     state.requestId = `${this._model.id || this.id}:references:${crypto.randomUUID()}`;
-    state.select.setAttribute('aria-busy', 'true'); state.select.title = t('Loading operations…');
-    this._emit('inventory-reference-options', { requestId: state.requestId, text, target: { ...state.target } });
+    state.select.setAttribute('aria-busy', 'true'); state.select.title = t(state.catalogue ? 'Loading records…' : 'Loading operations…');
+    this._emit(state.catalogue ? 'inventory-catalogue-options' : 'inventory-reference-options', { requestId: state.requestId, text, target: { ...state.target } });
+  }
+  acknowledgeReference(target, value) {
+    const attempt = this._attempts.get(pathKey(target));
+    if (attempt?.referenceName && attempt.referenceName === target.referenceName && versionKey(attempt.target) === versionKey(target)) attempt.value = value;
   }
   _showWindowStatus(status) {
     if (!this._windowNotice) return;
@@ -295,7 +300,7 @@ export class InventoryGrid extends HTMLElement {
     const request = { queryId: viewport.queryId, start, count: viewport.windowSize || 200,
       requestId: `${this._model.id || this.id}:${++this._windowSequence}`, ...(anchorId ? { anchorId } : {}),
       ...(this._rowDetail?.rowId ? { detailRowId: this._rowDetail.rowId } : {}),
-      ...(this._model.id === 'stock' ? { pendingRows: [...new Set([...this._attempts.values()].map(attempt => attempt.target.rowId || attempt.target.id))].slice(0, 100) } : {}) };
+      ...((this._model.id === 'stock' || this._model.id?.startsWith('catalogue-')) ? { pendingRows: [...new Set([...this._attempts.values()].map(attempt => attempt.target.rowId || attempt.target.id))].slice(0, 100) } : {}) };
     this._windowPending = request; this._windowFailed = null; this._showWindowStatus('loading');
     this._emit('inventory-window', request);
     return request;
@@ -568,7 +573,8 @@ export class InventoryGrid extends HTMLElement {
         continue;
       }
       if (versionKey(cell.target) !== versionKey(attempt.target)) {
-        if (sameValue(attempt.item ? cell.itemValue : cell.value, attempt.value)) { this._attempts.delete(key); this._acknowledgedWrite = attempt.target; }
+        if (sameValue(attempt.item ? cell.itemValue : cell.value, attempt.value) ||
+            (attempt.editorType === 'catalogue-reference' && cell.aliases?.includes(attempt.value))) { this._attempts.delete(key); this._acknowledgedWrite = attempt.target; }
         else { attempt.state = 'conflict'; attempt.saved = cell.value; attempt.currentTarget = attempt.item ? cell.itemTarget : cell.target; }
       } else if (attempt.state === 'orphan') attempt.state = 'failed';
     }
@@ -593,7 +599,7 @@ export class InventoryGrid extends HTMLElement {
         const saved = document.createElement('span'); saved.textContent = t("Saved: {p0}", {p0: attempt.editorType === 'date' ? formatDate(attempt.saved) : attempt.saved}); row.append(saved);
       }
       row.prepend(text);
-      if (this._model.viewport && this._model.id === 'stock' && attempt.state !== 'orphan') row.append(button(t('Show retained edit'), '', t('Show row'), () => {
+      if (this._model.viewport && (this._model.id === 'stock' || this._model.id?.startsWith('catalogue-')) && attempt.state !== 'orphan') row.append(button(t('Show retained edit'), '', t('Show row'), () => {
         this._pendingFieldFocus = { id: attempt.target.rowId || attempt.target.id, path: attempt.target.path };
         this._windowAnchor = this._captureAnchor();
         this._requestWindow(this._model.viewport, this._model.viewport.start, attempt.target.rowId || attempt.target.id);
@@ -1006,7 +1012,10 @@ export class InventoryGrid extends HTMLElement {
       controls.append(button(attempt.state === 'conflict' ? t('Save my value') : t('Retry saving'), '', attempt.state === 'conflict' ? t('Use mine') : t('Retry'), () => {
         this._attempts.delete(pathKey(cell.target)); this._attemptsChanged();
         if (attempt.item) this._saveItem(cell, attempt.value, attempt.display);
-        else this._save(Number(x), Number(y), attempt.value);
+        else {
+          this._closedContext = { fieldLabel: attempt.fieldLabel, editorType: attempt.editorType, referenceName: attempt.referenceName, display: attempt.display };
+          this._save(Number(x), Number(y), attempt.value);
+        }
       }));
       td.append(controls);
     }
@@ -1037,7 +1046,7 @@ export class InventoryGrid extends HTMLElement {
       input.type = type === 'date' ? 'datetime-local' : 'text';
       if (type === 'date') { input.step = '60'; input.dataset.dateValue = raw; input.value = toLocalDateTime(raw); }
       else input.value = raw;
-      if (type === 'operation-reference' && event?.key?.length !== 1) input.value = raw ? (attempt?.display ?? cell.display ?? cell.editor.options?.find(option => option.value === raw)?.label ?? raw) : '';
+      if (['operation-reference', 'catalogue-reference'].includes(type) && event?.key?.length !== 1) input.value = raw ? (attempt?.referenceName ?? attempt?.display ?? (attempt ? raw : cell.display ?? cell.editor.options?.find(option => option.value === raw)?.label ?? raw)) : '';
     }
     input.setAttribute('aria-label', t("{p0} for {p1}", {p0: this._model.columns[x]?.label || t('Value'), p1: this._rows[y]?.label || t('operation')}));
     if (type !== 'select') {
@@ -1050,6 +1059,9 @@ export class InventoryGrid extends HTMLElement {
     input.addEventListener('keydown', e => {
       e.stopPropagation();
       if (e.key === 'Escape') { e.preventDefault(); worksheet.closeEditor(td, false); }
+      if (e.key === 'ArrowDown' && (this._active?.itemOptions || this._active?.referenceOptions)) {
+        e.preventDefault(); (this._active.itemOptions || this._active.referenceOptions).select.focus(); return;
+      }
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
         if (type === 'operation-reference') {
@@ -1068,23 +1080,26 @@ export class InventoryGrid extends HTMLElement {
     });
     input.addEventListener('blur', () => { if (this._active?.td === td) worksheet.closeEditor(td, true); });
     wrapper.append(input);
-    if (type === 'goods' || type === 'operation-reference') {
-      const reference = type === 'operation-reference';
+    if (['goods', 'operation-reference', 'catalogue-reference'].includes(type)) {
+      const reference = type !== 'goods', catalogue = type === 'catalogue-reference';
+      const referenceLabel = catalogue ? 'Choose record' : 'Choose operation';
       const availableOptions = (cell.editor.options || []).filter(option => !reference || option.value !== '');
       const picker = document.createElement('span'); picker.className = 'inventory-goods-picker';
       const choices = document.createElement('select'); choices.className = 'inventory-goods-choice';
-      choices.setAttribute('aria-label', reference ? t('Choose operation') : t('Choose existing item'));
-      choices.title = reference ? t('Choose operation') : t('Choose existing item');
+      choices.setAttribute('aria-label', reference ? t(referenceLabel) : t('Choose existing item'));
+      choices.title = reference ? t(referenceLabel) : t('Choose existing item');
       const placeholder = reference ? `placeholder:${crypto.randomUUID()}` : '';
-      choices.append(new Option(reference ? t('Choose operation…') : t('Choose existing item…'), placeholder));
+      choices.append(new Option(reference ? t(catalogue ? 'Choose record…' : 'Choose operation…') : t('Choose existing item…'), placeholder));
       if (reference) choices.append(new Option(t('None'), ''));
       for (const option of availableOptions) choices.append(new Option(option.label, option.value));
-      const state = { select: choices, input, options: availableOptions, placeholder,
+      const state = { cell, select: choices, input, initialText: cell.display ?? String(cell.value ?? ''), options: availableOptions, placeholder, catalogue, valueType: cell.editor.valueType,
         selectedOption: availableOptions.find(option => option.value === (reference ? cell.value : cell.itemValue)) || (!reference && availableOptions.length === 1 ? availableOptions[0] : null),
         target: reference ? cell.target : cell.itemTarget || cell.editor.itemTarget || cell.target };
       this._active[reference ? 'referenceOptions' : 'itemOptions'] = state;
       const requestOptions = text => reference ? this._requestReferenceOptions(state, text) : this._requestItemOptions(state, text);
       input.addEventListener('input', () => {
+        delete state.chosenValue; delete state.chosenLabel;
+        choices.selectedIndex = 0;
         clearTimeout(state.timer);
         state.requestId = null;
         state.timer = setTimeout(requestOptions, 150);
@@ -1093,12 +1108,24 @@ export class InventoryGrid extends HTMLElement {
       input.addEventListener('blur', e => { if (wrapper.contains(e.relatedTarget)) e.stopImmediatePropagation(); }, true);
       choices.addEventListener('keydown', e => {
         e.stopPropagation();
-        if (e.key === 'Escape') { e.preventDefault(); worksheet.closeEditor(td, false); }
+        if (e.key === 'Escape') { e.preventDefault(); worksheet.closeEditor(td, false); return; }
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+          e.preventDefault();
+          choices.selectedIndex = e.key === 'Home' ? Math.min(1, choices.options.length - 1) : e.key === 'End' ? choices.options.length - 1
+            : Math.max(0, Math.min(choices.options.length - 1, choices.selectedIndex + (e.key === 'ArrowDown' ? 1 : -1)));
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          this._nextSelection = { x: Number(x), y: Number(y), backwards: e.shiftKey, vertical: e.key === 'Enter' };
+          if (choices.selectedIndex === 0) worksheet.closeEditor(td, true); else choose();
+        }
       });
       choices.addEventListener('blur', e => {
-        if (this._active?.td === td && !wrapper.contains(e.relatedTarget)) worksheet.closeEditor(td, true);
+        if (this._active?.td === td && !wrapper.contains(e.relatedTarget)) {
+          if (choices.selectedIndex === 0) worksheet.closeEditor(td, true); else choose();
+        }
       });
-      choices.addEventListener('change', () => {
+      const choose = () => {
         if (reference) {
           if (choices.selectedIndex === 0) return;
           state.chosenValue = choices.value; state.chosenLabel = choices.value ? choices.selectedOptions[0]?.textContent : '';
@@ -1108,7 +1135,8 @@ export class InventoryGrid extends HTMLElement {
         const selected = choices.value, display = choices.selectedOptions[0]?.textContent || input.value;
         worksheet.closeEditor(td, false);
         this._saveItem(cell, selected, display);
-      });
+      };
+      choices.addEventListener('change', choose);
       picker.append(gridIcon('down'), choices); wrapper.append(picker);
       requestOptions('');
     }
@@ -1123,13 +1151,22 @@ export class InventoryGrid extends HTMLElement {
     const input = td.querySelector('.inventory-cell-editor > input,.inventory-cell-editor > select');
     const editor = { ...this._cell(Number(x), Number(y)).editor,
       ...(active.referenceOptions ? { options: [{ value: '', label: t('None') }, ...active.referenceOptions.options] } : {}) };
-    const raw = active.referenceOptions ? (active.referenceOptions.chosenValue ?? active.original) : input ? (input.type === 'datetime-local' ? inputDateValue(input) : input.value) : active.original;
+    const reference = active.referenceOptions;
+    if (reference?.select.selectedIndex > 0) {
+      reference.chosenValue = reference.select.value;
+      reference.chosenLabel = reference.chosenValue ? reference.select.selectedOptions[0]?.textContent : '';
+    }
+    const item = save && active.itemOptions?.select.value ? active.itemOptions : null;
+    const itemValue = item?.select.value, itemLabel = item?.select.selectedOptions[0]?.textContent;
+    const typed = reference?.catalogue && reference.chosenValue == null && input && input.value !== reference.initialText;
+    const raw = item ? active.original : typed ? input.value : reference ? (reference.chosenValue ?? active.original) : input ? (input.type === 'datetime-local' ? inputDateValue(input) : input.value) : active.original;
     const error = input?.validity.badInput ? t('Enter an occurrence date or an ISO timestamp.') : fieldError(editor, raw);
     const value = error ? raw : normalizeFieldValue(editor, raw);
     this._closedTarget = save && !sameValue(value, active.original) ? active.target : null;
     this._closedContext = this._closedTarget ? { fieldLabel: active.fieldLabel, editorType: active.editorType,
       ...(error ? { validationError: error } : {}),
       ...(active.referenceOptions ? { editorOptions: editor.options } : {}),
+      ...(reference?.catalogue && reference.valueType === 'id' && typed && raw ? { referenceName: raw } : {}),
       ...(active.referenceOptions ? { display: active.referenceOptions.chosenLabel } : {}) } : null;
     this._active = null;
     if (save && !error && sameValue(value, active.original) && this._attempts.has(pathKey(active.target))) {
@@ -1138,12 +1175,16 @@ export class InventoryGrid extends HTMLElement {
     td.classList.remove('inventory-cell-editing');
     this._present(td, x, y, save ? value : active.original);
     if (!save) this._scheduleRender();
-    queueMicrotask(() => { this._attemptsChanged(); this._moveSelection(); });
+    queueMicrotask(() => {
+      if (item) this._saveItem(item.cell, itemValue, itemLabel);
+      this._attemptsChanged(); this._moveSelection();
+    });
     return save ? value : active.original;
   }
   _save(x, y, value) {
     const location = this._cell(x, y), target = this._closedTarget || location.target;
     const context = this._closedContext || { fieldLabel: this._model.columns[x]?.label, editorType: location.editor?.type };
+    if (!this._closedContext && location.editor?.type === 'catalogue-reference' && location.editor.valueType === 'id' && value) context.referenceName = String(value);
     const editor = { ...location.editor, ...(context.editorOptions ? { options: context.editorOptions } : {}) };
     const error = context.validationError || fieldError(editor, value);
     if (!error) value = normalizeFieldValue(editor, value);
@@ -1157,7 +1198,8 @@ export class InventoryGrid extends HTMLElement {
     this._attemptsChanged();
     this._notice.textContent = error;
     if (error) this._emit('inventory-validation-error', { message: error });
-    else if (cell || this._model.viewport) this._emit(target.type || 'draft-edit', { ...target, value: String(value ?? '') });
+    else if (cell || this._model.viewport) this._emit(target.type || 'draft-edit', { ...target, value: context.referenceName ? '' : String(value ?? ''),
+      ...(context.referenceName ? { referenceName: context.referenceName } : {}) });
     this._scheduleRender();
   }
   _saveItem(cell, value, display) {

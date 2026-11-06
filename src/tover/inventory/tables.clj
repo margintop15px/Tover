@@ -18,7 +18,7 @@
 (defn- value
   {:malli/schema [:=> [:cat :map :string] :any]}
   [row key]
-  (or (get row (keyword key)) ""))
+  (or (when (= key "location") (:location-label row)) (get row (keyword key)) ""))
 
 
 (defn stock
@@ -29,7 +29,7 @@
    :rows (mapv (fn [row]
                  {:id    (:id row) :groupId (:id row) :className (:_changeClass row)
                   :cells (mapv (fn [{:keys [key]}]
-                                 (cond-> {:value (value row key)}
+                                 (cond-> {:value (if (= key "location") (or (:location row) "") (value row key))}
                                    true
                                    (assoc :editor {:type (if (= "quantity" key) "quantity" "text")}
                                           :target (cond-> {:type     "stock-edit" :id (:id row) :path           key
@@ -38,6 +38,14 @@
                                                     (:draft-id row) (assoc :draftId (:draft-id row))
                                                     (:draft-revision row) (assoc :draftRevision (:draft-revision row))
                                                     (:draft-kind row) (assoc :draftKind (:draft-kind row))))
+                                   (= key "location")
+                                   (assoc :display (value row key) :aliases (:location-aliases row) :editor {:type "catalogue-reference" :valueType "key"})
+                                   (= key "location") (assoc-in [:target :lookupKind] "warehouses")
+                                   (and (= key "name") (= "opening" (:draft-kind row)))
+                                   (assoc :editor {:type "goods"} :itemValue (:item-id row)
+                                          :itemTarget {:type     "stock-edit"          :id             (:id row)              :path      key       :field "item-id" :rowId (:id row)
+                                                       :revision (:draft-revision row) :ledgerRevision (:ledger-revision row)
+                                                       :draftId  (:draft-id row)       :draftRevision  (:draft-revision row)  :draftKind "opening"})
                                    (and (= key "unit") (not= (:unit row) (i18n/unit-label (:unit row))))
                                    (assoc :display (i18n/unit-label (:unit row)))
                                    (some #{key} (:_changedFields row))

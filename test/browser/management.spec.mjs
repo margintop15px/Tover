@@ -14,7 +14,7 @@ async function login(page, email, locale) {
   await form.locator('[name=password]').fill('tover-development');
   await Promise.all([page.waitForNavigation(), form.locator('button').click()]);
   if (await page.locator('html').getAttribute('lang') !== locale) {
-    await Promise.all([page.waitForNavigation(), page.locator('.language-toggle').click()]);
+    await Promise.all([page.waitForNavigation(), page.locator(`.language-toggle[value="${locale}"]`).click()]);
   }
   await expect(page.locator('html')).toHaveAttribute('lang', locale);
 }

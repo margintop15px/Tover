@@ -13,7 +13,7 @@ const operationNames = ['Purchase', 'Return', 'Transfer', 'Production', 'Defect'
 
 async function language(page, locale) {
   if (await page.locator('html').getAttribute('lang') !== locale) {
-    await Promise.all([page.waitForNavigation(), page.locator('.language-toggle').click()]);
+    await Promise.all([page.waitForNavigation(), page.locator(`.language-toggle[value="${locale}"]`).click()]);
   }
   await expect(page.locator('html')).toHaveAttribute('lang', locale);
 }
@@ -179,10 +179,10 @@ for (const locale of ['en', 'ru']) {
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     await freshWorkspace(page, locale);
     await translatedInterface(page, locale);
-    const languageBox = await page.locator('.language-toggle').boundingBox();
+    const languageBox = await page.locator('.language-switch').boundingBox();
     const themeBox = await page.locator('#theme-toggle').boundingBox();
     expect(languageBox.height).toBe(themeBox.height);
-    expect(languageBox.width).toBeLessThan(60);
+    expect(languageBox.width).toBeLessThan(90);
     for (const route of ['/', '/operations']) {
       await page.goto(route);
       await expect(page).toHaveTitle(t(route === '/' ? 'Stock · Tover' : 'Operations · Tover'));
@@ -356,15 +356,32 @@ for (const locale of ['en', 'ru']) {
   });
 }
 
-test('compact language button works without JavaScript and persists on mobile', async ({ browser, baseURL }) => {
-  const context = await browser.newContext({ baseURL, javaScriptEnabled: false, locale: 'en-US', viewport: { width: 390, height: 844 } });
+for (const javaScriptEnabled of [true, false]) test(`segmented language switch supports keyboard and mobile with JavaScript ${javaScriptEnabled}`, async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL, javaScriptEnabled, locale: 'en-US', isMobile: true, hasTouch: true, viewport: { width: 390, height: 844 } });
   try {
     const page = await context.newPage(); await page.goto('/auth/login');
-    await expect(page.locator('.language-toggle')).toHaveAccessibleName('Switch to Russian');
-    await page.locator('.language-toggle').click();
+    const english = page.locator('.language-toggle[value=en]');
+    const russian = page.locator('.language-toggle[value=ru]');
+    await expect(page.getByRole('group', { name: 'Language', exact: true }).getByRole('button')).toHaveCount(2);
+    await expect(english).toHaveAccessibleName('English');
+    await expect(english).toHaveAttribute('aria-pressed', 'true');
+    await expect(russian).toHaveAccessibleName('Russian');
+    await expect(russian).toHaveAttribute('aria-pressed', 'false');
+    const target = await russian.boundingBox();
+    expect(target.width).toBeGreaterThanOrEqual(44);
+    expect(target.height).toBeGreaterThanOrEqual(44);
+    await russian.focus(); await page.keyboard.press('Enter');
     await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
-    await expect(page.locator('.language-toggle')).toHaveAccessibleName('Переключить на английский');
-    await page.reload(); await expect(page.locator('.language-toggle')).toHaveText('RU');
-    await page.screenshot({ path: '/tmp/tover-language-switch-mobile.png', fullPage: true });
+    await expect(page.getByRole('group', { name: 'Язык', exact: true })).toBeVisible();
+    await expect(english).toHaveAccessibleName('Английский');
+    await expect(russian).toHaveAccessibleName('Русский');
+    await expect(english).toHaveAttribute('aria-pressed', 'false');
+    await expect(russian).toHaveAttribute('aria-pressed', 'true');
+    await page.reload(); await expect(russian).toHaveAttribute('aria-pressed', 'true');
+    await page.screenshot({ path: `/tmp/tover-language-switch-mobile-${javaScriptEnabled}.png`, fullPage: true });
+    await english.focus(); await page.keyboard.press('Space');
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(english).toHaveAttribute('aria-pressed', 'true');
+    await expect(russian).toHaveAttribute('aria-pressed', 'false');
   } finally { await context.close(); }
 });

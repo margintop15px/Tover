@@ -466,18 +466,21 @@
                                   (when-let [route (:bel/route (meta definition))]
                                     [id route])))
                        (:pages registry))]
-    (is (= {:tover.auth.web/login      "/auth/login"
-            :tover.auth.web/signup     "/auth/signup"
-            :tover.auth.web/recover    "/auth/recover"
-            :tover.auth.web/verify     "/auth/verify"
-            :tover.auth.web/confirm    "/auth/confirm"
-            :tover.auth.web/password   "/auth/password"
-            :tover.stock.web/page      "/"
-            :tover.operations.web/page "/operations"
-            :tover.workspaces.web/page "/workspace"
-            :tover.teams.core/page     "/team"}
+    (is (= {:tover.auth.web/login       "/auth/login"
+            :tover.auth.web/signup      "/auth/signup"
+            :tover.auth.web/recover     "/auth/recover"
+            :tover.auth.web/verify      "/auth/verify"
+            :tover.auth.web/confirm     "/auth/confirm"
+            :tover.auth.web/password    "/auth/password"
+            :tover.stock.web/page       "/"
+            :tover.operations.web/page  "/operations"
+            :tover.catalogues.web/index "/catalogues"
+            :tover.catalogues.web/page  "/catalogues/:kind"
+            :tover.workspaces.web/page  "/workspace"
+            :tover.teams.core/page      "/team"}
            routes))
     (doseq [id [:tover.stock.web/page :tover.operations.web/page
+                :tover.catalogues.web/index :tover.catalogues.web/page
                 :tover.workspaces.web/page :tover.teams.core/page]]
       (is (= :tover.shared.web.core/shell (:bel/parent (bel/get-page id)))))
     (is (every? (fn [id]

@@ -17,6 +17,6 @@
                          (keep :location) (remove str/blank?) distinct vec)
           metadata  (into {:item-id item-id} (map (fn [key] [key (or (get item key) "")]) [:name :article :barcode :unit]))
           metadata  (cond-> metadata
-                      (and (not= :transfer (:type operation)) (str/blank? (:location line)) (= 1 (count locations)))
-                      (assoc :location (first locations)))]
-      (update-in entry line-path merge metadata))))
+                      (and (not= :transfer (:type operation)) (str/blank? (:location line)) (or (= 1 (count locations)) (:default-location item)))
+                      (assoc :location (if (= 1 (count locations)) (first locations) (:default-location item))))]
+      (update-in entry line-path #(merge (dissoc % :catalogue-new?) metadata)))))

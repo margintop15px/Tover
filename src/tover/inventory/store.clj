@@ -3,6 +3,8 @@
     [bel.validation :as validation]
     [clojure.edn :as edn]
     [clojure.string :as str]
+    [clojure.walk :as walk]
+    [tover.catalogues.store :as catalogue]
     [tover.inventory.affected-query :as affected-query]
     [tover.inventory.completion :as completion]
     [tover.inventory.derivation :as derivation]
@@ -146,12 +148,20 @@
             :history      records})))
 
 
+(defn- catalogue-snapshot
+  {:malli/schema [:=> [:cat rdf/Connection shared/Scope schema/Snapshot] schema/Snapshot]}
+  [conn scope snapshot]
+  (assoc snapshot :catalogue-revision (catalogue/revision conn scope)
+         :items (merge (:items snapshot) (catalogue/goods conn scope nil))
+         :rows (mapv #(catalogue/stock-row conn scope %) (:rows snapshot))))
+
+
 (defn snapshot
   "Read accepted inventory and the shared workspace draft in one consistent snapshot."
   {:malli/schema [:=> [:cat rdf/Repository shared/Scope] schema/Snapshot]}
   [repo scope]
   (rdf/with-transaction [conn {:repo repo :level :snapshot}]
-    (public-snapshot (state conn scope) (history conn scope) scope)))
+    (catalogue-snapshot conn scope (public-snapshot (state conn scope) (history conn scope) scope))))
 
 
 (defn operation-records
@@ -239,7 +249,9 @@
     (rdf/with-transaction [conn {:repo repo :level :serializable}]
       (let [current  (state conn scope)
             id       (if id (schema/text! id :id) (str (UUID/randomUUID)))
-            existing (get-in current [:drafts id])]
+            existing (get-in current [:drafts id])
+            _        (when-not (read-model/ready? conn scope) (read-model/ensure! conn scope current))
+            entry    (catalogue/correction-entry conn scope (catalogue/canonical-entry conn scope entry) (:entry existing))]
         (when (or existing expected-revision)
           (check-draft! current id expected-revision))
         (let [saved (merge (select-keys existing [:phase :owner-id])
@@ -264,7 +276,7 @@
           (when (or existing expected-revision)
             (check-composition! current owner-id id expected-revision))
           (let [saved {:id         id :revision (inc (or (:revision existing) 0))
-                       :phase      :composing :owner-id owner-id :entry entry :actor actor
+                       :phase      :composing :owner-id owner-id :entry (catalogue/canonical-entry conn scope entry) :actor actor
                        :created-by (or (:created-by existing) (:actor existing) actor) :saved-at (now)}]
             (save-state! conn scope (assoc-in current [:drafts id] saved))
             saved))))))
@@ -315,12 +327,13 @@
             (let [current (state conn scope)
                   draft   (check-composition! current owner-id id expected-revision)
                   entry   (if (contains? request :entry) entry (:entry draft))
-                  checked (completion/check entry (known-item-ids current))]
+                  ids     (into #{} (keep #(when (and (map? %) (string? (:item-id %))) (:item-id %))) (tree-seq coll? seq entry))
+                  checked (completion/check entry (into (known-item-ids current) (filter #(catalogue/record conn scope :goods %) ids)))]
               (when-not (:valid? checked)
                 (schema/fail! :validation "Complete the required fields before choosing Done."
                               {:errors (:errors checked)}))
               (let [saved (assoc draft :phase :pending :revision (inc (:revision draft))
-                                 :entry entry :actor actor :saved-at (now))]
+                                 :entry (catalogue/canonical-entry conn scope entry) :actor actor :saved-at (now))]
                 (save-state! conn scope (assoc-in current [:drafts id] saved))
                 (put-payload! conn (graph scope "composition-receipts") receipt-subject
                               {:owner-id owner-id :request fingerprint :entry entry :draft saved})
@@ -366,7 +379,8 @@
   "Current purchase drafts use item quantities; historical receipt records remain unchanged."
   {:malli/schema [:=> [:cat :map] :map]}
   [entry]
-  (let [direct (fn [value] (if (= :purchase (:type value)) (dissoc value :receipts) value))]
+  (let [entry  (walk/postwalk #(if (map? %) (dissoc % :catalogue-new?) %) entry)
+        direct (fn [value] (cond-> (dissoc value :catalogue-edits) (= :purchase (:type value)) (dissoc :receipts)))]
     (if (= :revision (:kind entry)) (update entry :replacement direct) (direct entry))))
 
 
@@ -402,14 +416,21 @@
                                 (conj prepared (record-for draft (into records prepared) actor recorded-at
                                                            (+ sequence (count prepared) 1))))
                               [] drafts)
-          effective   (ledger/effective-entries (into records new-records))]
+          effective   (ledger/effective-entries (into records new-records))
+          by-id       (into {} (map (juxt :id identity)) effective)]
       (doseq [entry effective
-              :let  [reference (:original-operation-id entry)]
+              :let  [reference (:original-operation-id entry)
+                     original (get by-id reference)]
               :when reference]
-        (when-not (some #(and (= reference (:id %))
-                              (#{:purchase :sale} (:type %))) effective)
+        (when-not (#{:purchase :sale} (:type original))
           (schema/fail! :validation "The referenced purchase or sale is unavailable."
-                        {:operation-id (:id entry) :original-operation-id reference})))
+                        {:operation-id (:id entry) :original-operation-id reference}))
+        (when (and (= :return (:type entry))
+                   (not= (:direction entry) (if (= :purchase (:type original)) :outgoing :incoming)))
+          (schema/fail! :validation (if (= :purchase (:type original))
+                                      "A return linked to a purchase must be outgoing."
+                                      "A return linked to a sale must be incoming.")
+                        {:operation-id (:id entry) :original-operation-id reference :field :direction})))
       {:drafts drafts :records new-records :operations effective})))
 
 
@@ -448,7 +469,13 @@
 (defn- prepare-scoped
   {:malli/schema [:=> [:cat rdf/Connection shared/Scope :map schema/ReviewRequest :string :string] :map]}
   [conn scope current request actor recorded-at]
-  (let [drafts   (selected-drafts! current request)
+  (when (and (contains? request :expected-catalogue-revision)
+             (not= (:expected-catalogue-revision request) (catalogue/revision conn scope)))
+    (schema/fail! :stale-catalogue "Catalogues changed. Preview the selection again." {}))
+  (let [drafts   (mapv #(update % :entry (partial catalogue/canonical-entry conn scope)) (selected-drafts! current request))
+        current  (reduce #(assoc-in %1 [:drafts (:id %2)] %2) current drafts)
+        _        (catalogue/check-corrections! conn scope (map :entry drafts))
+        _        (catalogue/check-new-goods! conn scope (map :entry drafts))
         entries  (mapv #(ledger/normalize-entry (purchase-entry (:entry %))) drafts)
         targets  (set (map #(or (get-in % [:entry :target-id]) (:id %)) drafts))
         affected (affected-query/closure conn scope entries targets)]
@@ -478,19 +505,23 @@
     (with-open [conn (.getConnection ^Repository repo)]
       (.begin conn IsolationLevels/SERIALIZABLE)
       (try
-        (let [_          (when-not (read-model/ready? conn scope)
-                           (read-model/ensure! conn scope (state conn scope)))
-              current    (read-model/read-state conn scope)
-              prepared   (prepare-scoped conn scope current request "preview" (now))
-              projection (scoped-projection! conn scope prepared)
-              before     (read-model/read-projection conn scope (:item-ids prepared))]
-          (merge (select-keys request [:selected :expected-ledger-revision])
-                 {:valid?      true           :errors []                  :operations (:operations prepared) :rows (:rows projection)
-                  :before-rows (:rows before) :items  (:items projection)}))
+        (let [_                  (when-not (read-model/ready? conn scope)
+                                   (read-model/ensure! conn scope (state conn scope)))
+              current            (read-model/read-state conn scope)
+              prepared           (prepare-scoped conn scope current request "preview" (now))
+              projection         (scoped-projection! conn scope prepared)
+              before             (read-model/read-projection conn scope (:item-ids prepared))
+              before-rows        (mapv #(catalogue/stock-row conn scope %) (:rows before))
+              catalogue-revision (catalogue/revision conn scope)
+              _                  (catalogue/register-projection! conn scope projection "preview")
+              _                  (catalogue/apply-corrections! conn scope (map :entry (:drafts prepared)) "preview")]
+          (merge (assoc (select-keys request [:selected :expected-ledger-revision]) :expected-catalogue-revision catalogue-revision)
+                 {:valid?      true        :errors [] :operations (:operations prepared) :rows (mapv #(catalogue/stock-row conn scope %) (:rows projection))
+                  :before-rows before-rows :items  (merge (:items projection) (catalogue/goods conn scope (:item-ids prepared)))}))
         (catch clojure.lang.ExceptionInfo error
-          (if (#{:stale-draft :stale-ledger} (:type (ex-data error)))
+          (if (#{:stale-draft :stale-ledger :stale-catalogue} (:type (ex-data error)))
             (throw error)
-            (merge (select-keys request [:selected :expected-ledger-revision])
+            (merge (assoc (select-keys request [:selected :expected-ledger-revision]) :expected-catalogue-revision (catalogue/revision conn scope))
                    {:valid? false :errors (or (:errors (ex-data error))
                                               [(assoc (ex-data error) :message (.getMessage error))])})))
         (finally
@@ -505,7 +536,7 @@
   (locking repo
     (rdf/with-transaction [conn {:repo repo :level :serializable}]
       (let [receipt-subject (entity scope "receipt" command-id)
-            fingerprint     (select-keys request [:selected :expected-ledger-revision :actor])]
+            fingerprint     (select-keys request [:selected :expected-ledger-revision :expected-catalogue-revision :actor])]
         (if-let [receipt (payload conn (graph scope "receipts") receipt-subject)]
           (if (= fingerprint (:request receipt))
             (dissoc receipt :request)
@@ -523,6 +554,8 @@
                   updated    (-> current
                                  (assoc :ledger-revision revision)
                                  (update :drafts #(apply dissoc % (map :id (:drafts prepared)))))]
+              (catalogue/register-projection! conn scope projection actor)
+              (catalogue/apply-corrections! conn scope (map :entry (:drafts prepared)) actor)
               (doseq [record (:records prepared)] (write-record! conn scope record))
               (save-light-state! conn scope updated)
               (read-model/stage-accepted! conn scope updated projection (:item-ids prepared) (:entity-ids prepared))
@@ -557,4 +590,4 @@
               updated    (assoc current :projection projection)]
           (save-state! conn scope updated)
           (read-model/rebuild! conn scope updated)
-          (public-snapshot updated records scope))))))
+          (catalogue-snapshot conn scope (public-snapshot updated records scope)))))))

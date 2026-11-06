@@ -180,6 +180,94 @@
         (assert-rebuild! repo)))))
 
 
+(deftest return-directions-match-both-pending-and-accepted-originals
+  (doseq [accepted? [false true]
+          [type direction expected message]
+          [[:purchase :outgoing 13 "A return linked to a purchase must be outgoing."]
+           [:sale :incoming 7 "A return linked to a sale must be incoming."]]]
+    (fixture/with-store
+      (fn [repo _]
+        (fixture/submit! repo [(fixture/save! repo (opening "a" 10 "2026-01-01"))])
+        (let [original (fixture/save! repo {:kind        :operation   :type  type                   :party "Counterparty"
+                                            :occurred-at "2026-01-02" :lines [(fixture/line "a" 5)]})]
+          (when accepted? (fixture/submit! repo [original]))
+          (let [returned (fixture/save! repo {:kind                  :operation :type      :return                :occurred-at "2026-01-03"
+                                              :direction             (if (= :incoming direction) :outgoing :incoming)
+                                              :original-operation-id (:id original) :lines [(fixture/line "a" 2)]})
+                selected (if accepted? [returned] [original returned])
+                before   (store/snapshot repo fixture/scope)
+                request  (fixture/request repo selected)
+                preview  (with-redefs [model/read-history (fn [& _] (throw (ex-info "Full history read forbidden" {})))]
+                           (store/preview repo fixture/scope request))
+                error    (fixture/error-data #(store/submit! repo fixture/scope
+                                                             (assoc request :actor "reviewer" :command-id (str (random-uuid)))))]
+            (is (false? (:valid? preview)))
+            (is (= {:message message :operation-id (:id returned) :original-operation-id (:id original) :field :direction}
+                   (select-keys (first (:errors preview)) [:message :operation-id :original-operation-id :field])))
+            (is (= :validation (:type error)))
+            (is (= (:id returned) (:operation-id error)))
+            (is (= before (store/snapshot repo fixture/scope)))
+            (let [corrected (store/save-entry! repo fixture/scope
+                                               {:id    (:id returned) :expected-revision (:revision returned) :actor "writer"
+                                                :entry (assoc (:entry returned) :direction direction)})
+                  selected  (if accepted? [corrected] [original corrected])]
+              (is (:valid? (store/preview repo fixture/scope (fixture/request repo selected))))
+              (fixture/submit! repo selected)
+              (is (= expected (fixture/quantity repo "a")))
+              (assert-rebuild! repo))))))))
+
+
+(deftest correcting-an-original-revalidates-its-returns-and-allows-a-joint-fix
+  (fixture/with-store
+    (fn [repo _]
+      (let [initial  (fixture/save! repo (opening "a" 10 "2026-01-01"))
+            purchase (fixture/save! repo {:kind        :operation   :type  :purchase              :party "Supplier"
+                                          :occurred-at "2026-01-02" :lines [(fixture/line "a" 5)]})]
+        (fixture/submit! repo [initial purchase])
+        (let [returned (fixture/save! repo {:kind        :operation             :type                  :return        :direction :outgoing
+                                            :occurred-at "2026-01-03"           :original-operation-id (:id purchase)
+                                            :lines       [(fixture/line "a" 2)]})]
+          (fixture/submit! repo [returned])
+          (let [change-original (fixture/save! repo (revise purchase (sale "a" 5 "2026-01-02")))
+                change-return   (fixture/save! repo (revise returned (assoc (:entry returned) :direction :incoming)))
+                before          (store/snapshot repo fixture/scope)]
+            (doseq [selected [[change-original] [change-return]]]
+              (let [preview (store/preview repo fixture/scope (fixture/request repo selected))]
+                (is (false? (:valid? preview)))
+                (is (= (:id returned) (get-in preview [:errors 0 :operation-id])))
+                (is (= :validation (:type (fixture/error-data #(fixture/submit! repo selected)))))))
+            (is (= before (store/snapshot repo fixture/scope)))
+            (is (:valid? (store/preview repo fixture/scope (fixture/request repo [change-original change-return]))))
+            (fixture/submit! repo [change-original change-return])
+            (is (= 7 (fixture/quantity repo "a")))
+            (let [cancel-return    (fixture/save! repo (cancel returned))
+                  restore-purchase (fixture/save! repo (revise purchase (:entry purchase)))]
+              (is (:valid? (store/preview repo fixture/scope (fixture/request repo [cancel-return restore-purchase]))))
+              (fixture/submit! repo [cancel-return restore-purchase])
+              (is (= 15 (fixture/quantity repo "a"))))
+            (assert-rebuild! repo)))))))
+
+
+(deftest unlinked-returns-and-payments-retain-both-directions
+  (fixture/with-store
+    (fn [repo _]
+      (let [purchase (fixture/save! repo {:kind        :operation   :type  :purchase              :party "Supplier"
+                                          :occurred-at "2026-01-01" :lines [(fixture/line "a" 5)]})]
+        (fixture/submit! repo [purchase])
+        (let [drafts (save-all! repo
+                                (vec (mapcat (fn [direction]
+                                               [{:kind        :operation   :type  :return                :direction direction
+                                                 :occurred-at "2026-01-02" :lines [(fixture/line "a" 1)]}
+                                                {:kind                  :operation     :type   :payment :direction direction :party "Supplier"
+                                                 :occurred-at           "2026-01-02"   :amount "1.25"   :currency  "EUR"
+                                                 :original-operation-id (:id purchase)}])
+                                             [:incoming :outgoing])))]
+          (is (:valid? (store/preview repo fixture/scope (fixture/request repo drafts))))
+          (fixture/submit! repo drafts)
+          (is (= 5 (fixture/quantity repo "a")))
+          (assert-rebuild! repo))))))
+
+
 (deftest cancellation-and-type-changes-validate-incoming-financial-references
   (fixture/with-store
     (fn [repo _]

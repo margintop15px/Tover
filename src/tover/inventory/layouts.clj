@@ -1,6 +1,7 @@
 (ns tover.inventory.layouts
   (:require
     [clojure.edn :as edn]
+    [tover.catalogues.schema :as catalogue]
     [tover.inventory.grid :as grid]
     [tover.inventory.schema :as schema]
     [tover.inventory.tables :as tables]
@@ -14,11 +15,12 @@
 (def ^:private known-columns
   (let [stock      (set (map :key tables/stock-columns))
         operations (set (remove utility-columns (map :key grid/columns)))]
-    {"stock"           stock
-     "operations"      operations
-     "shared-draft"    operations
-     "item-history"    (set (map :key tables/history-columns))
-     "resulting-stock" stock}))
+    (merge (into {} (map (fn [[kind columns]] [(str "catalogue-" (name kind)) (set (map (comp name first) columns))])) catalogue/columns)
+           {"stock"           stock
+            "operations"      operations
+            "shared-draft"    operations
+            "item-history"    (set (map :key tables/history-columns))
+            "resulting-stock" stock})))
 
 
 (def ^:private payload-predicate

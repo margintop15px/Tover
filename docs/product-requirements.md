@@ -36,6 +36,8 @@ Use exactly these eight types. Packing, unpacking, repacking, assembly and rewor
 
 Inventory quantities are whole units. Monetary amounts retain exact decimal values and currency. Financial facts do not establish valuation, debt allocation or accounting reports.
 
+A Return linked to a Purchase must be outgoing; one linked to a Sale must be incoming. Preview and Submit enforce this against the latest effective original operation, including corrections in the same selection. Returns without a reference support either direction. Payment directions remain independent of the referenced operation type.
+
 Production can transform A into B and later B into A. These are separate dated operation lines, not a cyclic identity graph. Item history includes that item's own records. The lineage Gantt may include production parents and their dated quantities. Shared operations must not be counted twice. Pooled inventory must disclose any unsupported per-output attribution.
 
 ## Accepted history and corrections
@@ -67,3 +69,14 @@ The first release is one Clojure application instance with RDF4J NativeStore and
 Release only after operation/replay/lineage correctness checks, two-member browser flows, real confirmation/invitation/recovery email checks and a consistent backup/restore rehearsal pass. Deployment details are in [production deployment](production-deployment.md).
 
 Imports, marketplace integrations, file/evidence uploads, automatic matching, valuation, debt reports, generalized report snapshots and multi-instance operation are deferred. Do not simulate them in the tester interface.
+
+
+## Workspace catalogues
+
+Maintain separate Goods, Warehouses, Suppliers, Categories and Stores catalogues. All active members can add and edit records directly. Require names; retain stable identities and workspace-local relationships. Goods use existing item IDs, one optional Category and one optional Store. Stores represent sales channels with an optional default warehouse.
+
+Catalogue metadata never owns quantities or rewrites accepted history. Warehouse labels may change while their immutable inventory location keys remain fixed. Reserve previous warehouse and supplier names as aliases to avoid ambiguous reuse. Current goods metadata changes only through direct catalogue edits or explicitly edited fields in accepted Stock corrections; ordinary operation snapshots cannot replace newer metadata. Catalogue-created goods need no opening stock declaration.
+
+Bootstrap current accepted items, locations and purchase suppliers additively. Do not infer suppliers from sale customers, expose private compositions, or import the old v1 database. New accepted references join the appropriate catalogues. Preserve quantities, ledger records and stock identities across bootstrap, catalogue edits, restart and projection rebuild.
+
+Suggest the appropriate catalogue records in table cells. Resolve a manually typed goods name to a unique exact match; require selection for ambiguous names. Unmatched inventory values join catalogues only when Submit succeeds. Existing Stock name edits retain the original goods identity. Category, Store and default-warehouse names typed into catalogue relationships create and link records atomically on cell save, reusing an existing exact match or warehouse alias.

@@ -80,7 +80,7 @@
       (rdf/with-transaction [conn {:repo repo :level :serializable}]
         (rdf/add! conn (rdf/iri "urn:tover:workspace:00000000-0000-0000-0000-000000000001:stock-v0:history")
                   (rdf/iri "urn:test:prototype") (rdf/iri "urn:test:quantity") 999))
-      (is (= {:ledger-revision 0 :items {} :rows [] :drafts [] :compositions [] :operations [] :history []}
+      (is (= {:ledger-revision 0 :catalogue-revision 0 :items {} :rows [] :drafts [] :compositions [] :operations [] :history []}
              (store/snapshot repo scope))))))
 
 
