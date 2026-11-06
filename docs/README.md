@@ -8,5 +8,6 @@ The Clojure application lives at the repository root. The agreed first tester ve
 - [RDF storage](rdf-machinery.md): records, replay, transactions and quantity lineage.
 - [Identity deployments](identity-deployment.md): local and hosted identity compatibility.
 - [Production deployment](production-deployment.md): HTTPS, SMTP, installation, upgrades and backup/restore.
+- [Marketplace integration execution plan](marketplace-integration-plan.md): approved goods identity/Ozon roadmap, decisions, source research and session checkpoints. M0 is complete; implementation starts at M1.
 
 The 2026-10-21 contracts supersede individual physical-unit identity and browser-simulated submissions. [Legacy contracts](legacy-contracts/README.md) retain selected historical integration behavior. The [offline RDF experiment](../experiments/inventory-rdf/README.md) uses a superseded containment model and is not the current ledger contract.
