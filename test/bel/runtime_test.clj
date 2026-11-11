@@ -20,7 +20,11 @@
 
   store/Store
   (-load [_ _ _ _ id] (get @rows id))
-  (-write! [_ _ _ model _ row] (swap! rows assoc (get row (:id model)) row))
+  (-create! [_ _ _ model row]
+    (let [id (get row (:id model))]
+      (when (contains? @rows id) (throw (ex-info "Exists" {:type :identity-conflict})))
+      (swap! rows assoc id row)))
+  (-write! [_ _ _ model fields row] (swap! rows update (get row (:id model)) #(merge (apply dissoc % fields) row)))
 
   store/Journal
   (-receipt [_ _ _ _] nil)
@@ -233,6 +237,35 @@
       (is (= [] @(:log store))))))
 
 
+(defn- execute-mapped
+  [store mapping]
+  (let [ops (-> (core/operations)
+                (assoc :models {::a {:id     :id :store :memory
+                                     :schema [:map [:id :string] [:value :int] [:note {:optional true} :string]]
+                                     :events {::changed mapping}}})
+                (assoc-in [:commands ::change :handler]
+                          (constantly {:events [{:type ::changed :data {:test/value 1 :id "1" :value 1}}]})))]
+    (with-redefs [core/operations (constantly ops)]
+      (runtime/execute! (context store) ::change {:command-id "C" :input {:value 1}}))))
+
+
+(deftest set-mapping-replaces-only-mapped-fields
+  (core/build-registry! ['bel.runtime-test])
+  (let [store (memory {"1" {:id "1" :value 0 :note "keep"}})]
+    (execute-mapped store {:set [:value]})
+    (is (= {:id "1" :value 1 :note "keep"} (get @(:rows store) "1")))))
+
+
+(deftest create-mapping-refuses-an-existing-entity
+  (core/build-registry! ['bel.runtime-test])
+  (let [store (memory {"1" {:id "1" :value 0 :note "keep"}})]
+    (is (= :identity-conflict (error-type #(execute-mapped store {:create [:value]}))))
+    (is (= {:id "1" :value 0 :note "keep"} (get @(:rows store) "1")))
+    (let [fresh (memory)]
+      (execute-mapped fresh {:create [:value]})
+      (is (= {:id "1" :value 1} (get @(:rows fresh) "1"))))))
+
+
 (deftest unknown-model-store-key-is-a-configuration-error
   (core/build-registry! ['bel.runtime-test])
   (let [original (core/operations)]
@@ -273,10 +306,14 @@
                    {:events {::changed {:set [:value :value]}}}
                    {:events {::changed {:set [:unknown]}}}
                    {:events {::changed {:set [:value] :call identity}}}
+                   {:events {::changed {:create [:value] :set [:value]}}}
+                   {:events {::changed {:create []}}}
+                   {:events {::changed {:create [:id]}}}
                    {:store "memory"}
                    {:vocabulary {}}]]
         (is (= :validation (error-type #(core/attach-model! #'entity ::entity (merge declaration bad))))))
       (is (= :validation (error-type #(core/attach-model! #'entity ::entity (dissoc declaration :store)))))
+      (is (nil? (error-type #(core/attach-model! #'entity ::entity (assoc declaration :events {::changed {:create [:value]}})))))
       (finally (reset-meta! #'entity metadata)))))
 
 

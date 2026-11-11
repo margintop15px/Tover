@@ -10,8 +10,10 @@
 (defprotocol Store
   (^{:malli/schema [:=> [:cat :any :any :map :map :any] [:maybe :map]]}
     -load [store tx scope model id] "Entity map or nil.")
+  (^{:malli/schema [:=> [:cat :any :any :map :map :map] :any]}
+    -create! [store tx scope model row] "Insert a complete entity; an existing identity is :identity-conflict.")
   (^{:malli/schema [:=> [:cat :any :any :map :map [:vector :keyword] :map] :any]}
-    -write! [store tx scope model fields row] "Replace the mapped fields of one entity."))
+    -write! [store tx scope model fields row] "Replace the mapped fields; insert when the entity is new and complete."))
 
 
 (defprotocol Outbox

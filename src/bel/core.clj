@@ -280,11 +280,13 @@
                      (or (nil? ref) (and (qualified-keyword? ref) (contains? #{:string :uuid} (m/type schema)) (not= key id-key))))
         (throw (ex-info "Model fields must be scalar; references must be string or UUID identities" {:type :validation :field key}))))
 
-    (validation/check! [:map-of :qualified-keyword [:map [:set [:vector {:min 1} :keyword]]]] (or events {}))
+    (validation/check! [:map-of :qualified-keyword [:or [:map [:set [:vector {:min 1} :keyword]]]
+                                                    [:map [:create [:vector {:min 1} :keyword]]]]]
+                       (or events {}))
 
     (doseq [[event mapping] events]
-      (let [keys (:set mapping)]
-        (when-not (and (= #{:set} (set (clojure.core/keys mapping)))
+      (let [keys (or (:set mapping) (:create mapping))]
+        (when-not (and (contains? #{#{:set} #{:create}} (set (clojure.core/keys mapping)))
                        (= (count keys) (count (distinct keys)))
                        (not-any? #{id-key} keys) (every? fields keys))
           (throw (ex-info "Mappings replace declared fields and preserve identity" {:type :validation :event event})))))
@@ -456,7 +458,7 @@
           (when-not event-var
             (throw (ex-info "Undeclared mapped event" {:type :configuration :model id :event event})))
           (let [event-fields (set (map first (m/entries (m/deref (:schema (:bel/options (meta event-var)))))))
-                missing      (seq (remove event-fields (cons id-key (:set mapping))))]
+                missing      (seq (remove event-fields (cons id-key (or (:set mapping) (:create mapping)))))]
             (when missing
               (throw (ex-info "Mapped events must declare the identity and mapped fields"
                               {:type :configuration :model id :event event :fields (vec missing)})))))))
