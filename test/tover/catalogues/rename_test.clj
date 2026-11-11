@@ -517,6 +517,21 @@
         (is (= :validation (:type (fixture/error-data #(runtime/read-model ctx ::model/good-row {:id "G"})))))))))
 
 
+(deftest create-refuses-an-existing-goods-subject
+  (with-feature
+    (fn [ctx _]
+      (let [model  (model-definition ::model/goods)
+            create #(runtime/with-store ctx :catalogue :serializable
+                      (fn [{:keys [tx]}]
+                        (store/-create! (store/store ctx :catalogue) tx (store/store-scope (:scope ctx)) model %)))
+            row    {:id    "G"     :name       "Other"                :revision 1 :article "" :barcode "" :unit "pcs"
+                    :actor "alice" :updated-at "2026-11-11T00:00:00Z"}]
+        (is (= :identity-conflict (:type (fixture/error-data #(create row)))))
+        (is (= "Bolt" (get-in (current ctx) [:row :name])))
+        (create (assoc row :id "H"))
+        (is (= "Other" (:name (runtime/read-model ctx ::model/goods {:id "H"}))))))))
+
+
 (deftest catalogue-graphs-refuse-non-workspace-scopes
   (is (= :configuration (:type (fixture/error-data #(persistence/graphs {:kind :user :id (:workspace-id fixture/scope)}))))))
 

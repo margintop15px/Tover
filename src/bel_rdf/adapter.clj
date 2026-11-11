@@ -113,6 +113,16 @@
   nil)
 
 
+(defn create-model!
+  "Insert a complete entity; a subject already typed as this model is :identity-conflict."
+  {:malli/schema [:=> [:cat :map :map :map] :nil]}
+  [{:keys [tx] :as context} {:keys [id model-id] :as model} row]
+  (when (.hasStatement ^RepositoryConnection tx (subject context model-id (get row id)) RDF/TYPE (:type (vocabulary model)) false
+                       (into-array Resource [(graph context :domain)]))
+    (throw (ex-info "This identity is already in use." {:type :identity-conflict})))
+  (write-model! context model row))
+
+
 (defn apply-model!
   "Replace the mapped fields; keep the entity's other fields."
   {:malli/schema [:=> [:cat :map :map [:vector :keyword] :map] :nil]}
@@ -223,6 +233,7 @@
 
   store/Store
   (-load [_ tx scope model id] (load-model {:tx tx :graphs graphs :scope scope} model id))
+  (-create! [_ tx scope model row] (create-model! {:tx tx :graphs graphs :scope scope} model row))
   (-write! [_ tx scope model fields row] (apply-model! {:tx tx :graphs graphs :scope scope} model fields row))
 
   store/Outbox
