@@ -2,8 +2,6 @@
   "Shared accepted-event and receipt storage. Delivery never reruns a command."
   (:require
     [bel-postgres.jdbc :as db]
-    [bel.journal :as bel-journal]
-    [bel.runtime :as runtime]
     [honey.sql :as sql]
     [next.jdbc :as jdbc]
     [next.jdbc.result-set :as rs]
@@ -80,11 +78,6 @@
        (db/execute-one! tx {:select [[[:count :*] :total] [[:count [:case match 1]] :matching]]
                             :from   [:app_private.bel_events]
                             :where  [:and (scope-clause context) [:= :command_id command-id]]}))))
-
-
-(defmethod runtime/coeffect :postgres/receipt
-  [_ context {:keys [command-id]}]
-  (bel-journal/receipt context command-id))
 
 
 (defn write-batch!

@@ -27,25 +27,36 @@
   (-write! [_ _ _ model fields row] (swap! rows update (get row (:id model)) #(merge (apply dissoc % fields) row)))
 
   store/Journal
-  (-receipt [_ _ _ _] nil)
+  (-receipt [_ _ _ command-id] (some #(when (= command-id (:command-id %)) %) @journal))
   (-append! [_ _ _ delivery] (swap! journal conj delivery))
   (-history [_ _ _] @journal))
 
 
+(defrecord TestPrincipal []
+  runtime/Authority
+  (-principal [_ tx context] (assoc (select-keys context [:allow? :nested?]) :tx tx)))
+
+
+(def policy-contexts (atom []))
+(def coeffect-contexts (atom []))
+(def echo-transactions (atom []))
+
+
 (defmethod runtime/policy ::allowed
   [_ context _]
-  (:allow? context))
+  (swap! policy-contexts conj context)
+  (:allow? (:principal context)))
 
 
 (defmethod runtime/policy ::nested
   [_ context _]
-  (:nested? context))
+  (:nested? (:principal context)))
 
 
 (defmethod runtime/coeffect ::echo
   [_ context input]
-  (runtime/with-store context :memory :repeatable-read
-    #(swap! (get-in % [:resources :seen]) conj (:tx %)))
+  (swap! coeffect-contexts conj context)
+  (runtime/with-store context :memory :repeatable-read #(swap! echo-transactions conj (:tx %)))
   input)
 
 
@@ -88,8 +99,12 @@
 (defn context
   ([] (context (memory)))
   ([store]
+   (reset! policy-contexts [])
+   (reset! coeffect-contexts [])
+   (reset! echo-transactions [])
    {:user-id    "alice" :allow? true :nested? true
-    :bel/system {:stores {:memory store} :journal :memory :scope :user :resources {:seen (atom [])}}}))
+    :bel/system {:stores    {:memory store} :journal :memory :scope :user
+                 :authority {:store :memory :impl (->TestPrincipal)}}}))
 
 
 (defn error-data
@@ -106,7 +121,7 @@
   (core/build-registry! ['bel.runtime-test])
   (let [ctx    (context)
         result (runtime/read-model ctx ::composed {:value "4" :actor "mallory"})
-        seen   @(get-in ctx [:bel/system :resources :seen])]
+        seen   @echo-transactions]
     (is (= [{} {:value 4} {:value 5}] ((juxt :empty :child :last) result)))
     (is (= "alice" (:actor result)))
     (is (not (contains? result :tx)))
@@ -115,6 +130,47 @@
     (is (identical? (first seen) (last seen)))
     (is (= :forbidden (error-type #(runtime/read-model (assoc ctx :nested? false) ::composed {:value 4}))))
     (is (= :forbidden (error-type #(runtime/read-model (assoc ctx :allow? :truthy) ::composed {:value 4}))))))
+
+
+(defreadmodel receipt-view
+  {:input [:map [:command-id :string]] :output :any :policy ::allowed
+   :cofx  [[:prior :bel/receipt (fn [_ input] input)]]}
+  [{:keys [prior]} _]
+  prior)
+
+
+(deftest policies-receive-only-principal-and-scope
+  (core/build-registry! ['bel.runtime-test])
+  (runtime/execute! (context) ::change {:command-id "C" :input {:value 1}})
+  (is (seq @policy-contexts))
+  (is (every? #(= #{:principal :scope} (set (keys %))) @policy-contexts)))
+
+
+(deftest caller-context-does-not-authorize
+  (core/build-registry! ['bel.runtime-test])
+  (let [ctx (assoc (context) :allow? false :principal {:allow? true})]
+    (is (= :forbidden (error-type #(runtime/execute! ctx ::change {:command-id "C" :input {:value 1}}))))))
+
+
+(deftest without-authority-the-principal-is-nil
+  (core/build-registry! ['bel.runtime-test])
+  (let [ctx (-> (context) (update :bel/system dissoc :authority) (assoc :principal {:allow? true}))]
+    (is (= :forbidden (error-type #(runtime/execute! ctx ::change {:command-id "C" :input {:value 1}}))))
+    (is (= [nil] (map :principal @policy-contexts)))))
+
+
+(deftest coeffects-receive-a-trimmed-context
+  (core/build-registry! ['bel.runtime-test])
+  (runtime/read-model (context) ::composed {:value 4})
+  (is (seq @coeffect-contexts))
+  (is (every? #(= #{:scope :actor :principal :bel/system :bel/transactions} (set (keys %))) @coeffect-contexts)))
+
+
+(deftest bel-receipt-reads-the-journal
+  (core/build-registry! ['bel.runtime-test])
+  (let [ctx     (context)
+        receipt (runtime/execute! ctx ::change {:command-id "C" :input {:value 1}})]
+    (is (= receipt (get-in (runtime/read-model ctx ::receipt-view {:command-id "C"}) [:result :receipt])))))
 
 
 (deftest invalid-bindings-and-unsupported-options-fail-at-declaration
@@ -163,7 +219,7 @@
 
 (defmethod runtime/policy ::transaction-required
   [_ context _]
-  (some? (:tx context)))
+  (some? (get-in context [:principal :tx])))
 
 
 (deftest authorization-runs-in-the-acceptance-transaction

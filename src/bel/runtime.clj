@@ -32,6 +32,11 @@
   (random-uuid))
 
 
+(defmethod coeffect :bel/receipt
+  [_ context {:keys [command-id]}]
+  (journal/receipt context command-id))
+
+
 (def ^:private scope-keys {:user :user-id :session :session-id :workspace :workspace-id})
 
 
@@ -71,14 +76,14 @@
   "Check the current policy inside the transaction, including receipt recovery."
   {:malli/schema [:=> [:cat :map :map :map] :nil]}
   [definition context input]
-  (when-not (true? (policy (:policy definition) context input))
+  (when-not (true? (policy (:policy definition) (select-keys context [:principal :scope]) input))
     (throw (ex-info "Access denied" {:type :forbidden :status 403})))
   nil)
 
 
 (defprotocol Authority
   (^{:malli/schema [:=> [:cat :any :any :map] :map]}
-    -principal [authority tx context] "Lock and verify the current session; return the authorized context or throw :forbidden."))
+    -principal [authority tx context] "Lock and verify the current session; return the principal map or throw :forbidden."))
 
 
 (defn with-authority
@@ -88,8 +93,8 @@
   [context touched isolation f]
   (if-let [{key :store impl :impl} (get-in context [:bel/system :authority])]
     (store/with-store context key (if (contains? touched key) isolation :read-committed)
-      #(f (-principal impl (:tx %) %)))
-    (f context)))
+      #(f (assoc % :principal (-principal impl (:tx %) %))))
+    (f (assoc context :principal nil))))
 
 
 (defn with-store
@@ -239,7 +244,7 @@
         (assoc facts local
                (if model?
                  (read* definitions context source request seen)
-                 (coeffect source (select-keys context [:tx :scope :actor :resources :bel/system :bel/transactions]) request)))))
+                 (coeffect source (select-keys context [:scope :actor :principal :bel/system :bel/transactions]) request)))))
     facts
     (:cofx definition)))
 

@@ -23,7 +23,7 @@
   runtime/Authority
   (-principal [_ tx context]
     (swap! seen conj :authorized)
-    (assoc context :authority-connection tx)))
+    {:connection tx}))
 
 
 (defn context [shared? seen]
@@ -41,7 +41,7 @@
       (fn [ctx]
         (store/with-store ctx :domain :serializable
           (fn [ctx]
-            (is (identical? (:authority-connection ctx) (:tx ctx)))
+            (is (identical? (get-in ctx [:principal :connection]) (:tx ctx)))
             (store/with-store ctx :domain :read-committed
               (fn [journal]
                 (is (identical? (:tx ctx) (:tx journal)))))))))
@@ -56,7 +56,7 @@
           (fn [ctx]
             (store/with-store ctx :domain :serializable
               (fn [ctx]
-                (is (not (identical? (:authority-connection ctx) (:tx ctx))))
+                (is (not (identical? (get-in ctx [:principal :connection]) (:tx ctx))))
                 (swap! seen conj :mapped)
                 (when fail? (throw (ex-info "Source failed" {})))))))
         (catch clojure.lang.ExceptionInfo _
