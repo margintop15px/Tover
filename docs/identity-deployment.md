@@ -16,7 +16,7 @@ deployment/local-identity/identity.sh up
 scripts/test-identity-integration.sh
 ```
 
-`init` generates private random credentials in an ignored `.env` with mode 0600 and refuses to overwrite it. `up` starts Postgres, configures local database role passwords, starts Auth/PostgREST/Mailpit/gateway, applies migrations 033 and 034 and configures the restricted `tover_app` session role. Running `up` again preserves accounts and data. `stop` stops this profile without removing its volume.
+`init` generates private random credentials in an ignored `.env` with mode 0600 and refuses to overwrite it. `up` starts Postgres, configures local database role passwords, starts Auth/PostgREST/Mailpit/gateway, applies migrations 033–036, configures the restricted `tover_app` session role and gives the private `tover_journal` worker role a local login. A profile created before the journal worker gets `TO_DEV_JOURNAL_PASSWORD` appended to its `.env` on the next `up`; other keys stay unchanged. Running `up` again preserves accounts and data. `stop` stops this profile without removing its volume.
 
 | Service | Local address |
 | --- | --- |
@@ -41,7 +41,7 @@ deployment/local-identity/identity.sh app-env
 TOVER_IDENTITY_MODE=supabase clojure -M:dev
 ```
 
-`TOVER_IDENTITY_MODE=supabase` uses explicit `TOVER_*` environment settings for a hosted or custom development target. Both `local` and `supabase` use the same Supabase HTTP adapters. Development permits this loopback HTTP origin. Production `clojure -M:run` requires HTTPS and never loads development fixtures. The optional private application environment sets `TOVER_AUTH_URL`, `TOVER_REST_URL`, `TOVER_API_KEY`, `TOVER_AUTH_ADMIN_KEY`, `TOVER_ORIGIN`, `TOVER_JDBC_URL`, `TOVER_DB_USER`, `TOVER_DB_PASSWORD` and `TOVER_SESSION_KEY`. Keep these values out of browser assets and Git.
+`TOVER_IDENTITY_MODE=supabase` uses explicit `TOVER_*` environment settings for a hosted or custom development target. Both `local` and `supabase` use the same Supabase HTTP adapters. Development permits this loopback HTTP origin. Production `clojure -M:run` requires HTTPS and never loads development fixtures. The optional private application environment sets `TOVER_AUTH_URL`, `TOVER_REST_URL`, `TOVER_API_KEY`, `TOVER_AUTH_ADMIN_KEY`, `TOVER_ORIGIN`, `TOVER_JDBC_URL`, `TOVER_DB_USER`, `TOVER_DB_PASSWORD`, `TOVER_SESSION_KEY`, `TOVER_JOURNAL_DB_USER` and `TOVER_JOURNAL_DB_PASSWORD`. The journal pair is optional: with both set, the application runs the journal delivery worker as that private role; with only one set, startup fails. Keep these values out of browser assets and Git.
 
 The session database user is `tover_app`; its password is `TO_DEV_APP_PASSWORD` in the private profile file. `ANON_KEY`, `SERVICE_ROLE_KEY` and `SESSION_ENCRYPTION_KEY` also live there. Keep the service key and database/encryption credentials on the server. Restart the application after changing credentials or deployment target.
 
