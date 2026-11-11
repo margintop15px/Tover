@@ -1,5 +1,6 @@
 (ns tover.app-test
   (:require [bel.core :as bel]
+            [bel.delivery :as delivery]
             [bel.handler :as bel-handler]
             [bel.realtime :as realtime]
             [clojure.java.io :as io]
@@ -497,3 +498,69 @@
     (is (= "/action/tover.teams.core/invite" (bel/action-url :tover.teams.core/invite)))
     (is (= "/view/tover.stock.web/stock" (bel/view-url :tover.stock.web/stock)))
     (is (some? (bel/get-stream :tover.stock.web/changed)))))
+
+
+(def ^:private environment
+  {"TOVER_AUTH_URL"    "http://127.0.0.1:58000/auth/v1"
+   "TOVER_REST_URL"    "http://127.0.0.1:58000/rest/v1"
+   "TOVER_API_KEY"     "synthetic-public" "TOVER_AUTH_ADMIN_KEY" "synthetic-admin"
+   "TOVER_ORIGIN"      "http://localhost:3030"
+   "TOVER_JDBC_URL"    "jdbc:postgresql://127.0.0.1:55432/postgres"
+   "TOVER_DB_USER"     "tover_app" "TOVER_DB_PASSWORD"           "synthetic-password"
+   "TOVER_SESSION_KEY" "synthetic-session-key"})
+
+
+(defn- error-data
+  {:malli/schema [:=> [:cat [:=> [:cat] :any]] [:maybe :map]]}
+  [f]
+  (try (f) nil (catch clojure.lang.ExceptionInfo error (ex-data error))))
+
+
+(deftest bel-system-is-configured-for-the-handler
+  (let [c (app/config 3031 "x" {:development? true :environment environment})]
+    (is (= {:repo (ig/ref ::app/repo) :datasource (ig/ref ::app/datasource) :realtime (ig/ref ::app/realtime)}
+           (::app/bel-system c)))
+    (is (= (ig/ref ::app/bel-system) (get-in c [::app/handler :bel/system])))
+    (is (not-any? #(contains? c %) [::app/journal-datasource ::app/delivery-system :bel.delivery/worker]))))
+
+
+(deftest journal-variables-configure-the-worker
+  (let [c (app/config 3031 "x" {:development? true
+                                :environment  (assoc environment "TOVER_JOURNAL_DB_USER" "tover_journal"
+                                                     "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal")})]
+    (is (= {:jdbc-url (get environment "TOVER_JDBC_URL") :user "tover_journal" :password "synthetic-journal"}
+           (::app/journal-datasource c)))
+    (is (= {:repo (ig/ref ::app/repo) :datasource (ig/ref ::app/journal-datasource)} (::app/delivery-system c)))
+    (is (= (ig/ref ::app/delivery-system) (:bel.delivery/worker c)))))
+
+
+(deftest one-journal-variable-is-a-configuration-error
+  (doseq [extra [{"TOVER_JOURNAL_DB_USER" "tover_journal"} {"TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"}]]
+    (is (= :configuration
+           (:type (error-data #(app/config 3031 "x" {:development? true :environment (merge environment extra)})))))))
+
+
+(deftest worker-runs-with-the-system-and-halts-before-its-resources
+  (with-data-path
+    (fn [path]
+      (let [pool          (Object.)
+            calls         (atom [])
+            closed?       (atom false)
+            start         delivery/start!
+            configuration (-> (fixture-config 3031 path)
+                              (assoc ::app/journal-datasource {}
+                                     ::app/delivery-system {:repo (ig/ref ::app/repo) :datasource (ig/ref ::app/journal-datasource)}
+                                     :bel.delivery/worker (ig/ref ::app/delivery-system)))]
+        (with-redefs [database/datasource (fn [_] pool)
+                      database/close!     (fn [value]
+                                            (is (identical? pool value))
+                                            (when (compare-and-set! closed? false true) (swap! calls conj :pool-close))
+                                            nil)
+                      delivery/start!     (fn [system]
+                                            (let [worker (start system)]
+                                              (reify java.lang.AutoCloseable
+                                                (close [_] (.close ^java.lang.AutoCloseable worker) (swap! calls conj :worker-close)))))]
+          (let [system (app/start! configuration)]
+            (is (instance? java.lang.AutoCloseable (:bel.delivery/worker system)))
+            (is (nil? (app/stop! system)))
+            (is (= [:worker-close :pool-close] @calls))))))))

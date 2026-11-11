@@ -1,6 +1,7 @@
 (ns tover.app
   (:require
     [bel.core :as bel]
+    [bel.delivery]
     [bel.handler :as handler]
     [bel.log :as log]
     [bel.realtime :as realtime]
@@ -21,6 +22,7 @@
     [tover.auth.sessions :as sessions]
     [tover.auth.supabase :as auth-supabase]
     [tover.inventory.smart-web]
+    [tover.shared.bel :as wiring]
     [tover.shared.i18n :as i18n]
     [tover.shared.jdbc :as database]
     [tover.shared.rdf :as rdf]
@@ -54,7 +56,8 @@
    [:session-store :any]
    [:origin schema/Text]
    [:development? {:optional true} :boolean]
-   [:identity-health {:optional true} :map]])
+   [:identity-health {:optional true} :map]
+   [:bel/system {:optional true} :map]])
 
 
 (def ServerOptions
@@ -77,6 +80,10 @@
    [::workspaces :any]
    [::session-store :any]
    [::datasource {:optional true} :any]
+   [::bel-system {:optional true} :map]
+   [::journal-datasource {:optional true} :any]
+   [::delivery-system {:optional true} :map]
+   [:bel.delivery/worker {:optional true} :any]
    [::logging {:optional true} StopFn]
    [::handler schema/Handler]
    [::server StopFn]])
@@ -148,7 +155,7 @@
   (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename 'tover.workspaces.create]})
 
   (let [{:keys [realtime session-store origin development?]} (validation/check! HandlerOptions options)
-        context (select-keys options [:repo :realtime :auth :workspaces :session-store :origin])
+        context (select-keys options [:repo :realtime :auth :workspaces :session-store :origin :bel/system])
         extra-routes (mapv (fn [[path data]]
                              [path (assoc data :tover/access :workspace)])
                            (realtime/routes realtime))
@@ -249,7 +256,15 @@
          (assoc ::datasource {:jdbc-url (required "TOVER_JDBC_URL")
                               :user     (required "TOVER_DB_USER")  :password (required "TOVER_DB_PASSWORD")})
          (assoc ::session-store {:datasource     (ig/ref ::datasource)
-                                 :encryption-key (required "TOVER_SESSION_KEY")})))))
+                                 :encryption-key (required "TOVER_SESSION_KEY")})
+         (assoc ::bel-system {:repo (ig/ref ::repo) :datasource (ig/ref ::datasource) :realtime (ig/ref ::realtime)})
+         (assoc-in [::handler :bel/system] (ig/ref ::bel-system))
+         (cond-> (some #(not-empty (get environment %)) ["TOVER_JOURNAL_DB_USER" "TOVER_JOURNAL_DB_PASSWORD"])
+           (assoc ::journal-datasource {:jdbc-url (required "TOVER_JDBC_URL")
+                                        :user     (required "TOVER_JOURNAL_DB_USER")
+                                        :password (required "TOVER_JOURNAL_DB_PASSWORD")}
+                  ::delivery-system {:repo (ig/ref ::repo) :datasource (ig/ref ::journal-datasource)}
+                  :bel.delivery/worker (ig/ref ::delivery-system)))))))
 
 
 (defn repo
@@ -296,6 +311,25 @@
   {:malli/schema [:=> [:cat :map] :any]}
   [options]
   (database/datasource options))
+
+
+(defn journal-datasource
+  "The private journal writer pool; only the delivery worker uses it."
+  {:malli/schema [:=> [:cat :map] :any]}
+  [options]
+  (database/datasource options))
+
+
+(defn bel-system
+  {:malli/schema [:=> [:cat :map] :map]}
+  [options]
+  (wiring/system options))
+
+
+(defn delivery-system
+  {:malli/schema [:=> [:cat :map] :map]}
+  [options]
+  (wiring/delivery-system options))
 
 
 (defn logging
@@ -349,6 +383,10 @@
   (database/close! datasource))
 
 
+(defmethod ig/halt-key! ::journal-datasource [_ datasource]
+  (database/close! datasource))
+
+
 (defmethod ig/halt-key! ::logging [_ stop]
   (stop))
 
@@ -360,6 +398,7 @@
   (when-let [error (cleanup-error nil
                                   [#(ig/halt! system)
                                    #(when-let [datasource (::datasource system)] (database/close! datasource))
+                                   #(when-let [datasource (::journal-datasource system)] (database/close! datasource))
                                    #(when-let [stop (::logging system)] (stop))])]
     (throw error))
   nil)
@@ -380,6 +419,7 @@
                            (::realtime partial-system) (conj #(realtime/stop! (::realtime partial-system)))
                            (::repo partial-system) (conj #(rdf/close! (::repo partial-system)))
                            (::datasource partial-system) (conj #(database/close! (::datasource partial-system)))
+                           (::journal-datasource partial-system) (conj #(database/close! (::journal-datasource partial-system)))
                            (::logging partial-system) (conj #((::logging partial-system)))))))
       (throw error))))
 

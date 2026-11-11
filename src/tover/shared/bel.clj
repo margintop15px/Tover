@@ -24,8 +24,8 @@
 
 (defn delivery-system
   "Use the private journal writer resource; accepted work does not depend on a user session."
-  {:malli/schema [:=> [:cat :any :any] :map]}
-  [repo datasource]
+  {:malli/schema [:=> [:cat [:map [:repo :any] [:datasource :any]]] :map]}
+  [{:keys [repo datasource]}]
   {:stores  {:catalogue      (rdf/store {:repo repo :graphs catalogues/graphs})
              :journal-writer (postgres/store {:datasource datasource})}
    :journal :journal-writer})

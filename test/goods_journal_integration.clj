@@ -66,7 +66,7 @@
 
 
 (defn delivery-system [repo]
-  (wiring/delivery-system repo (writer)))
+  (wiring/delivery-system {:repo repo :datasource (writer)}))
 
 
 (defn counts [ctx]
