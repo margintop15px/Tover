@@ -1,12 +1,14 @@
 (ns tover.auth.supabase
   (:require
+    [charred.api :as json]
     [clojure.string :as str]
     [tover.auth.core :as auth]
     [tover.shared.i18n :as i18n]
     [tover.shared.supabase :as http])
   (:import
+    [java.nio.charset StandardCharsets]
     [java.time Instant]
-    [java.util UUID]))
+    [java.util Base64 UUID]))
 
 
 (def ^:private Text
@@ -88,8 +90,13 @@
       (sign-in! [_ input]
         (auth/check-input! [:map [:email Text] [:password Text]] input)
         (tokens (request! "/token?grant_type=password" {:body (select-keys input [:email :password])})))
-      (current-user [_ access-token]
-        (user (request! "/user" {:method :get :token access-token})))
+      (token-identity [_ access-token]
+        ;; Tokens come only from Auth responses kept in the server-side session store, so the signature is not checked.
+        (auth/claims-identity
+          (try (let [payload (.decode (Base64/getUrlDecoder) ^String (second (str/split access-token #"\.")))
+                     claims  (json/read-json (String. payload StandardCharsets/UTF_8) :key-fn keyword)]
+                 (if (map? claims) claims (auth/fail! :invalid-response 502 false)))
+               (catch Exception _ (auth/fail! :invalid-response 502 false)))))
       (refresh! [_ refresh-token]
         (tokens (request! "/token?grant_type=refresh_token" {:body {:refresh_token refresh-token}})))
       (sign-out! [_ access-token]
@@ -101,9 +108,6 @@
         (tokens (request! "/verify" {:body {:token_hash (:token-hash input) :type (name (:type input))}})))
       (recover! [_ input]
         (email! "/recover" input false))
-      (set-locale! [_ access-token locale]
-        (auth/check-input! [:enum "en" "ru"] locale)
-        (user (request! "/user" {:method :put :token access-token :body {:data {:locale locale}}})))
       (set-password! [_ access-token password]
         (auth/check-input! Text password)
         (user (request! "/user" {:method :put :token access-token :body {:password password}})))

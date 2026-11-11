@@ -38,12 +38,33 @@
       (auth/fail! :unauthenticated 401 false)))
 
 
+(defn- claims
+  "The claims the Auth token hook adds, read once when the token is issued."
+  {:malli/schema [:=> [:cat :map :uuid] :map]}
+  [state user-id]
+  (let [user (get-in state [:users user-id])]
+    {:sub              (str user-id)
+     :email            (:email user)
+     :language         (:locale user)
+     :profile_complete (not (str/blank? (:display-name user)))
+     :email_confirmed  (boolean (:email-confirmed? user))
+     :memberships      (->> (:memberships state)
+                            (keep (fn [[workspace-id members]]
+                                    (when (= :active (get-in members [user-id :status]))
+                                      {:workspace_id (str workspace-id)
+                                       :name         (get-in state [:workspaces workspace-id :name])
+                                       :role         (name (get-in members [user-id :role]))
+                                       :created_at   (get-in members [user-id :created-at])})))
+                            (sort-by (juxt :created_at :workspace_id))
+                            vec)}))
+
+
 (defn- issue-tokens!
   {:malli/schema [:=> [:cat :any :uuid] auth/Tokens]}
   [state user-id]
   (let [access-token  (str (UUID/randomUUID))
         refresh-token (str (UUID/randomUUID))
-        session       {:user-id user-id :refresh-token refresh-token}]
+        session       {:user-id user-id :refresh-token refresh-token :claims (claims @state user-id)}]
     (swap! state #(-> %
                       (assoc-in [:sessions access-token] session)
                       (assoc-in [:refresh refresh-token] access-token)))
@@ -176,8 +197,9 @@
                 (auth/fail! :invalid-credentials 400 false))
               (when-not (:email-confirmed? user) (auth/fail! :email-not-confirmed 400 false))
               (issue-tokens! state (:user-id user))))
-          (current-user [_ token]
-            (public-user (checked-user state token)))
+          (token-identity [_ token]
+            (auth/claims-identity (or (get-in @state [:sessions token :claims])
+                                      (auth/fail! :unauthenticated 401 false))))
           (refresh! [_ token]
             (locking state
               (let [access-token (get-in @state [:refresh token])
@@ -202,11 +224,6 @@
           (recover! [_ input]
             (when (find-user @state (:email input)) (queue-email! state :recovery input))
             nil)
-          (set-locale! [_ token locale]
-            (auth/check-input! [:enum "en" "ru"] locale)
-            (let [user (checked-user state token)]
-              (swap! state assoc-in [:users (:user-id user) :locale] locale)
-              (public-user (get-in @state [:users (:user-id user)]))))
           (set-password! [_ token password]
             (let [user (checked-user state token)]
               (auth/check-input! [:string {:min 1}] password)
@@ -223,17 +240,6 @@
             (when-not (find-user @state (:email input)) (auth/fail! :not-found 404 false))
             (queue-email! state :magiclink input))
           workspaces/Directory
-          (list-memberships [_ token]
-            (let [user-id (:user-id (checked-user state token))]
-              (->> (:memberships @state)
-                   (keep (fn [[workspace-id members]]
-                           (when (= :active (get-in members [user-id :status]))
-                             {:workspace-id workspace-id
-                              :name         (get-in @state [:workspaces workspace-id :name])
-                              :role         (get-in members [user-id :role])
-                              :created-at   (get-in members [user-id :created-at])})))
-                   (sort-by (juxt :created-at (comp str :workspace-id)))
-                   vec)))
           (create-workspace! [_ token name]
             (add-workspace! state (:user-id (checked-user state token)) name))
           (actor-labels [_ token workspace-id actor-ids]

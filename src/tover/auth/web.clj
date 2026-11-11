@@ -150,11 +150,14 @@
 
 (defn- complete-sign-in
   {:malli/schema [:=> [:cat :map :map :map :boolean] :map]}
-  [{:keys [workspaces]} request tokens password-required?]
-  (let [response (login-response tokens (if password-required? ::password :tover.workspaces.web/page) password-required?)]
+  [{:keys [auth workspaces]} request tokens password-required?]
+  (let [page-id  (if password-required? ::password :tover.workspaces.web/page)
+        response (login-response tokens page-id password-required?)]
     (try
-      (workspaces/accept-invites! workspaces (:access-token tokens))
-      response
+      (if (pos? (workspaces/accept-invites! workspaces (:access-token tokens)))
+        ;; No session exists yet, so reissue the pair here: its claims list the accepted memberships.
+        (login-response (auth/refresh! auth (:refresh-token tokens)) page-id password-required?)
+        response)
       (catch ExceptionInfo error
         (if-let [status (:status (ex-data error))]
           (assoc (page request (i18n/t "Workspace access unavailable")
@@ -204,6 +207,7 @@
   {:route-data {:tover/access :finish}}
   [{:keys [workspaces request] :as services} _input]
   (workspaces/accept-invites! workspaces (security/access-token services request))
+  (security/refresh-claims! services (:session/key request))
   {:type    :page
    :id      (if (get-in request [:tover/identity :password-required?])
               ::password :tover.workspaces.web/page)
@@ -234,10 +238,9 @@
 (defaction set-language
   {:schema     [:map [:locale [:enum "en" "ru"]] [:return-to {:optional true} :string]]
    :route-data {:tover/access :optional}}
-  [{:keys [auth request] :as services} {:keys [locale return-to]}]
+  [{:keys [request]} {:keys [locale return-to]}]
   (try
-    (when (:tover/identity request)
-      (auth/set-locale! auth (security/access-token services request) locale))
+    ;; ponytail: signed-in users keep only the cookie until Task 4 executes the Bel change-account-language command here.
     {:status  303
      :headers {"location" (if (and (string? return-to) (re-matches #"/(?!/)[^\r\n\\]*" return-to)) return-to "/")}
      :cookies {"tover-language" {:value  locale :path "/" :max-age 31536000 :http-only true :same-site :lax

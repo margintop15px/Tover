@@ -81,8 +81,9 @@
                                     :body {:email         email :password password :email_confirm true
                                            :user_metadata {:organization_name "Clojure integration workspace"}}})
         tokens      (auth/sign-in! auth {:email email :password password})
-        memberships (workspaces/list-memberships directory (:access-token tokens))]
-    (is (= email (:email (auth/current-user auth (:access-token tokens)))))
+        claims      (auth/token-identity auth (:access-token tokens))
+        memberships (:memberships claims)]
+    (is (= email (get-in claims [:user :email])))
     (is (= :owner (:role (first memberships))))
     (is (= {(str (get-in tokens [:user :user-id])) email}
            (workspaces/actor-labels directory (:access-token tokens) (:workspace-id (first memberships))
@@ -126,7 +127,7 @@
     (let [rotated (if (:session *options*) tokens (auth/refresh! auth (:refresh-token tokens)))]
       (is (string? (:refresh-token rotated)))
       (auth/sign-out! auth (:access-token rotated))
-      (is (thrown? clojure.lang.ExceptionInfo (auth/current-user auth (:access-token rotated)))))))
+      (is (thrown? clojure.lang.ExceptionInfo (auth/refresh! auth (:refresh-token rotated)))))))
 
 
 (deftest live-jdbc-session-contract

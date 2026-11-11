@@ -84,4 +84,5 @@
   {:route-data {:tover/access :authenticated :bel/error-page ::page :bel/retain ["name"]}}
   [{:keys [workspaces request] :as services} {:keys [name]}]
   (let [id (workspaces/create-workspace! workspaces (security/access-token services request) name)]
+    (security/refresh-claims! services (:session/key request))
     (activate-workspace! services request id)))

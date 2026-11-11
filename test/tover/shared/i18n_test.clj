@@ -5,7 +5,6 @@
     [clojure.string :as str]
     [clojure.test :refer [deftest is testing]]
     [tover.auth.core :as auth]
-    [tover.auth.supabase :as supabase]
     [tover.inventory.completion :as completion]
     [tover.inventory.filters :as filters]
     [tover.inventory.grid :as grid]
@@ -112,46 +111,20 @@
       (is (not= (get-in english [:viewport :queryId]) (get-in russian [:viewport :queryId]))))))
 
 
-(deftest account-locale-uses-the-authenticated-user-endpoint
-  (support/with-server
-    (fn [_] {:body {:id            (str support/user-id) :email "user@example.test" :email_confirmed_at "2026-10-20T09:00:00Z"
-                    :user_metadata {:locale "ru" :display_name "Existing name"}}})
-    (fn [{:keys [url requests]}]
-      (let [provider (supabase/auth {:auth-url url :api-key "public" :admin-key "private"})]
-        (is (= "ru" (:locale (auth/set-locale! provider "user-token" "ru"))))
-        (is (= {:locale "ru"} (get-in (first @requests) [:body :data]))))
-      (is (= :put (:method (first @requests))))
-      (is (= "/user" (:path (first @requests))))
-      (is (= "Bearer user-token" (get-in (first @requests) [:headers "authorization"]))))))
-
-
 (deftest guest-and-account-preferences-survive-requests
   (support/with-application
-    (fn [{:keys [handler browser users]}]
+    (fn [{:keys [handler browser users state]}]
       (let [request! (:request! browser)]
         (is (str/includes? (:body (request! :get "/auth/login" {} {:headers {"accept-language" "ru-RU"}})) "Войти"))
         (is (= 403 (:status (request! :post "/action/tover.auth.web/set-language" {"locale" "ru"} {:csrf? false}))))
         (is (= 303 (:status (support/login! browser (first users)))))
         (is (= 303 (:status (request! :post "/action/tover.auth.web/set-language" {"locale" "ru" "return-to" "/"}))))
-        ;; Separate browser/session reads the same account preference.
+        ;; A separate browser/session reads the account language from its token claims.
+        (swap! state assoc-in [:users (:user-id (first users)) :locale] "ru")
         (let [other (support/browser handler)]
           (support/login! other (first users))
           (is (str/includes? (:body ((:request! other) :get "/workspace")) "Рабочие пространства")))
         (is (= 422 (:status (request! :post "/action/tover.auth.web/set-language" {"locale" "de"}))))))))
-
-
-(deftest failed-account-save-retains-language-and-the-original-destination
-  (support/with-application
-    (fn [{:keys [auth] :as services}]
-      (assoc services :auth (support/auth-provider auth {:set-locale (fn [_ _] (throw (ex-info "private provider detail" {})))})))
-    (fn [{:keys [browser users]}]
-      (support/login! browser (first users))
-      (let [response ((:request! browser) :post "/action/tover.auth.web/set-language" {"locale" "ru" "return-to" "/workspace"})]
-        (is (= 503 (:status response))))
-      (let [body (:body ((:request! browser) :post "/action/tover.auth.web/set-language" {"locale" "ru" "return-to" "/workspace"}))]
-        (is (str/includes? body "Could not save language. Please try again."))
-        (is (str/includes? body "value=\"/workspace\""))
-        (is (not (str/includes? body "private provider detail")))))))
 
 
 (deftest immutable-shape-errors-and-email-templates-have-both-languages

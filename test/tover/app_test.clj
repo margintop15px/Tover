@@ -11,12 +11,16 @@
             [ring.middleware.session.store :as ring-store]
             [tover.app :as app]
             [tover.auth.security :as security]
+            [tover.auth.sessions :as sessions]
+            [tover.auth.supabase :as auth-supabase]
             [tover.identity :as identity]
             [tover.session-store :as session-store]
             [tover.shared.jdbc :as database]
             [tover.shared.rdf :as rdf]
-            [tover.stock.store :as store])
-  (:import [java.nio.file Files]))
+            [tover.stock.store :as store]
+            [tover.support :as support])
+  (:import [java.nio.file Files]
+           [java.time Instant]))
 
 
 (defn- with-data-path
@@ -74,6 +78,29 @@
             (let [response (handler {:request-method :get :uri "/operations" :headers {}})]
               (is (contains? #{303 401} (:status response))))
             (is (= 405 (:status (handler {:request-method :options :uri "/" :headers {}})))))
+          (finally
+            (realtime/stop! rt)
+            (rdf/close! repo)))))))
+
+
+(deftest tokens-without-tover-claims-fail-closed
+  (with-data-path
+    (fn [path]
+      (let [repo     (rdf/native-store path)
+            rt       (realtime/start!)
+            services (assoc (fixture-services) :auth (auth-supabase/auth {:auth-url "http://auth.invalid" :api-key "public" :admin-key "admin"}))
+            ;; Issued by Auth without the custom access token hook.
+            token    (support/jwt {:sub (str support/user-id) :email "person@example.test" :role "authenticated"})
+            key      (sessions/establish! (:session-store services) nil
+                                          {:access-token token :refresh-token "refresh" :expires-at (+ 3600 (.getEpochSecond (Instant/now)))
+                                           :user         {:user-id support/user-id :email "person@example.test" :email-confirmed? true}})]
+        (try
+          (let [handler  (app/create-handler (merge services {:repo repo :realtime rt}))
+                response (handler {:request-method :get :uri "/" :headers {"cookie" (str "tover-session=" key)}})]
+            (is (= 503 (:status response)))
+            (is (nil? (get-in response [:headers "location"])))
+            (is (= "identity-claims-missing" (get-in response [:headers "x-tover-error"])))
+            (is (some? (sessions/session (:session-store services) key))))
           (finally
             (realtime/stop! rt)
             (rdf/close! repo)))))))

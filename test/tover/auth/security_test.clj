@@ -5,7 +5,34 @@
     [tover.auth.core :as auth]
     [tover.auth.security :as security]
     [tover.auth.sessions :as sessions]
-    [tover.support :as support]))
+    [tover.auth.supabase :as supabase]
+    [tover.session-store :as session-store]
+    [tover.shared.supabase :as http]
+    [tover.support :as support])
+  (:import
+    [java.time Instant]))
+
+
+(deftest identity-comes-from-claims-without-http
+  (let [workspace-id #uuid "30000000-0000-4000-8000-000000000001"
+        store        (session-store/memory-store)
+        provider     (supabase/auth {:auth-url "http://auth.invalid" :api-key "public" :admin-key "admin"})
+        user         {:user-id support/user-id :email "person@example.test" :email-confirmed? true}
+        claims       {:sub              (str support/user-id) :email "person@example.test" :role "authenticated"
+                      :language         "ru" :email_confirmed        true
+                      :profile_complete true
+                      :memberships      [{:workspace_id (str workspace-id) :name       "Workspace"
+                                          :role         "admin"            :created_at "2026-01-01T00:00:00.123456+00:00"}]}
+        key          (sessions/establish! store nil {:access-token (support/jwt claims) :refresh-token            "refresh"
+                                                     :expires-at   (+ 3600 (.getEpochSecond (Instant/now))) :user user})]
+    (with-redefs [http/request! (fn [_ _] (throw (IllegalStateException. "No HTTP during authentication")))]
+      (let [identity (security/authenticate {:auth provider :session-store store} key)]
+        (is (= (assoc user :locale "ru") (:user identity)))
+        (is (true? (:profile-complete? identity)))
+        (is (= [{:workspace-id workspace-id :name "Workspace" :role :admin :created-at "2026-01-01T00:00:00.123456+00:00"}]
+               (:memberships identity)))
+        (is (= workspace-id (:workspace-id identity)))
+        (is (= :admin (:role identity)))))))
 
 
 (deftest protected-requests-use-current-server-identity
@@ -40,6 +67,7 @@
         handler (security/wrap-identity (fn [_] (swap! calls inc) {:status 200}) services)
         old-request (support/request services :post "/action/anything")]
     (swap! state assoc-in [:memberships workspace-id (:user-id (first users)) :status] :suspended)
+    (security/refresh-claims! services key)
     (let [response (handler old-request)]
       (is (= 409 (:status response)))
       (is (= "workspace-changed" (get-in response [:headers "x-tover-error"])))
@@ -48,11 +76,12 @@
 
 
 (deftest no-active-membership-cannot-enter-operational-handlers
-  (let [{:keys [state users workspace-id other-workspace-id] :as services} (support/authenticated-services)
+  (let [{:keys [state users workspace-id other-workspace-id key] :as services} (support/authenticated-services)
         handler (security/wrap-identity (constantly {:status 200}) services)
         user-id (:user-id (first users))]
     (doseq [workspace [workspace-id other-workspace-id]]
       (swap! state assoc-in [:memberships workspace user-id :status] :suspended))
+    (security/refresh-claims! services key)
     (is (= "/workspace" (get-in (handler (support/request services :get "/")) [:headers "location"])))
     (is (= 409 (:status (handler (support/request services :post "/action/anything")))))))
 
@@ -84,17 +113,18 @@
 
 
 (deftest workspace-selection-remains-accessible-without-memberships
-  (let [{:keys [state users workspace-id other-workspace-id] :as services} (support/authenticated-services)
+  (let [{:keys [state users workspace-id other-workspace-id key] :as services} (support/authenticated-services)
         user-id (:user-id (first users))]
     (doseq [workspace [workspace-id other-workspace-id]]
       (swap! state assoc-in [:memberships workspace user-id :status] :suspended))
+    (security/refresh-claims! services key)
     (let [handler (security/wrap-identity (constantly {:status 200}) services :authenticated)]
       (is (= 200 (:status (handler (support/request services :get "/workspace"))))))))
 
 
 (deftest logout-policy-does-not-call-upstream-authentication
   (let [{:keys [auth] :as services} (support/authenticated-services)
-        unavailable                 (support/auth-provider auth {:current-user (fn [_] (throw (IllegalStateException. "Must not verify logout")))})
+        unavailable                 (support/auth-provider auth {:token-identity (fn [_] (throw (IllegalStateException. "Must not verify logout")))})
         handler (security/wrap-identity (constantly {:status 200}) (assoc services :auth unavailable) :logout)]
     (is (= 200 (:status (handler (support/request services :post "/action/tover.auth.web/sign-out")))))))
 
@@ -102,7 +132,7 @@
 (deftest transient-auth-failure-preserves-session-but-revocation-removes-it
   (doseq [[code status retained?] [[:unavailable 503 true] [:unauthenticated 401 false]]]
     (let [{:keys [session-store key] :as services} (support/authenticated-services)
-          provider (support/auth-provider (:auth services) {:current-user (fn [_] (auth/fail! code status false))})
+          provider (support/auth-provider (:auth services) {:token-identity (fn [_] (auth/fail! code status false))})
           handler (security/wrap-identity (constantly {:status 200}) (assoc services :auth provider))
           before (sessions/session session-store key)
           response (handler (support/request services :post "/action/anything"))]
@@ -119,23 +149,29 @@
     (is (nil? (sessions/session session-store key)))))
 
 
-(deftest rotated-credentials-survive-a-later-verification-outage
-  (doseq [stage [:current-user :list-memberships]]
-    (testing (name stage)
-      (let [{:keys [auth workspaces session-store key] :as services} (support/authenticated-services)
-            old-tokens (:tokens (sessions/session session-store key))
-            fail! (fn [_] (auth/fail! :unavailable 503 false))
-            failing (case stage
-                      :current-user (assoc services :auth (support/auth-provider auth {:current-user fail!}))
-                      :list-memberships (assoc services :workspaces (support/workspace-provider workspaces {:list-memberships fail!})))
-            handler (security/wrap-identity (constantly {:status 200}) failing)]
-        (sessions/update-session! session-store key (fn [row] [(assoc-in row [:tokens :expires-at] 0) nil]))
-        (is (= 503 (:status (handler (support/request services :post "/action/anything")))))
-        (let [tokens (:tokens (sessions/session session-store key))]
-          (is (not= (:refresh-token old-tokens) (:refresh-token tokens)))
-          (is (= (:user old-tokens) (auth/current-user auth (:access-token tokens))))
-          (is (= 200 (:status ((security/wrap-identity (constantly {:status 200}) services)
-                               (support/request services :post "/action/anything"))))))))))
+(deftest rotated-credentials-survive-a-later-claims-failure
+  (let [{:keys [auth session-store key] :as services} (support/authenticated-services)
+        old-tokens (:tokens (sessions/session session-store key))
+        failing (assoc services :auth (support/auth-provider auth {:token-identity (fn [_] (auth/fail! :invalid-response 502 false))}))
+        handler (security/wrap-identity (constantly {:status 200}) failing)]
+    (sessions/update-session! session-store key (fn [row] [(assoc-in row [:tokens :expires-at] 0) nil]))
+    (is (= 502 (:status (handler (support/request services :post "/action/anything")))))
+    (let [tokens (:tokens (sessions/session session-store key))]
+      (is (not= (:refresh-token old-tokens) (:refresh-token tokens)))
+      (is (= (:user old-tokens) (:user (auth/token-identity auth (:access-token tokens)))))
+      (is (= 200 (:status ((security/wrap-identity (constantly {:status 200}) services)
+                           (support/request services :post "/action/anything"))))))))
+
+
+(deftest refreshing-claims-keeps-the-page-context
+  (let [{:keys [session-store key] :as services} (support/authenticated-services)
+        before (sessions/session session-store key)]
+    (is (nil? (security/refresh-claims! services key)))
+    (let [after (sessions/session session-store key)]
+      (is (= (:version before) (:version after)))
+      (is (not= (:tokens before) (:tokens after))))
+    (is (= 200 (:status ((security/wrap-identity (constantly {:status 200}) services)
+                         (support/request services :post "/action/anything")))))))
 
 
 (deftest production-origin-checks-do-not-trust-datastar-header

@@ -11,8 +11,6 @@
 
 (defprotocol Directory
   "Workspace authorization uses the caller's verified access token."
-  (^{:malli/schema [:=> [:cat :any :string] [:vector :map]]}
-    list-memberships [provider access-token])
   (^{:malli/schema [:=> [:cat :any :string :string] :uuid]}
     create-workspace! [provider access-token name])
   (^{:malli/schema [:=> [:cat :any :string :uuid] :map]}

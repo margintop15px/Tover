@@ -5,6 +5,7 @@
     [org.httpkit.client :as http-client]
     [tover.auth.core :as auth]
     [tover.auth.supabase :as supabase]
+    [tover.shared.supabase :as http]
     [tover.support :as support])
   (:import
     [java.io IOException OutputStream]
@@ -29,7 +30,7 @@
 
 (deftest token-responses-and-users-have-application-owned-shapes
   (support/with-server
-    (fn [request] {:body (if (= :get (:method request)) upstream-user upstream-tokens)})
+    (fn [_] {:body upstream-tokens})
     (fn [{:keys [url requests]}]
       (let [provider  (adapter url)
             signed-in (auth/sign-in! provider {:email           "person@example.test" :password "password-secret"
@@ -37,13 +38,28 @@
         (is (= {:access-token "access-secret" :refresh-token "refresh-secret" :expires-at 2000000000
                 :user         {:user-id support/user-id :email "person@example.test" :email-confirmed? true}}
                signed-in))
-        (is (= (:user signed-in) (auth/current-user provider (:access-token signed-in))))
         (is (= {:email "person@example.test" :password "password-secret"} (:body (first @requests))))
         (is (= "/custom-auth/token" (:path (first @requests))))
         (is (= "grant_type=password" (:query (first @requests))))
         (is (= "public-key" (get-in (first @requests) [:headers "apikey"])))
         (is (nil? (get-in (first @requests) [:headers "authorization"])))
-        (is (= "Bearer access-secret" (get-in (second @requests) [:headers "authorization"])))))))
+        (is (= 1 (count @requests)))))))
+
+
+(deftest access-token-claims-are-the-identity
+  (let [provider (adapter "http://auth.invalid")
+        claims   {:sub              (str support/user-id) :email           "person@example.test" :language    nil
+                  :profile_complete false                 :email_confirmed false                 :memberships []}]
+    (is (= {:user              {:user-id support/user-id :email "person@example.test" :email-confirmed? false}
+            :profile-complete? false :memberships []}
+           (auth/token-identity provider (support/jwt claims))))
+    (doseq [missing [:memberships :profile_complete :email_confirmed]]
+      (is (= {:type :configuration :code :identity-claims-missing :status 503 :uncertain? false :message "Identity request failed."}
+             (support/error-data #(auth/token-identity provider (support/jwt (dissoc claims missing))))))
+      (is (= :identity-claims-missing
+             (:code (support/error-data #(auth/token-identity provider (support/jwt (assoc claims missing nil))))))))
+    (doseq [token ["not-a-token" (support/jwt (assoc claims :memberships [{:workspace_id "forged"}]))]]
+      (is (= :invalid-response (:code (support/error-data #(auth/token-identity provider token))))))))
 
 
 (deftest refresh-and-logout-use-local-session-http-contracts
@@ -155,8 +171,8 @@
 
 (deftest response-body-deadline-preserves-read-and-write-certainty
   (doseq [[request! uncertain?]
-          [[#(auth/current-user % "access-secret") false]
-           [#(auth/sign-in! % {:email "a" :password "secret"}) true]]]
+          [[(fn [_ url] (http/request! {:client (http/client) :api-key "public" :timeout-ms 100} {:method :get :url url})) false]
+           [(fn [provider _] (auth/sign-in! provider {:email "a" :password "secret"})) true]]]
     (let [release      (CountDownLatch. 1)
           disconnected (promise)]
       (support/with-server
@@ -175,7 +191,7 @@
             (try
               (is (= {:type    :identity                  :code :unavailable :status 503 :uncertain? uncertain?
                       :message "Identity request failed."}
-                     (support/error-data #(request! provider))))
+                     (support/error-data #(request! provider url))))
               (is (< (/ (- (System/nanoTime) started) 1000000) 1500))
               (is (= 1 (count @requests)))
               (is (true? (deref disconnected 750 false)))

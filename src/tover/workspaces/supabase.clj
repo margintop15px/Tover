@@ -3,9 +3,7 @@
     [clojure.string :as str]
     [tover.auth.core :as auth]
     [tover.shared.supabase :as http]
-    [tover.workspaces.core :as workspaces])
-  (:import
-    [java.util UUID]))
+    [tover.workspaces.core :as workspaces]))
 
 
 (def ^:private Text
@@ -69,18 +67,6 @@
                                                           :token token
                                                           :body  args})))]
     (reify workspaces/Directory
-      (list-memberships [_ token]
-        (let [data (rpc! token "my_workspaces" {})]
-          (try
-            (auth/check-input! [:vector :map] data)
-            (mapv (fn [membership]
-                    (auth/check-input! workspaces/Membership
-                                       {:workspace-id (UUID/fromString (:organization_id membership))
-                                        :name         (:name membership)
-                                        :role         (keyword (:role_id membership))
-                                        :created-at   (:created_at membership)}))
-                  data)
-            (catch Exception _ (auth/fail! :invalid-response 502 false)))))
       (create-workspace! [_ token name]
         (auth/check-input! [:string {:min 2}] (str/trim name))
         (or (some-> (rpc! token "create_organization" {:p_name (str/trim name)}) parse-uuid)

@@ -21,19 +21,6 @@
   (supabase/workspaces {:rest-url (str url "/rest/v1/") :api-key "public-key"}))
 
 
-(deftest membership-rpc-is-user-authenticated-and-normalized
-  (support/with-server
-    (fn [_] {:body [{:organization_id (str workspace-id)     :name "Workspace" :role_id "owner"
-                     :created_at      "2026-01-01T00:00:00Z"}]})
-    (fn [{:keys [url requests]}]
-      (is (= [{:workspace-id workspace-id :name "Workspace" :role :owner :created-at "2026-01-01T00:00:00Z"}]
-             (workspaces/list-memberships (adapter url) "user-token")))
-      (is (= "/rest/v1/rpc/my_workspaces" (:path (first @requests))))
-      (is (= "Bearer user-token" (get-in (first @requests) [:headers "authorization"])))
-      (is (= "public-key" (get-in (first @requests) [:headers "apikey"])))
-      (is (= {} (:body (first @requests)))))))
-
-
 (deftest team-rpc-normalizes-member-and-invitation-shapes
   (support/with-server
     (fn [_] {:body {:members     [{:userId           (str support/user-id) :email               "person@example.test" :role "admin" :status "active"

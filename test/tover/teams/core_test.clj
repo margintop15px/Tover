@@ -27,12 +27,11 @@
   (reify auth/Auth
     (sign-up! [_ input] (auth/sign-up! provider input))
     (sign-in! [_ input] (auth/sign-in! provider input))
-    (current-user [_ token] (auth/current-user provider token))
+    (token-identity [_ token] (auth/token-identity provider token))
     (refresh! [_ token] (auth/refresh! provider token))
     (sign-out! [_ token] (auth/sign-out! provider token))
     (verify-email! [_ input] (auth/verify-email! provider input))
     (recover! [_ input] (auth/recover! provider input))
-    (set-locale! [_ token locale] (auth/set-locale! provider token locale))
     (set-password! [_ token password] (auth/set-password! provider token password))
     (invite! [_ _] (auth/fail! code 503 uncertain?))
     (magic-link! [_ input] (auth/magic-link! provider input))))

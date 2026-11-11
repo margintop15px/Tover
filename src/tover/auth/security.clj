@@ -1,12 +1,10 @@
 (ns tover.auth.security
   (:require
     [bel.validation :as validation]
-    [com.brunobonacci.mulog :as mu]
     [ring.middleware.session.store :as ring-store]
     [tover.auth.core :as auth]
     [tover.auth.sessions :as sessions]
-    [tover.shared.i18n :as i18n]
-    [tover.workspaces.core :as workspaces])
+    [tover.shared.i18n :as i18n])
   (:import
     [java.time Instant]))
 
@@ -17,9 +15,9 @@
 
 
 (defn authenticate
-  "Resolve current user and membership while serializing token refresh for this session."
+  "Resolve the current user and memberships from token claims, serializing token refresh for this session."
   {:malli/schema [:=> [:cat :map [:maybe :string]] [:maybe :map]]}
-  [{:keys [auth workspaces session-store]} key]
+  [{:keys [auth session-store]} key]
   (let [result
         (sessions/update-session! session-store key
                                   (fn [{:keys [tokens workspace-id] :as row}]
@@ -34,22 +32,31 @@
                                                      tokens)
                                             row    (assoc row :tokens tokens)]
                                         (try
-                                          (let [user        (mu/trace ::current-user {:pairs []}
-                                                              (auth/current-user auth (:access-token tokens)))
-                                                memberships (mu/trace ::memberships {:pairs []}
-                                                              (workspaces/list-memberships workspaces (:access-token tokens)))
+                                          (let [{:keys [user memberships] :as claims}
+                                                (auth/token-identity auth (:access-token tokens))
                                                 selected    (or (some #(when (= workspace-id (:workspace-id %)) %) memberships)
                                                                 (first memberships))
                                                 selected-id (:workspace-id selected)
                                                 row         (cond-> (assoc row :user-id (:user-id user) :workspace-id selected-id)
                                                               (not= workspace-id selected-id) (assoc :version (random-uuid)))]
                                             [row {:user-id            (:user-id user) :user user             :memberships memberships
+                                                  :profile-complete?  (:profile-complete? claims)
                                                   :password-required? (get-in row [:data :identity/password-required?])
                                                   :workspace-id       selected-id :role     (:role selected)
                                                   :auth-session-id    key :auth-version     (:version row)}])
-                  ;; Save a rotated pair even if the following authorization read fails.
+                  ;; Save a rotated pair even if reading its claims fails.
                                           (catch Throwable error [row {:error error}]))))))]
     (if-let [error (:error result)] (throw error) result)))
+
+
+(defn refresh-claims!
+  "Reissue this session's tokens so changed profile or membership claims apply now; the page context stays valid."
+  {:malli/schema [:=> [:cat :map :string] :nil]}
+  [{:keys [auth session-store]} key]
+  (sessions/update-session! session-store key
+                            (fn [{:keys [tokens] :as row}]
+                              [(cond-> row tokens (assoc :tokens (auth/refresh! auth (:refresh-token tokens)))) nil]))
+  nil)
 
 
 (defn require-manager!

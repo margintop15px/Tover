@@ -19,7 +19,8 @@
     [java.io ByteArrayInputStream]
     [java.net InetSocketAddress]
     [java.nio.charset StandardCharsets]
-    [java.nio.file Files]))
+    [java.nio.file Files]
+    [java.util Base64]))
 
 
 (defn- hidden-value
@@ -156,6 +157,14 @@
          (assoc (ex-data error) :message (.getMessage error)))))
 
 
+(defn jwt
+  "An unsigned token shaped like the Auth access token; signatures are not read."
+  {:malli/schema [:=> [:cat :map] :string]}
+  [claims]
+  (let [encode #(.encodeToString (.withoutPadding (Base64/getUrlEncoder)) (.getBytes ^String % StandardCharsets/UTF_8))]
+    (str (encode "{\"alg\":\"HS256\",\"typ\":\"JWT\"}") "." (encode (json/write-json-str claims)) ".signature")))
+
+
 (defn authenticated-services
   {:malli/schema [:=> [:cat] :map]}
   []
@@ -181,12 +190,11 @@
   (reify auth/Auth
     (sign-up! [_ input] (auth/sign-up! provider input))
     (sign-in! [_ input] (auth/sign-in! provider input))
-    (current-user [_ token] (if-let [f (:current-user overrides)] (f token) (auth/current-user provider token)))
+    (token-identity [_ token] (if-let [f (:token-identity overrides)] (f token) (auth/token-identity provider token)))
     (refresh! [_ token] (if-let [f (:refresh overrides)] (f token) (auth/refresh! provider token)))
     (sign-out! [_ token] (if-let [f (:sign-out overrides)] (f token) (auth/sign-out! provider token)))
     (verify-email! [_ input] (auth/verify-email! provider input))
     (recover! [_ input] (if-let [f (:recover overrides)] (f input) (auth/recover! provider input)))
-    (set-locale! [_ token locale] (if-let [f (:set-locale overrides)] (f token locale) (auth/set-locale! provider token locale)))
     (set-password! [_ token password] (auth/set-password! provider token password))
     (invite! [_ input] (if-let [f (:invite overrides)] (f input) (auth/invite! provider input)))
     (magic-link! [_ input] (auth/magic-link! provider input))))
@@ -196,7 +204,6 @@
   {:malli/schema [:=> [:cat :any :map] :any]}
   [provider overrides]
   (reify workspaces/Directory
-    (list-memberships [_ token] (if-let [f (:list-memberships overrides)] (f token) (workspaces/list-memberships provider token)))
     (create-workspace! [_ token name] (workspaces/create-workspace! provider token name))
     (team [_ token workspace-id] (if-let [f (:team overrides)] (f token workspace-id) (workspaces/team provider token workspace-id)))
     (actor-labels [_ token workspace-id actor-ids]

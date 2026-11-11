@@ -4,6 +4,7 @@
     [clojure.string :as str]
     [clojure.test :refer [deftest is]]
     [tover.auth.core :as auth]
+    [tover.auth.security :as security]
     [tover.auth.sessions :as sessions]
     [tover.support :as support]
     [tover.workspaces.core :as workspaces]))
@@ -144,6 +145,19 @@
         (is (= 200 (:status (request! :get "/auth/password"))))))))
 
 
+(deftest accepting-invites-refreshes-claims
+  (support/with-application
+    (fn [{:keys [browser auth workspaces users workspace-id] :as services}]
+      (let [[owner _ other] users
+            owner-token     (:access-token (auth/sign-in! auth owner))]
+        (support/login! browser other)
+        (workspaces/manage-invitation! workspaces owner-token {:workspace-id workspace-id   :action :create
+                                                               :email        (:email other) :role   :member})
+        (is (= 303 (:status ((:request! browser) :post (bel/action-url :tover.auth.web/finish-sign-in)))))
+        (is (some #(= workspace-id (:workspace-id %))
+                  (:memberships (security/authenticate services (support/session-key browser)))))))))
+
+
 (deftest recovery-does-not-reveal-whether-email-exists
   (support/with-application
     (fn [{:keys [browser state]}]
@@ -176,10 +190,10 @@
     (support/with-application
       (fn [{:keys [auth] :as services}]
         (assoc services :auth (support/auth-provider auth
-                                                     {:current-user (fn [token]
-                                                                      (if @unavailable?
-                                                                        (auth/fail! :unavailable 503 false)
-                                                                        (auth/current-user auth token)))})))
+                                                     {:token-identity (fn [token]
+                                                                        (if @unavailable?
+                                                                          (auth/fail! :unavailable 503 false)
+                                                                          (auth/token-identity auth token)))})))
       (fn [{:keys [browser users session-store]}]
         (support/login! browser (first users))
         (let [key    (support/session-key browser)
