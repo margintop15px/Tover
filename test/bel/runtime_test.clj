@@ -133,7 +133,7 @@
 
 
 (defreadmodel receipt-view
-  {:input [:map [:command-id :string]] :output :any :policy ::allowed
+  {:input [:map [:command-id :string]]                 :output :any :policy ::allowed
    :cofx  [[:prior :bel/receipt (fn [_ input] input)]]}
   [{:keys [prior]} _]
   prior)

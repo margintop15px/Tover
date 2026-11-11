@@ -40,7 +40,7 @@
 (defn context
   {:malli/schema [:=> [:cat rdf/Repository] :map]}
   [repo]
-  (runtime/prepare-context {:bel/system  (wiring/system {:repo repo})                                  :repo repo :workspace-id (:workspace-id fixture/scope)
+  (runtime/prepare-context {:bel/system  (wiring/system {:repo repo}) :repo repo :workspace-id (:workspace-id fixture/scope)
                             :user-id     #uuid "00000000-0000-0000-0000-000000000011"
                             :memberships [{:workspace-id (:workspace-id fixture/scope) :role :member}]}))
 
@@ -322,7 +322,7 @@
   (with-feature
     (fn [ctx _]
       (let [sent    (atom nil)
-            request {:request-method    :post                                              :body (json/write-json-str (assoc cell :revision "4"))
+            request {:request-method    :post :body (json/write-json-str (assoc cell :revision "4"))
                      :reitit.core/match {:result {:post {:data {:bel/action ::web/save}}}}}]
         (with-redefs [hk/->sse-response      (fn [_ options] ((get options hk/on-open) nil) {:status 200})
                       handler/send-prepared! (fn [_ result] (reset! sent result))
@@ -332,7 +332,7 @@
                             :_catalogueSaveJson (json/read-json :key-fn keyword))]
             (is (= ["C" "ok" "Nut"] ((juxt :commandId :status #(get-in % [:row :name])) message))))
           (is (= 200 (:status ((handler/view-handler ctx)
-                               {:request-method    :get                                           :query-params {"datastar" (json/write-json-str {:id "G" :commandId "C"})}
+                               {:request-method    :get :query-params {"datastar" (json/write-json-str {:id "G" :commandId "C"})}
                                 :reitit.core/match {:result {:get {:data {:bel/view ::web/row}}}}}))))
           (is (= "signals" (:type (json/read-json (json/write-json-str (first @sent)) :key-fn keyword)))))))))
 
