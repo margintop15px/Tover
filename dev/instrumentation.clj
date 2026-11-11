@@ -14,7 +14,9 @@
   (vec (for [namespace (all-ns)
              :when     (or (= 'user (ns-name namespace))
                            (str/starts-with? (str (ns-name namespace)) "tover.")
-                           (contains? #{'bel.core 'bel.handler 'bel.nav 'bel.realtime 'bel.session 'bel.validation} (ns-name namespace)))
+                           (contains? #{'bel.core 'bel.handler 'bel.runtime 'bel.nav 'bel.realtime 'bel.session 'bel.validation
+                                        'bel.store 'bel.journal 'bel.delivery 'bel-postgres.jdbc 'bel-rdf.core
+                                        'bel-rdf.adapter 'bel-postgres.adapter 'bel-postgres.journal} (ns-name namespace)))
              [_ var]   (ns-interns namespace)
              :when     (and (bound? var) (fn? @var) (not (:macro (meta var))) (not (:test (meta var))))]
          var)))

@@ -1,13 +1,15 @@
 (ns bel.core
   (:require
-    [bel.expressions :as expressions]
-    [clojure.java.classpath :as classpath]
-    [clojure.string :as str]
-    [clojure.tools.namespace.find :as ns-find]))
+   [bel.expressions :as expressions]
+   [bel.validation :as validation]
+   [clojure.java.classpath :as classpath]
+   [clojure.string :as str]
+   [clojure.tools.namespace.find :as ns-find]
+   [malli.core :as m]))
 
 
 (defonce registry
-  (atom {:pages {} :views {} :actions {} :streams {}}))
+  (atom {:pages {} :views {} :actions {} :streams {} :events {} :commands {} :models {} :read-models {}}))
 
 
 (def Scan
@@ -52,8 +54,8 @@
    [:or Instruction [:vector Instruction]]
    [:fn {:error/message "Page instructions must be returned alone"}
     #(not
-       (and (vector? %)
-            (some (fn [instruction] (= :page (:type instruction))) %)))]])
+      (and (vector? %)
+           (some (fn [instruction] (= :page (:type instruction))) %)))]])
 
 
 (def RingResponse
@@ -66,10 +68,28 @@
    [:cookies {:optional true} :map]])
 
 
-(def ActionResult
+(def ActionResponse
   [:multi {:dispatch #(if (and (map? %) (not (:type %))) :response :instructions)}
    [:response RingResponse]
    [:instructions Result]])
+
+
+(def CommandRequest
+  [:map
+   [:type [:= :command]]
+   [:id :qualified-keyword]
+   [:command-id [:string {:min 1 :max 100}]]
+   [:input :map]
+   [:then Result]
+   [:catch {:optional true}
+    [:map
+     [:type [:= :view]]
+     [:id :qualified-keyword]
+     [:input {:optional true} :map]]]])
+
+
+(def ActionResult
+  [:or CommandRequest ActionResponse])
 
 
 (def PageResult
@@ -95,6 +115,18 @@
    [:=> [:cat [:fn var?] :keyword :qualified-keyword :map]
     [:fn var?]]}
   [definition-var kind id opts]
+  (when (contains? opts :command)
+    (throw (ex-info "Actions return command requests" {:type :validation :id id})))
+  (doseq [key [:read-model] :when (contains? opts key)]
+    (let [allowed #{:read-model :schema :output :query :selector :patch-mode :route-data :signal}]
+      (when (seq (remove allowed (keys opts)))
+        (throw (ex-info "Unsupported bound declaration option" {:type :validation :id id :options (keys opts)}))))
+    (when-not (and (= kind :bel/view)
+                   (qualified-keyword? (get opts key)))
+      (throw (ex-info "Invalid declaration binding" {:type :validation :id id :option key}))))
+  (when (contains? opts :signal)
+    (when-not (and (= kind :bel/view) (simple-keyword? (:signal opts)))
+      (throw (ex-info "A snapshot signal belongs to a view" {:type :validation :id id}))))
   (let [input-schema (or (:schema opts) [:map])
         page?        (= :bel/page kind)
         children?    (and page? (spread-children? (:arglists (meta definition-var))))
@@ -102,7 +134,7 @@
                          (case kind
                            :bel/page PageResult
                            :bel/action ActionResult
-                           Result))
+                           (if (:signal opts) :map Result)))
         request?     (contains? #{:bel/action :bel/stream} kind)]
     (alter-meta! definition-var
                  #(-> %
@@ -113,6 +145,8 @@
                       (assoc :bel/kind kind
                              :bel/id id
                              :bel/query (or (:query opts) (when-not request? input-query))
+                             :bel/read-model (:read-model opts)
+                             :bel/signal (:signal opts)
                              :bel/schema input-schema
                              :bel/output output
                              :bel/selector (:selector opts)
@@ -160,7 +194,7 @@
 
 
 (defmacro defview
-  "Declare a pure renderer returning Result. :query receives [ctx input]; the body receives [data]."
+  "Declare a pure renderer. :signal views return a snapshot map; other views return Result."
   [name & args]
   (declaration-form :bel/view name args (ns-name *ns*)))
 
@@ -175,6 +209,112 @@
   "Declare an event interpreter receiving [ctx payload]. Its qualified declaration ID is its topic."
   [name & args]
   (declaration-form :bel/stream name args (ns-name *ns*)))
+
+
+(defn attach-operation!
+  "Validate the small business DSL at declaration time."
+  {:malli/schema [:=> [:cat [:fn var?] :keyword :qualified-keyword :map] [:fn var?]]}
+  [v kind id opts]
+  (let [allowed  (case kind
+                   :bel/event #{:schema}
+                   :bel/command #{:input :policy :emits :cofx :scope}
+                   :bel/read-model #{:input :output :policy :cofx :scope})
+        required (disj allowed :cofx :scope)
+        bindings (:cofx opts [])]
+    (when (or (seq (remove allowed (keys opts)))
+              (seq (remove #(contains? opts %) required)))
+      (throw (ex-info "Unsupported or missing declaration option" {:type :validation :id id :options (keys opts)})))
+
+    (when-not (= kind :bel/event)
+      (validation/check! :qualified-keyword (:policy opts))
+      (when (contains? opts :scope)
+        (validation/check! [:enum :user :session :workspace] (:scope opts)))
+      (when-not (and (vector? bindings)
+                     (every? #(and (vector? %) (<= 2 (count %) 3)
+                                   (keyword? (first %)) (qualified-keyword? (second %))
+                                   (or (= 2 (count %)) (fn? (nth % 2)))) bindings)
+                     (= (count bindings) (count (distinct (map first bindings))))
+                     (not-any? #{:scope :actor :command-id :now} (map first bindings)))
+        (throw (ex-info "Invalid coeffect bindings" {:type :validation :id id}))))
+
+    (when (= kind :bel/command)
+      (validation/check! [:set :qualified-keyword] (:emits opts)))
+
+    (doseq [key [:input :output :schema] :when (contains? opts key)]
+      (m/schema (get opts key)))
+    (alter-meta! v assoc :bel/kind kind :bel/id id :bel/options opts)
+    (when-not (= kind :bel/event)
+      (alter-meta! v assoc :malli/schema
+                   [:=> [:cat :map (:input opts)]
+                    (if (= kind :bel/command) :map (:output opts))]))
+    v))
+
+
+(defmacro defevent
+  [name opts]
+  `(do
+     (def ~name ~opts)
+     (attach-operation! (var ~name) :bel/event ~(keyword (str (ns-name *ns*)) (str name)) ~opts)))
+
+
+(defn attach-model!
+  "Declare scalar entity fields, references and event-to-field mappings."
+  {:malli/schema [:=> [:cat [:fn var?] :qualified-keyword :map] [:fn var?]]}
+  [v id {:keys [schema policy events] id-key :id :as opts}]
+  (when (seq (remove #{:id :schema :policy :events} (keys opts)))
+    (throw (ex-info "Unsupported model option" {:type :validation :id id})))
+
+  (validation/check! :qualified-keyword policy)
+
+  (let [schema (m/schema schema)
+        fields (when (= :map (m/type schema))
+                 (into {} (map (fn [[key props schema]] [key (assoc props :schema schema)])) (m/children schema)))]
+    (when-not (and (seq fields) (contains? fields id-key)
+                   (contains? #{:string :uuid} (m/type (get-in fields [id-key :schema])))
+                   (not (get-in fields [id-key :optional])))
+      (throw (ex-info "Models need a map schema and a required string or UUID identity" {:type :validation :id id})))
+
+    (doseq [[key {:keys [schema bel/ref]}] fields]
+      (when-not (and (keyword? key) (contains? #{:string :uuid :time/instant :int :boolean :double} (m/type schema))
+                     (or (nil? ref) (and (qualified-keyword? ref) (contains? #{:string :uuid} (m/type schema)) (not= key id-key))))
+        (throw (ex-info "Model fields must be scalar; references must be string or UUID identities" {:type :validation :field key}))))
+
+    (validation/check! [:map-of :qualified-keyword [:map [:set [:vector {:min 1} :keyword]]]] (or events {}))
+
+    (doseq [[event mapping] events]
+      (let [keys (:set mapping)]
+        (when-not (and (= #{:set} (set (clojure.core/keys mapping)))
+                       (= (count keys) (count (distinct keys)))
+                       (not-any? #{id-key} keys) (every? fields keys))
+          (throw (ex-info "Mappings replace declared fields and preserve identity" {:type :validation :event event})))))
+
+    (let [options (assoc opts :model-id id :fields fields :events (or events {}))]
+      (alter-meta! v assoc
+                   :bel/kind :bel/model
+                   :bel/id id
+                   :bel/options options)))
+  v)
+
+
+(defmacro defmodel
+  [name opts]
+  `(do
+     (def ~name ~opts)
+     (attach-model! (var ~name) ~(keyword (str (ns-name *ns*)) (str name)) ~opts)))
+
+
+(defmacro defcommand
+  [name opts bindings & body]
+  `(do
+     (defn ~name ~bindings ~@body)
+     (attach-operation! (var ~name) :bel/command ~(keyword (str (ns-name *ns*)) (str name)) ~opts)))
+
+
+(defmacro defreadmodel
+  [name opts bindings & body]
+  `(do
+     (defn ~name ~bindings ~@body)
+     (attach-operation! (var ~name) :bel/read-model ~(keyword (str (ns-name *ns*)) (str name)) ~opts)))
 
 
 (defn scan-config
@@ -203,8 +343,8 @@
    [:=> [:cat :symbol [:sequential :symbol]] :boolean]}
   [namespace-symbol exclusions]
   (boolean
-    (or (re-find #"(?:^|\.)(?:dev|test)(?:\.|$)|-test(?:\.|$)" (str namespace-symbol))
-        (some #(ns-under? namespace-symbol %) exclusions))))
+   (or (re-find #"(?:^|\.)(?:dev|test)(?:\.|$)|-test(?:\.|$)" (str namespace-symbol))
+       (some #(ns-under? namespace-symbol %) exclusions))))
 
 
 (defn find-namespaces
@@ -232,7 +372,7 @@
    [:=> [:cat Scan] [:vector :symbol]]}
   [scan]
   (let [{:keys [scan-ns scan-exclude-ns]} (scan-config scan)
-        namespaces (into [] (mapcat #(find-namespaces % scan-exclude-ns)) scan-ns)]
+        namespaces                        (into [] (mapcat #(find-namespaces % scan-exclude-ns)) scan-ns)]
     (doseq [namespace-symbol namespaces]
       (require namespace-symbol))
     namespaces))
@@ -245,7 +385,9 @@
   [namespaces]
   (into []
         (comp (mapcat #(vals (ns-publics %)))
-              (filter #(contains? #{:bel/page :bel/view :bel/action :bel/stream} (:bel/kind (meta %)))))
+              (filter #(contains? #{:bel/page :bel/view :bel/action :bel/stream
+                                    :bel/event :bel/command :bel/model :bel/read-model}
+                                  (:bel/kind (meta %)))))
         namespaces))
 
 
@@ -285,9 +427,13 @@
                                                            :bel/page :pages
                                                            :bel/view :views
                                                            :bel/action :actions
-                                                           :bel/stream :streams)]
+                                                           :bel/stream :streams
+                                                           :bel/event :events
+                                                           :bel/command :commands
+                                                           :bel/model :models
+                                                           :bel/read-model :read-models)]
                                (assoc-in result [section id] definition-var)))
-                           {:pages {} :views {} :actions {} :streams {}}
+                           {:pages {} :views {} :actions {} :streams {} :events {} :commands {} :models {} :read-models {}}
                            (discover-vars namespaces))
         pages      (:pages discovered)]
     (doseq [[id definition-var] pages]
@@ -298,7 +444,35 @@
                        (or (nil? document) (ifn? document))
                        (or (nil? route-data) (map? route-data)))
           (throw (ex-info "Invalid page route metadata" {:type :validation :id id})))))
+    (doseq [[id v] (:models discovered)
+            :let   [{:keys [fields events] id-key :id} (:bel/options (meta v))]]
+      (doseq [ref (keep :bel/ref (vals fields))]
+        (when-not (contains? (:models discovered) ref)
+          (throw (ex-info "Undeclared referenced model" {:type :configuration :model id :reference ref}))))
+
+      (doseq [[event mapping] events]
+        (let [event-var (get-in discovered [:events event])]
+          (when-not event-var
+            (throw (ex-info "Undeclared mapped event" {:type :configuration :model id :event event})))
+          (let [event-fields (set (map first (m/entries (m/deref (:schema (:bel/options (meta event-var)))))))
+                missing      (seq (remove event-fields (cons id-key (:set mapping))))]
+            (when missing
+              (throw (ex-info "Mapped events must declare the identity and mapped fields"
+                              {:type :configuration :model id :event event :fields (vec missing)})))))))
     (reset! registry discovered)))
+
+
+(defn operations
+  "Capture functions and metadata once for a command or composed read."
+  {:malli/schema [:=> [:cat] :map]}
+  []
+  (let [definitions @registry
+        ops         {:events {} :commands {} :models {} :read-models {}}]
+    (->> (keys ops)
+         (mapcat (fn [section]
+                   (for [[id v] (get definitions section)]
+                     {section {id (assoc (:bel/options (meta v)) :handler @v)}})))
+         (apply merge-deep ops))))
 
 
 (defn init!

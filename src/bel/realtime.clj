@@ -4,6 +4,7 @@
     [bel.core :as core]
     [bel.handler :as handler]
     [bel.log :as log]
+    [bel.runtime :as runtime]
     [bel.validation :as validation]
     [com.brunobonacci.mulog :as mu]
     [malli.core :as m]
@@ -143,6 +144,12 @@
                                     (contains? (:topics connection) topic))]
         (deliver! realtime context sid tid connection event))))
   nil)
+
+
+(defmethod runtime/effect! :bel/publish
+  [_ {:keys [resources]} event]
+  (when-let [realtime (:realtime resources)]
+    (publish! realtime resources event)))
 
 
 (defn- heartbeat!

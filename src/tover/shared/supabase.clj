@@ -1,14 +1,16 @@
 (ns tover.shared.supabase
   (:require
-    [charred.api :as json]
-    [clojure.string :as str]
-    [org.httpkit.client :as http]
-    [tover.auth.core :as auth])
+   [charred.api :as json]
+   [clojure.string :as str]
+   [org.httpkit.client :as http]
+   [tover.auth.core :as auth])
   (:import
-    [java.net URI URLEncoder]
-    [java.nio.charset StandardCharsets]
-    [java.util.concurrent ExecutionException]
-    [org.httpkit.client HttpClient IFilter]))
+   [java.net URI URLEncoder]
+   [java.nio.charset StandardCharsets]
+   [java.util Map]
+   [java.util.concurrent ExecutionException]
+   [org.httpkit DynamicBytes]
+   [org.httpkit.client HttpClient IFilter]))
 
 
 (defn client
@@ -63,7 +65,7 @@
    "over_request_rate_limit"    :rate-limited
    "email_address_invalid"      :invalid-input
    "validation_failed"          :invalid-input
-   "42501" :forbidden
+   "42501"                      :forbidden
    "PGRST301"                   :unauthenticated
    "PGRST302"                   :unauthenticated
    "PGRST303"                   :unauthenticated})
@@ -88,20 +90,20 @@
         write?     (not= :get method)
         pending    (future
                      @(http/request
-                        {:client           client
-                         :url              url
-                         :method           method
-                         :headers          (cond-> {"Accept" "application/json" "Content-Type" "application/json" "apikey" api-key}
-                                             token (assoc "Authorization" (str "Bearer " token)))
-                         :body             (when (some? body) (json/write-json-str body))
-                         :as               :text
-                         :timeout          timeout-ms
-                         :follow-redirects false
-                         :keepalive        -1
+                       {:client           client
+                        :url              url
+                        :method           method
+                        :headers          (cond-> {"Accept" "application/json" "Content-Type" "application/json" "apikey" api-key}
+                                            token (assoc "Authorization" (str "Bearer " token)))
+                        :body             (when (some? body) (json/write-json-str body))
+                        :as               :text
+                        :timeout          timeout-ms
+                        :follow-redirects false
+                        :keepalive        -1
                       ;; Abort active responses after the caller's deadline too.
-                         :filter           (reify IFilter
-                                             (^boolean accept [_ ^java.util.Map _headers] (< (System/nanoTime) deadline))
-                                             (^boolean accept [_ ^org.httpkit.DynamicBytes _body] (< (System/nanoTime) deadline)))}))
+                        :filter           (reify IFilter
+                                            (^boolean accept [_ ^Map _headers] (< (System/nanoTime) deadline))
+                                            (^boolean accept [_ ^DynamicBytes _body] (< (System/nanoTime) deadline)))}))
         {:keys [status headers body error]}
         (try
           ;; Include synchronous DNS and body reads in the caller's deadline.

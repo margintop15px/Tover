@@ -1,5 +1,6 @@
 (ns tover.shared.jdbc
   (:require
+    [bel-postgres.jdbc]
     [com.brunobonacci.mulog :as mu]
     [hikari-cp.core :as hikari]
     [next.jdbc :as jdbc]))

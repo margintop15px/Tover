@@ -1,18 +1,23 @@
 ;; Focused adaptation of HVN's typed input, pure rendering and SSE dispatch.
 (ns bel.handler
   (:require
-    [bel.core :as core]
-    [bel.log :as log]
-    [bel.validation :as validation]
-    [charred.api :as charred]
-    [clojure.string :as str]
-    [com.brunobonacci.mulog :as mu]
-    [dev.onionpancakes.chassis.core :as chassis]
-    [reitit.core :as reitit]
-    [reitit.ring :as ring]
-    [ring.util.codec :as codec]
-    [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
-    [starfederation.datastar.clojure.api :as datastar]) (:import [java.io IOException]))
+   [bel.core :as core]
+   [bel.log :as log]
+   [bel.runtime :as runtime]
+   [bel.validation :as validation]
+   [charred.api :as charred]
+   [clojure.string :as str]
+   [com.brunobonacci.mulog :as mu]
+   [dev.onionpancakes.chassis.core :as chassis]
+   [reitit.core :as reitit]
+   [reitit.ring :as ring]
+   [ring.util.codec :as codec]
+   [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
+   [starfederation.datastar.clojure.api :as datastar])
+  (:import
+   [clojure.lang ExceptionInfo]
+   [java.io IOException]
+   [reitit.core Match]))
 
 
 (def Prepared
@@ -40,11 +45,17 @@
   {:malli/schema [:=> [:cat :map :qualified-keyword :map] core/Result]}
   [context id input]
   (if-let [definition (core/get-view id)]
-    (let [{:bel/keys [query fn output schema]} definition
-          input (validation/decode-input schema input)
-          data (mu/trace ::view-query [:view id] (query context input))]
+    (let [{:bel/keys [query fn output schema read-model signal]} definition
+          input                                                  (validation/decode-input schema input)
+          data                                                   (mu/trace ::view-query [:view id]
+                                                                   (let [data (query context input)]
+                                                                     (if read-model {:model (runtime/read-model context read-model data) :input input} data)))]
       (mu/trace ::view-render [:view id]
-        (validation/check! output (fn data))))
+        (let [result (fn data)]
+          (if signal
+            ;; A scalar signal replaces the whole snapshot under JSON Merge Patch.
+            {:type :signals :data {signal (validation/signal-json output result)}}
+            (validation/check! output result)))))
     (throw (ex-info "Undeclared view" {:type :validation :id id}))))
 
 
@@ -120,18 +131,31 @@
 
 
 (defn execute-action
-  {:malli/schema [:=> [:cat :map :qualified-keyword :map] core/ActionResult]}
+  {:malli/schema [:=> [:cat :map :qualified-keyword :map] core/ActionResponse]}
   [context id input]
   (if-let [definition (core/get-action id)]
     (let [{:bel/keys [fn output schema]} definition
-          input (try
-                  (validation/decode-input schema input)
-                  (catch clojure.lang.ExceptionInfo error
-                    (if (= :validation (:type (ex-data error)))
-                      (throw (ex-info (.getMessage error) (assoc (ex-data error) :bel/input-error? true) error))
-                      (throw error))))]
+          input                          (try
+                                           (validation/decode-input schema input)
+                                           (catch ExceptionInfo error
+                                             (if (= :validation (:type (ex-data error)))
+                                               (throw (ex-info (.getMessage error) (assoc (ex-data error) :bel/input-error? true) error))
+                                               (throw error))))]
       (mu/trace ::action [:action id]
-        (validation/check! core/ActionResult (validation/check! output (fn context input)))))
+        (let [result (validation/check! (if (= output core/ActionResult)
+                                          output
+                                          [:and core/ActionResult output])
+                                        (fn context input))]
+          (if (= :command (:type result))
+            (try
+              (runtime/execute! context (:id result) (select-keys result [:command-id :input]))
+              (:then result)
+              (catch ExceptionInfo error
+                (if (and (:catch result) (not (:retryable? (ex-data error)))
+                         (not (contains? #{:forbidden :configuration :conflict} (:type (ex-data error)))))
+                  (assoc-in (:catch result) [:input :error] (assoc (ex-data error) :message (.getMessage error)))
+                  (throw error))))
+            result))))
     (throw (ex-info "Undeclared action" {:type :validation :id id}))))
 
 
@@ -157,17 +181,17 @@
   [request prepared]
   (let [trace-context (log/capture-context)]
     (hk/->sse-response
-      request
-      {hk/write-profile hk/buffered-writer-profile
-       hk/on-open
-       (fn [sse]
-         (mu/with-context trace-context
-           (try
-             (send-prepared! sse prepared)
-             (catch Exception exception
-               (log-error! exception))
-             (finally
-               (datastar/close-sse! sse)))))})))
+     request
+     {hk/write-profile hk/buffered-writer-profile
+      hk/on-open
+      (fn [sse]
+        (mu/with-context trace-context
+          (try
+            (send-prepared! sse prepared)
+            (catch Exception exception
+              (log-error! exception))
+            (finally
+              (datastar/close-sse! sse)))))})))
 
 
 (defn- request-context
@@ -263,7 +287,7 @@
   [request {:keys [id input path-params]}]
   (let [router (:reitit.core/router request)
         match  (when router (reitit/match-by-name router id (or path-params {})))
-        url    (when (instance? reitit.core.Match match)
+        url    (when (instance? Match match)
                  (reitit/match->path match input))]
     (when-not (and url (core/get-page id)
                    (= id (get-in match [:result :get :data :bel/page])))
@@ -305,11 +329,11 @@
     (let [{:keys [url]} (destination request instruction)]
       (if (datastar/datastar-request? request)
         (hk/->sse-response
-          request
-          {:headers   {"Content-Type" "text/event-stream; charset=utf-8"}
-           hk/on-open (fn [sse]
-                        (try (datastar/redirect! sse url)
-                             (finally (datastar/close-sse! sse))))})
+         request
+         {:headers   {"Content-Type" "text/event-stream; charset=utf-8"}
+          hk/on-open (fn [sse]
+                       (try (datastar/redirect! sse url)
+                            (finally (datastar/close-sse! sse))))})
         {:status 303 :headers {"location" url} :body ""}))))
 
 

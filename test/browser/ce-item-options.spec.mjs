@@ -158,9 +158,16 @@ test('catalogue free text survives failed lookups and acknowledges the resolved 
   await expect.poll(async () => (await writes(page)).length).toBe(1);
   const [request] = await writes(page);
   expect(request).toEqual({ id: 'row', revision: 4, path: 'reference', lookupKind: 'categories', value: '', referenceName: 'New category' });
+  // An acknowledgement for another intent must leave this pending edit intact.
   await page.evaluate(request => {
     const { grid } = window.fixture;
-    grid.acknowledgeReference(request, 'new-id');
+    grid.acknowledgeSave({ ...request, revision: 3 });
+    grid.acknowledgeSave({ ...request, referenceName: 'Earlier category' });
+  }, request);
+  await expect.poll(() => page.evaluate(() => window.fixture.grid._attempts.size)).toBe(1);
+  await page.evaluate(request => {
+    const { grid } = window.fixture;
+    grid.acknowledgeSave(request);
     const cell = grid.model.rows[0].cells[0];
     grid.model = { ...grid.model, rows: [{ id: 'row', cells: [{ ...cell, value: 'new-id', display: 'New category', target: { ...cell.target, revision: 5 } }] }] };
   }, request);

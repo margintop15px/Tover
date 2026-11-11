@@ -4,7 +4,12 @@
     [clojure.string :as str]
     [malli.core :as m]
     [malli.error :as error]
+    [malli.experimental.time :as time]
     [malli.transform :as mt]))
+
+
+(def Instant
+  (m/deref (m/schema :time/instant {:registry (merge (m/default-schemas) (time/schemas))})))
 
 
 (def input-transformer

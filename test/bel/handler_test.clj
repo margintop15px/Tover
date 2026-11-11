@@ -56,6 +56,24 @@
               (catch Exception exception (:type (ex-data exception)))))))
 
 
+(core/defview snapshot-row
+  {:signal :_rowJson}
+  [data]
+  data)
+
+
+(deftest plain-view-data-is-encoded-as-a-complete-snapshot-by-bel
+  (core/build-registry! ['bel.handler-test])
+  (doseq [payload [{:commandId "C" :row {:name "Nut\"☃" :category "Old"} :rows [1 2]}
+                   {:commandId "D" :row {:name "Bolt"} :rows []}
+                   {:commandId "E" :row nil}]]
+    (let [prepared (handler/prepare-result {} {:type :view :id ::snapshot-row :input payload})
+          signals  (charred/read-json (:json (first prepared)) :key-fn keyword)]
+      (is (= payload (snapshot-row payload)))
+      (is (string? (:_rowJson signals)))
+      (is (= payload (charred/read-json (:_rowJson signals) :key-fn keyword))))))
+
+
 (deftest payload-parsed-and-decoded
   (let [request {:request-method :post
                  :body           (java.io.ByteArrayInputStream. (.getBytes "{\"quantity\":\"42\",\"query\":\"\"}" "UTF-8"))}
@@ -728,3 +746,16 @@
                              (catch Exception error error))))))
     (let [handle (router {:action-result {:type :page :id "invalid-output"}})]
       (is (= 422 (:status (handle (assoc request :body "{}"))))))))
+
+
+(deftest snapshot-views-use-the-declared-output-codec
+  (let [schema [:map [:quantity :int]]
+        data   {:quantity Long/MAX_VALUE}]
+    (with-redefs [core/get-view (constantly {:bel/schema [:map]            :bel/query  core/input-query
+                                             :bel/output schema            :bel/signal :_snapshot
+                                             :bel/fn     (constantly data)})]
+      (let [prepared (handler/prepare-result {} {:type :view :id ::typed-snapshot})
+            wire     (-> prepared first :json (charred/read-json :key-fn keyword)
+                         :_snapshot (charred/read-json :key-fn keyword))]
+        (is (= {:quantity "9223372036854775807"} wire))
+        (is (= data (validation/decode-input schema wire)))))))

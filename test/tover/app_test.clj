@@ -56,6 +56,11 @@
                 request {:request-method :post :uri "/missing"
                          :headers        {"host"             "localhost:3031" "origin" "http://localhost:3031"
                                           "datastar-request" "true"}}]
+            (is (some? (bel/get-action :tover.catalogues.web/save)))
+            (is (nil? (bel/get-action :tover.catalogues.rename.web/save)))
+            (is (nil? (bel/get-view :tover.catalogues.rename.web/row)))
+            (is (nil? (bel/get-action :tover.workspaces.create.web/create)))
+            (is (nil? (bel/get-view :tover.workspaces.create.web/ready)))
             (is (= 403 (:status (handler request))))
             (is (= 403 (:status (handler (update request :headers dissoc "origin")))))
             (is (= 403 (:status (handler (assoc-in request [:headers "origin"] "http://attacker.example")))))

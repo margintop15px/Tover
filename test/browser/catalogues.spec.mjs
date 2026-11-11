@@ -179,6 +179,39 @@ test('save retries are idempotent and cross-workspace relationships are rejected
   } finally { await other.close(); }
 });
 
+test('a late save acknowledgement preserves a newer displayed row', async ({ page }) => {
+  await signIn(page); await open(page, 'goods');
+  const id = await create(page, `Ordering ${Date.now()}`);
+  const result = await page.locator('catalogue-workbench').evaluate((workbench, id) => {
+    const current = workbench.grid.model.rows.find(row => row.id === id);
+    const rowAt = (revision, name) => ({ ...current, cells: current.cells.map(cell => ({
+      ...cell, value: cell.target.path === 'name' ? name : cell.value,
+      target: { ...cell.target, revision },
+    })) });
+    const latest = rowAt(6, 'Latest name');
+    workbench.grid._attempts.set(`${id}:name`, { target: { ...current.cells[0].target, revision: 4 },
+      value: 'Earlier name', state: 'saving' });
+    workbench.grid.model = { ...workbench.grid.model,
+      rows: workbench.grid.model.rows.map(row => row.id === id ? latest : row) };
+    workbench.pending = { kind: 'goods', id, revision: 4, path: 'name', value: 'Earlier name', commandId: 'delayed' };
+    workbench.setStatus('Saving');
+    // Hold the subsequent refresh so it cannot hide a stale acknowledgement patch.
+    const refresh = workbench.refresh;
+    workbench.refresh = () => {};
+    try {
+      workbench.catalogueSave = { commandId: 'delayed', status: 'ok',
+        row: { id, name: 'Earlier name', revision: 5 }, gridRow: rowAt(5, 'Earlier name') };
+      return { row: workbench.grid.model.rows.find(row => row.id === id),
+        pending: workbench.pending, status: workbench.status.textContent, attempts: workbench.grid._attempts.size };
+    } finally { workbench.refresh = refresh; }
+  }, id);
+  expect(result.row.cells[0].value).toBe('Latest name');
+  expect(result.row.cells[0].target.revision).toBe(6);
+  expect(result.pending).toBeNull();
+  expect(result.status).toBe('Saved');
+  expect(result.attempts).toBe(0);
+});
+
 test('rejected names remain editable and a lost save response retries the same request', async ({ page }) => {
   await signIn(page); await open(page, 'goods');
   const id = await create(page, `Recovery ${Date.now()}`);
@@ -387,4 +420,29 @@ test('operation cells suggest catalogue-only suppliers and Transfer warehouses',
     await expect(draftCell(page, transfer, field)).toContainText(place);
   }
   await expect.poll(() => draftGrid(page).evaluate(node => node._attempts.size)).toBe(0);
+});
+
+test('Bel snapshot signals replace omitted fields, shorter arrays and explicit nulls', async ({ page }) => {
+  await signIn(page);
+  await open(page, 'goods');
+  await page.evaluate(() => {
+    const probe = document.createElement('div');
+    probe.id = 'goods-snapshot-probe';
+    probe.dataset.signals__ifmissing = JSON.stringify({ _goodsSnapshotJson: 'null' });
+    probe.dataset.effect = 'el.snapshot=JSON.parse($_goodsSnapshotJson)';
+    document.body.append(probe);
+  });
+  const probe = page.locator('#goods-snapshot-probe');
+  await expect.poll(() => probe.evaluate(node => node.snapshot)).toBe(null);
+  for (const snapshot of [
+    { row: { id: 'G', name: 'Nut"☃', category: 'Old', labels: { category: 'Old', store: 'Main' } }, rows: [1, 2] },
+    { row: { id: 'G', name: 'Bolt', labels: {} }, rows: [] },
+    { row: null },
+  ]) {
+    await page.evaluate(async snapshot => {
+      const { mergePatch } = await import('/datastar.js');
+      mergePatch({ _goodsSnapshotJson: JSON.stringify(snapshot) });
+    }, snapshot);
+    await expect.poll(() => probe.evaluate(node => node.snapshot)).toEqual(snapshot);
+  }
 });

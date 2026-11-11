@@ -67,9 +67,12 @@ playwright/.auth/
 /.migration-backups/
 /.pal/
 /.playwright-mcp/
+/.clj-xref/
 
 .claude/
 .superpowers/
+.codex/
+.junie/
 
 # Python deployment helpers
 __pycache__/

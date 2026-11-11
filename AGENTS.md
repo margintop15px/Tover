@@ -1,9 +1,37 @@
 <!-- jbcontext-instructions-start -->
-# Semantic code search
+# Tools
 
-Use `jbcontext search "<focused description>"` before planning, editing or exact search in unfamiliar code. Use `jbcontext search -p <relative-path> "<query>"` to narrow a known area. Read promising files directly after a relevant hit.
+## Semantic Code Search (jbcontext)
 
-For broader or multi-step exploration, delegate to `context_explorer` with `fork_turns="none"`. Give it a focused intent. While it runs, read only already-known relevant files; call `wait_agent` after that work. Do not repeat broad searches or duplicate the delegated exploration. If the index lacks new files, use focused direct reads or `rg` in the known area.
+You have access to `jbcontext search` for searching the codebase semantically.
+Use the `/context-search` skill or run `jbcontext search "<query>"` to find code by meaning, not just keywords.
+
+### Query Tips
+
+- Be descriptive: "Where is a function that validates user email addresses" > "email"
+- Include context: "Find error handling middleware for HTTP requests with logging"
+- Specify what you're looking for: "React component that renders a modal dialog"
+
+### When to use
+
+`jbcontext search` is a **code-discovery** tool. Reach for it only when a task requires finding or understanding code whose location you don't already know.
+
+Skip it - go straight to the right tool - when:
+
+- the task names the exact file, class, or symbol (keyword grep is faster);
+- the relevant file is already open or identified;
+- the task doesn't involve locating code at all - git operations (rebase, merge, commit), running tests or builds, shell/statusline/config setup, or reviewing a diff you already have.
+
+### How to use it
+
+- Start with `jbcontext search` before planning, editing, or exact search in unfamiliar code when you do not yet know the right file, subsystem, implementation, or related test.
+- Use one focused natural-language query per search.
+- Do not start with grep, ripgrep, or find when the search problem is still semantic or exploratory.
+- Inspect the first relevant file or directory before issuing another broad semantic search.
+- Use another broad `jbcontext search` only if the local path stops being productive.
+- Once you know the relevant file, symbol, or directory, switch to direct file reads or exact search for local inspection.
+- If you search again after finding a relevant area, narrow with `-p <path>`.
+
 <!-- jbcontext-instructions-end -->
 
 ## Clojure and REPL Rules
@@ -86,7 +114,7 @@ The development alias is required for tests because Kaocha hooks and instrumenta
 - `test`: Clojure tests; `test/browser` has independent Playwright tooling.
 - `supabase/migrations`: immutable SQL history; 033 supports fresh identity installation and upgrade from 032. See `docs/identity-deployment.md` for the local Auth/Postgres/PostgREST profile.
 - `docs/legacy-contracts`: historical behavior and sanitized fixtures for later ports. Do not treat legacy inventory semantics as new requirements.
-- `experiments/inventory-rdf`: historical offline proof. Its containment model is superseded by the current specifications.
+- `docs/bel-experiment-findings.md`: historical findings from retired experiments; use `docs/bel-dsl-proposal.md` and `docs/bel-next-milestone.md` for the proposed direction and next bounded step.
 
 Keep changes small and testable. Identity, workspace isolation, durable shared drafts and atomic ledger Submit are implemented. Default development uses the local self-hosted profile (`TOVER_IDENTITY_MODE=local`). Production requires credentials and has no fixture fallback. Browser adapters forward edits and render authoritative server results. Imports, marketplace integrations, uploads and accounting reports remain deferred.
 

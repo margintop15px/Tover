@@ -120,13 +120,17 @@ class CatalogueWorkbench extends HTMLElement {
     const request = this.pending; this.pending = null;
     if (response.status === 'ok') {
       this.commands.delete(JSON.stringify([request.id, request.revision, request.path, request.value, request.referenceName]));
+      (request.id === this.newId ? this.newGrid : this.grid).acknowledgeSave(request);
       if (request.id === this.newId) {
         this.newGrid.model = { ...this.newGrid.model, rows: [response.gridRow] };
         this.newGrid.hidden = true; this.newId = null; this.focusId = request.id;
       } else if (response.gridRow) {
-        this.grid.acknowledgeReference(request, response.row[request.path]);
-        this.grid.model = { ...this.grid.model, editStates: response.gridRow.cells,
-          rows: this.grid.model.rows.map(row => row.id === request.id ? { ...row, ...response.gridRow } : row) };
+        const current = this.grid.model.rows.find(row => row.id === request.id);
+        const newer = current?.cells.some(cell => Number(cell.target?.revision) > Number(response.row.revision));
+        if (!newer) {
+          this.grid.model = { ...this.grid.model, editStates: response.gridRow.cells,
+            rows: this.grid.model.rows.map(row => row.id === request.id ? { ...row, ...response.gridRow } : row) };
+        }
       }
       this.setStatus('Saved');
       this.refresh({ anchorId: request.id });

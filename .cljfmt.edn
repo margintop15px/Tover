@@ -10,10 +10,15 @@
  :paths ["src" "dev" "test"]
  :extra-indents
  {tover.shared.rdf/with-transaction [[:block 1]]
+  bel-rdf.core/with-transaction          [[:block 1]]
   com.brunobonacci.mulog/trace        [[:block 2]]
   com.brunobonacci.mulog/with-context [[:block 1]]
   bel.core/defpage           [[:inner 0]]
   bel.core/defview           [[:inner 0]]
   bel.core/defaction         [[:inner 0]]
   bel.core/defstream         [[:inner 0]]
+  bel.core/defevent          [[:inner 0]]
+  bel.core/defmodel          [[:inner 0]]
+  bel.core/defcommand        [[:inner 0]]
+  bel.core/defreadmodel      [[:inner 0]]
   bel.expressions/->expr     [[:inner 0]]}}

@@ -1,0 +1,394 @@
+(ns workspace-creation-integration
+  "Run only through scripts/test-bel-workspace.sh against its newly created cluster."
+  (:require
+    [bel-postgres.adapter :as pg]
+    [bel-postgres.journal :as journal-store]
+    [bel.core :as bel]
+    [bel.core-test :as fixture]
+    [bel.handler :as handler]
+    [bel.journal :as journal]
+    [bel.runtime :as runtime]
+    [charred.api :as json]
+    [clojure.java.io :as io]
+    [clojure.string :as str]
+    [clojure.test :as test :refer [deftest is use-fixtures]]
+    [instrumentation :as instrumentation]
+    [next.jdbc :as jdbc]
+    [next.jdbc.result-set :as rs]
+    [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
+    [starfederation.datastar.clojure.api :as datastar]
+    [taoensso.nippy :as nippy]
+    [tover.shared.bel :as wiring]
+    [tover.workspaces.create.model :as model]
+    [tover.workspaces.create.web :as web])
+  (:import
+    [java.nio.file Files]
+    [java.time Instant]
+    [java.util.concurrent CountDownLatch TimeUnit]))
+
+
+(defn db [role]
+  (jdbc/get-datasource {:jdbcUrl (System/getenv "TOVER_BEL_TEST_URL") :user role}))
+
+
+(defn admin! [statement]
+  (jdbc/execute-one! (db "postgres") statement {:builder-fn rs/as-unqualified-lower-maps}))
+
+
+(defn error-data [f]
+  (try (f) nil (catch clojure.lang.ExceptionInfo error (ex-data error))))
+
+
+(defn register [f]
+  (bel/build-registry! ['tover.workspaces.create.model 'tover.workspaces.create.web])
+  (f))
+
+
+(use-fixtures :each fixture/isolated-registry register)
+
+
+(defn context
+  ([] (context {}))
+  ([{:keys [confirmed? name recovery?] :or {confirmed? true name "Alice"}}]
+   (let [user-id     (random-uuid)
+         session-id  (random-uuid)
+         session-key (str "test-session-" (random-uuid))]
+     (admin! ["insert into auth.users(id,email,email_confirmed_at,raw_user_meta_data) values(?,?,case when ? then now() end,?::jsonb)"
+              user-id (str user-id "@example.test") confirmed? (json/write-json-str {:name name})])
+     (admin! ["insert into app_private.sessions(id,user_id,data) values(?,?,?)"
+              session-key user-id (pr-str {:bel/session-id session-id :identity/password-required? (boolean recovery?)})])
+     {:bel/runtime (wiring/runtime-config :postgres)
+      :datasource  (db "tover_app")                  :user-id user-id :session-id session-id :auth-session-id session-key})))
+
+
+(defn request []
+  {:command-id (str (random-uuid)) :input {:workspace-id (random-uuid) :name "Workshop"}})
+
+
+(defn execute [ctx req]
+  (runtime/execute! ctx ::model/create-workspace req))
+
+
+(defn current [ctx req]
+  (runtime/read-model ctx ::model/created-workspace
+                      {:command-id (:command-id req) :workspace-id (get-in req [:input :workspace-id])}))
+
+
+(defn counts [ctx req]
+  (let [id (get-in req [:input :workspace-id])]
+    (mapv (fn [statement] (:n (admin! statement)))
+          [["select count(*) as n from public.organizations where id=?" id]
+           ["select count(*) as n from public.organization_memberships where organization_id=?" id]
+           ["select count(*) as n from app_private.bel_events where scope_id=? and command_id=?" (:user-id ctx) (:command-id req)]
+           ["select count(*) as n from app_private.bel_receipts where scope_id=? and command_id=?" (:user-id ctx) (:command-id req)]])))
+
+
+(deftest create-retry-normalization-and-native-domain-data
+  (let [ctx     (context) req (request)
+        receipt (execute ctx (-> req (assoc-in [:input :name] "  Workshop  ")
+                                 (update-in [:input :workspace-id] (comp str/upper-case str))))]
+    (is (= :accepted (:status receipt)))
+    (is (= 2 (count (:event-ids receipt))))
+    (is (every? uuid? (:event-ids receipt)))
+    (is (= [1 1 2 1] (counts ctx req)))
+    (is (= receipt (execute ctx req)))
+    (is (= {:workspace-id (get-in req [:input :workspace-id]) :name "Workshop" :role "owner" :can-open? true}
+           (current ctx req)))
+    (is (= :idempotency-conflict (:type (error-data #(execute ctx (assoc-in req [:input :name] "Other"))))))
+    (is (nil? (:workspace_id (admin! ["select workspace_id from app_private.sessions where id=?" (:auth-session-id ctx)]))))
+    (let [workspace (runtime/read-model ctx ::model/workspaces (:input req))
+          event     (admin! ["select id,actor_id,occurred_at,data from app_private.bel_events where scope_id=? and event_type=?"
+                             (:user-id ctx) "tover.workspaces.create.model/workspace-created"])]
+      (is (= "Workshop" (:name workspace)))
+      (is (= (get-in req [:input :workspace-id]) (:workspace-id workspace)))
+      (is (= (:user-id ctx) (:created-by workspace) (:actor_id event)))
+      (is (instance? Instant (:created-at workspace)))
+      (is (= (:created-at workspace) (:occurred_at event)))
+      (is (uuid? (:id event)))
+      ;; JSON has strings; UUID columns, model reads and receipts retain native values.
+      (is (= (str (:workspace-id workspace)) (get-in event [:data :workspace-id]))))
+    (let [row    (admin! ["select payload from app_private.bel_receipts where scope_id=? and command_id=?"
+                          (:user-id ctx) (:command-id req)])
+          stored (nippy/thaw (:payload row))]
+      (is (= receipt (get-in stored [:result :receipt])))
+      (is (= (:user-id ctx) (get-in stored [:request :actor])))
+      (is (= (:input req) (get-in stored [:request :input])))
+      (is (not (str/includes? (pr-str stored) (:auth-session-id ctx))))
+      (is (= {:user-id (:user-id ctx)} (get-in stored [:request :scope]))))))
+
+
+(deftest rollback-at-every-persistence-stage
+  (doseq [[stage target] [[#'journal-store/append-event! nil]
+                          [#'pg/insert-model! ::model/workspaces]
+                          [#'pg/insert-model! ::model/memberships]
+                          [#'journal-store/save-receipt! nil]]]
+    (let [ctx (context) req (request) original @stage touched (atom false)]
+      (with-redefs-fn {stage (fn [& args]
+                               (let [result (apply original args)]
+                                 (when (or (nil? target) (= target (:model-id (second args))))
+                                   (reset! touched true)
+                                   (throw (ex-info "Injected failure" {:type :injected})))
+                                 result))}
+        #(is (= :injected (:type (error-data (fn [] (execute ctx req)))))))
+      (is @touched)
+      (is (= [0 0 0 0] (counts ctx req)))
+      (is (= :accepted (:status (execute ctx req)))))))
+
+
+(deftest user-receipts-survive-another-session-without-changing-its-selection
+  (let [ctx       (context)
+        req       (request)
+        receipt   (execute ctx req)
+        other-id  (random-uuid)
+        other-key (str "test-session-" (random-uuid))
+        other     (assoc ctx :session-id other-id :auth-session-id other-key :workspace-id (random-uuid))]
+    (admin! ["insert into app_private.sessions(id,user_id,data) values(?,?,?)"
+             other-key (:user-id ctx) (pr-str {:bel/session-id other-id})])
+    (is (= receipt (execute other req)))
+    (is (= (current ctx req) (current other req)))
+    (is (= [1 1 2 1] (counts ctx req)))))
+
+
+(deftest names-and-identities-validate-before-any-write
+  (let [ctx (context)]
+    (doseq [input [{:workspace-id (str (random-uuid)) :name "  "}
+                   {:workspace-id (str (random-uuid)) :name (apply str (repeat 201 "x"))}
+                   {:workspace-id "not-a-uuid" :name "Workshop"}]]
+      (is (= :validation (:type (error-data #(execute ctx {:command-id "invalid" :input input}))))))
+    (let [first-request  (request)
+          second-request (request)]
+      (is (= :accepted (:status (execute ctx first-request))))
+      (is (= :accepted (:status (execute ctx second-request))))
+      (is (not= (get-in first-request [:input :workspace-id]) (get-in second-request [:input :workspace-id]))))))
+
+
+(deftest malformed-input-is-a-validation-response
+  (let [ctx    (context)                    req (request)
+        handle (handler/action-handler ctx)]
+    (doseq [[field value] [[:name nil] [:name 42] [:name ["Workshop"]]
+                           [:workspace-id nil] [:workspace-id 42] [:workspace-id []]]]
+      (let [input (assoc (:input req) :command-id (:command-id req) field value)]
+        (is (= 422 (:status (handle {:request-method    :post :body (json/write-json-str input)
+                                     :headers           {"content-type" "application/json"}
+                                     :reitit.core/match {:result {:post {:data {:bel/action ::web/create}}}}}))))))
+    (is (= [0 0 0 0] (counts ctx req)))))
+
+
+(deftest a-unique-conflict-can-recover-a-matching-acceptance
+  (let [ctx          (context)       req         (request)   accepted (execute ctx req)
+        read-receipt journal/receipt first-read? (atom true)]
+    ;; Reproduce the missed receipt followed by a real uniqueness failure.
+    (with-redefs [journal/receipt (fn [context command-id]
+                                    (when-not (compare-and-set! first-read? true false)
+                                      (read-receipt context command-id)))]
+      (is (= accepted (execute ctx req))))
+    (is (= [1 1 2 1] (counts ctx req)))))
+
+
+(deftest overlapping-retries-have-one-acceptance
+  (let [ctx     (context) req (request) gate (CountDownLatch. 2) decide model/create-workspace
+        results (with-redefs [model/create-workspace
+                              (fn [facts input]
+                                (.countDown gate)
+                                (when-not (.await gate 10 TimeUnit/SECONDS)
+                                  (throw (ex-info "Decisions did not overlap" {:type :test-timeout})))
+                                (decide facts input))]
+                  (let [jobs (mapv (fn [_] (future (try (execute ctx req) (catch Exception e e)))) (range 2))]
+                    (try (mapv #(deref % 15000 ::timeout) jobs)
+                         (finally (doseq [job jobs] (future-cancel job))))))
+        receipt (execute ctx req)]
+    (is (some #{receipt} results))
+    (is (not-any? #{::timeout} results))
+    (doseq [result results :when (instance? Exception result)]
+      (is (= {:type :conflict :retryable? true :command-id (:command-id req)} (ex-data result))))
+    (is (= [1 1 2 1] (counts ctx req)))))
+
+
+(deftest isolation-and-no-overwrite-of-existing-workspaces
+  (let [alice   (context)           bob (context) req (request)
+        receipt (execute alice req)]
+    (is (= :creation-unconfirmed (:type (error-data #(current bob req)))))
+    (is (nil? (runtime/read-model bob ::model/workspaces (:input req))))
+    (doseq [_ (range 2)]
+      (let [problem (error-data #(execute bob (assoc-in req [:input :name] "Stolen")))]
+        (is (= :identity-conflict (:type problem)))
+        (is (not (:retryable? problem)))))
+    (is (= [1 1 0 0] (counts bob req)))
+    (is (= "Workshop" (:name (current alice req))))
+    (is (= receipt (execute alice req)))
+    (is (= :identity-conflict (:type (error-data #(execute alice (assoc req :command-id "different-attempt"))))))))
+
+
+(deftest current-identity-profile-and-session-are-required
+  (doseq [[options expected] [[{:confirmed? false} :forbidden]
+                              [{:recovery? true} :forbidden]
+                              [{:name "  "} :profile-incomplete]
+                              [{:name (apply str (repeat 101 "a"))} :profile-incomplete]]]
+    (let [ctx (assoc (context options) :confirmed? true :password-required? false) req (request)]
+      (is (= expected (:type (error-data #(execute ctx req)))))
+      (is (= [0 0 0 0] (counts ctx req)))))
+  (let [ctx (context) req (request)]
+    (is (= :forbidden (:type (error-data #(execute (assoc ctx :session-id (random-uuid)) req)))))
+    (admin! ["update app_private.sessions set expires_at=now()-interval '1 minute' where id=?" (:auth-session-id ctx)])
+    (is (= :forbidden (:type (error-data #(execute ctx req)))))
+    (is (= [0 0 0 0] (counts ctx req)))))
+
+
+(deftest retries-do-not-restore-access-and-user-scope-ignores-selection
+  (let [ctx          (context) req (request) receipt (execute ctx req)
+        workspace-id (get-in req [:input :workspace-id])]
+    (admin! ["update public.organization_memberships set status='suspended' where organization_id=?" workspace-id])
+    (admin! ["update public.profiles set display_name='' where user_id=?" (:user-id ctx)])
+    (is (= receipt (execute (assoc ctx :workspace-id (random-uuid)) req)))
+    (is (false? (:can-open? (current ctx req))))
+    (is (not (contains? (current ctx req) :role)))
+    (is (nil? (runtime/read-model ctx ::model/workspaces {:workspace-id (str workspace-id)})))
+    (is (= [1 1 2 1] (counts ctx req)))
+    (admin! ["update app_private.sessions set user_id=? where id=?" (:user-id (context)) (:auth-session-id ctx)])
+    (is (= :forbidden (:type (error-data #(execute ctx req)))))))
+
+
+(deftest acceptance-waits-for-profile-change-and-sees-its-result
+  (let [ctx (context) req (request)]
+    (with-open [connection (jdbc/get-connection (db "postgres"))]
+      (.setAutoCommit connection false)
+      (jdbc/execute-one! connection ["update public.profiles set display_name='' where user_id=?" (:user-id ctx)])
+      (let [job (future (error-data #(execute ctx req)))]
+        (try
+          (is (= ::waiting (deref job 200 ::waiting)))
+          (.commit connection)
+          (is (contains? #{:profile-incomplete :conflict} (:type (deref job 10000 {}))))
+          (is (= :profile-incomplete (:type (error-data #(execute ctx req)))))
+          (is (= [0 0 0 0] (counts ctx req)))
+          (finally (.rollback connection) (future-cancel job)))))))
+
+
+(deftest session-revocation-before-acceptance-prevents-writes
+  (let [ctx (context) req (request)]
+    (with-open [connection (jdbc/get-connection (db "postgres"))]
+      (.setAutoCommit connection false)
+      (jdbc/execute-one! connection ["update app_private.sessions set expires_at=now()-interval '1 minute' where id=?"
+                                     (:auth-session-id ctx)])
+      (let [started (promise)
+            job     (future (deliver started true) (error-data #(execute ctx req)))]
+        (try
+          (is (= true (deref started 10000 ::timeout)))
+          (is (= ::waiting (deref job 200 ::waiting)))
+          (.commit connection)
+          (is (contains? #{:forbidden :conflict} (:type (deref job 10000 {}))))
+          (is (= :forbidden (:type (error-data #(execute ctx req)))))
+          (is (= [0 0 0 0] (counts ctx req)))
+          (finally (.rollback connection) (future-cancel job)))))))
+
+
+(deftest acceptance-holds-session-authority-through-commit
+  (let [ctx (context) req (request) save journal-store/save-receipt! staged (promise) resume (promise)]
+    (with-redefs [journal-store/save-receipt!
+                  (fn [context invocation result]
+                    (let [inserted? (save context invocation result)]
+                      (deliver staged true)
+                      (assert (= true (deref resume 10000 ::timeout)))
+                      inserted?))]
+      (let [acceptance (future (execute ctx req))]
+        (try
+          (is (= true (deref staged 10000 ::timeout)))
+          (let [started    (promise)
+                revocation (future
+                             (deliver started true)
+                             (admin! ["update app_private.sessions set expires_at=now()-interval '1 minute' where id=?"
+                                      (:auth-session-id ctx)]))]
+            (try
+              (is (= true (deref started 10000 ::timeout)))
+              (is (= ::waiting (deref revocation 200 ::waiting)))
+              (deliver resume true)
+              (is (= :accepted (:status (deref acceptance 10000 {}))))
+              (is (not= ::timeout (deref revocation 10000 ::timeout)))
+              (finally (deliver resume true) (future-cancel revocation))))
+          (finally (deliver resume true) (future-cancel acceptance)))))
+    (is (= :forbidden (:type (error-data #(execute ctx req)))))
+    (is (= [1 1 2 1] (counts ctx req)))))
+
+
+(deftest uncommitted-work-is-invisible
+  (let [ctx (context) req (request) save journal-store/save-receipt! staged (promise) resume (promise)]
+    (with-redefs [journal-store/save-receipt!
+                  (fn [context invocation result]
+                    (let [inserted? (save context invocation result)]
+                      (deliver staged true)
+                      (assert (= true (deref resume 10000 ::timeout)))
+                      inserted?))]
+      (let [job (future (execute ctx req))]
+        (try
+          (is (= true (deref staged 10000 ::timeout)))
+          (is (= [0 0 0 0] (counts ctx req)))
+          (deliver resume true)
+          (is (= :accepted (:status (deref job 10000 {}))))
+          (finally (deliver resume true) (future-cancel job)))))
+    (is (= [1 1 2 1] (counts ctx req)))))
+
+
+(deftest plain-action-ring-view-and-render-recovery
+  (let [ctx (context) req (request) input (assoc (:input req) :command-id (:command-id req)) events (atom [])]
+    (with-redefs [runtime/execute! (fn [& _] (throw (Exception. "Action must be pure")))]
+      (is (= ::model/create-workspace (:id (web/create {} input)))))
+    (with-redefs [hk/->sse-response      (fn [_ options] ((get options hk/on-open) nil) {:status 200})
+                  handler/send-prepared! (fn [_ result] (swap! events into result))
+                  datastar/close-sse!    (fn [_])]
+      (is (= 200 (:status ((handler/action-handler ctx)
+                           {:request-method    :post :body (json/write-json-str input)
+                            :headers           {"content-type" "application/json"}
+                            :reitit.core/match {:result {:post {:data {:bel/action ::web/create}}}}})))))
+    (is (some #(str/includes? (pr-str %) "Workspace created") @events))
+    (let [receipt (execute ctx req) result (handler/execute-action ctx ::web/create input)]
+      (with-redefs [web/ready (fn [_] (throw (ex-info "Rendering unavailable" {:type :injected})))]
+        (is (= :injected (:type (error-data #(handler/prepare-result ctx result))))))
+      (is (= receipt (execute ctx req)))
+      (is (str/includes? (handler/render-html (:html (handler/render-view ctx ::web/ready (:input result)))) "Workshop")))))
+
+
+(deftest runtime-role-has-no-data-api-or-rewrite-capability
+  (doseq [table ["app_private.bel_events" "app_private.bel_receipts"]]
+    (is (false? (:allowed (admin! ["select has_table_privilege('authenticated',?,'SELECT') as allowed" table]))))
+    (is (false? (:allowed (admin! ["select has_table_privilege('tover_app',?,'UPDATE') as allowed" table])))))
+  (doseq [table ["public.organizations" "public.organization_memberships"]]
+    (is (false? (:allowed (admin! ["select has_table_privilege('tover_app',?,'UPDATE') as allowed" table]))))
+    (is (false? (:allowed (admin! ["select has_table_privilege('tover_app',?,'DELETE') as allowed" table])))))
+  (is (false? (:allowed (admin! ["select has_table_privilege('tover_app','auth.users','SELECT') as allowed"])))))
+
+
+(deftest restart-receipt
+  (let [file (io/file (System/getenv "TOVER_BEL_TEST_STATE"))]
+    (if (= "1" (System/getenv "TOVER_BEL_RESTART_CHECK"))
+      (let [{:keys [context request receipt]} (nippy/thaw (Files/readAllBytes (.toPath file)))
+            ctx (assoc context :datasource (db "tover_app"))]
+        (is (= receipt (execute ctx request)))
+        (is (= "Workshop" (:name (current ctx request))))
+        (is (= [1 1 2 1] (counts ctx request))))
+      (let [ctx (context) req (request) receipt (execute ctx req)]
+        (with-open [out (io/output-stream file)]
+          (.write out ^bytes (nippy/freeze {:context (dissoc ctx :datasource) :request req :receipt receipt})))
+        (is (= [1 1 2 1] (counts ctx req)))))))
+
+
+(defn -main [& _]
+  (let [url  (System/getenv "TOVER_BEL_TEST_URL")
+        root (System/getenv "TOVER_BEL_TEST_ROOT")]
+    (when-not (and url root (str/starts-with? url "jdbc:postgresql://127.0.0.1:")
+                   (str/starts-with? root "/private/tmp/tover-bel-workspace."))
+      (throw (ex-info "Use scripts/test-bel-workspace.sh; an existing database is not a test target" {})))
+    (when-not (= (System/getenv "TOVER_BEL_TEST_DATA_DIRECTORY")
+                 (:data_directory (admin! ["show data_directory"])))
+      (throw (ex-info "Refusing a database outside the disposable cluster" {}))))
+  (require 'goods-journal-integration)
+  (instrumentation/start!)
+  (let [result (try
+                 (if (= "1" (System/getenv "TOVER_BEL_RESTART_CHECK"))
+                   (binding [test/*report-counters* (ref test/*initial-report-counters*)]
+                     (test/test-vars [#'restart-receipt (resolve 'goods-journal-integration/restart-delivery)])
+                     (let [result @test/*report-counters*]
+                       (test/do-report (assoc result :type :summary)) result))
+                   (test/run-tests 'workspace-creation-integration 'goods-journal-integration))
+                 (finally (instrumentation/stop!) (shutdown-agents)))]
+    (flush)
+    ;; The disposable runner restarts the stores after an abrupt exit, without JVM shutdown hooks.
+    (.halt (Runtime/getRuntime) (if (zero? (+ (:fail result) (:error result))) 0 1))))

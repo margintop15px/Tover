@@ -14,7 +14,7 @@
 (defn isolated-registry
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [run-test]
-  (with-redefs [core/registry (atom {:pages {} :views {} :actions {} :streams {}})]
+  (with-redefs [core/registry (atom {:pages {} :views {} :actions {} :streams {} :events {} :commands {} :models {} :read-models {}})]
     (run-test)))
 
 
@@ -107,7 +107,7 @@
       (is (nil? (core/get-page :bel.fixture/document)))
       (ns-unmap namespace 'temporary)
       (core/build-registry! [namespace-symbol])
-      (is (= {:pages {} :views {} :actions {} :streams {}} @core/registry))
+      (is (= {:pages {} :views {} :actions {} :streams {} :events {} :commands {} :models {} :read-models {}} @core/registry))
       (is (nil? (core/get-view :bel.discovery-fixture.temporary/temporary)))
       (finally
         (remove-ns namespace-symbol)))))

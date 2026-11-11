@@ -280,9 +280,12 @@ export class InventoryGrid extends HTMLElement {
     state.select.setAttribute('aria-busy', 'true'); state.select.title = t(state.catalogue ? 'Loading records…' : 'Loading operations…');
     this._emit(state.catalogue ? 'inventory-catalogue-options' : 'inventory-reference-options', { requestId: state.requestId, text, target: { ...state.target } });
   }
-  acknowledgeReference(target, value) {
-    const attempt = this._attempts.get(pathKey(target));
-    if (attempt?.referenceName && attempt.referenceName === target.referenceName && versionKey(attempt.target) === versionKey(target)) attempt.value = value;
+  acknowledgeSave(target) {
+    const key = pathKey(target), attempt = this._attempts.get(key);
+    if (attempt && versionKey(attempt.target) === versionKey(target) &&
+        (attempt.referenceName ? attempt.referenceName === target.referenceName : sameValue(attempt.value, target.value))) {
+      this._dismissAttempt(key, target);
+    }
   }
   _showWindowStatus(status) {
     if (!this._windowNotice) return;
