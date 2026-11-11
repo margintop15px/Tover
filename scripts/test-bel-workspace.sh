@@ -29,7 +29,8 @@ for migration in supabase/tests/auth-stub.sql \
   supabase/migrations/033_identity_and_sessions.sql \
   supabase/migrations/034_workspace_actor_labels.sql \
   supabase/migrations/035_bel_workspace_creation.sql \
-  supabase/migrations/036_bel_shared_journal.sql; do
+  supabase/migrations/036_bel_shared_journal.sql \
+  supabase/migrations/037_profile_preferences.sql; do
   docker exec "$test_container" psql -X -q -U postgres -d postgres \
     -v ON_ERROR_STOP=1 -c 'SET client_min_messages=warning' -f "/work/$migration"
 done
@@ -37,6 +38,9 @@ done
 docker exec "$test_container" psql -X -q -U postgres -d postgres \
   -v ON_ERROR_STOP=1 -c 'SET client_min_messages=warning' \
   -f /work/supabase/migrations/036_bel_shared_journal.sql
+docker exec "$test_container" psql -X -q -U postgres -d postgres \
+  -v ON_ERROR_STOP=1 -c 'SET client_min_messages=warning' \
+  -f /work/supabase/migrations/037_profile_preferences.sql
 # Only the freshly created disposable cluster gets a direct worker login.
 docker exec "$test_container" psql -X -q -U postgres -d postgres \
   -v ON_ERROR_STOP=1 -c 'ALTER ROLE tover_journal LOGIN'

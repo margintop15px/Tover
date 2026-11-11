@@ -34,10 +34,15 @@ check() {
 }
 
 migrate() {
-  "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
-    < "$repo_dir/supabase/migrations/033_identity_and_sessions.sql"
-  "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
-    < "$repo_dir/supabase/migrations/034_workspace_actor_labels.sql"
+  # 033 verifies the exact original profiles shape, so it runs only on a fresh database.
+  if [[ -z "$("${compose[@]}" exec -T db psql -X -At -U postgres -d postgres -c "select to_regclass('app_private.sessions')")" ]]; then
+    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+      < "$repo_dir/supabase/migrations/033_identity_and_sessions.sql"
+  fi
+  for migration in 034_workspace_actor_labels 035_bel_workspace_creation 036_bel_shared_journal 037_profile_preferences; do
+    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+      < "$repo_dir/supabase/migrations/$migration.sql"
+  done
   "${compose[@]}" exec -T db sh -c \
     'psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 --set=app_password="$TOVER_DB_PASSWORD"' <<'SQL'
 ALTER ROLE tover_app WITH PASSWORD :'app_password';

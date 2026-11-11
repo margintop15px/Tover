@@ -230,7 +230,7 @@
   (doseq [[options expected] [[{:confirmed? false} :forbidden]
                               [{:recovery? true} :forbidden]
                               [{:name "  "} :profile-incomplete]
-                              [{:name (apply str (repeat 101 "a"))} :profile-incomplete]]]
+                              [{:name nil} :profile-incomplete]]]
     (let [ctx (assoc (context options) :confirmed? true :password-required? false) req (request)]
       (is (= expected (:type (error-data #(execute ctx req)))))
       (is (= [0 0 0 0] (counts ctx req)))))
@@ -245,7 +245,7 @@
   (let [ctx          (context) req (request) receipt (execute ctx req)
         workspace-id (get-in req [:input :workspace-id])]
     (admin! ["update public.organization_memberships set status='suspended' where organization_id=?" workspace-id])
-    (admin! ["update public.profiles set display_name='' where user_id=?" (:user-id ctx)])
+    (admin! ["update public.profiles set display_name=null where user_id=?" (:user-id ctx)])
     (is (= receipt (execute (assoc ctx :workspace-id (random-uuid)) req)))
     (is (false? (:can-open? (current ctx req))))
     (is (not (contains? (current ctx req) :role)))
@@ -259,7 +259,7 @@
   (let [ctx (context) req (request)]
     (with-open [connection (jdbc/get-connection (db "postgres"))]
       (.setAutoCommit connection false)
-      (jdbc/execute-one! connection ["update public.profiles set display_name='' where user_id=?" (:user-id ctx)])
+      (jdbc/execute-one! connection ["update public.profiles set display_name=null where user_id=?" (:user-id ctx)])
       (let [job (future (error-data #(execute ctx req)))]
         (try
           (is (= ::waiting (deref job 200 ::waiting)))
@@ -430,6 +430,64 @@
   (let [ctx (context)]
     (is (= {:user-id (:user-id ctx) :confirmed? true :password-required? false :memberships []}
            (runtime/with-authority (runtime/prepare-context ctx) #{} :read-committed #(:principal %))))))
+
+
+(defn profile-user!
+  "A confirmed user with a profile name and optional locale metadata."
+  [name locale]
+  (let [user-id (random-uuid)]
+    (admin! ["insert into auth.users(id,email,email_confirmed_at,raw_user_meta_data) values(?,?,now(),?::jsonb)"
+             user-id (str user-id "@example.test") (json/write-json-str (cond-> {:name name} locale (assoc :locale locale)))])
+    user-id))
+
+
+(defn as-app
+  "Runs sql as tover_app with the user's claim; returns rows affected or the SQL state of the failure."
+  [user-id sql]
+  (with-open [connection (jdbc/get-connection (db "tover_app"))]
+    (jdbc/execute-one! connection ["select set_config('request.jwt.claim.sub', ?, false)" (str user-id)])
+    (try (:next.jdbc/update-count (jdbc/execute-one! connection [sql]))
+         (catch java.sql.SQLException error (.getSQLState error)))))
+
+
+(deftest profile-hook-claims
+  (let [user-id (profile-user! "Alice" "ru")
+        active  (random-uuid)
+        revoked (random-uuid)]
+    (doseq [[id workspace-name status] [[active "Active shop" "active"] [revoked "Revoked shop" "suspended"]]]
+      (admin! ["insert into public.organizations(id,name,created_by) values(?,?,?)" id workspace-name user-id])
+      (admin! ["insert into public.organization_memberships(organization_id,user_id,role_id,status) values(?,?,'owner',?)" id user-id status]))
+    (let [claims (-> (admin! ["select public.custom_access_token_hook(jsonb_build_object('user_id', ?::uuid, 'claims', '{}'::jsonb))::text as event" user-id])
+                     :event (json/read-json :key-fn keyword) :claims)]
+      (is (= "ru" (:language claims)))
+      (is (true? (:profile_complete claims)))
+      (is (true? (:email_confirmed claims)))
+      (is (= [{:workspace_id (str active) :name "Active shop" :role "owner"}]
+             (mapv #(select-keys % [:workspace_id :name :role]) (:memberships claims))))
+      (is (string? (:created_at (first (:memberships claims))))))))
+
+
+(deftest profile-update-is-own-row-and-columns-only
+  (let [alice (profile-user! "Alice" nil)
+        bob   (profile-user! "Bob" nil)]
+    (is (= 0 (as-app alice (str "update public.profiles set display_name='Hacked' where user_id='" bob "'"))))
+    (is (= "Bob" (:display_name (profile bob))))
+    (is (= 1 (as-app alice (str "update public.profiles set display_name='Alicia', name_revision=1, language='en', language_revision=1 where user_id='" alice "'"))))
+    (is (= "42501" (as-app alice (str "update public.profiles set created_at=now() where user_id='" alice "'"))))
+    (is (= "23514" (as-app alice (str "update public.profiles set language='de' where user_id='" alice "'"))))
+    (is (= "23514" (as-app alice (str "update public.profiles set display_name='   ' where user_id='" alice "'"))))))
+
+
+(deftest hook-is-not-callable-by-the-app
+  (is (= "42501" (as-app (random-uuid) "select public.custom_access_token_hook('{}'::jsonb)")))
+  (is (false? (:allowed (admin! ["select has_function_privilege('authenticated','public.custom_access_token_hook(jsonb)','EXECUTE') as allowed"])))))
+
+
+(deftest signup-locale-seeds-profile-language
+  (let [ru (profile-user! "Ru" "ru")
+        de (profile-user! "De" "de")]
+    (is (= "ru" (:language (admin! ["select language from public.profiles where user_id=?" ru]))))
+    (is (nil? (:language (admin! ["select language from public.profiles where user_id=?" de]))))))
 
 
 (deftest restart-receipt

@@ -43,14 +43,15 @@ PYJOURNAL
     "${compose[@]}" up -d --wait --wait-timeout 180 db mail
     "${compose[@]}" exec -T db bash -s < "$profile_dir/db-roles.sh"
     "${compose[@]}" up -d --wait --wait-timeout 180
-    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
-      < "$repo_dir/supabase/migrations/033_identity_and_sessions.sql"
-    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
-      < "$repo_dir/supabase/migrations/034_workspace_actor_labels.sql"
-    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
-      < "$repo_dir/supabase/migrations/035_bel_workspace_creation.sql"
-    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
-      < "$repo_dir/supabase/migrations/036_bel_shared_journal.sql"
+    # 033 verifies the exact original profiles shape, so it runs only on a fresh database.
+    if [[ -z "$("${compose[@]}" exec -T db psql -X -At -U postgres -d postgres -c "select to_regclass('app_private.sessions')")" ]]; then
+      "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+        < "$repo_dir/supabase/migrations/033_identity_and_sessions.sql"
+    fi
+    for migration in 034_workspace_actor_labels 035_bel_workspace_creation 036_bel_shared_journal 037_profile_preferences; do
+      "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+        < "$repo_dir/supabase/migrations/$migration.sql"
+    done
     # Migrations never include passwords; configure these local roles separately.
     "${compose[@]}" exec -T db sh -c \
       'psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 --set=app_password="$TO_DEV_APP_PASSWORD" --set=journal_password="$TO_DEV_JOURNAL_PASSWORD"' <<'SQL'

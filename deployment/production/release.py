@@ -24,6 +24,9 @@ RUNTIME_FILES = (
 PUBLIC_FILES = tuple(str(PROFILE / name) for name in RUNTIME_FILES) + (
     "supabase/migrations/033_identity_and_sessions.sql",
     "supabase/migrations/034_workspace_actor_labels.sql",
+    "supabase/migrations/035_bel_workspace_creation.sql",
+    "supabase/migrations/036_bel_shared_journal.sql",
+    "supabase/migrations/037_profile_preferences.sql",
     "docs/selectel-deployment.md", "docs/production-deployment.md")
 BUILD_FILES = ("Dockerfile", ".dockerignore", "deps.edn",
                "deployment/production/build-classpath.sh", "deployment/production/Healthcheck.java")
