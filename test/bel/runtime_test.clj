@@ -358,6 +358,8 @@
                    {:schema [:map [:id :int]]}
                    {:schema [:map [:id :string] [:values [:vector :string]]]}
                    {:schema [:map [:id :string] [:ref {:bel/ref ::entity} :int]]}
+                   {:schema [:map [:id :string] [:mode [:enum :a :b]]]}
+                   {:schema [:map [:id [:enum "a" "b"]]]}
                    {:events {::changed {:set [:id]}}}
                    {:events {::changed {:set [:value :value]}}}
                    {:events {::changed {:set [:unknown]}}}
@@ -370,6 +372,9 @@
         (is (= :validation (error-type #(core/attach-model! #'entity ::entity (merge declaration bad))))))
       (is (= :validation (error-type #(core/attach-model! #'entity ::entity (dissoc declaration :store)))))
       (is (nil? (error-type #(core/attach-model! #'entity ::entity (assoc declaration :events {::changed {:create [:value]}})))))
+      (is (nil? (error-type #(core/attach-model! #'entity ::entity
+                                                 (assoc declaration :schema [:map [:id :string] [:value :int]
+                                                                             [:mode {:optional true} [:enum "en" "ru"]]])))))
       (finally (reset-meta! #'entity metadata)))))
 
 

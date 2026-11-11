@@ -7,9 +7,7 @@
 
 
 (def tables
-  {::model/profiles    {:table   :public.profiles
-                        :columns {:user-id :user_id :display-name :display_name}}
-   ::model/workspaces  {:table   :public.organizations
+  {::model/workspaces  {:table   :public.organizations
                         :columns {:workspace-id :id :name :name :created-by :created_by :created-at :created_at}}
    ::model/memberships {:table   :public.organization_memberships
                         :columns {:membership-id :id      :workspace-id :organization_id

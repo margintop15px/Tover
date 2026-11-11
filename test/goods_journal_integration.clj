@@ -27,7 +27,7 @@
 
 
 (defn register [f]
-  (bel/build-registry! ['tover.workspaces.create.model 'tover.workspaces.create.web
+  (bel/build-registry! ['tover.accounts.profile.model 'tover.workspaces.create.model 'tover.workspaces.create.web
                         'tover.catalogues.rename.model 'tover.catalogues.rename.web])
   (f))
 

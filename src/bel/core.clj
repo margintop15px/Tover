@@ -276,7 +276,10 @@
       (throw (ex-info "Models need a map schema and a required string or UUID identity" {:type :validation :id id})))
 
     (doseq [[key {:keys [schema bel/ref]}] fields]
-      (when-not (and (keyword? key) (contains? #{:string :uuid :time/instant :int :boolean :double} (m/type schema))
+      (when-not (and (keyword? key)
+                     (or (contains? #{:string :uuid :time/instant :int :boolean :double} (m/type schema))
+                         ;; A closed set of strings is still a string value to every adapter.
+                         (and (= :enum (m/type schema)) (every? string? (m/children schema))))
                      (or (nil? ref) (and (qualified-keyword? ref) (contains? #{:string :uuid} (m/type schema)) (not= key id-key))))
         (throw (ex-info "Model fields must be scalar; references must be string or UUID identities" {:type :validation :field key}))))
 

@@ -3,7 +3,8 @@
     [bel.core :refer [defcommand defevent defmodel defreadmodel]]
     [bel.runtime :as runtime]
     [bel.validation :as validation]
-    [clojure.string :as str]))
+    [clojure.string :as str]
+    [tover.accounts.profile.model :as profile]))
 
 
 (def WorkspaceName
@@ -25,17 +26,11 @@
    [:workspace-id :uuid]])
 
 
-(def Profile
-  [:map
-   [:user-id :uuid]
-   [:display-name {:optional true} :string]])
-
-
 (def Workspace
   [:map
    [:workspace-id :uuid]
    [:name :string]
-   [:created-by {:bel/ref ::profiles} :uuid]
+   [:created-by {:bel/ref ::profile/profiles} :uuid]
    [:created-at validation/Instant]])
 
 
@@ -43,7 +38,7 @@
   [:map
    [:membership-id :uuid]
    [:workspace-id {:bel/ref ::workspaces} :uuid]
-   [:user-id {:bel/ref ::profiles} :uuid]
+   [:user-id {:bel/ref ::profile/profiles} :uuid]
    [:role :string]
    [:status :string]])
 
@@ -59,13 +54,6 @@
 
 (defevent workspace-owner-assigned
   {:schema Membership})
-
-
-(defmodel profiles
-  {:id     :user-id
-   :store  :directory
-   :schema Profile
-   :policy ::ordinary-user})
 
 
 (defmodel workspaces
@@ -86,7 +74,7 @@
 
 (defcommand create-workspace
   {:scope :user :input CreateWorkspace :policy ::ordinary-user
-   :cofx  [[:profile ::profiles (fn [{:keys [actor]} _] {:user-id actor})]
+   :cofx  [[:profile ::profile/profiles profile/own-profile]
            [:membership-id :bel/uuid]]
    :emits #{::workspace-created ::workspace-owner-assigned}}
   [{:keys [actor now profile membership-id]} {:keys [workspace-id name]}]

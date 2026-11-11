@@ -518,10 +518,13 @@
 
 (deftest bel-system-is-configured-for-the-handler
   (let [c (app/config 3031 "x" {:development? true :environment environment})]
-    (is (= {:repo (ig/ref ::app/repo) :datasource (ig/ref ::app/datasource) :realtime (ig/ref ::app/realtime)}
+    (is (= {:repo (ig/ref ::app/repo) :datasource    (ig/ref ::app/datasource)    :realtime (ig/ref ::app/realtime)
+            :auth (ig/ref ::app/auth) :session-store (ig/ref ::app/session-store)}
            (::app/bel-system c)))
     (is (= (ig/ref ::app/bel-system) (get-in c [::app/handler :bel/system])))
-    (is (not-any? #(contains? c %) [::app/journal-datasource ::app/delivery-system :bel.delivery/worker]))))
+    (is (not-any? #(contains? c %) [::app/journal-datasource ::app/delivery-system :bel.delivery/worker]))
+    (is (= {:realtime ::realtime :auth ::auth :session-store ::sessions}
+           (:resources (app/bel-system {:realtime ::realtime :auth ::auth :session-store ::sessions}))))))
 
 
 (deftest journal-variables-configure-the-worker

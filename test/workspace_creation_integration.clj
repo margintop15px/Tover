@@ -19,6 +19,8 @@
     [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
     [starfederation.datastar.clojure.api :as datastar]
     [taoensso.nippy :as nippy]
+    [tover.accounts.persistence :as accounts]
+    [tover.accounts.profile.model :as profile-model]
     [tover.shared.bel :as wiring]
     [tover.workspaces.create.model :as model]
     [tover.workspaces.create.web :as web]
@@ -42,7 +44,7 @@
 
 
 (defn register [f]
-  (bel/build-registry! ['tover.workspaces.create.model 'tover.workspaces.create.web])
+  (bel/build-registry! ['tover.accounts.profile.model 'tover.workspaces.create.model 'tover.workspaces.create.web])
   (f))
 
 
@@ -366,7 +368,7 @@
 (defn write!
   "Adapter semantics only: the runtime role deliberately has no UPDATE grant on directory tables."
   [model fields row]
-  (let [directory (pg/store {:datasource (db "postgres") :tables persistence/tables})]
+  (let [directory (pg/store {:datasource (db "postgres") :tables (merge persistence/tables accounts/tables)})]
     (store/-transact directory :serializable
                      #(store/-write! directory % {:kind :user :id nil} (get-in (bel/operations) [:models model]) fields row))))
 
@@ -377,7 +379,7 @@
 
 (deftest set-replaces-mapped-columns-of-one-row
   (let [alice (:user-id (context)) bob (:user-id (context {:name "Bob"})) before (profile alice)]
-    (write! ::model/profiles [:display-name] {:user-id alice :display-name "Alicia"})
+    (write! ::profile-model/profiles [:display-name] {:user-id alice :display-name "Alicia"})
     (is (= "Alicia" (:display_name (profile alice))))
     (is (= (:created_at before) (:created_at (profile alice))))
     (is (= "Bob" (:display_name (profile bob))))))
@@ -401,7 +403,7 @@
                          "create policy bel_p2_probe_all on public.profiles to bel_p2_probe using (true)"
                          "set local role bel_p2_probe"]]
         (jdbc/execute! tx [statement]))
-      (pg/write-model! {:tx tx :tables persistence/tables} (get-in (bel/operations) [:models ::model/profiles])
+      (pg/write-model! {:tx tx :tables accounts/tables} (get-in (bel/operations) [:models ::profile-model/profiles])
                        [:display-name] {:user-id alice :display-name "Alicia"})
       (is (= "Alicia" (:display_name (jdbc/execute-one! tx ["select display_name from public.profiles where user_id=?" alice]
                                                         {:builder-fn rs/as-unqualified-lower-maps})))))))
@@ -416,7 +418,7 @@
 
 (deftest set-without-an-optional-mapped-field-clears-it
   (let [alice (:user-id (context))]
-    (write! ::model/profiles [:display-name] {:user-id alice})
+    (write! ::profile-model/profiles [:display-name] {:user-id alice})
     (is (nil? (:display_name (profile alice))))))
 
 
@@ -476,6 +478,41 @@
     (is (= "42501" (as-app alice (str "update public.profiles set created_at=now() where user_id='" alice "'"))))
     (is (= "23514" (as-app alice (str "update public.profiles set language='de' where user_id='" alice "'"))))
     (is (= "23514" (as-app alice (str "update public.profiles set display_name='   ' where user_id='" alice "'"))))))
+
+
+(defn save-profile [ctx command command-id input]
+  (runtime/execute! ctx command {:command-id command-id :input (assoc input :account (:user-id ctx))}))
+
+
+(defn profile-row [user-id]
+  (admin! ["select display_name, language, name_revision, language_revision from public.profiles where user_id=?" user-id]))
+
+
+(deftest name-and-language-saves-do-not-overwrite
+  (let [ctx (context)]
+    (is (= :accepted (:status (save-profile ctx ::profile-model/set-display-name "N" {:display-name "Alicia" :name-revision 0}))))
+    (is (= :accepted (:status (save-profile ctx ::profile-model/change-account-language "L"
+                                            {:language "ru" :language-revision 0}))))
+    (is (= {:display_name "Alicia" :language "ru" :name_revision 1 :language_revision 1} (profile-row (:user-id ctx))))
+    (is (= {:user-id (:user-id ctx) :display-name "Alicia" :language "ru" :name-revision 1 :language-revision 1}
+           (runtime/read-model ctx ::profile-model/my-profile {})))
+    (is (= :stale-profile (:type (error-data #(save-profile ctx ::profile-model/set-display-name "S"
+                                                            {:display-name "Other" :name-revision 0})))))))
+
+
+(deftest repeated-command-returns-original-after-later-edit
+  (let [ctx        (context)
+        first-save (save-profile ctx ::profile-model/set-display-name "C1" {:display-name "A" :name-revision 0})]
+    (is (= :accepted (:status (save-profile ctx ::profile-model/set-display-name "C2" {:display-name "B" :name-revision 1}))))
+    (is (= first-save (save-profile ctx ::profile-model/set-display-name "C1" {:display-name "A" :name-revision 0})))
+    (is (= {:display_name "B" :name_revision 2} (select-keys (profile-row (:user-id ctx)) [:display_name :name_revision])))))
+
+
+(deftest check-violations-are-validation-errors
+  (let [alice (:user-id (context))]
+    (is (= :validation (:type (error-data #(write! ::profile-model/profiles [:display-name]
+                                                   {:user-id alice :display-name "   "})))))
+    (is (= "Alice" (:display_name (profile alice))))))
 
 
 (deftest hook-is-not-callable-by-the-app

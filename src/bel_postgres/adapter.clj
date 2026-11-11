@@ -66,6 +66,7 @@
       (case (.getSQLState error)
         "23505" (throw (ex-info "This identity is already in use." {:type :identity-conflict} error))
         "23502" (throw (ex-info "A required value is missing." {:type :validation} error))
+        "23514" (throw (ex-info "A value is not allowed." {:type :validation} error))
         ("40001" "40P01")
         (throw (ex-info "Concurrent change; retry the same command" {:type :conflict :retryable? true} error))
         (throw error)))))
