@@ -490,6 +490,29 @@
     (is (nil? (:language (admin! ["select language from public.profiles where user_id=?" de]))))))
 
 
+(deftest migration-037-backfill-survives-legacy-profile-rows
+  ;; Re-applies the real 037 file after recreating the pre-037 state: no display_name check, language NULL.
+  (let [migration (slurp "supabase/migrations/037_profile_preferences.sql")
+        legacy    (fn [name locale]
+                    (let [id (profile-user! "Seed" locale)]
+                      (admin! ["alter table public.profiles drop constraint if exists profiles_display_name_check"])
+                      (admin! ["update public.profiles set display_name=?, language=null where user_id=?" name id])
+                      id))
+        blank     (legacy "   " "ru")
+        long-name (legacy (apply str (repeat 101 "a")) "ru")
+        fine      (legacy "Carol" "en")]
+    (admin! ["alter table public.profiles drop constraint if exists profiles_display_name_check"])
+    (with-open [connection (jdbc/get-connection (db "postgres"))
+                statement  (.createStatement connection)]
+      (.execute statement migration))
+    (is (nil? (:display_name (profile blank))))
+    (is (= "ru" (:language (admin! ["select language from public.profiles where user_id=?" blank]))))
+    (is (= 101 (count (:display_name (profile long-name)))))
+    (is (nil? (:language (admin! ["select language from public.profiles where user_id=?" long-name]))))
+    (is (= "en" (:language (admin! ["select language from public.profiles where user_id=?" fine]))))
+    (is (= 1 (:n (admin! ["select count(*) as n from pg_constraint where conname='profiles_display_name_check'"]))))))
+
+
 (deftest restart-receipt
   (let [file (io/file (System/getenv "TOVER_BEL_TEST_STATE"))]
     (if (= "1" (System/getenv "TOVER_BEL_RESTART_CHECK"))

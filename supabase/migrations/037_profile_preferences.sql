@@ -12,13 +12,6 @@ DO $$ BEGIN
     ALTER TABLE public.profiles ADD CONSTRAINT profiles_language_check
       CHECK (language IN ('en', 'ru'));
   END IF;
-  -- NOT VALID: existing rows are not rewritten or rejected; new writes must comply.
-  IF NOT EXISTS (SELECT FROM pg_constraint WHERE conrelid = 'public.profiles'::regclass
-                 AND conname = 'profiles_display_name_check') THEN
-    ALTER TABLE public.profiles ADD CONSTRAINT profiles_display_name_check
-      CHECK (display_name IS NULL OR (char_length(display_name) <= 100 AND btrim(display_name) <> ''))
-      NOT VALID;
-  END IF;
 END $$;
 
 -- Signup keeps its chosen language without editing 033's function.
@@ -38,9 +31,24 @@ DROP TRIGGER IF EXISTS profiles_default_language ON public.profiles;
 CREATE TRIGGER profiles_default_language BEFORE INSERT ON public.profiles
   FOR EACH ROW EXECUTE FUNCTION app_private.profile_default_language();
 
+-- Legacy rows: blank names become NULL; over-long names are left untouched (no silent truncation).
+UPDATE public.profiles SET display_name = NULL
+WHERE display_name IS NOT NULL AND btrim(display_name) = '';
+
 UPDATE public.profiles p SET language = u.raw_user_meta_data ->> 'locale'
 FROM auth.users u
-WHERE u.id = p.user_id AND p.language IS NULL AND u.raw_user_meta_data ->> 'locale' IN ('en', 'ru');
+WHERE u.id = p.user_id AND p.language IS NULL AND u.raw_user_meta_data ->> 'locale' IN ('en', 'ru')
+  AND (p.display_name IS NULL OR char_length(p.display_name) <= 100);
+
+-- NOT VALID: existing rows are not rejected; new writes must comply.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_constraint WHERE conrelid = 'public.profiles'::regclass
+                 AND conname = 'profiles_display_name_check') THEN
+    ALTER TABLE public.profiles ADD CONSTRAINT profiles_display_name_check
+      CHECK (display_name IS NULL OR (char_length(display_name) <= 100 AND btrim(display_name) <> ''))
+      NOT VALID;
+  END IF;
+END $$;
 
 -- The runtime may change only these columns of its own row.
 GRANT UPDATE (display_name, name_revision, language, language_revision) ON public.profiles TO tover_app;
