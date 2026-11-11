@@ -35,15 +35,17 @@
 (use-fixtures :each fixture/isolated-registry register)
 
 
+(defn system [repo]
+  (wiring/system {:repo repo :datasource (workspace/db "tover_app")}))
+
+
 (defn context
   ([repo] (context repo false))
   ([repo same-identity?]
    (let [ctx (workspace/context)
          id  (if same-identity? (:user-id ctx) (random-uuid))]
      (workspace/execute ctx {:command-id "C" :input {:workspace-id id :name "Workshop"}})
-     (let [ctx (runtime/prepare-context
-                 (assoc ctx :repo repo :workspace-id id
-                        :bel/runtime (wiring/runtime-config :rdf)))]
+     (let [ctx (runtime/prepare-context (assoc ctx :repo repo :workspace-id id :bel/system (system repo)))]
        (rename/baseline! repo (:scope ctx))
        ctx))))
 
@@ -63,8 +65,8 @@
 (defn writer [] (workspace/db "tover_journal"))
 
 
-(defn delivery-context [repo]
-  (wiring/delivery-context repo (writer)))
+(defn delivery-system [repo]
+  (wiring/delivery-system repo (writer)))
 
 
 (defn counts [ctx]
@@ -74,7 +76,7 @@
 
 
 (defn pending [ctx]
-  (filterv #(= (:scope ctx) (get-in % [:request :scope])) (delivery/pending ctx)))
+  (filterv #(= (:scope ctx) (get-in % [:request :scope])) (delivery/pending (:bel/system ctx))))
 
 
 (defn eventually [pred]
@@ -105,7 +107,7 @@
             delivery (first (pending ctx))]
         (is (= ["Nut" 5] ((juxt :name :revision) (row ctx))))
         (is (= [0 0] (counts ctx)))
-        (delivery/deliver-one! (delivery-context (:repo ctx)) delivery)
+        (delivery/deliver-one! (delivery-system (:repo ctx)) :catalogue delivery)
         (is (= [1 1] (counts ctx)))
         (is (empty? (pending ctx)))
         (let [event (first (runtime/history ctx))]
@@ -128,17 +130,38 @@
                                                                (assoc-in rename/request [:input :name] "Other"))))))))))
 
 
+(deftest pre-refactor-pending-record-still-delivers
+  (with-feature
+    (fn [ctx]
+      (let [receipt  (execute ctx)
+            delivery (first (pending ctx))
+            graph    (persistence/graph (:scope ctx) :delivery)
+            subject  (#'source/node graph (:command-id delivery))
+            marker   (#'source/term :pending)]
+        ;; Written as the pre-P1 adapter did: Tover-scope graph lookup, (assoc invocation :events :result) payload.
+        (rdf/with-transaction [tx {:repo (:repo ctx) :level :serializable}]
+          (rdf/remove! tx graph subject marker nil)
+          (rdf/add! tx graph subject marker
+                    (nippy/freeze-to-string (assoc (dissoc delivery :events :result)
+                                                   :events (:events delivery) :result (:result delivery)))))
+        (is (= {:delivered 1 :failed 0} (delivery/deliver-pending! (delivery-system (:repo ctx)))))
+        (is (= [1 1] (counts ctx)))
+        (is (empty? (pending ctx)))
+        (with-redefs [goods/rename-good (fn [& _] (throw (Exception. "Decision reran")))]
+          (is (= receipt (execute ctx))))))))
+
+
 (deftest delivery-failure-rolls-back-both-postgres-writes-and-retries-the-same-batch
   (with-feature
     (fn [ctx]
       (let [receipt (execute ctx) append journal-store/append-event!]
         (with-redefs [journal-store/append-event! (fn [& args] (apply append args) (throw (ex-info "Journal unavailable" {:type :injected})))]
-          (is (= {:delivered 0 :failed 1} (delivery/deliver-pending! (delivery-context (:repo ctx)))))
+          (is (= {:delivered 0 :failed 1} (delivery/deliver-pending! (delivery-system (:repo ctx)))))
           (is (= receipt (execute ctx))))
         (is (= [0 0] (counts ctx)))
         (is (= 1 (count (pending ctx))))
         (is (= 5 (:revision (row ctx))))
-        (is (= {:delivered 1 :failed 0} (delivery/deliver-pending! (delivery-context (:repo ctx)))))
+        (is (= {:delivered 1 :failed 0} (delivery/deliver-pending! (delivery-system (:repo ctx)))))
         (is (= [1 1] (counts ctx)))
         (is (= receipt (execute ctx)))))))
 
@@ -147,15 +170,15 @@
   (doseq [after? [false true]]
     (with-feature
       (fn [ctx]
-        (let [receipt  (execute ctx) delivery (first (pending ctx)) acknowledge delivery/acknowledge!
+        (let [receipt  (execute ctx) delivery (first (pending ctx)) acknowledge source/acknowledge!
               fail-ack (fn [& args]
                          (when after? (apply acknowledge args))
                          (throw (ex-info "Lost acknowledgement" {:type :injected})))]
-          (with-redefs [delivery/acknowledge! fail-ack]
-            (is (= :injected (:type (workspace/error-data #(delivery/deliver-one! (delivery-context (:repo ctx)) delivery))))))
+          (with-redefs [source/acknowledge! fail-ack]
+            (is (= :injected (:type (workspace/error-data #(delivery/deliver-one! (delivery-system (:repo ctx)) :catalogue delivery))))))
           (is (= [1 1] (counts ctx)))
           (is (= receipt (execute ctx)))
-          (delivery/deliver-one! (delivery-context (:repo ctx)) delivery)
+          (delivery/deliver-one! (delivery-system (:repo ctx)) :catalogue delivery)
           (is (empty? (pending ctx)))
           (is (= [1 1] (counts ctx)))
           (is (= receipt (execute ctx))))))))
@@ -165,7 +188,7 @@
   (with-feature
     (fn [ctx]
       (let [receipt (execute ctx)]
-        (delivery/deliver-pending! (delivery-context (:repo ctx)))
+        (delivery/deliver-pending! (delivery-system (:repo ctx)))
         (with-redefs [journal/receipt   (constantly nil)
                       goods/rename-good (fn [& _] (throw (Exception. "Decision reran")))]
           (is (= :journal-unavailable (:type (workspace/error-data #(execute ctx)))))
@@ -182,10 +205,10 @@
       (let [receipt             (execute ctx)
             delivery            (first (pending ctx))
             authorize           runtime/with-authority
-            deliver-before-read (fn [context isolation read]
-                                  (authorize context isolation
+            deliver-before-read (fn [context owning isolation read]
+                                  (authorize context owning isolation
                                              (fn [authorized]
-                                               (delivery/deliver-one! (delivery-context (:repo ctx)) delivery)
+                                               (delivery/deliver-one! (delivery-system (:repo ctx)) :catalogue delivery)
                                                (read authorized))))]
         (with-redefs [runtime/with-authority deliver-before-read
                       goods/rename-good      (fn [& _] (throw (Exception. "Decision reran")))]
@@ -207,7 +230,7 @@
                                            (.countDown gate)
                                            (assert (.await gate 10 TimeUnit/SECONDS))
                                            (apply deliver args))]
-            (let [jobs (mapv (fn [_] (future (delivery/deliver-pending! (delivery-context (:repo ctx))))) (range 2))]
+            (let [jobs (mapv (fn [_] (future (delivery/deliver-pending! (delivery-system (:repo ctx))))) (range 2))]
               (try
                 (let [results (mapv #(deref % 15000 ::timeout) jobs)]
                   (is (not-any? #{::timeout} results))
@@ -228,10 +251,10 @@
                             :request (assoc-in delivery [:request :input :name] "Different acceptance")
                             :event (assoc-in delivery [:events 0 :data :name] "Different fact")
                             :missing-event (assoc delivery :events []))]
-          (journal/deliver! (delivery-context (:repo ctx)) conflicting)
+          (journal/deliver! {:bel/system (delivery-system (:repo ctx))} conflicting)
           (let [history (runtime/history ctx)]
             (is (= :journal-conflict
-                   (:type (workspace/error-data #(delivery/deliver-one! (delivery-context (:repo ctx)) delivery))))
+                   (:type (workspace/error-data #(delivery/deliver-one! (delivery-system (:repo ctx)) :catalogue delivery))))
                 (name difference))
             (is (= history (runtime/history ctx))))
           (is (= [(count (:events conflicting)) 1] (counts ctx)))
@@ -256,7 +279,7 @@
             (rdf/with-transaction [tx {:repo repo :level :serializable}]
               (rdf/remove! tx graph subject predicate nil)
               (rdf/add! tx graph subject predicate payload))
-            (is (= {:delivered 1 :failed 1} (delivery/deliver-pending! (delivery-context repo))))
+            (is (= {:delivered 1 :failed 1} (delivery/deliver-pending! (delivery-system repo))))
             (is (= [1 1] (counts healthy)))
             (is (= [0 0] (counts broken)))
             (is (= receipt (execute healthy)))
@@ -272,7 +295,7 @@
             first-receipt  (execute alice)
             second-receipt (runtime/execute! bob ::goods/rename-good (assoc-in rename/request [:input :name] "Bob"))]
         (is (not= first-receipt second-receipt))
-        (is (= {:delivered 2 :failed 0} (delivery/deliver-pending! (delivery-context repo))))
+        (is (= {:delivered 2 :failed 0} (delivery/deliver-pending! (delivery-system repo))))
         (is (= ["Nut"] (mapv #(get-in % [:data :name]) (runtime/history alice))))
         (is (= ["Bob"] (mapv #(get-in % [:data :name]) (runtime/history bob))))
         (is (= first-receipt (execute alice)))
@@ -289,7 +312,7 @@
           (is (= :forbidden (:type (workspace/error-data #(execute spoofed)))))
           (is (= :forbidden (:type (workspace/error-data #(row spoofed)))))
           (is (= :forbidden (:type (workspace/error-data #(runtime/history spoofed))))))
-        (runtime/with-authority alice :read-committed
+        (runtime/with-authority alice nil :read-committed
           (fn [{:keys [tx]}]
             (is (empty? (jdbc/execute! tx ["select id from app_private.bel_events where scope_kind='workspace' and scope_id=?" (:workspace-id bob)])))
             (is (empty? (jdbc/execute! tx ["select payload from app_private.bel_receipts where scope_kind='workspace' and scope_id=?" (:workspace-id bob)])))))
@@ -305,7 +328,7 @@
       (is (= :forbidden (:type (workspace/error-data #(execute ctx)))))
       (is (= :forbidden (:type (workspace/error-data #(row ctx)))))
       (is (= :forbidden (:type (workspace/error-data #(runtime/history ctx)))))
-      (is (= {:delivered 1 :failed 0} (delivery/deliver-pending! (delivery-context (:repo ctx)))))
+      (is (= {:delivered 1 :failed 0} (delivery/deliver-pending! (delivery-system (:repo ctx)))))
       (is (= [1 1] (counts ctx)))
       (is (empty? (pending ctx))))))
 
@@ -323,7 +346,7 @@
             (try
               (is (= true (deref staged 10000 ::timeout)))
               (is (empty? (pending ctx)))
-              (is (= {:delivered 0 :failed 0} (delivery/deliver-pending! (delivery-context (:repo ctx)))))
+              (is (= {:delivered 0 :failed 0} (delivery/deliver-pending! (delivery-system (:repo ctx)))))
               (let [started (promise)
                     revoke  (future (deliver started true)
                                     (workspace/admin! ["update public.organization_memberships set status='suspended' where organization_id=?" (:workspace-id ctx)]))]
@@ -336,7 +359,7 @@
                   (finally (deliver resume true) (future-cancel revoke))))
               (finally (deliver resume true) (future-cancel acceptance)))))
         (is (= :forbidden (:type (workspace/error-data #(execute ctx)))))
-        (is (= {:delivered 1 :failed 0} (delivery/deliver-pending! (delivery-context (:repo ctx)))))))))
+        (is (= {:delivered 1 :failed 0} (delivery/deliver-pending! (delivery-system (:repo ctx)))))))))
 
 
 (deftest background-delivery-retries-without-blocking-acceptance-or-view-refresh
@@ -350,7 +373,7 @@
                           (assert (= true (deref release 10000 ::timeout)))
                           (throw (ex-info "Temporary delivery failure" {:type :injected}))))]
         (with-redefs [journal-store/append-event! fail-once]
-          (with-open [_worker (delivery/start! (delivery-context (:repo ctx)))]
+          (with-open [_worker (delivery/start! (delivery-system (:repo ctx)))]
             (let [receipt (execute ctx)]
               (try
                 (is (= true (deref started 10000 ::timeout)))
@@ -389,10 +412,10 @@
     (try
       (if (= "1" (System/getenv "TOVER_BEL_RESTART_CHECK"))
         (let [states (nippy/thaw (Files/readAllBytes (.toPath file)))]
-          (with-open [_worker (delivery/start! (delivery-context repo))]
-            (is (eventually #(empty? (delivery/pending (delivery-context repo)))))
+          (with-open [_worker (delivery/start! (delivery-system repo))]
+            (is (eventually #(empty? (delivery/pending (delivery-system repo)))))
             (doseq [{:keys [context receipt]} states]
-              (let [ctx (runtime/prepare-context (assoc context :repo repo :datasource (workspace/db "tover_app")))]
+              (let [ctx (runtime/prepare-context (assoc context :repo repo :bel/system (system repo)))]
                 (with-redefs [goods/rename-good (fn [& _] (throw (Exception. "Restart reran the decision")))]
                   (is (= receipt (execute ctx))))
                 (is (= ["Nut" 5] ((juxt :name :revision) (row ctx))))
@@ -401,12 +424,12 @@
                              (let [ctx (context repo) receipt (execute ctx) delivery (first (pending ctx))]
                                (case stage
                                  :pending nil
-                                 :committed (journal/deliver! (delivery-context (:repo ctx)) delivery)
-                                 :acknowledged (delivery/deliver-one! (delivery-context repo) delivery))
-                               {:context (dissoc ctx :repo :datasource :resources) :receipt receipt}))
+                                 :committed (journal/deliver! {:bel/system (delivery-system (:repo ctx))} delivery)
+                                 :acknowledged (delivery/deliver-one! (delivery-system repo) :catalogue delivery))
+                               {:context (dissoc ctx :repo :bel/system :resources) :receipt receipt}))
                            [:pending :committed :acknowledged])]
           (with-open [out (io/output-stream file)] (.write out ^bytes (nippy/freeze states)))
-          (is (= 2 (count (delivery/pending (delivery-context repo)))))))
+          (is (= 2 (count (delivery/pending (delivery-system repo)))))))
       ;; The first test JVM halts with this store open. Recovery must not depend on close/shutdown hooks.
       (finally
         (when (= "1" (System/getenv "TOVER_BEL_RESTART_CHECK"))

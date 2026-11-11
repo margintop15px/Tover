@@ -99,7 +99,7 @@
 
 
 (defn- with-stores
-  {:malli/schema [:=> [:cat :map [:sequential :keyword] :keyword [:fn fn?]] :any]}
+  {:malli/schema [:=> [:cat :map [:maybe [:sequential :keyword]] :keyword [:fn fn?]] :any]}
   [context keys isolation f]
   (if-let [[key & more] (seq keys)]
     (store/with-store context key isolation #(with-stores % more isolation f))

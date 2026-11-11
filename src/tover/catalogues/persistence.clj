@@ -1,9 +1,7 @@
 (ns tover.catalogues.persistence
   "The isolated Goods slice's graph identities and explicit legacy cutover guard."
   (:require
-    [bel-rdf.adapter :as adapter]
     [bel-rdf.core :as rdf]
-    [bel.runtime :as runtime]
     [tover.shared.schema :as schema])
   (:import [org.eclipse.rdf4j.model Resource]
            [org.eclipse.rdf4j.repository RepositoryConnection]))
@@ -15,13 +13,17 @@
   (rdf/iri (str "urn:tover:workspace:" (:workspace-id scope) ":bel-" (name kind))))
 
 
-(defmethod adapter/graphs ::workspace
-  [{:keys [scope]}]
-  {:domain (graph scope :domain) :delivery (graph scope :delivery)})
+(defn graphs
+  "Store graph allocation for a Bel workspace scope."
+  {:malli/schema [:=> [:cat [:map [:kind [:= :workspace]] [:id :uuid]]] :map]}
+  [{:keys [id]}]
+  {:domain (graph {:workspace-id id} :domain) :delivery (graph {:workspace-id id} :delivery)})
 
 
-(defmethod runtime/check-source! ::goods
-  [_ {:keys [tx scope]}]
+(defn legacy-guard
+  "Refuse acceptance where pre-journal RDF history still exists."
+  {:malli/schema [:=> [:cat :any [:map [:kind :keyword] [:id :any]]] :nil]}
+  [tx {:keys [id]}]
   (when (.hasStatement ^RepositoryConnection tx nil nil nil false
-                       (into-array Resource [(graph scope :events) (graph scope :receipts)]))
+                       (into-array Resource [(graph {:workspace-id id} :events) (graph {:workspace-id id} :receipts)]))
     (throw (ex-info "Existing RDF history requires an explicit journal cutover" {:type :migration-required}))))

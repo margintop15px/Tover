@@ -7,6 +7,7 @@
     [bel.handler :as handler]
     [bel.realtime :as realtime]
     [bel.runtime :as runtime]
+    [bel.store :as store]
     [charred.api :as json]
     [clojure.edn :as edn]
     [clojure.string :as str]
@@ -28,7 +29,7 @@
   "These tests isolate RDF/DSL behavior. Real session/membership guards run in the store integration suite."
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
-  (with-redefs [runtime/with-authority (fn [context _isolation read] (read context))]
+  (with-redefs [runtime/with-authority (fn [context _owning _isolation read] (read context))]
     (f)))
 
 
@@ -38,7 +39,7 @@
 (defn context
   {:malli/schema [:=> [:cat rdf/Repository] :map]}
   [repo]
-  (runtime/prepare-context {:bel/runtime (wiring/runtime-config :rdf) :repo repo :workspace-id (:workspace-id fixture/scope)
+  (runtime/prepare-context {:bel/system  (wiring/system {:repo repo}) :repo repo :workspace-id (:workspace-id fixture/scope)
                             :user-id     #uuid "00000000-0000-0000-0000-000000000011"
                             :memberships [{:workspace-id (:workspace-id fixture/scope) :role :member}]}))
 
@@ -46,7 +47,7 @@
 (defn scoped
   {:malli/schema [:=> [:cat :map] :map]}
   [scope]
-  {:scope scope :bel/runtime (wiring/runtime-config :rdf)})
+  {:scope (store/store-scope scope) :graphs persistence/graphs})
 
 
 (def request
@@ -92,7 +93,7 @@
   {:malli/schema [:=> [:cat :map] [:vector :map]]}
   [context]
   (into [] (comp (filter #(= (:scope context) (get-in % [:request :scope]))) (mapcat :events))
-        (delivery/pending context)))
+        (delivery/pending (:bel/system context))))
 
 
 (deftest alice-renames-bolt-to-nut-and-can-retry-the-same-intent
@@ -171,9 +172,9 @@
             model    (model-definition ::model/goods)
             vocab    (source/vocabulary model)
             graph    (persistence/graph (:scope ctx) :domain)
-            subject  (source/subject ctx ::model/goods "G")]
+            subject  (source/subject (scoped (:scope ctx)) ::model/goods "G")]
         (rdf/with-transaction [tx {:repo (:repo ctx) :level :serializable}]
-          (source/write-model! (assoc ctx :tx tx) model (assoc original :category-id "category/one +😀"))
+          (source/write-model! (assoc (scoped (:scope ctx)) :tx tx) model (assoc original :category-id "category/one +😀"))
           (rdf/add! tx graph subject (rdf/iri "urn:test:annotation") "Keep me")
           ;; A same-ID legacy record must stay outside this slice.
           (catalogue/save! tx (:scope ctx) {:kind "goods" :id "G" :revision 0 :path "name" :value "Legacy" :commandId "legacy"} "alice"))
@@ -183,7 +184,7 @@
         (rdf/with-transaction [tx {:repo (:repo ctx) :level :snapshot}]
           (is (= "Nut" (rdf/value-at tx graph subject (get-in vocab [:fields :name]))))
           (is (= 5 (rdf/value-at tx graph subject (get-in vocab [:fields :revision]))))
-          (is (= (source/subject ctx ::model/categories "category/one +😀")
+          (is (= (source/subject (scoped (:scope ctx)) ::model/categories "category/one +😀")
                  (rdf/value-at tx graph subject (get-in vocab [:fields :category-id]))))
           (is (= "Keep me" (rdf/value-at tx graph subject (rdf/iri "urn:test:annotation"))))
           (is (= "Legacy" (rdf/value-at tx (catalogue/graph (:scope ctx)) (catalogue/subject (:scope ctx) :goods "G") (catalogue/term "name"))))
@@ -203,7 +204,7 @@
                             (update-in [:models ::model/goods :events ::model/good-renamed :set] conj :category-id)
                             (update-in [:events ::model/good-renamed :schema] conj [:category-id {:optional true} :string]))]
         (rdf/with-transaction [tx {:repo (:repo ctx) :level :serializable}]
-          (source/write-model! (assoc ctx :tx tx) model (assoc (:row (current ctx)) :category-id "old")))
+          (source/write-model! (assoc (scoped (:scope ctx)) :tx tx) model (assoc (:row (current ctx)) :category-id "old")))
         (with-redefs [bel/operations (constantly definitions)]
           (runtime/execute! ctx ::model/rename-good request))
         (is (not (contains? (:row (current ctx)) :category-id)))))))
@@ -227,7 +228,7 @@
       (let [receipt (binding [*print-length* 1 *print-level* 1]
                       (runtime/execute! ctx ::model/rename-good request))]
         (is (= receipt (runtime/execute! ctx ::model/rename-good request)))
-        (let [delivery (first (delivery/pending ctx))]
+        (let [delivery (first (delivery/pending (:bel/system ctx)))]
           (is (= receipt (get-in delivery [:result :receipt])))
           (is (= fixture/scope (get-in delivery [:request :scope]))))))))
 
@@ -264,10 +265,8 @@
         (is (some #(= name (get-in % [:data :name])) (pending-events ctx)))
         (is (= :validation
                (:type (fixture/error-data
-                        #(runtime/snapshot ctx
-                                           (fn [tx]
-                                             (runtime/coeffect :rdf/query tx
-                                                               {:query '{:select [?row] :where [[?row ?predicate ?value]]} :bindings {:graph (persistence/graph fixture/other-scope :domain)}})))))))))))
+                        #(runtime/coeffect :rdf/query ctx
+                                           {:query '{:select [?row] :where [[?row ?predicate ?value]]} :bindings {:graph (persistence/graph fixture/other-scope :domain)}})))))))))
 
 
 (deftest publication-is-after-commit-and-cannot-block-or-reject-acceptance
@@ -278,7 +277,7 @@
                                           (deliver started {:event event :name (get-in (current ctx) [:row :name])})
                                           (deref release 10000 nil)
                                           (throw (ex-info "Notification failed" {})))]
-          (let [work (future (handler/execute-action (assoc ctx :realtime :fixture) ::web/save cell))]
+          (let [work (future (handler/execute-action (assoc-in ctx [:bel/system :resources :realtime] :fixture) ::web/save cell))]
             (try
               (is (= {:event {:topic :tover.stock.web/changed :scope-id (:workspace-id fixture/scope) :data {}}
                       :name  "Nut"}
@@ -401,39 +400,38 @@
 (deftest composed-rdf-models-use-the-same-active-connection
   (with-feature
     (fn [ctx _]
-      (let [read   (get-method runtime/load-model :rdf)
+      (let [read   source/load-model
             seen   (atom [])
             loaded (promise)
             resume (promise)]
         (rdf/with-transaction [tx {:repo (:repo ctx) :level :serializable}]
-          (source/write-model! (assoc ctx :tx tx) (model-definition ::model/categories) {:id "category" :name "Before"})
-          (source/write-model! (assoc ctx :tx tx) (model-definition ::model/goods)
+          (source/write-model! (assoc (scoped (:scope ctx)) :tx tx) (model-definition ::model/categories) {:id "category" :name "Before"})
+          (source/write-model! (assoc (scoped (:scope ctx)) :tx tx) (model-definition ::model/goods)
                                (assoc (:row (current ctx)) :category-id "category")))
-        (.addMethod ^clojure.lang.MultiFn runtime/load-model :rdf
-                    (fn [context model input]
-                      (swap! seen conj (:tx context))
-                      (is (.isActive ^org.eclipse.rdf4j.repository.RepositoryConnection (:tx context)))
-                      (let [result (read context model input)]
-                        (when (= 1 (count @seen))
-                          (deliver loaded true)
-                          (when (= ::timeout (deref resume 10000 ::timeout))
-                            (throw (ex-info "Reader was not resumed" {:type :test-timeout}))))
-                        result)))
-        (let [reader (future (runtime/read-model ctx ::model/good-row {:id "G"}))]
-          (try
-            (is (= true (deref loaded 10000 ::timeout)))
-            (rdf/with-transaction [tx {:repo (:repo ctx) :level :serializable}]
-              (source/write-model! (assoc ctx :tx tx) (model-definition ::model/categories) {:id "category" :name "After"}))
-            (deliver resume true)
-            (let [row (deref reader 10000 {})]
-              (is (= "Before" (get-in row [:labels :category-id])))
-              (is (not (contains? row :commandId))))
-            (is (= 2 (count @seen)))
-            (is (identical? (first @seen) (second @seen)))
-            (finally
+        (with-redefs [source/load-model
+                      (fn [context model id]
+                        (swap! seen conj (:tx context))
+                        (is (.isActive ^org.eclipse.rdf4j.repository.RepositoryConnection (:tx context)))
+                        (let [result (read context model id)]
+                          (when (= 1 (count @seen))
+                            (deliver loaded true)
+                            (when (= ::timeout (deref resume 10000 ::timeout))
+                              (throw (ex-info "Reader was not resumed" {:type :test-timeout}))))
+                          result))]
+          (let [reader (future (runtime/read-model ctx ::model/good-row {:id "G"}))]
+            (try
+              (is (= true (deref loaded 10000 ::timeout)))
+              (rdf/with-transaction [tx {:repo (:repo ctx) :level :serializable}]
+                (source/write-model! (assoc (scoped (:scope ctx)) :tx tx) (model-definition ::model/categories) {:id "category" :name "After"}))
               (deliver resume true)
-              (future-cancel reader)
-              (.addMethod ^clojure.lang.MultiFn runtime/load-model :rdf read))))
+              (let [row (deref reader 10000 {})]
+                (is (= "Before" (get-in row [:labels :category-id])))
+                (is (not (contains? row :commandId))))
+              (is (= 2 (count @seen)))
+              (is (identical? (first @seen) (second @seen)))
+              (finally
+                (deliver resume true)
+                (future-cancel reader)))))
         (is (= "After" (get-in (runtime/read-model ctx ::model/good-row {:id "G"}) [:labels :category-id])))))))
 
 
@@ -442,8 +440,8 @@
     (fn [ctx _]
       (let [staged (promise)            release (promise)
             save   source/save-pending!]
-        (with-redefs [source/save-pending! (fn [context invocation events result]
-                                             (save context invocation events result)
+        (with-redefs [source/save-pending! (fn [context delivery]
+                                             (save context delivery)
                                              (deliver staged true)
                                              (when (= ::timeout (deref release 10000 ::timeout))
                                                (throw (ex-info "Release timed out" {}))))]
@@ -506,7 +504,7 @@
   (with-feature
     (fn [ctx _]
       (let [graph   (persistence/graph (:scope ctx) :domain)
-            subject (source/subject ctx ::model/goods "G")
+            subject (source/subject (scoped (:scope ctx)) ::model/goods "G")
             fields  (:fields (source/vocabulary (model-definition ::model/goods)))]
         (rdf/with-transaction [tx {:repo (:repo ctx) :level :serializable}]
           (rdf/add! tx graph subject (:name fields) "Conflicting name"))
