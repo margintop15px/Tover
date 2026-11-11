@@ -102,11 +102,11 @@ The guarantees Bel owns. Each lives in one place.
 | C2 | `(scope, command-id)` identifies an invocation. A matching request returns the original result; a different one fails with `:idempotency-conflict`. A decision never runs twice. | `runtime/recover` |
 | C3 | Model mappings and the journal batch (colocated) or outbox record (separate) commit together in the owning store. | `runtime/accept` |
 | C4 | The outbox delivers exactly the recorded batch, never reruns a decision; identical redelivery succeeds, different content stays pending. | `bel.delivery` |
-| C5 | An event's `:set` fields replace those fields on the entity named by the payload identity; other fields stay. Same meaning on every store. | `Store/-write!` |
+| C5 | An event's `:set` fields replace those fields on the entity named by the payload identity; other fields stay. `:create` inserts a complete entity and refuses an existing identity with `:identity-conflict`. Same meaning on every store. | `Store/-write!`, `Store/-create!` |
 | C6 | Effects run after commit, best effort, may repeat; never affect acceptance. | `runtime/dispatch-effects!` |
 | C7 | `:scope`, `:actor`, `:command-id`, `:now` come from trusted context, never input. | `prepare-context` |
 
-C5 is broken today: the Postgres adapter only inserts, so an update event fails as `:identity-conflict`. Chapter 03 (display name) is the first update.
+Chapter 03 (display name) is the first `:set` update on PostgreSQL; its migration grants the runtime role UPDATE on the mapped columns.
 
 Errors use one vocabulary, translated by adapters inside `-transact`: `:validation`, `:forbidden`, `:not-found`, `:conflict` (retryable), `:identity-conflict`, `:idempotency-conflict`, `:journal-unavailable` (retryable), `:journal-conflict`, `:migration-required`, `:configuration`, plus business types (`:stale-catalogue`, `:profile-incomplete`).
 
@@ -120,7 +120,8 @@ Errors use one vocabulary, translated by adapters inside `-transact`: `:validati
 
 (defprotocol Store
   (-load     [store tx scope model id]    "Entity map or nil.")
-  (-write!   [store tx scope model fields row] "Upsert the mapped fields of one entity."))
+  (-create!  [store tx scope model row]   "Insert a complete entity; existing identity is :identity-conflict.")
+  (-write!   [store tx scope model fields row] "Replace the mapped fields; insert when new and complete."))
 
 (defprotocol Outbox
   (-record!  [store tx scope delivery]    "Accepted batch + permanent acceptance marker.")
@@ -236,7 +237,7 @@ Each phase keeps all tests green.
 | --- | --- | --- | --- |
 | P0 | Agree this document. | Approved. | — |
 | P1 Protocols and flow — done 2026-11-11 | Add the protocols; adapters become records with `:tables`/`:graphs`/`:guard`; `accept`/`snapshot`/`recover` become functions; delete the storage multimethods; `runtime_test`'s `::memory` overrides become a small test `Store` record; add `bel.runtime/decide`. `:rdf/query` keeps its request shape (no store option). | Only `coeffect`, `effect!`, `policy`, `expand-form` remain as `defmulti`; `scripts/test-bel-workspace.sh` and unit suite green; Tover declarations unchanged except `:store`. | P2, P3 |
-| P2 Upsert (C5) | `-write!` upserts on both adapters; Postgres `INSERT … ON CONFLICT (id) DO UPDATE SET <fields>`, creation collision unchanged. | Postgres update-event integration test. | Chapter 03 |
+| P2 Upsert (C5) — done 2026-11-11 | Mappings are `{:create […]}` (plain insert, `:identity-conflict` on an existing entity) or `{:set […]}`; `-write!` upserts on both adapters (Postgres `INSERT … ON CONFLICT (id) DO UPDATE SET <fields>` for a complete entity, `UPDATE` of an existing row otherwise); Create Workspace uses `:create`. | Postgres update-event integration test. | Chapter 03 |
 | P3 Principal | Authority record returns principal; policies read it; hook contexts trimmed (§6.3); `:postgres/membership` → `::membership`, `:postgres/receipt` → `:bel/receipt`. | Both slices' policies use principal only. | Chapter 03 |
 | P4 System | `bel/system` and delivery worker as Integrant keys in `tover.app`; delete `runtime-config`/`delivery-context`. | Dev system starts with slices excluded; worker running. | Any cutover |
 | P5 Chapter 03/03a | Profile, name, language built on the new structure via §8. | Board scenarios pass; profile writers cut over. | Validates the design on an update flow |

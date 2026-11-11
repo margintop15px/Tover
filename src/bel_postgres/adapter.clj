@@ -44,7 +44,7 @@
   (let [{:keys [table columns]} (binding! tables model)
         values                  (into {} (map (fn [field] [(get columns field) (get row field)])) (cons id mapped))]
     (if (m/validate schema row)
-      (db/execute-one! tx {:insert-into   table :values [values]
+      (db/execute-one! tx {:insert-into   table                 :values [values]
                            :on-conflict   [(get columns id)]
                            :do-update-set (mapv columns mapped)})
       (do (validation/check! (into [:map] (map (fn [field] [field {:optional (boolean (get-in fields [field :optional]))}
