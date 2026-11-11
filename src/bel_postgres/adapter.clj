@@ -5,6 +5,7 @@
     [bel-postgres.journal :as journal]
     [bel.store :as store]
     [bel.validation :as validation]
+    [malli.core :as m]
     [next.jdbc :as jdbc])
   (:import [java.sql SQLException]))
 
@@ -36,6 +37,27 @@
   nil)
 
 
+(defn write-model!
+  "Replace the mapped columns. A complete entity upserts on its identity; a partial one must already exist."
+  {:malli/schema [:=> [:cat :map :map [:vector :keyword] :map] :nil]}
+  [{:keys [tx tables]} {:keys [id fields schema] :as model} mapped row]
+  (let [{:keys [table columns]} (binding! tables model)
+        values                  (into {} (map (fn [field] [(get columns field) (get row field)])) (cons id mapped))]
+    (if (m/validate schema row)
+      (db/execute-one! tx {:insert-into   table :values [values]
+                           :on-conflict   [(get columns id)]
+                           :do-update-set (mapv columns mapped)})
+      (do (validation/check! (into [:map] (map (fn [field] [field {:optional (boolean (get-in fields [field :optional]))}
+                                                            (get-in fields [field :schema])]))
+                                   (cons id mapped))
+                             row)
+          (when (zero? (:next.jdbc/update-count
+                         (db/execute-one! tx {:update table :set (dissoc values (get columns id))
+                                              :where  [:= (get columns id) (get row id)]})))
+            (throw (ex-info "A new entity requires all required fields" {:type :validation}))))))
+  nil)
+
+
 (defn transact
   {:malli/schema [:=> [:cat :any :keyword [:fn fn?]] :any]}
   [datasource isolation f]
@@ -45,6 +67,7 @@
     (catch SQLException error
       (case (.getSQLState error)
         "23505" (throw (ex-info "This identity is already in use." {:type :identity-conflict} error))
+        "23502" (throw (ex-info "A required value is missing." {:type :validation} error))
         ("40001" "40P01")
         (throw (ex-info "Concurrent change; retry the same command" {:type :conflict :retryable? true} error))
         (throw error)))))
@@ -56,8 +79,8 @@
 
   store/Store
   (-load [_ tx _ model id] (load-model {:tx tx :tables tables} model id))
-  ;; ponytail: creation mappings only; P2 turns this into an upsert of the mapped fields.
-  (-write! [_ tx _ model _ row] (insert-model! {:tx tx :tables tables} model row))
+  (-create! [_ tx _ model row] (insert-model! {:tx tx :tables tables} model row))
+  (-write! [_ tx _ model fields row] (write-model! {:tx tx :tables tables} model fields row))
 
   store/Journal
   (-receipt [_ tx scope command-id] (journal/receipt {:tx tx :scope scope} command-id))

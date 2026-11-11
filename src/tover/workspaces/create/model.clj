@@ -73,7 +73,7 @@
    :store  :directory
    :schema Workspace
    :policy ::ordinary-user
-   :events {::workspace-created {:set [:name :created-by :created-at]}}})
+   :events {::workspace-created {:create [:name :created-by :created-at]}}})
 
 
 (defmodel memberships
@@ -81,7 +81,7 @@
    :store  :directory
    :schema Membership
    :policy ::ordinary-user
-   :events {::workspace-owner-assigned {:set [:workspace-id :user-id :role :status]}}})
+   :events {::workspace-owner-assigned {:create [:workspace-id :user-id :role :status]}}})
 
 
 (defcommand create-workspace

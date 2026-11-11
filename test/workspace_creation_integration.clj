@@ -8,6 +8,7 @@
     [bel.handler :as handler]
     [bel.journal :as journal]
     [bel.runtime :as runtime]
+    [bel.store :as store]
     [charred.api :as json]
     [clojure.java.io :as io]
     [clojure.string :as str]
@@ -20,7 +21,8 @@
     [taoensso.nippy :as nippy]
     [tover.shared.bel :as wiring]
     [tover.workspaces.create.model :as model]
-    [tover.workspaces.create.web :as web])
+    [tover.workspaces.create.web :as web]
+    [tover.workspaces.persistence :as persistence])
   (:import
     [java.nio.file Files]
     [java.time Instant]
@@ -359,6 +361,46 @@
     (is (false? (:allowed (admin! ["select has_table_privilege('tover_app',?,'UPDATE') as allowed" table]))))
     (is (false? (:allowed (admin! ["select has_table_privilege('tover_app',?,'DELETE') as allowed" table])))))
   (is (false? (:allowed (admin! ["select has_table_privilege('tover_app','auth.users','SELECT') as allowed"])))))
+
+
+(defn write!
+  "Adapter semantics only: the runtime role deliberately has no UPDATE grant on directory tables."
+  [model fields row]
+  (let [directory (pg/store {:datasource (db "postgres") :tables persistence/tables})]
+    (store/-transact directory :serializable
+                     #(store/-write! directory % {:kind :user :id nil} (get-in (bel/operations) [:models model]) fields row))))
+
+
+(defn profile [user-id]
+  (admin! ["select display_name, created_at from public.profiles where user_id=?" user-id]))
+
+
+(deftest set-replaces-mapped-columns-of-one-row
+  (let [alice (:user-id (context)) bob (:user-id (context {:name "Bob"})) before (profile alice)]
+    (write! ::model/profiles [:display-name] {:user-id alice :display-name "Alicia"})
+    (is (= "Alicia" (:display_name (profile alice))))
+    (is (= (:created_at before) (:created_at (profile alice))))
+    (is (= "Bob" (:display_name (profile bob))))))
+
+
+(deftest set-on-an-existing-incomplete-row-updates-only-mapped-columns
+  (let [alice (context) req (request) id (get-in req [:input :workspace-id])]
+    (execute alice req)
+    (write! ::model/workspaces [:name] {:workspace-id id :name "Renamed"})
+    (is (= {:name "Renamed" :created_by (:user-id alice)}
+           (admin! ["select name, created_by from public.organizations where id=?" id])))))
+
+
+(deftest set-without-an-optional-mapped-field-clears-it
+  (let [alice (:user-id (context))]
+    (write! ::model/profiles [:display-name] {:user-id alice})
+    (is (nil? (:display_name (profile alice))))))
+
+
+(deftest set-on-a-missing-incomplete-entity-is-a-validation-error
+  (let [id (random-uuid)]
+    (is (= :validation (:type (error-data #(write! ::model/workspaces [:name] {:workspace-id id :name "X"})))))
+    (is (= 0 (:n (admin! ["select count(*) as n from public.organizations where id=?" id]))))))
 
 
 (deftest restart-receipt
