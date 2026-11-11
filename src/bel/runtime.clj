@@ -15,11 +15,6 @@
 (defmulti policy (fn [id _context _input] id))
 (defmulti coeffect (fn [id _context _input] id))
 (defmulti effect! (fn [id _context _input] id))
-(defmulti snapshot (fn [context _read] (get-in context [:bel/runtime :adapter])))
-(defmulti load-model (fn [context _definition _input] (get-in context [:bel/runtime :adapter])))
-(defmulti accept! (fn [context _invocation _decide] (get-in context [:bel/runtime :adapter])))
-(defmulti authority (fn [id _context] id))
-(defmulti check-source! (fn [id _context] id))
 
 
 (defmethod policy :default
@@ -37,40 +32,19 @@
   (random-uuid))
 
 
-(defmethod authority :default
-  [id _]
-  (throw (ex-info "Missing application authority check" {:type :configuration :id id})))
-
-
-(defmethod check-source! nil
-  [_ _]
-  nil)
-
-
-(defmethod check-source! :default
-  [id _]
-  (throw (ex-info "Missing source compatibility check" {:type :configuration :id id})))
-
-
-(defmethod load-model :default
-  [_ _ _]
-  (throw (ex-info "Missing model adapter" {:type :configuration})))
+(def ^:private scope-keys {:user :user-id :session :session-id :workspace :workspace-id})
 
 
 (defn prepare-context
-  "Resolve configured facts and resources from trusted application context."
+  "Resolve trusted scope, actor and effect resources. A declared scope wins over the system default."
   {:malli/schema [:function [:=> [:cat :map] :map] [:=> [:cat :map :map] :map]]}
-  ([ctx]
-   (let [{:keys [scope actor resources]} (:bel/runtime ctx)]
-     (cond-> ctx
-       scope (assoc :scope (select-keys ctx scope))
-       actor (assoc :actor (get ctx actor))
-       resources (assoc :resources (select-keys ctx resources)))))
+  ([ctx] (prepare-context ctx {}))
 
   ([ctx definition]
-   (let [ctx (prepare-context ctx)]
-     (if-let [scope (:scope definition)]
-       (let [key ({:user :user-id :session :session-id :workspace :workspace-id} scope)
+   (let [ctx  (assoc ctx :actor (:user-id ctx) :resources (get-in ctx [:bel/system :resources]))
+         kind (or (:scope definition) (get-in ctx [:bel/system :scope]))]
+     (if kind
+       (let [key (scope-keys kind)
              id  (get ctx key)]
          (when (nil? id)
            (throw (ex-info "Missing authorized context" {:type :forbidden :status 403})))
@@ -109,43 +83,78 @@
 
 (defn with-authority
   "Hold application authority locks through the owning-store callback and its commit."
-  {:malli/schema [:function
-                  [:=> [:cat :map :keyword [:fn fn?]] :any]
-                  [:=> [:cat :map [:maybe :keyword] :keyword [:fn fn?]] :any]]}
-  ([context isolation f]
-   (if-let [guard (get-in context [:bel/runtime :authority])]
-     (store/transact context guard
-                     (if (store/same-resource? guard (store/domain context)) isolation :read-committed)
-                     #(f (authority (:check guard) %)))
-     (f context)))
-
-  ([context owning isolation f]
-   (if-let [{key :store impl :impl} (get-in context [:bel/system :authority])]
-     (store/with-store context key (if (= key owning) isolation :read-committed)
-       #(f (-principal impl (:tx %) %)))
-     (f context))))
+  {:malli/schema [:=> [:cat :map [:maybe :keyword] :keyword [:fn fn?]] :any]}
+  [context owning isolation f]
+  (if-let [{key :store impl :impl} (get-in context [:bel/system :authority])]
+    (store/with-store context key (if (= key owning) isolation :read-committed)
+      #(f (-principal impl (:tx %) %)))
+    (f context)))
 
 
-(defmethod snapshot :default
-  [context read]
-  (with-authority context :repeatable-read
-    #(store/transact % (store/domain context) :repeatable-read read)))
+(defn with-store
+  "Join this operation's transaction for a store key, or hold a new one through f."
+  {:malli/schema [:=> [:cat :map :keyword :keyword [:fn fn?]] :any]}
+  [context key isolation f]
+  (store/with-store context key isolation f))
 
 
-(defn- colocated-journal?
-  {:malli/schema [:=> [:cat :map] :boolean]}
-  [context]
-  (store/same-resource? (store/domain context) (get-in context [:bel/runtime :journal])))
+(defn- with-stores
+  {:malli/schema [:=> [:cat :map [:sequential :keyword] :keyword [:fn fn?]] :any]}
+  [context keys isolation f]
+  (if-let [[key & more] (seq keys)]
+    (store/with-store context key isolation #(with-stores % more isolation f))
+    (f context)))
+
+
+(defn- read-stores
+  "Stores of every model reachable through declared coeffects."
+  {:malli/schema [:=> [:cat :map :qualified-keyword [:set :qualified-keyword]] [:set :keyword]]}
+  [definitions id seen]
+  (if-let [model (get-in definitions [:models id])]
+    #{(:store model)}
+    (if-let [definition (when-not (contains? seen id) (get-in definitions [:read-models id] (get-in definitions [:commands id])))]
+      (into #{} (mapcat #(read-stores definitions (second %) (conj seen id))) (:cofx definition))
+      #{})))
+
+
+(defn- owning-store
+  "A command writes to the store of the models its events map to, or only to the journal."
+  {:malli/schema [:=> [:cat :map :map :map] :keyword]}
+  [context definitions definition]
+  (let [stores (into #{} (keep (fn [[_ model]] (when (some (:emits definition) (keys (:events model))) (:store model))))
+                     (:models definitions))]
+    (case (count stores)
+      0 (get-in context [:bel/system :journal])
+      1 (first stores)
+      (throw (ex-info "A command writes to one store" {:type :configuration :stores stores})))))
+
+
+(defn- adapter-call
+  {:malli/schema [:=> [:cat :map :keyword :keyword [:fn fn?]] :any]}
+  [context key isolation f]
+  (store/with-store context key isolation #(f (store/store % key) (:tx %) (store/store-scope (:scope %)))))
+
+
+(defn- load-model
+  {:malli/schema [:=> [:cat :map :map :map] [:maybe :map]]}
+  [context model input]
+  (adapter-call context (:store model) :repeatable-read #(store/-load %1 %2 %3 model (get input (:id model)))))
+
+
+(defn- colocated?
+  {:malli/schema [:=> [:cat :map :keyword] :boolean]}
+  [context owning]
+  (= owning (get-in context [:bel/system :journal])))
 
 
 (defn- recover
-  {:malli/schema [:=> [:cat :map :map] [:maybe :map]]}
-  [context invocation]
+  {:malli/schema [:=> [:cat :map :keyword :map] [:maybe :map]]}
+  [context owning invocation]
   (authorize! (:bel/command context) context (get-in invocation [:request :input]))
-  (check-source! (get-in context [:bel/runtime :check-source]) context)
-  (when-let [prior (if (colocated-journal? context)
+  (when-let [prior (if (colocated? context owning)
                      (journal/receipt context (:command-id invocation))
-                     (when-let [accepted (store/acceptance context (:command-id invocation))]
+                     (when-let [accepted (adapter-call context owning :serializable
+                                                       #(store/-accepted %1 %2 %3 (:command-id invocation)))]
                        (or (:pending accepted)
                            (journal/receipt context (:command-id invocation))
                            (throw (ex-info "Accepted command is not available in the journal; retry without changing its identity"
@@ -162,32 +171,38 @@
   (doseq [[_ model] (get-in context [:bel/definitions :models])
           :let      [fields (get-in model [:events (:type event) :set])]
           :when     fields]
-    (store/apply-model! context model fields (select-keys (:data event) (conj fields (:id model)))))
+    (adapter-call context (:store model) :serializable
+                  #(store/-write! %1 %2 %3 model fields (select-keys (:data event) (conj fields (:id model))))))
   nil)
 
 
-(defmethod accept! :default
-  [context invocation decide]
+(defn- accept
+  {:malli/schema [:=> [:cat :map :keyword [:sequential :keyword] :map [:fn fn?]] :map]}
+  [context owning reads invocation decide]
   (try
-    (with-authority context :serializable
-      #(store/transact % (store/domain context) :serializable
-                       (fn [context]
-                         (or (recover context invocation)
-                             (let [{:keys [events fx]} (decide context)
-                                   result              {:receipt {:command-id (:command-id invocation) :status :accepted :event-ids (mapv :id events)}
-                                                        :fx      fx}]
-                               (doseq [event events] (apply-event! context event))
-                               (if (colocated-journal? context)
-                                 (journal/deliver! context (assoc invocation :events events :result result))
-                                 (store/save-acceptance! context invocation events result))
-                               result)))))
+    (with-authority context owning :serializable
+      #(store/with-store % owning :serializable
+         (fn [context]
+           (or (recover context owning invocation)
+               (let [{:keys [events fx]} (with-stores context reads :repeatable-read decide)
+                     result              {:receipt {:command-id (:command-id invocation) :status :accepted :event-ids (mapv :id events)}
+                                          :fx      fx}
+                     delivery            (assoc invocation :events events :result result)]
+                 (doseq [event events] (apply-event! context event))
+                 (if (colocated? context owning)
+                   (journal/deliver! context delivery)
+                   (adapter-call context owning :serializable (fn [s tx scope] (store/-record! s tx scope delivery))))
+                 result)))))
     (catch clojure.lang.ExceptionInfo error
       (case (:type (ex-data error))
         :identity-conflict
         ;; A concurrent acceptance may have committed after the failed transaction's snapshot.
-        (snapshot context #(or (recover % invocation)
-                               (throw (ex-info "This identity is already in use."
-                                               {:type :identity-conflict :command-id (:command-id invocation)} error))))
+        (with-authority context owning :repeatable-read
+          #(store/with-store % owning :repeatable-read
+             (fn [context]
+               (or (recover context owning invocation)
+                   (throw (ex-info "This identity is already in use."
+                                   {:type :identity-conflict :command-id (:command-id invocation)} error))))))
         :conflict (throw (ex-info (.getMessage error) (assoc (ex-data error) :command-id (:command-id invocation)) error))
         (throw error)))))
 
@@ -196,7 +211,7 @@
   "Read journal history under current application authority."
   {:malli/schema [:=> [:cat :map] [:vector :map]]}
   [context]
-  (with-authority (prepare-context context) :read-committed journal/history))
+  (with-authority (prepare-context context) nil :read-committed journal/history))
 
 
 (declare read*)
@@ -215,7 +230,7 @@
         (assoc facts local
                (if model?
                  (read* definitions context source request seen)
-                 (coeffect source (select-keys context [:tx :scope :actor :resources :bel/runtime :bel/transactions]) request)))))
+                 (coeffect source (select-keys context [:tx :scope :actor :resources :bel/system :bel/transactions]) request)))))
     facts
     (:cofx definition)))
 
@@ -245,13 +260,22 @@
         (validation/check! (:output definition) result)))))
 
 
+(defn- snapshot
+  "Open, up front, every store a read references; authority holds its locks around them."
+  {:malli/schema [:=> [:cat :map :map :qualified-keyword [:fn fn?]] :any]}
+  [context definitions id read]
+  (let [stores (sort (read-stores definitions id #{}))]
+    (with-authority context (or (first stores) (get-in context [:bel/system :authority :store])) :repeatable-read
+      #(with-stores % stores :repeatable-read read))))
+
+
 (defn read-model
   {:malli/schema [:=> [:cat :map :qualified-keyword :map] :any]}
   [context id input]
   (let [definitions (core/operations)
         definition  (or (get-in definitions [:read-models id]) (get-in definitions [:models id]))
         context     (prepare-context context (or definition {}))]
-    (snapshot (assoc context :bel/definitions definitions) #(read* definitions % id input #{}))))
+    (snapshot (assoc context :bel/definitions definitions) definitions id #(read* definitions % id input #{}))))
 
 
 (defn- plan
@@ -297,6 +321,15 @@
   nil)
 
 
+(defn decide
+  "Run a command's pure decision with given facts through the runtime's plan checks. For scenario tests."
+  {:malli/schema [:=> [:cat :qualified-keyword :map :map] :map]}
+  [id facts input]
+  (let [definitions (core/operations)
+        definition  (definition! definitions :commands id)]
+    (plan definitions definition facts (decode (:input definition) input))))
+
+
 (defn execute!
   "Run new decisions inside acceptance; authorized retries return the recorded result."
   {:malli/schema [:=> [:cat :map :qualified-keyword :map] :map]}
@@ -309,11 +342,13 @@
         facts       (select-keys context [:scope :actor])
         invocation  {:command-id (:command-id invocation)
                      :request    {:command id :scope (:scope facts) :actor (:actor facts) :input input}}
+        owning      (owning-store context definitions definition)
         {:keys [receipt fx]}
-        (accept! (assoc context :bel/definitions definitions :bel/command definition) invocation
-                 (fn [context]
-                   (let [facts (assoc facts :command-id (:command-id invocation) :now (Instant/now))]
-                     (plan definitions definition
-                           (load-facts definitions definition context input facts #{}) input))))]
+        (accept (assoc context :bel/definitions definitions :bel/command definition) owning
+                (sort (disj (read-stores definitions id #{}) owning)) invocation
+                (fn [context]
+                  (let [facts (assoc facts :command-id (:command-id invocation) :now (Instant/now))]
+                    (plan definitions definition
+                          (load-facts definitions definition context input facts #{}) input))))]
     (dispatch-effects! context fx)
     receipt))

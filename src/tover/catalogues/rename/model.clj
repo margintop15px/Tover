@@ -44,6 +44,7 @@
 
 (defmodel goods
   {:id     :id
+   :store  :catalogue
    :schema Good
    :policy ::workspace-member
    :events {::good-renamed {:set [:name :revision :actor :updated-at]}}})
@@ -51,12 +52,14 @@
 
 (defmodel categories
   {:id     :id
+   :store  :catalogue
    :schema [:map [:id :string] [:name :string]]
    :policy ::workspace-member})
 
 
 (defmodel stores
   {:id     :id
+   :store  :catalogue
    :schema [:map [:id :string] [:name :string]]
    :policy ::workspace-member})
 

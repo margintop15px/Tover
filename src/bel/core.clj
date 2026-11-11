@@ -1,11 +1,11 @@
 (ns bel.core
   (:require
-   [bel.expressions :as expressions]
-   [bel.validation :as validation]
-   [clojure.java.classpath :as classpath]
-   [clojure.string :as str]
-   [clojure.tools.namespace.find :as ns-find]
-   [malli.core :as m]))
+    [bel.expressions :as expressions]
+    [bel.validation :as validation]
+    [clojure.java.classpath :as classpath]
+    [clojure.string :as str]
+    [clojure.tools.namespace.find :as ns-find]
+    [malli.core :as m]))
 
 
 (defonce registry
@@ -54,8 +54,8 @@
    [:or Instruction [:vector Instruction]]
    [:fn {:error/message "Page instructions must be returned alone"}
     #(not
-      (and (vector? %)
-           (some (fn [instruction] (= :page (:type instruction))) %)))]])
+       (and (vector? %)
+            (some (fn [instruction] (= :page (:type instruction))) %)))]])
 
 
 (def RingResponse
@@ -260,10 +260,11 @@
 (defn attach-model!
   "Declare scalar entity fields, references and event-to-field mappings."
   {:malli/schema [:=> [:cat [:fn var?] :qualified-keyword :map] [:fn var?]]}
-  [v id {:keys [schema policy events] id-key :id :as opts}]
-  (when (seq (remove #{:id :schema :policy :events} (keys opts)))
+  [v id {:keys [schema policy events store] id-key :id :as opts}]
+  (when (seq (remove #{:id :store :schema :policy :events} (keys opts)))
     (throw (ex-info "Unsupported model option" {:type :validation :id id})))
 
+  (validation/check! :keyword store)
   (validation/check! :qualified-keyword policy)
 
   (let [schema (m/schema schema)
@@ -343,8 +344,8 @@
    [:=> [:cat :symbol [:sequential :symbol]] :boolean]}
   [namespace-symbol exclusions]
   (boolean
-   (or (re-find #"(?:^|\.)(?:dev|test)(?:\.|$)|-test(?:\.|$)" (str namespace-symbol))
-       (some #(ns-under? namespace-symbol %) exclusions))))
+    (or (re-find #"(?:^|\.)(?:dev|test)(?:\.|$)|-test(?:\.|$)" (str namespace-symbol))
+        (some #(ns-under? namespace-symbol %) exclusions))))
 
 
 (defn find-namespaces
@@ -372,7 +373,7 @@
    [:=> [:cat Scan] [:vector :symbol]]}
   [scan]
   (let [{:keys [scan-ns scan-exclude-ns]} (scan-config scan)
-        namespaces                        (into [] (mapcat #(find-namespaces % scan-exclude-ns)) scan-ns)]
+        namespaces (into [] (mapcat #(find-namespaces % scan-exclude-ns)) scan-ns)]
     (doseq [namespace-symbol namespaces]
       (require namespace-symbol))
     namespaces))

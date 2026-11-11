@@ -3,10 +3,29 @@
     [bel.core :as core :refer [defcommand defevent defmodel defreadmodel]]
     [bel.core-test :as fixture]
     [bel.runtime :as runtime]
-    [clojure.test :refer [deftest is use-fixtures]]))
+    [bel.store :as store]
+    [clojure.test :refer [deftest is use-fixtures]])
+  (:import
+    [java.time Instant]))
 
 
 (use-fixtures :each fixture/isolated-registry)
+
+
+(defrecord MemoryStore [rows journal log]
+  store/Transactional
+  (-transact [_ isolation f]
+    (swap! log conj isolation)
+    (f (Object.)))
+
+  store/Store
+  (-load [_ _ _ _ id] (get @rows id))
+  (-write! [_ _ _ model _ row] (swap! rows assoc (get row (:id model)) row))
+
+  store/Journal
+  (-receipt [_ _ _ _] nil)
+  (-append! [_ _ _ delivery] (swap! journal conj delivery))
+  (-history [_ _ _] @journal))
 
 
 (defmethod runtime/policy ::allowed
@@ -21,21 +40,13 @@
 
 (defmethod runtime/coeffect ::echo
   [_ context input]
-  (swap! (get-in context [:resources :seen]) conj (:tx context))
+  (runtime/with-store context :memory :repeatable-read
+    #(swap! (get-in % [:resources :seen]) conj (:tx %)))
   input)
 
 
-(defmethod runtime/snapshot ::memory
-  [context read]
-  (read (assoc context :tx (Object.))))
-
-
-(defmethod runtime/accept! ::memory
-  [context invocation decide]
-  (let [context (assoc context :tx (Object.))
-        _       (runtime/authorize! (:bel/command context) context (get-in invocation [:request :input]))
-        plan    (decide context)]
-    {:receipt (select-keys plan [:events]) :fx (:fx plan)}))
+(defmodel entity
+  {:id :id :store :memory :schema [:map [:id :string] [:value :int]] :policy ::nested})
 
 
 (defreadmodel child
@@ -47,7 +58,8 @@
 
 (defreadmodel composed
   {:input [:map [:value :int]] :output :map :policy ::allowed
-   :cofx  [[:empty ::echo]
+   :cofx  [[:entity ::entity (fn [_ _] {:id nil})]
+           [:empty ::echo]
            [:child ::child (fn [_ input] input)]
            [:last ::echo (fn [facts _] {:value (inc (get-in facts [:child :value]))})]]}
   [facts _]
@@ -64,22 +76,33 @@
   {:events [{:type ::changed :data {:test/value (:value input)}}]})
 
 
+(defn memory
+  ([] (memory {}))
+  ([rows] (->MemoryStore (atom rows) (atom []) (atom []))))
+
+
 (defn context
-  []
-  {:scope     {}                :actor       "alice"             :allow? true :nested? true
-   :resources {:seen (atom [])} :bel/runtime {:adapter ::memory}})
+  ([] (context (memory)))
+  ([store]
+   {:user-id    "alice" :allow? true :nested? true
+    :bel/system {:stores {:memory store} :journal :memory :scope :user :resources {:seen (atom [])}}}))
+
+
+(defn error-data
+  [f]
+  (try (f) nil (catch clojure.lang.ExceptionInfo error (ex-data error))))
 
 
 (defn error-type
   [f]
-  (try (f) nil (catch clojure.lang.ExceptionInfo error (:type (ex-data error)))))
+  (:type (error-data f)))
 
 
 (deftest ordered-coeffects-and-nested-authorization-share-one-snapshot
   (core/build-registry! ['bel.runtime-test])
   (let [ctx    (context)
         result (runtime/read-model ctx ::composed {:value "4" :actor "mallory"})
-        seen   @(get-in ctx [:resources :seen])]
+        seen   @(get-in ctx [:bel/system :resources :seen])]
     (is (= [{} {:value 4} {:value 5}] ((juxt :empty :child :last) result)))
     (is (= "alice" (:actor result)))
     (is (not (contains? result :tx)))
@@ -128,6 +151,12 @@
       (is (= :configuration (error-type #(runtime/read-model ctx ::composed {:value 1})))))))
 
 
+(deftest system-scope-is-the-default
+  (core/build-registry! ['bel.runtime-test])
+  (let [ctx (-> (context) (assoc :workspace-id "workspace-A") (assoc-in [:bel/system :scope] :workspace))]
+    (is (= {:workspace-id "workspace-A"} (:scope (runtime/read-model ctx ::composed {:value 1}))))))
+
+
 (defmethod runtime/policy ::transaction-required
   [_ context _]
   (some? (:tx context)))
@@ -137,7 +166,7 @@
   (core/build-registry! ['bel.runtime-test])
   (let [definitions (core/operations)]
     (with-redefs [core/operations (constantly (assoc-in definitions [:commands ::change :policy] ::transaction-required))]
-      (is (= 1 (count (:events (runtime/execute! (context) ::change {:command-id "inside-tx" :input {:value 1}}))))))))
+      (is (= 1 (count (:event-ids (runtime/execute! (context) ::change {:command-id "inside-tx" :input {:value 1}}))))))))
 
 
 (deftest cycles-missing-sources-and-adapter-collisions-reject
@@ -164,20 +193,41 @@
                   {:events nil}]]
       (with-redefs [core/operations (constantly (assoc-in original [:commands ::change :handler] (constantly plan)))]
         (is (= :validation (error-type #(runtime/execute! (context) ::change {:command-id "C" :input {:value 1}})))))))
-  (let [result (runtime/execute! (context) ::change {:command-id "C" :input {:value "1" :actor "mallory"}})]
-    (is (= {:test/value 1} (get-in result [:events 0 :data])))
-    (is (= "alice" (get-in result [:events 0 :actor])))
-    (is (uuid? (get-in result [:events 0 :id])))
-    (is (instance? java.time.Instant (get-in result [:events 0 :at])))))
+  (let [store (memory)
+        _     (runtime/execute! (context store) ::change {:command-id "C" :input {:value "1" :actor "mallory"}})
+        event (-> @(:journal store) first :events first)]
+    (is (= {:test/value 1} (:data event)))
+    (is (= "alice" (:actor event)))
+    (is (uuid? (:id event)))
+    (is (instance? Instant (:at event)))))
 
 
-(defmodel entity
-  {:id :id :schema [:map [:id :string] [:value :int]] :policy ::nested})
+(deftest decide-runs-the-plan-check-without-a-store
+  (core/build-registry! ['bel.runtime-test])
+  (let [facts {:actor "alice" :command-id "C" :now (Instant/now)}]
+    (is (= [::changed] (mapv :type (:events (runtime/decide ::change facts {:value 1})))))
+    (with-redefs [core/operations (constantly (assoc-in (core/operations) [:commands ::change :handler]
+                                                        (constantly {:events [{:type ::missing :data {}}]})))]
+      (is (= :validation (error-type #(runtime/decide ::change facts {:value 1})))))))
 
 
-(defmethod runtime/load-model ::memory
-  [context _ input]
-  (get-in context [:resources :rows (:id input)]))
+(deftest command-mapping-two-stores-is-a-configuration-error
+  (core/build-registry! ['bel.runtime-test])
+  (let [store    (memory)
+        mapped   {:id :id :events {::changed {:set [:value]}}}
+        original (core/operations)]
+    (with-redefs [core/operations (constantly (assoc original :models {::a (assoc mapped :store :memory)
+                                                                       ::b (assoc mapped :store :other)}))]
+      (is (= :configuration (error-type #(runtime/execute! (context store) ::change {:command-id "C" :input {:value 1}}))))
+      (is (= [] @(:log store))))))
+
+
+(deftest unknown-model-store-key-is-a-configuration-error
+  (core/build-registry! ['bel.runtime-test])
+  (let [original (core/operations)]
+    (with-redefs [core/operations (constantly (assoc-in original [:models ::entity :store] :absent))]
+      (is (= {:type :configuration :store :absent}
+             (select-keys (error-data #(runtime/read-model (context) ::entity-screen {:id "G"})) [:type :store]))))))
 
 
 (defreadmodel entity-screen
@@ -189,18 +239,18 @@
 
 (deftest model-lookups-validate-input-output-and-nested-policy
   (core/build-registry! ['bel.runtime-test])
-  (let [ctx (assoc-in (context) [:resources :rows] {"G" {:id "G" :value 4}})]
+  (let [ctx (context (memory {"G" {:id "G" :value 4}}))]
     (is (= {:id "G" :value 4} (runtime/read-model ctx ::entity-screen {:id "G"})))
     (is (nil? (runtime/read-model ctx ::entity {:id "missing"})))
     (is (nil? (runtime/read-model ctx ::entity {:id nil})))
     (is (= :forbidden (error-type #(runtime/read-model (assoc ctx :nested? false) ::entity-screen {:id "G"}))))
     (is (= :validation (error-type #(runtime/read-model ctx ::entity {}))))
-    (is (= :validation (error-type #(runtime/read-model (assoc-in ctx [:resources :rows "G" :value] "bad") ::entity {:id "G"}))))))
+    (is (= :validation (error-type #(runtime/read-model (context (memory {"G" {:id "G" :value "bad"}})) ::entity {:id "G"}))))))
 
 
 (deftest models-reject-ambiguous-storage-and-mapping-declarations
   (let [opts        (:bel/options (meta #'entity))
-        declaration (select-keys opts [:id :schema :policy :events])
+        declaration (select-keys opts [:id :store :schema :policy :events])
         metadata    (meta #'entity)]
     (try
       (doseq [bad [{:id :missing}
@@ -212,13 +262,15 @@
                    {:events {::changed {:set [:value :value]}}}
                    {:events {::changed {:set [:unknown]}}}
                    {:events {::changed {:set [:value] :call identity}}}
+                   {:store "memory"}
                    {:vocabulary {}}]]
         (is (= :validation (error-type #(core/attach-model! #'entity ::entity (merge declaration bad))))))
+      (is (= :validation (error-type #(core/attach-model! #'entity ::entity (dissoc declaration :store)))))
       (finally (reset-meta! #'entity metadata)))))
 
 
 (deftest model-discovery-rejects-undeclared-reference-and-event-targets
-  (let [opts     (select-keys (:bel/options (meta #'entity)) [:id :schema :policy :events])
+  (let [opts     (select-keys (:bel/options (meta #'entity)) [:id :store :schema :policy :events])
         metadata (meta #'entity)]
     (try
       (doseq [bad [{:schema [:map [:id :string] [:link {:bel/ref ::missing} :string]]}
@@ -230,7 +282,7 @@
 
 (deftest mapped-fields-must-be-declared-by-the-event
   (let [metadata (meta #'entity)
-        opts     (select-keys (:bel/options metadata) [:id :schema :policy])]
+        opts     (select-keys (:bel/options metadata) [:id :store :schema :policy])]
     (try
       (core/attach-model! #'entity ::entity
                           (assoc opts :schema (conj (:schema opts) [:label {:optional true} :string])

@@ -1,9 +1,9 @@
 (ns tover.workspaces.create.model
   (:require
-   [bel.core :refer [defcommand defevent defmodel defreadmodel]]
-   [bel.runtime :as runtime]
-   [bel.validation :as validation]
-   [clojure.string :as str]))
+    [bel.core :refer [defcommand defevent defmodel defreadmodel]]
+    [bel.runtime :as runtime]
+    [bel.validation :as validation]
+    [clojure.string :as str]))
 
 
 (def WorkspaceName
@@ -63,12 +63,14 @@
 
 (defmodel profiles
   {:id     :user-id
+   :store  :directory
    :schema Profile
    :policy ::ordinary-user})
 
 
 (defmodel workspaces
   {:id     :workspace-id
+   :store  :directory
    :schema Workspace
    :policy ::ordinary-user
    :events {::workspace-created {:set [:name :created-by :created-at]}}})
@@ -76,6 +78,7 @@
 
 (defmodel memberships
   {:id     :membership-id
+   :store  :directory
    :schema Membership
    :policy ::ordinary-user
    :events {::workspace-owner-assigned {:set [:workspace-id :user-id :role :status]}}})
