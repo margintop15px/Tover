@@ -239,15 +239,9 @@
   {:schema     [:map [:locale [:enum "en" "ru"]] [:return-to {:optional true} :string]]
    :route-data {:tover/access :optional}}
   [{:keys [request]} {:keys [locale return-to]}]
-  (try
-    ;; ponytail: signed-in users keep only the cookie until Task 4 executes the Bel change-account-language command here.
-    {:status  303
-     :headers {"location" (if (and (string? return-to) (re-matches #"/(?!/)[^\r\n\\]*" return-to)) return-to "/")}
-     :cookies {"tover-language" {:value  locale :path "/" :max-age 31536000 :http-only true :same-site :lax
-                                 :secure (= :https (:scheme request))}}
-     :body    ""}
-    (catch Exception error
-      (binding [*out* *err*]
-        (println "Language preference save failed:" (select-keys (ex-data error) [:type :code :status])))
-      (assoc (page request (i18n/t "Language")
-                   [:p {:role "alert"} (i18n/t "Could not save language. Please try again.")]) :status 503))))
+  ;; ponytail: signed-in users keep only the cookie until Task 4 executes the Bel change-account-language command here.
+  {:status  303
+   :headers {"location" (if (and (string? return-to) (re-matches #"/(?!/)[^\r\n\\]*" return-to)) return-to "/")}
+   :cookies {"tover-language" {:value  locale :path "/" :max-age 31536000 :http-only true :same-site :lax
+                               :secure (= :https (:scheme request))}}
+   :body    ""})

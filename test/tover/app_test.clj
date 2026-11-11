@@ -86,20 +86,24 @@
 (deftest tokens-without-tover-claims-fail-closed
   (with-data-path
     (fn [path]
-      (let [repo     (rdf/native-store path)
-            rt       (realtime/start!)
-            services (assoc (fixture-services) :auth (auth-supabase/auth {:auth-url "http://auth.invalid" :api-key "public" :admin-key "admin"}))
-            ;; Issued by Auth without the custom access token hook.
-            token    (support/jwt {:sub (str support/user-id) :email "person@example.test" :role "authenticated"})
-            key      (sessions/establish! (:session-store services) nil
-                                          {:access-token token :refresh-token "refresh" :expires-at (+ 3600 (.getEpochSecond (Instant/now)))
-                                           :user         {:user-id support/user-id :email "person@example.test" :email-confirmed? true}})]
+      (let [repo      (rdf/native-store path)
+            rt        (realtime/start!)
+            ;; Issued by Auth without the custom access token hook; a refresh does not add the claims either.
+            tokens    {:access-token  (support/jwt {:sub (str support/user-id) :email "person@example.test" :role "authenticated"})
+                       :refresh-token "refresh" :expires-at (+ 3600 (.getEpochSecond (Instant/now)))
+                       :user          {:user-id support/user-id :email "person@example.test" :email-confirmed? true}}
+            refreshes (atom 0)
+            services  (assoc (fixture-services)
+                             :auth (support/auth-provider (auth-supabase/auth {:auth-url "http://auth.invalid" :api-key "public" :admin-key "admin"})
+                                                          {:refresh (fn [_] (swap! refreshes inc) tokens)}))
+            key       (sessions/establish! (:session-store services) nil tokens)]
         (try
           (let [handler  (app/create-handler (merge services {:repo repo :realtime rt}))
                 response (handler {:request-method :get :uri "/" :headers {"cookie" (str "tover-session=" key)}})]
             (is (= 503 (:status response)))
             (is (nil? (get-in response [:headers "location"])))
             (is (= "identity-claims-missing" (get-in response [:headers "x-tover-error"])))
+            (is (= 1 @refreshes))
             (is (some? (sessions/session (:session-store services) key))))
           (finally
             (realtime/stop! rt)

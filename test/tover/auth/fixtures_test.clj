@@ -39,8 +39,8 @@
 
 (deftest fixture-signup-verification-and-password-setup-work-in-fresh-browser
   (let [{:keys [auth state]} (identity/fixtures)
-        input {:email "New@Example.test" :password "first-password" :workspace-name "New workspace"}
-        signup (auth/sign-up! auth input)]
+        input                {:email "New@Example.test" :password "first-password" :workspace-name "New workspace"}
+        signup               (auth/sign-up! auth input)]
     (is (false? (get-in signup [:user :email-confirmed?])))
     (is (= :email-not-confirmed (:code (support/error-data #(auth/sign-in! auth input)))))
     (let [email    (last (:emails @state))

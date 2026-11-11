@@ -35,6 +35,24 @@
         (is (= :admin (:role identity)))))))
 
 
+(deftest pre-hook-token-is-refreshed-once
+  (let [{:keys [auth state session-store key] :as services} (support/authenticated-services)
+        before (sessions/session session-store key)
+        refreshes (atom 0)
+        services (assoc services :auth (support/auth-provider auth {:refresh (fn [token] (swap! refreshes inc) (auth/refresh! auth token))}))
+        handler (security/wrap-identity (constantly {:status 200}) services)]
+    ;; A token issued before the Auth hook was enabled carries only the standard claims.
+    (swap! state update-in [:sessions (get-in before [:tokens :access-token]) :claims]
+           select-keys [:sub :email])
+    (is (= 200 (:status (handler (support/request services :post "/action/anything")))))
+    (is (= 1 @refreshes))
+    (let [after (sessions/session session-store key)]
+      (is (not= (:tokens before) (:tokens after)))
+      (is (= (:version before) (:version after))))
+    (is (= 200 (:status (handler (support/request services :post "/action/anything")))))
+    (is (= 1 @refreshes))))
+
+
 (deftest protected-requests-use-current-server-identity
   (let [{:keys [users context] :as services} (support/authenticated-services)
         handler (security/wrap-identity #(hash-map :status 200 :identity (:tover/identity %)) services)

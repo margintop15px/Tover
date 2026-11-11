@@ -1,6 +1,7 @@
 (ns tover.auth.security
   (:require
     [bel.validation :as validation]
+    [com.brunobonacci.mulog :as mu]
     [ring.middleware.session.store :as ring-store]
     [tover.auth.core :as auth]
     [tover.auth.sessions :as sessions]
@@ -14,6 +15,28 @@
   (throw (ex-info message {:type :identity :status status :code code :locale i18n/*locale*})))
 
 
+(defn- refreshed-tokens
+  {:malli/schema [:=> [:cat :any :map] :map]}
+  [auth tokens]
+  (try (auth/refresh! auth (:refresh-token tokens))
+       (catch clojure.lang.ExceptionInfo error
+         (if (= :invalid-refresh-token (:code (ex-data error)))
+           (failure 401 :unauthenticated "Please sign in again.")
+           (throw error)))))
+
+
+(defn- token-claims
+  "Read the claims. A token issued before the Auth hook was enabled is replaced once; then missing claims fail closed."
+  {:malli/schema [:=> [:cat :any :map :boolean] [:tuple :map :map]]}
+  [auth tokens refreshed?]
+  (let [read   #(try {:claims (auth/token-identity auth (:access-token %))}
+                     (catch Throwable error {:error error}))
+        result (read tokens)]
+    (if (and (not refreshed?) (= :identity-claims-missing (:code (ex-data (:error result)))))
+      (let [tokens (refreshed-tokens auth tokens)] [tokens (read tokens)])
+      [tokens result])))
+
+
 (defn authenticate
   "Resolve the current user and memberships from token claims, serializing token refresh for this session."
   {:malli/schema [:=> [:cat :map [:maybe :string]] [:maybe :map]]}
@@ -23,29 +46,23 @@
                                   (fn [{:keys [tokens workspace-id] :as row}]
                                     (if-not tokens
                                       [row nil]
-                                      (let [tokens (if (<= (long (or (:expires-at tokens) 0)) (+ 30 (.getEpochSecond (Instant/now))))
-                                                     (try (auth/refresh! auth (:refresh-token tokens))
-                                                          (catch clojure.lang.ExceptionInfo error
-                                                            (if (= :invalid-refresh-token (:code (ex-data error)))
-                                                              (failure 401 :unauthenticated "Please sign in again.")
-                                                              (throw error))))
-                                                     tokens)
-                                            row    (assoc row :tokens tokens)]
-                                        (try
-                                          (let [{:keys [user memberships] :as claims}
-                                                (auth/token-identity auth (:access-token tokens))
-                                                selected    (or (some #(when (= workspace-id (:workspace-id %)) %) memberships)
-                                                                (first memberships))
-                                                selected-id (:workspace-id selected)
-                                                row         (cond-> (assoc row :user-id (:user-id user) :workspace-id selected-id)
-                                                              (not= workspace-id selected-id) (assoc :version (random-uuid)))]
+                                      (let [expiring? (<= (long (or (:expires-at tokens) 0)) (+ 30 (.getEpochSecond (Instant/now))))
+                                            [tokens {:keys [claims error]}] (token-claims auth (cond->> tokens expiring? (refreshed-tokens auth)) expiring?)
+                                            row (assoc row :tokens tokens)]
+                                        (if error
+                                          ;; Save a rotated pair even if reading its claims fails.
+                                          [row {:error error}]
+                                          (let [{:keys [user memberships]} claims
+                                                selected                   (or (some #(when (= workspace-id (:workspace-id %)) %) memberships)
+                                                                               (first memberships))
+                                                selected-id                (:workspace-id selected)
+                                                row (cond-> (assoc row :user-id (:user-id user) :workspace-id selected-id)
+                                                      (not= workspace-id selected-id) (assoc :version (random-uuid)))]
                                             [row {:user-id            (:user-id user) :user user             :memberships memberships
                                                   :profile-complete?  (:profile-complete? claims)
                                                   :password-required? (get-in row [:data :identity/password-required?])
                                                   :workspace-id       selected-id :role     (:role selected)
-                                                  :auth-session-id    key :auth-version     (:version row)}])
-                  ;; Save a rotated pair even if reading its claims fails.
-                                          (catch Throwable error [row {:error error}]))))))]
+                                                  :auth-session-id    key :auth-version     (:version row)}]))))))]
     (if-let [error (:error result)] (throw error) result)))
 
 
@@ -158,6 +175,8 @@
          (let [{:keys [status code]} (ex-data error)]
            (if status
              (do
+               (when (= :configuration (:type (ex-data error)))
+                 (mu/log ::identity-configuration-error :code code :status status))
                (when (= status 401)
                  (ring-store/delete-session (:session-store services) (:session/key request)))
                (if (and (= status 401) (= policy :optional))
