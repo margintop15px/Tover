@@ -391,6 +391,29 @@
            (admin! ["select name, created_by from public.organizations where id=?" id])))))
 
 
+(deftest set-on-an-existing-row-needs-only-update-privilege
+  ;; Everything here, including the probe role, rolls back.
+  (let [alice (:user-id (context))]
+    (jdbc/with-transaction [tx (db "postgres") {:rollback-only true}]
+      (doseq [statement ["create role bel_p2_probe"
+                         "grant usage on schema public to bel_p2_probe"
+                         "grant select, update (display_name) on public.profiles to bel_p2_probe"
+                         "create policy bel_p2_probe_all on public.profiles to bel_p2_probe using (true)"
+                         "set local role bel_p2_probe"]]
+        (jdbc/execute! tx [statement]))
+      (pg/write-model! {:tx tx :tables persistence/tables} (get-in (bel/operations) [:models ::model/profiles])
+                       [:display-name] {:user-id alice :display-name "Alicia"})
+      (is (= "Alicia" (:display_name (jdbc/execute-one! tx ["select display_name from public.profiles where user_id=?" alice]
+                                                        {:builder-fn rs/as-unqualified-lower-maps})))))))
+
+
+(deftest set-on-a-missing-complete-entity-inserts-it
+  (let [alice (:user-id (context)) id (random-uuid)]
+    (write! ::model/workspaces [:name :created-by :created-at]
+            {:workspace-id id :name "New" :created-by alice :created-at (Instant/now)})
+    (is (= {:name "New" :created_by alice} (admin! ["select name, created_by from public.organizations where id=?" id])))))
+
+
 (deftest set-without-an-optional-mapped-field-clears-it
   (let [alice (:user-id (context))]
     (write! ::model/profiles [:display-name] {:user-id alice})

@@ -5,7 +5,6 @@
     [bel-postgres.journal :as journal]
     [bel.store :as store]
     [bel.validation :as validation]
-    [malli.core :as m]
     [next.jdbc :as jdbc])
   (:import [java.sql SQLException]))
 
@@ -38,23 +37,22 @@
 
 
 (defn write-model!
-  "Replace the mapped columns. A complete entity upserts on its identity; a partial one must already exist."
+  "Replace the mapped columns of an existing row; a missing row is inserted only when the entity is complete.
+  Updating an existing row needs only UPDATE privilege on the mapped columns."
   {:malli/schema [:=> [:cat :map :map [:vector :keyword] :map] :nil]}
   [{:keys [tx tables]} {:keys [id fields schema] :as model} mapped row]
   (let [{:keys [table columns]} (binding! tables model)
         values                  (into {} (map (fn [field] [(get columns field) (get row field)])) (cons id mapped))]
-    (if (m/validate schema row)
-      (db/execute-one! tx {:insert-into   table                 :values [values]
-                           :on-conflict   [(get columns id)]
-                           :do-update-set (mapv columns mapped)})
-      (do (validation/check! (into [:map] (map (fn [field] [field {:optional (boolean (get-in fields [field :optional]))}
-                                                            (get-in fields [field :schema])]))
-                                   (cons id mapped))
-                             row)
-          (when (zero? (:next.jdbc/update-count
-                         (db/execute-one! tx {:update table :set (dissoc values (get columns id))
-                                              :where  [:= (get columns id) (get row id)]})))
-            (throw (ex-info "A new entity requires all required fields" {:type :validation}))))))
+    (validation/check! (into [:map] (map (fn [field] [field {:optional (boolean (get-in fields [field :optional]))}
+                                                      (get-in fields [field :schema])]))
+                             (cons id mapped))
+                       row)
+    (when (zero? (:next.jdbc/update-count
+                   (db/execute-one! tx {:update table :set (dissoc values (get columns id))
+                                        :where  [:= (get columns id) (get row id)]})))
+      ;; A new entity requires all required fields.
+      (validation/check! schema row)
+      (db/execute-one! tx {:insert-into table :values [values]})))
   nil)
 
 
