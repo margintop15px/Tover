@@ -312,7 +312,7 @@
           (is (= :forbidden (:type (workspace/error-data #(execute spoofed)))))
           (is (= :forbidden (:type (workspace/error-data #(row spoofed)))))
           (is (= :forbidden (:type (workspace/error-data #(runtime/history spoofed))))))
-        (runtime/with-authority alice nil :read-committed
+        (runtime/with-authority alice #{} :read-committed
           (fn [{:keys [tx]}]
             (is (empty? (jdbc/execute! tx ["select id from app_private.bel_events where scope_kind='workspace' and scope_id=?" (:workspace-id bob)])))
             (is (empty? (jdbc/execute! tx ["select payload from app_private.bel_receipts where scope_kind='workspace' and scope_id=?" (:workspace-id bob)])))))

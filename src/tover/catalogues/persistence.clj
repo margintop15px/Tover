@@ -15,8 +15,10 @@
 
 (defn graphs
   "Store graph allocation for a Bel workspace scope."
-  {:malli/schema [:=> [:cat [:map [:kind [:= :workspace]] [:id :uuid]]] :map]}
-  [{:keys [id]}]
+  {:malli/schema [:=> [:cat [:map [:kind :keyword] [:id :any]]] :map]}
+  [{:keys [kind id]}]
+  (when-not (= :workspace kind)
+    (throw (ex-info "Catalogue graphs are workspace-scoped" {:type :configuration :scope kind})))
   {:domain (graph {:workspace-id id} :domain) :delivery (graph {:workspace-id id} :delivery)})
 
 

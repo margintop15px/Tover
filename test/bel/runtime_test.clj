@@ -222,6 +222,17 @@
       (is (= [] @(:log store))))))
 
 
+(deftest separate-owning-store-without-outbox-is-a-configuration-error
+  (core/build-registry! ['bel.runtime-test])
+  (let [store    (memory)
+        ctx      (-> (context store) (assoc-in [:bel/system :stores :journal] (memory)) (assoc-in [:bel/system :journal] :journal))
+        original (core/operations)]
+    (with-redefs [core/operations (constantly (assoc original :models {::a {:id :id :store :memory :events {::changed {:set [:value]}}}}))]
+      (is (= {:type :configuration :store :memory}
+             (select-keys (error-data #(runtime/execute! ctx ::change {:command-id "C" :input {:value 1}})) [:type :store])))
+      (is (= [] @(:log store))))))
+
+
 (deftest unknown-model-store-key-is-a-configuration-error
   (core/build-registry! ['bel.runtime-test])
   (let [original (core/operations)]

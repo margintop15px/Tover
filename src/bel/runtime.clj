@@ -82,11 +82,12 @@
 
 
 (defn with-authority
-  "Hold application authority locks through the owning-store callback and its commit."
-  {:malli/schema [:=> [:cat :map [:maybe :keyword] :keyword [:fn fn?]] :any]}
-  [context owning isolation f]
+  "Hold application authority locks through the owning-store callback and its commit.
+  The authority store opens at `isolation` when the operation also uses it (`touched`), else Read Committed."
+  {:malli/schema [:=> [:cat :map [:set :keyword] :keyword [:fn fn?]] :any]}
+  [context touched isolation f]
   (if-let [{key :store impl :impl} (get-in context [:bel/system :authority])]
-    (store/with-store context key (if (= key owning) isolation :read-committed)
+    (store/with-store context key (if (contains? touched key) isolation :read-committed)
       #(f (-principal impl (:tx %) %)))
     (f context)))
 
@@ -125,7 +126,10 @@
                      (:models definitions))]
     (case (count stores)
       0 (get-in context [:bel/system :journal])
-      1 (first stores)
+      1 (let [key (first stores)]
+          (when-not (or (= key (get-in context [:bel/system :journal])) (satisfies? store/Outbox (store/store context key)))
+            (throw (ex-info "A store that is not the journal must be an outbox" {:type :configuration :store key})))
+          key)
       (throw (ex-info "A command writes to one store" {:type :configuration :stores stores})))))
 
 
@@ -180,7 +184,7 @@
   {:malli/schema [:=> [:cat :map :keyword [:sequential :keyword] :map [:fn fn?]] :map]}
   [context owning reads invocation decide]
   (try
-    (with-authority context owning :serializable
+    (with-authority context (conj (set reads) owning) :serializable
       #(store/with-store % owning :serializable
          (fn [context]
            (or (recover context owning invocation)
@@ -197,7 +201,7 @@
       (case (:type (ex-data error))
         :identity-conflict
         ;; A concurrent acceptance may have committed after the failed transaction's snapshot.
-        (with-authority context owning :repeatable-read
+        (with-authority context (conj (set reads) owning) :repeatable-read
           #(store/with-store % owning :repeatable-read
              (fn [context]
                (or (recover context owning invocation)
@@ -211,7 +215,7 @@
   "Read journal history under current application authority."
   {:malli/schema [:=> [:cat :map] [:vector :map]]}
   [context]
-  (with-authority (prepare-context context) nil :read-committed journal/history))
+  (with-authority (prepare-context context) #{} :read-committed journal/history))
 
 
 (declare read*)
@@ -265,7 +269,9 @@
   {:malli/schema [:=> [:cat :map :map :qualified-keyword [:fn fn?]] :any]}
   [context definitions id read]
   (let [stores (sort (read-stores definitions id #{}))]
-    (with-authority context (or (first stores) (get-in context [:bel/system :authority :store])) :repeatable-read
+    ;; Coeffect-only reads (no model store) still snapshot the authority store.
+    (with-authority context (into #{} (or (seq stores) (keep identity [(get-in context [:bel/system :authority :store])])))
+      :repeatable-read
       #(with-stores % stores :repeatable-read read))))
 
 

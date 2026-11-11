@@ -37,7 +37,7 @@
 
 (deftest colocated-authority-and-domain-share-one-transaction
   (let [seen (atom []) ctx (context true seen)]
-    (runtime/with-authority ctx :domain :serializable
+    (runtime/with-authority ctx #{:domain} :serializable
       (fn [ctx]
         (store/with-store ctx :domain :serializable
           (fn [ctx]
@@ -52,7 +52,7 @@
   (doseq [fail? [false true]]
     (let [seen (atom []) ctx (context false seen)]
       (try
-        (runtime/with-authority ctx :domain :serializable
+        (runtime/with-authority ctx #{:domain} :serializable
           (fn [ctx]
             (store/with-store ctx :domain :serializable
               (fn [ctx]
@@ -67,9 +67,16 @@
                 [outcome :domain] [outcome :identity]] @seen))))))
 
 
+(deftest authority-store-read-by-the-operation-opens-at-the-requested-isolation
+  (let [seen (atom []) ctx (context false seen)]
+    (runtime/with-authority ctx #{:domain :identity} :repeatable-read
+      (fn [ctx] (store/with-store ctx :identity :repeatable-read (fn [_] (swap! seen conj :read)))))
+    (is (= [[:begin :identity :repeatable-read] :authorized :read [:commit :identity]] @seen))))
+
+
 (deftest without-authority-the-callback-runs-directly
   (let [seen (atom []) ctx (update (context true seen) :bel/system dissoc :authority)]
-    (is (= :done (runtime/with-authority ctx :domain :serializable (constantly :done))))
+    (is (= :done (runtime/with-authority ctx #{:domain} :serializable (constantly :done))))
     (is (= [] @seen))))
 
 

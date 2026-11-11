@@ -517,6 +517,10 @@
         (is (= :validation (:type (fixture/error-data #(runtime/read-model ctx ::model/good-row {:id "G"})))))))))
 
 
+(deftest catalogue-graphs-refuse-non-workspace-scopes
+  (is (= :configuration (:type (fixture/error-data #(persistence/graphs {:kind :user :id (:workspace-id fixture/scope)}))))))
+
+
 (deftest additional-rdf-types-do-not-hide-or-replace-the-model
   (bel/build-registry! ['tover.catalogues.rename.model 'tover.catalogues.rename.web])
   (fixture/with-store
