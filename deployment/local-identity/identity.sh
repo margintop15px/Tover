@@ -17,6 +17,7 @@ def jwt(role):
     value=f'{header}.{body}'
     return value+'.'+b64(hmac.new(secret.encode(),value.encode(),hashlib.sha256).digest())
 values={'POSTGRES_PASSWORD':secrets.token_urlsafe(32),'TO_DEV_APP_PASSWORD':secrets.token_urlsafe(32),
+        'TO_DEV_JOURNAL_PASSWORD':secrets.token_urlsafe(32),
         'JWT_SECRET':secret,'ANON_KEY':jwt('anon'),'SERVICE_ROLE_KEY':jwt('service_role'),
         'SESSION_ENCRYPTION_KEY':base64.b64encode(secrets.token_bytes(32)).decode()}
 fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
@@ -26,6 +27,17 @@ print('Created private local credentials in deployment/local-identity/.env')
 PY
     ;;
   up)
+    # Profiles created before the journal worker get its password once; other keys stay unchanged.
+    python3 - "$profile_dir/.env" <<'PYJOURNAL'
+import os, secrets, sys
+path=sys.argv[1]
+with open(path) as source:
+    if any(line.startswith('TO_DEV_JOURNAL_PASSWORD=') for line in source): sys.exit()
+fd=os.open(path,os.O_WRONLY|os.O_APPEND)
+os.fchmod(fd,0o600)
+with os.fdopen(fd,'a') as output: output.write(f'TO_DEV_JOURNAL_PASSWORD={secrets.token_urlsafe(32)}\n')
+print('Added a local journal worker password to deployment/local-identity/.env')
+PYJOURNAL
     "${compose[@]}" up -d --wait --wait-timeout 180 db mail
     "${compose[@]}" exec -T db bash -s < "$profile_dir/db-roles.sh"
     "${compose[@]}" up -d --wait --wait-timeout 180
@@ -33,10 +45,15 @@ PY
       < "$repo_dir/supabase/migrations/033_identity_and_sessions.sql"
     "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
       < "$repo_dir/supabase/migrations/034_workspace_actor_labels.sql"
-    # The migration never includes a password; configure this local role separately.
+    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+      < "$repo_dir/supabase/migrations/035_bel_workspace_creation.sql"
+    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+      < "$repo_dir/supabase/migrations/036_bel_shared_journal.sql"
+    # Migrations never include passwords; configure these local roles separately.
     "${compose[@]}" exec -T db sh -c \
-      'psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 --set=app_password="$TO_DEV_APP_PASSWORD"' <<'SQL'
+      'psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 --set=app_password="$TO_DEV_APP_PASSWORD" --set=journal_password="$TO_DEV_JOURNAL_PASSWORD"' <<'SQL'
 ALTER ROLE tover_app WITH PASSWORD :'app_password';
+ALTER ROLE tover_journal WITH LOGIN PASSWORD :'journal_password';
 SQL
     printf 'Local identity profile is ready. Run identity.sh app-env to configure the application.\n'
     ;;
@@ -55,7 +72,8 @@ configuration={
     'TOVER_ORIGIN':values.get('TO_DEV_SITE_URL','http://localhost:3030'),
     'TOVER_JDBC_URL':f"jdbc:postgresql://127.0.0.1:{values.get('IDENTITY_DB_PORT','55432')}/postgres",
     'TOVER_DB_USER':'tover_app','TOVER_DB_PASSWORD':values['TO_DEV_APP_PASSWORD'],
-    'TOVER_SESSION_KEY':values['SESSION_ENCRYPTION_KEY']}
+    'TOVER_SESSION_KEY':values['SESSION_ENCRYPTION_KEY'],
+    'TOVER_JOURNAL_DB_USER':'tover_journal','TOVER_JOURNAL_DB_PASSWORD':values['TO_DEV_JOURNAL_PASSWORD']}
 fd=os.open(sys.argv[2],os.O_CREAT|os.O_TRUNC|os.O_WRONLY,0o600)
 os.fchmod(fd,0o600)
 with os.fdopen(fd,'w') as output:

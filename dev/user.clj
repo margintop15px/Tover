@@ -69,15 +69,17 @@
         settings (merge (into {} profile)
                         (select-keys (System/getenv) ["IDENTITY_API_PORT" "IDENTITY_DB_PORT" "TO_DEV_SITE_URL"]))
         api      (str "http://127.0.0.1:" (get settings "IDENTITY_API_PORT" "58000"))]
-    {"TOVER_AUTH_URL"       (str api "/auth/v1")
-     "TOVER_REST_URL"       (str api "/rest/v1")
-     "TOVER_API_KEY"        (get settings "ANON_KEY")
-     "TOVER_AUTH_ADMIN_KEY" (get settings "SERVICE_ROLE_KEY")
-     "TOVER_ORIGIN"         (get settings "TO_DEV_SITE_URL" "http://localhost:3030")
-     "TOVER_JDBC_URL"       (str "jdbc:postgresql://127.0.0.1:" (get settings "IDENTITY_DB_PORT" "55432") "/postgres")
-     "TOVER_DB_USER"        "tover_app"
-     "TOVER_DB_PASSWORD"    (get settings "TO_DEV_APP_PASSWORD")
-     "TOVER_SESSION_KEY"    (get settings "SESSION_ENCRYPTION_KEY")}))
+    {"TOVER_AUTH_URL"            (str api "/auth/v1")
+     "TOVER_REST_URL"            (str api "/rest/v1")
+     "TOVER_API_KEY"             (get settings "ANON_KEY")
+     "TOVER_AUTH_ADMIN_KEY"      (get settings "SERVICE_ROLE_KEY")
+     "TOVER_ORIGIN"              (get settings "TO_DEV_SITE_URL" "http://localhost:3030")
+     "TOVER_JDBC_URL"            (str "jdbc:postgresql://127.0.0.1:" (get settings "IDENTITY_DB_PORT" "55432") "/postgres")
+     "TOVER_DB_USER"             "tover_app"
+     "TOVER_DB_PASSWORD"         (get settings "TO_DEV_APP_PASSWORD")
+     "TOVER_SESSION_KEY"         (get settings "SESSION_ENCRYPTION_KEY")
+     "TOVER_JOURNAL_DB_USER"     "tover_journal"
+     "TOVER_JOURNAL_DB_PASSWORD" (get settings "TO_DEV_JOURNAL_PASSWORD")}))
 
 
 (defn dev-config

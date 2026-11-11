@@ -118,13 +118,14 @@
           '(do
              (require '[tover.app :as app] '[tover.auth.core :as auth] '[tover.workspaces.core :as workspaces]
                       '[integrant.core :as ig] '[ring.middleware.session.store :as ring] '[user])
-             (let [environment      {"TOVER_AUTH_URL"    "http://127.0.0.1:58000/auth/v1"
-                                     "TOVER_REST_URL"    "http://127.0.0.1:58000/rest/v1"
-                                     "TOVER_API_KEY"     "synthetic-public" "TOVER_AUTH_ADMIN_KEY" "synthetic-admin"
-                                     "TOVER_ORIGIN"      "http://localhost:3030"
-                                     "TOVER_JDBC_URL"    "jdbc:postgresql://127.0.0.1:55432/postgres"
-                                     "TOVER_DB_USER"     "tover_app" "TOVER_DB_PASSWORD"           "synthetic-password"
-                                     "TOVER_SESSION_KEY" "synthetic-session-key"}
+             (let [environment      {"TOVER_AUTH_URL"        "http://127.0.0.1:58000/auth/v1"
+                                     "TOVER_REST_URL"        "http://127.0.0.1:58000/rest/v1"
+                                     "TOVER_API_KEY"         "synthetic-public" "TOVER_AUTH_ADMIN_KEY"   "synthetic-admin"
+                                     "TOVER_ORIGIN"          "http://localhost:3030"
+                                     "TOVER_JDBC_URL"        "jdbc:postgresql://127.0.0.1:55432/postgres"
+                                     "TOVER_DB_USER"         "tover_app" "TOVER_DB_PASSWORD"             "synthetic-password"
+                                     "TOVER_SESSION_KEY"     "synthetic-session-key"
+                                     "TOVER_JOURNAL_DB_USER" "tover_journal" "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"}
                    production-error (try (app/config) nil
                                          (catch clojure.lang.ExceptionInfo error (:type (ex-data error))))
                    development      (try
@@ -159,7 +160,9 @@
                            :seed-dependency?           (= (ig/ref :user/opening-stock) (get-in development [:user/handler :opening-stock]))
                            :scoped-seed?               (uuid? (get-in development [:user/opening-stock :scope :workspace-id]))
                            :production-handler-absent? (not (contains? development :tover.app/handler))
-                           :development?               (get-in development [:user/handler :development?])})))))
+                           :development?               (get-in development [:user/handler :development?])
+                           :worker?                    (= (ig/ref :tover.app/delivery-system) (:bel.delivery/worker development))
+                           :bel-system?                (= (ig/ref :tover.app/bel-system) (get-in development [:user/handler :bel/system]))})))))
         builder     (ProcessBuilder. ^java.util.List
                       [(str (io/file (System/getProperty "java.home") "bin" "java"))
                        "-cp" (System/getProperty "java.class.path") "clojure.main" "-e" program])
@@ -187,7 +190,7 @@
     (is (= :configuration (:production-error result)))
     (is (nil? (:development-error result)))
     (is (= ".data/tester-inventory-v1" (:inventory-path result)))
-    (is (every? true? (map result [:provider-options? :jdbc-sessions? :dev-handler? :reload-dependency? :production-handler-absent? :development?]))
+    (is (every? true? (map result [:provider-options? :jdbc-sessions? :dev-handler? :reload-dependency? :production-handler-absent? :development? :worker? :bel-system?]))
         (pr-str result))
     (is (every? false? (map result [:fixture-auth? :fixture-workspaces? :fixture-sessions? :seed-dependency? :scoped-seed?]))
         (pr-str result))))
@@ -207,8 +210,9 @@
 
 (deftest local-environment-derives-generated-profile-settings
   (doseq [overrides [{} {"IDENTITY_API_PORT" "58111" "IDENTITY_DB_PORT" "55111" "TO_DEV_SITE_URL" "http://localhost:3099"}]]
-    (let [settings (merge {"ANON_KEY"            "synthetic-public"   "SERVICE_ROLE_KEY"       "synthetic-admin"
-                           "TO_DEV_APP_PASSWORD" "synthetic-password" "SESSION_ENCRYPTION_KEY" "synthetic-session-key"}
+    (let [settings (merge {"ANON_KEY"                "synthetic-public"   "SERVICE_ROLE_KEY"       "synthetic-admin"
+                           "TO_DEV_APP_PASSWORD"     "synthetic-password" "SESSION_ENCRYPTION_KEY" "synthetic-session-key"
+                           "TO_DEV_JOURNAL_PASSWORD" "synthetic-journal"}
                           overrides)
           content  (str/join "\n" (map (fn [[key value]] (str key "=" value)) settings))
           api-port (or (System/getenv "IDENTITY_API_PORT") (get settings "IDENTITY_API_PORT") "58000")
@@ -217,12 +221,13 @@
       (with-redefs [io/reader (fn [path]
                                 (is (= "deployment/local-identity/.env" path))
                                 (StringReader. content))]
-        (is (= {"TOVER_AUTH_URL"    (str "http://127.0.0.1:" api-port "/auth/v1")
-                "TOVER_REST_URL"    (str "http://127.0.0.1:" api-port "/rest/v1")
-                "TOVER_API_KEY"     "synthetic-public" "TOVER_AUTH_ADMIN_KEY" "synthetic-admin"
-                "TOVER_ORIGIN"      origin "TOVER_JDBC_URL"                   (str "jdbc:postgresql://127.0.0.1:" db-port "/postgres")
-                "TOVER_DB_USER"     "tover_app" "TOVER_DB_PASSWORD"           "synthetic-password"
-                "TOVER_SESSION_KEY" "synthetic-session-key"}
+        (is (= {"TOVER_AUTH_URL"        (str "http://127.0.0.1:" api-port "/auth/v1")
+                "TOVER_REST_URL"        (str "http://127.0.0.1:" api-port "/rest/v1")
+                "TOVER_API_KEY"         "synthetic-public" "TOVER_AUTH_ADMIN_KEY"   "synthetic-admin"
+                "TOVER_ORIGIN"          origin "TOVER_JDBC_URL" (str "jdbc:postgresql://127.0.0.1:" db-port "/postgres")
+                "TOVER_DB_USER"         "tover_app" "TOVER_DB_PASSWORD"             "synthetic-password"
+                "TOVER_SESSION_KEY"     "synthetic-session-key"
+                "TOVER_JOURNAL_DB_USER" "tover_journal" "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"}
                (user/local-environment)))))))
 
 

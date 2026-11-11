@@ -12,6 +12,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run ./identity.sh init}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       TO_DEV_APP_PASSWORD: ${TO_DEV_APP_PASSWORD:?Run ./identity.sh init}
+      TO_DEV_JOURNAL_PASSWORD: ${TO_DEV_JOURNAL_PASSWORD:?Run ./identity.sh up}
       JWT_EXP: 3600
     ports:
       - 127.0.0.1:${IDENTITY_DB_PORT:-55432}:5432
