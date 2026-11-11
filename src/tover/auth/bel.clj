@@ -7,8 +7,9 @@
   (:import [java.time Instant]))
 
 
-(defmethod runtime/authority ::current
-  [_ {:keys [tx] :as context}]
+(defn current
+  {:malli/schema [:=> [:cat :any :map] :map]}
+  [tx context]
   (let [{:keys [actor user-id scope auth-session-id session-id]} context]
     (when-not (and (or (= scope {:user-id user-id})
                        (and (= #{:workspace-id} (set (keys scope))) (uuid? (:workspace-id scope))))
@@ -41,3 +42,10 @@
           context)))))
 
 
+(defrecord CurrentSession []
+  runtime/Authority
+  (-principal [_ tx context] (current tx context)))
+
+
+(alter-meta! #'->CurrentSession assoc :malli/schema [:=> [:cat] :map])
+(alter-meta! #'map->CurrentSession assoc :malli/schema [:=> [:cat :map] :map])

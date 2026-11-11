@@ -2,7 +2,7 @@
   "Shared accepted-event and receipt storage. Delivery never reruns a command."
   (:require
     [bel-postgres.jdbc :as db]
-    [bel.journal :as journal]
+    [bel.journal :as bel-journal]
     [bel.runtime :as runtime]
     [honey.sql :as sql]
     [next.jdbc :as jdbc]
@@ -12,11 +12,10 @@
 
 (defn- scope-columns
   {:malli/schema [:=> [:cat :map] :map]}
-  [{:keys [scope]}]
-  (cond
-    (= #{:user-id} (set (keys scope))) {:scope_kind "user" :scope_id (:user-id scope)}
-    (= #{:workspace-id} (set (keys scope))) {:scope_kind "workspace" :scope_id (:workspace-id scope)}
-    :else (throw (ex-info "Unsupported journal scope" {:type :configuration}))))
+  [{{:keys [kind id]} :scope}]
+  (if (contains? #{:user :workspace} kind)
+    {:scope_kind (name kind) :scope_id id}
+    (throw (ex-info "Unsupported journal scope" {:type :configuration}))))
 
 
 (defn- scope-clause
@@ -83,17 +82,13 @@
                             :where  [:and (scope-clause context) [:= :command_id command-id]]}))))
 
 
-(defmethod journal/read-receipt :postgres
-  [context command-id]
-  (receipt context command-id))
-
-
 (defmethod runtime/coeffect :postgres/receipt
   [_ context {:keys [command-id]}]
-  (journal/receipt context command-id))
+  (bel-journal/receipt context command-id))
 
 
-(defmethod journal/write-batch! :postgres
+(defn write-batch!
+  {:malli/schema [:=> [:cat :map :map] :nil]}
   [context {:keys [request result events command-id] :as delivery}]
   (if (save-receipt! context delivery result)
     (doseq [[index event] (map-indexed vector events)]
@@ -105,7 +100,8 @@
   nil)
 
 
-(defmethod journal/read-history :postgres
+(defn read-history
+  {:malli/schema [:=> [:cat :map] [:vector :map]]}
   [{:keys [tx] :as context}]
   (jdbc/execute! tx
                  (sql/format {:select   [:id :command_id :actor_id :event_type :occurred_at :recorded_at :event_index :data]

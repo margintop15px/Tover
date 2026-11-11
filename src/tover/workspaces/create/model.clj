@@ -111,7 +111,7 @@
             [:role {:optional true} :string]]
    :policy ::ordinary-user
    :cofx   [[:creation :postgres/receipt (fn [_ input] (select-keys input [:command-id]))]
-            [:membership :postgres/membership (fn [_ input] (select-keys input [:workspace-id]))]]}
+            [:membership :tover.workspaces.persistence/membership (fn [_ input] (select-keys input [:workspace-id]))]]}
   [{:keys [creation membership]} {:keys [workspace-id]}]
   (when-not (and (= ::create-workspace (get-in creation [:request :command]))
                  (= workspace-id (get-in creation [:request :input :workspace-id])))

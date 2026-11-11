@@ -47,6 +47,12 @@
 (use-fixtures :each fixture/isolated-registry register)
 
 
+(defn system
+  "Directory reads in these checks are user-scoped."
+  []
+  (assoc (wiring/system {:datasource (db "tover_app")}) :scope :user))
+
+
 (defn context
   ([] (context {}))
   ([{:keys [confirmed? name recovery?] :or {confirmed? true name "Alice"}}]
@@ -57,8 +63,7 @@
               user-id (str user-id "@example.test") confirmed? (json/write-json-str {:name name})])
      (admin! ["insert into app_private.sessions(id,user_id,data) values(?,?,?)"
               session-key user-id (pr-str {:bel/session-id session-id :identity/password-required? (boolean recovery?)})])
-     {:bel/runtime (wiring/runtime-config :postgres)
-      :datasource  (db "tover_app")                  :user-id user-id :session-id session-id :auth-session-id session-key})))
+     {:bel/system (system) :user-id user-id :session-id session-id :auth-session-id session-key})))
 
 
 (defn request []
@@ -360,13 +365,13 @@
   (let [file (io/file (System/getenv "TOVER_BEL_TEST_STATE"))]
     (if (= "1" (System/getenv "TOVER_BEL_RESTART_CHECK"))
       (let [{:keys [context request receipt]} (nippy/thaw (Files/readAllBytes (.toPath file)))
-            ctx (assoc context :datasource (db "tover_app"))]
+            ctx (assoc context :bel/system (system))]
         (is (= receipt (execute ctx request)))
         (is (= "Workshop" (:name (current ctx request))))
         (is (= [1 1 2 1] (counts ctx request))))
       (let [ctx (context) req (request) receipt (execute ctx req)]
         (with-open [out (io/output-stream file)]
-          (.write out ^bytes (nippy/freeze {:context (dissoc ctx :datasource) :request req :receipt receipt})))
+          (.write out ^bytes (nippy/freeze {:context (dissoc ctx :bel/system) :request req :receipt receipt})))
         (is (= [1 1 2 1] (counts ctx req)))))))
 
 
