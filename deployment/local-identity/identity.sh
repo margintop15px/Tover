@@ -31,11 +31,13 @@ PY
     python3 - "$profile_dir/.env" <<'PYJOURNAL'
 import os, secrets, sys
 path=sys.argv[1]
-with open(path) as source:
-    if any(line.startswith('TO_DEV_JOURNAL_PASSWORD=') for line in source): sys.exit()
+with open(path) as source: content=source.read()
+if any(line.startswith('TO_DEV_JOURNAL_PASSWORD=') for line in content.splitlines()): sys.exit()
 fd=os.open(path,os.O_WRONLY|os.O_APPEND)
 os.fchmod(fd,0o600)
-with os.fdopen(fd,'a') as output: output.write(f'TO_DEV_JOURNAL_PASSWORD={secrets.token_urlsafe(32)}\n')
+# Keep a hand-edited last line intact when the file lacks a final newline.
+separator='' if not content or content.endswith('\n') else '\n'
+with os.fdopen(fd,'a') as output: output.write(f'{separator}TO_DEV_JOURNAL_PASSWORD={secrets.token_urlsafe(32)}\n')
 print('Added a local journal worker password to deployment/local-identity/.env')
 PYJOURNAL
     "${compose[@]}" up -d --wait --wait-timeout 180 db mail
