@@ -170,7 +170,7 @@ Built once by Integrant, passed to the handler and the delivery worker.
 | Hook | Receives |
 | --- | --- |
 | `policy` | principal, scope, decoded input |
-| `coeffect` | `{:tx :scope :actor :principal}` for the store it reads, request |
+| `coeffect` | `{:scope :actor :principal}` plus the system; it opens the store it reads with `runtime/with-store`, request |
 | `effect!` | `{:scope :actor :resources}`, request |
 | `Authority/-principal` | its own `tx`, trusted request identity |
 | store options | scope, own `tx` |
@@ -238,7 +238,7 @@ Each phase keeps all tests green.
 | P0 | Agree this document. | Approved. | — |
 | P1 Protocols and flow — done 2026-11-11 | Add the protocols; adapters become records with `:tables`/`:graphs`/`:guard`; `accept`/`snapshot`/`recover` become functions; delete the storage multimethods; `runtime_test`'s `::memory` overrides become a small test `Store` record; add `bel.runtime/decide`. `:rdf/query` keeps its request shape (no store option). | Only `coeffect`, `effect!`, `policy`, `expand-form` remain as `defmulti`; `scripts/test-bel-workspace.sh` and unit suite green; Tover declarations unchanged except `:store`. | P2, P3 |
 | P2 Upsert (C5) — done 2026-11-11 | Mappings are `{:create […]}` (plain insert, `:identity-conflict` on an existing entity) or `{:set […]}`; `-write!` upserts on both adapters (Postgres `UPDATE` of the mapped columns, then `INSERT` only when no row exists and the entity is complete; updates need only UPDATE privilege); Create Workspace uses `:create`. | Postgres update-event integration test. | Chapter 03 |
-| P3 Principal | Authority record returns principal; policies read it; hook contexts trimmed (§6.3); `:postgres/membership` → `::membership`, `:postgres/receipt` → `:bel/receipt`. | Both slices' policies use principal only. | Chapter 03 |
+| P3 Principal — done 2026-11-11 | Authority record returns principal; policies read it; hook contexts trimmed (§6.3); `:postgres/membership` → `::membership`, `:postgres/receipt` → `:bel/receipt`. | Both slices' policies use principal only. | Chapter 03 |
 | P4 System | `bel/system` and delivery worker as Integrant keys in `tover.app`; delete `runtime-config`/`delivery-context`. | Dev system starts with slices excluded; worker running. | Any cutover |
 | P5 Chapter 03/03a | Profile, name, language built on the new structure via §8. | Board scenarios pass; profile writers cut over. | Validates the design on an update flow |
 | P6 Processors and effects | `defprocessor`, effect descriptors with `:then`/`:catch`. | Chapter 05 delivery scenarios. | 05, 05a, 05b, 01, 02 |
