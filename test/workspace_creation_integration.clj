@@ -426,6 +426,12 @@
     (is (= 0 (:n (admin! ["select count(*) as n from public.organizations where id=?" id]))))))
 
 
+(deftest principal-is-the-current-session
+  (let [ctx (context)]
+    (is (= {:user-id (:user-id ctx) :confirmed? true :password-required? false :memberships []}
+           (runtime/with-authority (runtime/prepare-context ctx) #{} :read-committed #(:principal %))))))
+
+
 (deftest restart-receipt
   (let [file (io/file (System/getenv "TOVER_BEL_TEST_STATE"))]
     (if (= "1" (System/getenv "TOVER_BEL_RESTART_CHECK"))

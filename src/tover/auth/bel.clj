@@ -7,8 +7,14 @@
   (:import [java.time Instant]))
 
 
+(def Principal
+  [:map [:user-id :uuid] [:confirmed? :boolean] [:password-required? :boolean]
+   [:memberships [:vector [:map [:workspace-id :uuid] [:role :keyword]]]]])
+
+
 (defn current
-  {:malli/schema [:=> [:cat :any :map] :map]}
+  "Lock and verify the current session; return its principal."
+  {:malli/schema [:=> [:cat :any :map] Principal]}
   [tx context]
   (let [{:keys [actor user-id scope auth-session-id session-id]} context]
     (when-not (and (or (= scope {:user-id user-id})
@@ -27,19 +33,17 @@
       (db/execute-one! tx {:select [[[:set_config "request.jwt.claim.sub" [:cast actor :text] true]]
                                     [[:set_config "tover.session_key" auth-session-id true]]]})
 
-      (let [context (assoc context
-                           :tx tx
-                           :confirmed? (:confirmed (db/execute-one! tx {:select [[[:app_private.bel_confirmed_user] :confirmed]]}))
-                           :password-required? (boolean (:identity/password-required? data)))]
+      (let [principal {:user-id            user-id
+                       :confirmed?         (boolean (:confirmed (db/execute-one! tx {:select [[[:app_private.bel_confirmed_user] :confirmed]]})))
+                       :password-required? (boolean (:identity/password-required? data))
+                       :memberships        []}]
         (if-let [workspace-id (:workspace-id scope)]
           (let [membership (db/execute-one! tx {:select [:role_id :status]
                                                 :from   [[[:app_private.bel_workspace_membership workspace-id] :membership]]})]
-            (when-not (and (:confirmed? context) (not (:password-required? context)) (= "active" (:status membership)))
+            (when-not (and (:confirmed? principal) (not (:password-required? principal)) (= "active" (:status membership)))
               (throw (ex-info "Current workspace access is required" {:type :forbidden :status 403})))
-            (assoc context
-                   :workspace-id workspace-id
-                   :memberships [{:workspace-id workspace-id :role (keyword (:role_id membership))}]))
-          context)))))
+            (assoc principal :memberships [{:workspace-id workspace-id :role (keyword (:role_id membership))}]))
+          principal)))))
 
 
 (defrecord CurrentSession []

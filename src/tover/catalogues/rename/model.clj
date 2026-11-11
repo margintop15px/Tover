@@ -31,10 +31,8 @@
 
 
 (defmethod runtime/policy ::workspace-member
-  [_ {:keys [scope actor user-id workspace-id memberships]} _]
-  (boolean (and (uuid? user-id) (= actor user-id)
-                (= workspace-id (:workspace-id scope))
-                (some #(= workspace-id (:workspace-id %)) memberships))))
+  [_ {{:keys [memberships]} :principal scope :scope} _]
+  (boolean (some #(= (:workspace-id scope) (:workspace-id %)) memberships)))
 
 
 (defevent good-renamed

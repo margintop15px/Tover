@@ -49,8 +49,8 @@
 
 
 (defmethod runtime/policy ::ordinary-user
-  [_ {:keys [confirmed? password-required? actor scope]} _]
-  (boolean (and confirmed? (not password-required?) (= actor (:user-id scope)))))
+  [_ {{:keys [user-id confirmed? password-required?]} :principal scope :scope} _]
+  (boolean (and confirmed? (not password-required?) (= user-id (:user-id scope)))))
 
 
 (defevent workspace-created
@@ -110,7 +110,7 @@
    :output [:map [:workspace-id :uuid] [:name :string] [:can-open? :boolean]
             [:role {:optional true} :string]]
    :policy ::ordinary-user
-   :cofx   [[:creation :postgres/receipt (fn [_ input] (select-keys input [:command-id]))]
+   :cofx   [[:creation :bel/receipt (fn [_ input] (select-keys input [:command-id]))]
             [:membership :tover.workspaces.persistence/membership (fn [_ input] (select-keys input [:workspace-id]))]]}
   [{:keys [creation membership]} {:keys [workspace-id]}]
   (when-not (and (= ::create-workspace (get-in creation [:request :command]))
