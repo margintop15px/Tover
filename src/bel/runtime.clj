@@ -102,15 +102,28 @@
   nil)
 
 
+(defprotocol Authority
+  (^{:malli/schema [:=> [:cat :any :any :map] :map]}
+    -principal [authority tx context] "Lock and verify the current session; return the authorized context or throw :forbidden."))
+
+
 (defn with-authority
   "Hold application authority locks through the owning-store callback and its commit."
-  {:malli/schema [:=> [:cat :map :keyword [:fn fn?]] :any]}
-  [context isolation f]
-  (if-let [guard (get-in context [:bel/runtime :authority])]
-    (store/transact context guard
-                    (if (store/same-resource? guard (store/domain context)) isolation :read-committed)
-                    #(f (authority (:check guard) %)))
-    (f context)))
+  {:malli/schema [:function
+                  [:=> [:cat :map :keyword [:fn fn?]] :any]
+                  [:=> [:cat :map [:maybe :keyword] :keyword [:fn fn?]] :any]]}
+  ([context isolation f]
+   (if-let [guard (get-in context [:bel/runtime :authority])]
+     (store/transact context guard
+                     (if (store/same-resource? guard (store/domain context)) isolation :read-committed)
+                     #(f (authority (:check guard) %)))
+     (f context)))
+
+  ([context owning isolation f]
+   (if-let [{key :store impl :impl} (get-in context [:bel/system :authority])]
+     (store/with-store context key (if (= key owning) isolation :read-committed)
+       #(f (-principal impl (:tx %) %)))
+     (f context))))
 
 
 (defmethod snapshot :default

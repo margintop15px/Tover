@@ -1,31 +1,31 @@
 (ns bel.journal
-  "Shared journal operations, independent of the owning domain store."
+  "Shared journal operations on the system's journal store, independent of the owning domain store."
   (:require [bel.store :as store]))
 
 
-(defmulti read-receipt (fn [context _command-id] (get-in context [:bel/runtime :journal :adapter])))
-(defmulti write-batch! (fn [context _delivery] (get-in context [:bel/runtime :journal :adapter])))
-(defmulti read-history (fn [context] (get-in context [:bel/runtime :journal :adapter])))
+(defn- journal-call
+  {:malli/schema [:=> [:cat :map :map [:fn fn?]] :any]}
+  [context scope f]
+  (let [key (get-in context [:bel/system :journal])]
+    (store/with-store context key :read-committed
+      #(f (store/store % key) (:tx %) (store/store-scope scope)))))
 
 
 (defn receipt
   {:malli/schema [:=> [:cat :map :string] [:maybe :map]]}
   [context command-id]
-  (store/transact context (get-in context [:bel/runtime :journal]) :read-committed
-                  #(read-receipt % command-id)))
+  (journal-call context (:scope context) #(store/-receipt %1 %2 %3 command-id)))
 
 
 (defn deliver!
   "Commit the complete recorded batch, or join the domain's existing journal transaction."
   {:malli/schema [:=> [:cat :map :map] :nil]}
   [context delivery]
-  (store/transact (assoc context :scope (get-in delivery [:request :scope]))
-                  (get-in context [:bel/runtime :journal]) :read-committed
-                  #(write-batch! % delivery))
+  (journal-call context (get-in delivery [:request :scope]) #(store/-append! %1 %2 %3 delivery))
   nil)
 
 
 (defn history
   {:malli/schema [:=> [:cat :map] [:vector :map]]}
   [context]
-  (store/transact context (get-in context [:bel/runtime :journal]) :read-committed #(read-history %)))
+  (vec (journal-call context (:scope context) store/-history)))
