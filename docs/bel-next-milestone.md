@@ -10,13 +10,14 @@ The Goods action, pure command, event, model mapping, read model and view are un
 | --- | --- |
 | Goods schemas, decision, event, models and composed reads | `src/tover/catalogues/rename/model.clj` |
 | Data-only action and rendering-only views | `src/tover/catalogues/rename/web.clj` |
-| Acceptance, retry recovery and shared transaction boundaries | `src/bel/runtime.clj`, `src/bel/store.clj` |
-| Journal dispatch and delivery lifecycle | `src/bel/journal.clj`, `src/bel/delivery.clj` |
-| Optional RDF integration: native models, acceptance markers and pending records | `src/bel_rdf/adapter.clj`, `src/bel_rdf/core.clj` |
-| Optional PostgreSQL integration: models, journal and JDBC values | `src/bel_postgres/adapter.clj`, `src/bel_postgres/journal.clj`, `src/bel_postgres/jdbc.clj` |
-| Current Tover session/membership checks | `src/tover/auth/bel.clj` |
+| Acceptance, retry recovery and the `Authority` protocol | `src/bel/runtime.clj` |
+| `Transactional`, `Store`, `Outbox`, `Journal` protocols; transaction sharing by store key | `src/bel/store.clj` |
+| Journal calls and delivery over every `Outbox` store | `src/bel/journal.clj`, `src/bel/delivery.clj` |
+| Optional RDF integration: `RdfStore` record (models, acceptance markers, pending records) | `src/bel_rdf/adapter.clj`, `src/bel_rdf/core.clj` |
+| Optional PostgreSQL integration: `PgStore` record (models, journal, JDBC values) | `src/bel_postgres/adapter.clj`, `src/bel_postgres/journal.clj`, `src/bel_postgres/jdbc.clj` |
+| Current Tover session/membership checks (`CurrentSession` authority) | `src/tover/auth/bel.clj` |
 | Existing table bindings, graph names and legacy cutover guard | `src/tover/workspaces/persistence.clj`, `src/tover/catalogues/persistence.clj` |
-| Resource and policy composition | `src/tover/shared/bel.clj` |
+| System map: named stores, journal, default scope, authority | `src/tover/shared/bel.clj` |
 | Scope-aware journal permissions and private worker role | `supabase/migrations/036_bel_shared_journal.sql` |
 | Cross-store failure, race and restart tests | `test/goods_journal_integration.clj` |
 

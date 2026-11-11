@@ -159,7 +159,7 @@ Domain revisions and event order must be sufficient to reconstruct event-sourced
 
 Application processes are stateless with respect to business state. Reads and restarts use persisted domain data. Reconstruction is a maintenance operation; it must apply recorded facts without rerunning decisions or external effects. Caching is optional later work.
 
-Coeffects and policies use multimethods keyed by qualified IDs:
+Coeffects, effects and policies are the only multimethods, keyed by qualified IDs; storage and authority are protocols:
 
 ```clojure
 (defmethod runtime/coeffect :rdf/query
@@ -171,18 +171,22 @@ Coeffects and policies use multimethods keyed by qualified IDs:
   (membership/allowed? context input))
 ```
 
-Integrant owns resource lifecycles. Methods are shared behavior; clients belong to each runtime instance. Application bootstrap selects the domain store, journal and authority resource independently. Tover supplies this composition once through `tover.shared.bel/runtime-config`:
+Integrant owns resource lifecycles. Every `defmodel` names its `:store`. Tover supplies one system map through `tover.shared.bel/system`:
 
 ```clojure
-{:bel/runtime (wiring/runtime-config :rdf)
- :repo repo :datasource datasource :realtime realtime}
+{:bel/system (wiring/system {:repo repo :datasource datasource :realtime realtime})}
+;; => {:stores    {:directory (postgres/store …) :catalogue (rdf/store …)}
+;;     :journal   :directory
+;;     :scope     :workspace
+;;     :authority {:store :directory :impl (auth/->CurrentSession)}
+;;     :resources {:realtime realtime}}
 ```
 
-Store references contain an adapter ID and a named resource. The authority reference also identifies an application check. Bel opens the required transactions and reuses an already open resource. Domain and journal share a transaction only when their configured adapter and resource match; two PostgreSQL adapters alone do not establish atomicity. The current PostgreSQL domain adapter requires a colocated journal. RDF supports deferred delivery to a separate journal.
+Bel opens each store at most once per operation and shares the transaction by store key. Domain and journal are atomic only when the owning store key equals `:journal`; otherwise the store must implement `Outbox` and the delivery worker forwards its pending records. A command writes to one store; a definition's optional `:scope` overrides the system default.
 
 Bel assembles context and captures declarations once per operation. Feature namespaces supply no graph, vocabulary or mapping configuration. Read adapters receive the current `:tx`, trusted `:scope`, `:actor`, instance `:resources` and named transaction handles. Policies receive trusted application context and decoded input; only `true` authorizes. Unknown sources and model/read-model/coeffect collisions reject. Command/read-model input decoding removes undeclared fields before decisions and receipt comparison.
 
-`bel.runtime` coordinates snapshots and acceptance, including policy checks before retry recovery. `bel.store` owns transaction sharing and dispatches native transaction/model operations. `bel.journal` dispatches receipt and batch storage independently of the domain adapter. `bel.delivery` owns polling, per-record failures and acknowledgement ordering. Adapters translate storage conflicts; Bel decides whether to recover a receipt or return a retryable conflict. Business declarations do not select a journal.
+`bel.runtime` coordinates snapshots and acceptance, including policy checks before retry recovery. `bel.store` defines the storage protocols and shares transactions by store key. `bel.journal` calls the system's journal store independently of the owning store. `bel.delivery` owns polling, per-record failures and acknowledgement ordering. Adapters translate storage conflicts; Bel decides whether to recover a receipt or return a retryable conflict. Business declarations do not select a journal.
 
 Tover registers current session/membership checks in `tover.auth.bel`, native workspace bindings in `tover.workspaces.persistence`, and Goods graph allocation and legacy checks in `tover.catalogues.persistence`. Its existing RDF repository lifecycle still installs the unchanged inventory semantic package. RDF primitives and storage operations live in `bel-rdf.*`; SQL, JDBC conversion and journal persistence live in `bel-postgres.*`. Neither integration initializes application data or schemas. Bel core owns their contracts and orchestration, with no backend implementation or backend-specific coeffect registration.
 
@@ -239,7 +243,7 @@ For inventory Review/Submit, retain a fixed ticket containing command identity, 
 
 The source transaction records the normalized request, accepted event batch, result and repeatable publication requests. These are delivery data, not another business model. A failed source mapping or pending-record write rolls back both domain changes and delivery state. No PostgreSQL journal write runs inside the RDF transaction.
 
-The Integrant component `:bel.delivery/worker` receives a source/journal context from `tover.shared.bel/delivery-context`, containing the RDF repository and a journal-role datasource. It polls after startup and every second, retries failed batches, and closes before its resources. It is wired only in the isolated test/bootstrap path. The worker calls registered storage operations; it contains no RDF or PostgreSQL implementation code.
+The Integrant component `:bel.delivery/worker` receives a system map from `tover.shared.bel/delivery-system`: the RDF outbox store and a journal-role PostgreSQL store. It polls after startup and every second, retries failed batches, and closes before its resources. It is wired only in the isolated test/bootstrap path. The worker calls the storage protocols; it contains no RDF or PostgreSQL implementation code.
 
 1. Insert the receipt using its scoped unique key in PostgreSQL.
 2. Insert the batch's events with runtime-owned indices in the same transaction.

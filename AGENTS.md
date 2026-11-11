@@ -72,6 +72,8 @@ available on the development classpath.
 Repository source files may be read normally. Use `:reload` for manual
 namespace investigation so an earlier require does not hide recent edits.
 
+Find callers and multimethod implementations with `clojure -M:xref` (who-calls, who-dispatches) before grepping.
+
 ## Parenthesis Repair
 
 Do not manually repair unbalanced Clojure delimiters.
@@ -133,6 +135,6 @@ Keep business constraints in the semantic package where practical. Accepted hist
 
 Never perform destructive database operations, including DELETE, TRUNCATE, DROP, resets or destructive overwrites, without explicit user approval identifying the exact target and impact. Repository cleanup does not authorize database changes.
 
-Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `035_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
+Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `037_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
 
 Keep credentials, `.data`, backups, private experiment captures and generated dependencies out of Git. Never expose privileged credentials in browser assets.
