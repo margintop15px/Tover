@@ -388,8 +388,11 @@
 
 
 (deftest worker-role-is-private-and-legacy-rdf-history-is-not-migrated-implicitly
-  (doseq [table ["auth.users" "app_private.sessions" "public.organizations" "public.organization_memberships"]]
+  (doseq [table ["auth.users" "app_private.sessions" "public.organization_memberships"]]
     (is (false? (:allowed (workspace/admin! ["select has_table_privilege('tover_journal',?,'SELECT') as allowed" table])))))
+  ;; 038 narrows the worker: it reads organizations (for the invitation email) but nothing else of the directory.
+  (is (true? (:allowed (workspace/admin! ["select has_table_privilege('tover_journal','public.organizations','SELECT') as allowed"]))))
+  (is (false? (:allowed (workspace/admin! ["select has_table_privilege('tover_journal','public.organizations','INSERT,UPDATE,DELETE') as allowed"]))))
   (doseq [table ["app_private.bel_events" "app_private.bel_receipts"]]
     (is (false? (:allowed (workspace/admin! ["select has_table_privilege('tover_journal',?,'UPDATE,DELETE') as allowed" table])))))
   (with-feature
