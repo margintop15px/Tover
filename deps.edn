@@ -29,6 +29,7 @@
   hikari-cp/hikari-cp                        {:mvn/version "4.1.0"}
   buddy/buddy-core                          {:mvn/version "1.12.0-430"}
   org.postgresql/postgresql                  {:mvn/version "42.7.14"}
+  org.eclipse.angus/angus-mail               {:mvn/version "2.0.3"}
   org.eclipse.rdf4j/rdf4j-repository-sail    {:mvn/version "6.2.0-M1"}
   org.eclipse.rdf4j/rdf4j-sail-nativerdf     {:mvn/version "6.2.0-M1"}
   org.eclipse.rdf4j/rdf4j-shacl              {:mvn/version "6.2.0-M1"}
