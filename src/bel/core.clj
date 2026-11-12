@@ -9,7 +9,7 @@
 
 
 (defonce registry
-  (atom {:pages {} :views {} :actions {} :streams {} :events {} :commands {} :models {} :read-models {}}))
+  (atom {:pages {} :views {} :actions {} :streams {} :events {} :commands {} :models {} :read-models {} :processors {}}))
 
 
 (def Scan
@@ -316,6 +316,33 @@
      (attach-operation! (var ~name) :bel/command ~(keyword (str (ns-name *ns*)) (str name)) ~opts)))
 
 
+(def ProcessorRequest
+  [:map
+   [:type [:= :command]]
+   [:id :qualified-keyword]
+   [:scope [:map-of :keyword :uuid]]
+   [:actor :uuid]
+   [:input :map]])
+
+
+(defn attach-processor!
+  "Declare a todo-list automation: each item of the `:todo` coeffect becomes command requests."
+  {:malli/schema [:=> [:cat [:fn var?] :qualified-keyword :map] [:fn var?]]}
+  [v id opts]
+  (when (or (seq (remove #{:todo} (keys opts))) (not (contains? opts :todo)))
+    (throw (ex-info "Unsupported or missing processor option" {:type :validation :id id :options (keys opts)})))
+  (validation/check! :qualified-keyword (:todo opts))
+  (alter-meta! v assoc :bel/kind :bel/processor :bel/id id :bel/options opts)
+  v)
+
+
+(defmacro defprocessor
+  [name opts bindings & body]
+  `(do
+     (defn ~name ~bindings ~@body)
+     (attach-processor! (var ~name) ~(keyword (str (ns-name *ns*)) (str name)) ~opts)))
+
+
 (defmacro defreadmodel
   [name opts bindings & body]
   `(do
@@ -392,7 +419,7 @@
   (into []
         (comp (mapcat #(vals (ns-publics %)))
               (filter #(contains? #{:bel/page :bel/view :bel/action :bel/stream
-                                    :bel/event :bel/command :bel/model :bel/read-model}
+                                    :bel/event :bel/command :bel/model :bel/read-model :bel/processor}
                                   (:bel/kind (meta %)))))
         namespaces))
 
@@ -437,9 +464,10 @@
                                                            :bel/event :events
                                                            :bel/command :commands
                                                            :bel/model :models
-                                                           :bel/read-model :read-models)]
+                                                           :bel/read-model :read-models
+                                                           :bel/processor :processors)]
                                (assoc-in result [section id] definition-var)))
-                           {:pages {} :views {} :actions {} :streams {} :events {} :commands {} :models {} :read-models {}}
+                           {:pages {} :views {} :actions {} :streams {} :events {} :commands {} :models {} :read-models {} :processors {}}
                            (discover-vars namespaces))
         pages      (:pages discovered)]
     (doseq [[id definition-var] pages]
@@ -473,7 +501,7 @@
   {:malli/schema [:=> [:cat] :map]}
   []
   (let [definitions @registry
-        ops         {:events {} :commands {} :models {} :read-models {}}]
+        ops         {:events {} :commands {} :models {} :read-models {} :processors {}}]
     (->> (keys ops)
          (mapcat (fn [section]
                    (for [[id v] (get definitions section)]

@@ -2,6 +2,7 @@
   "Deliver committed source records without rerunning business decisions."
   (:require
     [bel.journal :as journal]
+    [bel.runtime :as runtime]
     [bel.store :as store]
     [com.brunobonacci.mulog :as mu]
     [integrant.core :as ig])
@@ -55,7 +56,10 @@
                              ^Runnable (fn []
                                          (try (deliver-pending! system)
                                               (catch Exception error
-                                                (mu/log ::delivery-scan-failed :error-type (.getName (class error))))))
+                                                (mu/log ::delivery-scan-failed :error-type (.getName (class error)))))
+                                         (try (runtime/run-processors! system)
+                                              (catch Exception error
+                                                (mu/log ::processor-scan-failed :error-type (.getName (class error))))))
                              0 1 TimeUnit/SECONDS)
     (reify AutoCloseable
       (close [_]

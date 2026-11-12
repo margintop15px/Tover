@@ -32,6 +32,11 @@
   (random-uuid))
 
 
+(defmethod coeffect :bel/now
+  [_ _ _]
+  (Instant/now))
+
+
 (defmethod coeffect :bel/receipt
   [_ context {:keys [command-id]}]
   (journal/receipt context command-id))
@@ -91,10 +96,12 @@
   The authority store opens at `isolation` when the operation also uses it (`touched`), else Read Committed."
   {:malli/schema [:=> [:cat :map [:set :keyword] :keyword [:fn fn?]] :any]}
   [context touched isolation f]
-  (if-let [{key :store impl :impl} (get-in context [:bel/system :authority])]
-    (store/with-store context key (if (contains? touched key) isolation :read-committed)
-      #(f (assoc % :principal (-principal impl (:tx %) %))))
-    (f (assoc context :principal nil))))
+  (if-let [service (:bel/service context)]
+    (f (assoc context :principal {:service service}))
+    (if-let [{key :store impl :impl} (get-in context [:bel/system :authority])]
+      (store/with-store context key (if (contains? touched key) isolation :read-committed)
+        #(f (assoc % :principal (-principal impl (:tx %) %))))
+      (f (assoc context :principal nil)))))
 
 
 (defn with-store
@@ -368,3 +375,50 @@
                           (load-facts definitions definition context input facts #{}) input))))]
     (dispatch-effects! context fx)
     receipt))
+
+
+(defn processor-command-id
+  "Derive a stable, bounded command ID so reruns of the same request are idempotent."
+  {:malli/schema [:=> [:cat :qualified-keyword :map] [:string {:min 66 :max 66}]]}
+  [processor-id request]
+  (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                        (.getBytes ^String (pr-str [processor-id (:id request) (:scope request) (:input request)]) "UTF-8"))]
+    (str "p/" (apply str (map #(format "%02x" (bit-and % 0xff)) digest)))))
+
+
+(defn- run-processor!
+  {:malli/schema [:=> [:cat :map :qualified-keyword :map] :map]}
+  [system id {:keys [todo handler]}]
+  (let [items (coeffect todo {:bel/system system} {})]
+    (reduce (fn [counts item]
+              (let [requests (try (let [result (handler item)] (if (map? result) [result] (vec result)))
+                                  (catch Exception error
+                                    (mu/log ::processor-failed :processor id :error-type (or (:type (ex-data error)) (.getName (class error))))
+                                    nil))]
+                (if (nil? requests)
+                  (update counts :failed inc)
+                  (reduce (fn [counts request]
+                            (try
+                              (validation/check! core/ProcessorRequest request)
+                              (execute! (merge {:bel/system system :bel/service id :user-id (:actor request)} (:scope request))
+                                        (:id request) {:command-id (processor-command-id id request) :input (:input request)})
+                              (update counts :executed inc)
+                              (catch Exception error
+                                (mu/log ::processor-failed :processor id :command (:id request)
+                                        :error-type (or (:type (ex-data error)) (.getName (class error))))
+                                (update counts :failed inc))))
+                          counts requests))))
+            {:executed 0 :failed 0} items)))
+
+
+(defn run-processors!
+  "Run every declared processor once; failures are counted per request, never thrown."
+  {:malli/schema [:=> [:cat :map] [:map [:executed :int] [:failed :int]]]}
+  [system]
+  (reduce (fn [counts [id processor]]
+            (merge-with + counts
+                        (try (run-processor! system id processor)
+                             (catch Exception error
+                               (mu/log ::processor-failed :processor id :error-type (or (:type (ex-data error)) (.getName (class error))))
+                               {:failed 1}))))
+          {:executed 0 :failed 0} (:processors (core/operations))))
