@@ -246,7 +246,7 @@ test('CE gate: merged purchase and production cells preserve real saves, refresh
     await expect(details).toContainText(`${prefix} input A`);
     await expect(details).toContainText(`${prefix} input B`);
     await expect(details).toContainText(`${prefix} output B`);
-    await expect(details).toContainText('owner@example.test');
+    await expect(details).toContainText('Olga Owner');
     await details.getByRole('button', { name: 'Close operation details', exact: true }).click();
     await expect(production).toBeFocused();
     await screenshot(page, 'automatic-parent-history-dark', { dark: true });
@@ -270,7 +270,7 @@ test('CE gate: merged purchase and production cells preserve real saves, refresh
     await expect(typeCell.locator('xpath=../td[contains(@class,"jss_row")]')).toHaveAttribute('rowspan', '4');
     await typeCell.getByRole('button', { name: 'Show production details', exact: true }).click();
     const compact = accepted.locator('.operation-details');
-    await expect(compact).toContainText('owner@example.test');
+    await expect(compact).toContainText('Olga Owner');
     await expect(compact).toContainText('CE real production gate');
     await expect(compact.getByRole('button', { name: 'Correct', exact: true })).toBeVisible();
     await expect(compact.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible();

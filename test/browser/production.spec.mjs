@@ -336,7 +336,7 @@ test('stock cell corrections persist and item history is fetched when opened', a
   const panel = page.locator('#history-panel');
   await expect(panel).toContainText('0 → 3');
   await expect(panel).toContainText('3 → 7');
-  await expect(panel).toContainText('owner@example.test');
+  await expect(panel).toContainText('Olga Owner');
   await expect(panel).not.toContainText('00000000-0000-4000-8000-000000000001');
   const records = panel.locator('inventory-grid');
   await expect(records.locator('table.jss_worksheet')).toHaveCount(1);

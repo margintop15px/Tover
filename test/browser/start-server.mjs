@@ -36,7 +36,7 @@ const program = `
                                            display-name (assoc :display-name display-name :name-revision 1)))
         users [(user "00000000-0000-4000-8000-000000000011" "zero@example.test" "Zero")
                (user "00000000-0000-4000-8000-000000000012" "manager@example.test" nil)
-               (user "00000000-0000-4000-8000-000000000013" "admin@example.test" "Admin")
+               (user "00000000-0000-4000-8000-000000000013" "admin@example.test" "Ada Admin")
                (user "00000000-0000-4000-8000-000000000014" "suspended-member-with-an-intentionally-long-email-address@example.test" nil)
                (user "00000000-0000-4000-8000-000000000015" "invited@example.test" nil)
                (user "00000000-0000-4000-8000-000000000016" "native-en@example.test" "Native EN")

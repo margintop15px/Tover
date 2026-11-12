@@ -59,7 +59,7 @@ test('real durable tables load complete windows and operation details only on ex
   const button = operations.locator(`tr[data-row-id="${clickableId}"]`).getByRole('button').first();
   const read = page.waitForResponse(response => new URL(response.url()).pathname === '/view/tover.stock.web/operation-details');
   await button.click(); expect((await read).status()).toBe(200);
-  await expect(operations.locator('.operation-details')).toContainText('owner@example.test');
+  await expect(operations.locator('.operation-details')).toContainText('Olga Owner');
   await expect(operations.locator('.operation-details')).toContainText('Viewport payment fixture');
   await expect.poll(() => visibleAnchor(operations)).toEqual(before);
   expect(await operations.locator('.operation-details table,.operation-details details').count()).toBe(0);
@@ -128,7 +128,7 @@ test('item-scoped history keeps production parents inline and only opens relevan
   await expect(details).toContainText('Viewport goods 000');
   await expect(details).toContainText('Viewport goods 001');
   await expect(details).toContainText('Viewport produced');
-  await expect(details).toContainText('owner@example.test');
+  await expect(details).toContainText('Olga Owner');
   await expect(details.locator('tbody tr')).toHaveCount(3);
   expect(await panel.innerText()).not.toMatch(/\brevision\s+\d+\b/i);
 

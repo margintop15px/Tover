@@ -68,6 +68,6 @@
   (let [{:keys [users other-workspace-id] :as services} (support/authenticated-services)
         member (:user-id (second users))
         records [{:actor (str member)}]]
-    (is (= "Member" (:actor-label (first (actors/enrich (context services) records)))))
+    (is (= "Max Member" (:actor-label (first (actors/enrich (context services) records)))))
     (is (= "Unavailable user"
            (:actor-label (first (actors/enrich (assoc (context services) :workspace-id other-workspace-id) records)))))))

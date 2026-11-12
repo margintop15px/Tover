@@ -175,7 +175,7 @@
                                     "00000000-0000-4000-8000-000000000003"
                                     "00000000-0000-4000-8000-000000000004"]
                                    ["owner@example.test" "member@example.test" "other@example.test" "unnamed@example.test"]
-                                   ["Owner" "Member" "Other" nil])
+                                   ["Olga Owner" "Max Member" "Otto Other" nil])
         [owner member other] (map :user-id users)
         state                (atom {:users       (into {} (map (juxt :user-id identity)) users)
                                     :workspaces  {workspace-id       {:name "Development workspace"}

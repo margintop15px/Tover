@@ -33,6 +33,13 @@ async function confirm(page, link) {
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
 }
 
+// New accounts have no name yet, so profile setup comes before the requested page.
+async function completeProfile(page, name) {
+  await expect(page).toHaveURL(/\/account\/profile\?return-to=%2Fworkspace$/);
+  await page.getByLabel('Display name', { exact: true }).fill(name);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+}
+
 async function openWorkspace(page, name) {
   await page.goto('/workspace');
   await page.locator('.management-table tbody tr').filter({ hasText: name }).getByRole('button', { name: 'Open', exact: true }).click();
@@ -60,6 +67,7 @@ test('real email signup, verification, invite, joining, recovery and logout', as
   await expect(page.getByRole('heading', { name: 'Check your email' })).toBeVisible();
   const confirmation = await emailLink(request, owner, 'email', baseURL);
   await confirm(page, confirmation);
+  await completeProfile(page, 'Browser owner');
   await expect(page).toHaveURL(/\/workspace$/);
   await expect(page.locator('.management-table')).toContainText(workspace);
   await openWorkspace(page, workspace);
@@ -77,6 +85,7 @@ test('real email signup, verification, invite, joining, recovery and logout', as
     await expect(member).toHaveURL(/\/auth\/password$/);
     await member.getByLabel('New password', { exact: true }).fill(password);
     await member.getByRole('button', { name: 'Save password', exact: true }).click();
+    await completeProfile(member, 'Browser member');
     await expect(member).toHaveURL(/\/workspace$/);
     await expect(member.locator('.management-table')).toContainText(workspace);
     await openWorkspace(member, workspace);
