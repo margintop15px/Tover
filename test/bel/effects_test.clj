@@ -186,3 +186,10 @@
     (reset! conflicts 1)
     (runtime/execute! ctx ::start-contended {:command-id "R1" :input {}})
     (is (= [:then {:outcome {}}] (await-delivery)))))
+
+
+(deftest continuation-outlasts-a-burst-of-conflicts
+  (let [ctx (setup (fn [_] {}))]
+    (reset! conflicts 5)
+    (runtime/execute! ctx ::start-contended {:command-id "R2" :input {}})
+    (is (= [:then {:outcome {}}] (deref @delivered 10000 :timeout)))))

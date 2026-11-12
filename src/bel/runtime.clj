@@ -347,14 +347,16 @@
 
 
 (defn- retrying
-  "Call `f`, repeating a failure marked :retryable? up to three attempts. `f` must keep its command identity."
-  {:malli/schema [:=> [:cat [:fn fn?]] :any]}
-  [f]
+  "Call `f`, repeating a failure marked :retryable? up to `attempts` times with jittered exponential backoff
+  (20 ms doubling, capped at 1 s). `f` must keep its command identity."
+  {:malli/schema [:=> [:cat :int [:fn fn?]] :any]}
+  [attempts f]
   (loop [attempt 1]
     (let [result (try {:value (f)}
                       (catch clojure.lang.ExceptionInfo error
-                        (if (and (:retryable? (ex-data error)) (< attempt 3))
-                          (Thread/sleep (* 20 attempt))
+                        (if (and (:retryable? (ex-data error)) (< attempt attempts))
+                          (let [base (min 1000 (* 20 (bit-shift-left 1 (dec attempt))))]
+                            (Thread/sleep (long (+ (quot base 2) (rand-int base)))))
                           (throw error))))]
       (if (map? result) (:value result) (recur (inc attempt))))))
 
@@ -364,8 +366,9 @@
   {:malli/schema [:=> [:cat :map :string :int :keyword :map :map] :nil]}
   [context command-id i kind ref extra]
   (try
-    (retrying #(execute! context (:id ref) {:command-id (str command-id "/" i "/" (name kind))
-                                            :input      (merge (:input ref) extra)}))
+    ;; A failed attempt dispatched nothing, so retrying never repeats an effect; giving up loses the outcome.
+    (retrying 10 #(execute! context (:id ref) {:command-id (str command-id "/" i "/" (name kind))
+                                               :input      (merge (:input ref) extra)}))
     (catch Exception error
       (mu/log ::continuation-failed :command (:id ref) :error-type (or (:type (ex-data error)) (.getName (class error))))))
   nil)
@@ -464,8 +467,8 @@
                   (reduce (fn [counts request]
                             (try
                               (validation/check! core/ProcessorRequest request)
-                              (retrying #(execute! (merge (:scope request) {:bel/system system :bel/service id :user-id (:actor request)})
-                                                   (:id request) {:command-id (processor-command-id id request) :input (:input request)}))
+                              (retrying 3 #(execute! (merge (:scope request) {:bel/system system :bel/service id :user-id (:actor request)})
+                                                     (:id request) {:command-id (processor-command-id id request) :input (:input request)}))
                               (update counts :executed inc)
                               (catch Exception error
                                 (mu/log ::processor-failed :processor id :command (:id request)

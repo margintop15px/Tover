@@ -292,3 +292,11 @@
       (is (= {:status "failed" :attempts-remaining 3} (select-keys (:delivery status) [:status :attempts-remaining])))
       (is (some? (get-in status [:delivery :next-attempt-at]))))
     (is (nil? (read "nobody@example.test")))))
+
+
+(deftest journal-role-cannot-execute-public-definer-functions
+  (is (= [] (mapv :name (jdbc/execute! (workspace/db "postgres")
+                                       ["select p.oid::regprocedure::text as name from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                                         where n.nspname = 'public' and p.prosecdef and has_function_privilege('tover_journal', p.oid, 'EXECUTE')
+                                         order by 1"]
+                                       {:builder-fn next.jdbc.result-set/as-unqualified-lower-maps})))))
