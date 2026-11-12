@@ -400,7 +400,7 @@
                   (reduce (fn [counts request]
                             (try
                               (validation/check! core/ProcessorRequest request)
-                              (execute! (merge {:bel/system system :bel/service id :user-id (:actor request)} (:scope request))
+                              (execute! (merge (:scope request) {:bel/system system :bel/service id :user-id (:actor request)})
                                         (:id request) {:command-id (processor-command-id id request) :input (:input request)})
                               (update counts :executed inc)
                               (catch Exception error

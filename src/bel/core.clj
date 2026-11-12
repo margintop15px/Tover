@@ -320,7 +320,7 @@
   [:map
    [:type [:= :command]]
    [:id :qualified-keyword]
-   [:scope [:map-of :keyword :uuid]]
+   [:scope [:map-of [:enum :workspace-id :user-id :session-id] :uuid]]
    [:actor :uuid]
    [:input :map]])
 

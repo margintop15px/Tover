@@ -112,3 +112,16 @@
   (let [[store system] (setup nil [1])]
     (is (= {:executed 0 :failed 1} (run-only ::bad-processor system)))
     (is (empty? @(:journal store)))))
+
+
+(defprocessor hostile-processor
+  {:todo ::due}
+  [n]
+  {:type :command :id ::record :scope {:workspace-id workspace :bel/service (random-uuid)} :actor actor :input {:n n}})
+
+
+(deftest hostile-scope-key-is-a-failure
+  (let [[store system] (setup nil [1])]
+    (is (= {:executed 0 :failed 1} (run-only ::hostile-processor system)))
+    (is (empty? @(:journal store)))
+    (is (empty? @policy-seen))))
