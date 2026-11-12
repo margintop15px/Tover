@@ -34,7 +34,7 @@ Tover never writes flow: no transaction opening, no receipt handling, no retry l
 | Automation | `defprocessor` | Todo-list automation: polls a Tover coeffect for due work and returns command requests only. |
 | Translation | Inbound processor (later) | Marketplace sources. |
 | User lane | Policy id, e.g. `::confirmed-user` | |
-| System lane | Store key: `:directory` or `:catalogue` | Many lanes to one store: Workspace Directory, Workspace Session and Invitations all use `:directory`. |
+| System lane | Store key: `:directory` or `:catalogue` | Many lanes to one store: Workspace Directory, Workspace Session and Invitations all use `:directory`. Full lane table in §12.1. |
 | External system lane | Effect id, e.g. `:email/send` | |
 | Hotspot | Not code | Stays on the board until decided. |
 | Given/When/Then | Scenario test against the pure command | §8. |
@@ -263,6 +263,51 @@ Dropped from the earlier draft as premature:
 - Configurable scope kinds and a default store.
 - A separate `bel.errors` namespace; the vocabulary in §5 is enough.
 - Moving `bel-postgres.jdbc`'s global next.jdbc setup to startup; revisit if legacy code is affected.
-- Collections, nested records and richer RDF queries.
+- Collections, nested records and richer RDF queries — until the catalogue/inventory cutover, which needs them (§12.4).
 
 Existing checks stay where they protect data or business guarantees: declaration shape at load, event-to-model mapping validity, plan and event validation, hostile SPARQL rejection, legacy-graph guard, receipt and batch comparison.
+
+## 12. Board alignment: catalogues, inventory, marketplace (2026-11-12)
+
+The board was reworked for the stock-item model and the marketplace chapters (08a, 40–47). These rules make it implementable under §2 and §5.
+
+### 12.1 Lane → store
+
+| Board system lane | Store | Why |
+| --- | --- | --- |
+| Workspace Directory, Workspace Session, Invitations, Identity | `:directory` | Membership, roles and invitation delivery commit together. |
+| Account Preferences | `:directory` | Per-account settings; chapter 47 keys them by `(account, workspace, table)`. |
+| Marketplace Connections | `:directory` | Connection state, encrypted-secret reference and sync runs; no inventory facts. |
+| Catalogues, Inventory | `:catalogue` | Acceptance registers catalogue records and writes ledger records in one commit. |
+| Marketplace Source, Marketplace Mappings, Marketplace Cutover | `:catalogue` | Mapping, baseline and "source operation accepted" are rechecked and written inside the acceptance commit. |
+| Email Delivery (chapter 05) | effect `:email/send` | External system: owns no facts. Attempt outcomes are `:directory` facts written by the delivery processor. |
+
+Sync checkpoints are Marketplace Source facts: `Record Source Observations` writes the batch and its cursor to `:catalogue` in one commit, while the run's start and outcome are `:directory` facts on the connection.
+
+A lane that holds events is never an external system. Facts owned by an external provider (Auth identities, marketplace payloads) enter only as events recorded by a Tover command: an inbound processor fetches, a command records.
+
+The one-store rule holds for every board command under this table. The automatic-acceptance command reads connection state from `:directory` as a fact (§6.4) and writes `:catalogue` only; a pause that commits first is seen because the read happens inside the owning transaction's decision.
+
+### 12.2 Identity model
+
+- Product: catalogue card. Name unique per workspace, trimmed and case-insensitive, archived products included.
+- Stock item: child of a product; variant label unique within the product; owns unit (locked by first quantity record), article (descriptive) and barcodes. A barcode belongs to at most one stock item per workspace, archived items included, so a barcode names one stock item.
+- Every quantity-bearing line and every marketplace mapping targets a stock item id. The product is reached through it.
+- External listing `(connection, provider product id)` → member-confirmed mapping → stock item. Barcode, article and name only rank candidates.
+
+### 12.3 Acceptance contract
+
+`Accept Reviewed Inventory Changes` (board chapter 17) is one command with one event set: an `Inventory Changes Accepted` envelope, one `Inventory Record Accepted` per record (kind as data), the catalogue events the selection required, and mapping/baseline/provenance events for imported work. The per-kind events on chapters 14–28 (`Sale Recorded`, `Return Recorded`, …) are that record event with a fixed kind, not separate declarations. All chapters save drafts through one `Save Shared Inventory Entry` command.
+
+Two principals reach it: a member (`::confirmed-user` policy) and a connector service principal `{:service :marketplace/connector :connection id}` through `Accept Imported Operation Automatically`, which takes exactly one eligible proposal and may not register catalogue records, confirm mappings, correct or cancel. Both run the same decision core.
+
+### 12.4 Gaps to close before the catalogue/inventory cutover
+
+1. **RDF adapter shape.** Stock items carry a set of barcodes; operations carry lines; acceptance writes several entities of several models. The scalar-only adapter (§11) cannot express this. Add multi-valued fields and multi-entity writes, or keep these writes on the existing semantic-ledger acceptance behind a Bel command until the adapter grows.
+2. **Uniqueness under concurrency.** Product name, variant label and barcode uniqueness must hold inside the acceptance transaction (SHACL plus a guarded read), not only in a pre-check.
+3. **C2 across workspaces.** Board chapter 07 requires a retry after a workspace switch to resolve in the original workspace. `(scope, command-id)` alone would run it as a new invocation in the new scope. Command ids must be looked up across the actor's scopes, or the client must resend the original scope with the retry.
+4. **C1 and claims.** Role and membership are read inside the owning transaction; access-token claims are a routing hint only.
+5. **One writer path.** Catalogues (08–12), inventory (13–28, 32a) and marketplace (40–47) share models, so they cut over together: products, stock items, warehouses and the ledger get their Bel writers in one step, and legacy `tover.catalogues.store`, `tover.stock` and `tover.inventory.*` writers are removed in the same step. The legacy Return "Original operation" column and scalar `barcode`/`article`/`unit` on goods are not ported.
+6. **Existing data.** Each existing good becomes one product with one stock item (same id for the stock item, so ledger history is untouched). Duplicate names and duplicate barcodes in existing stores must be listed and resolved by a member before the uniqueness constraints are installed; this is a reviewed semantic migration with a restored-backup rehearsal.
+
+Open board hotspots that block their slices: Defect vs Write-off (23), sale Party (19), kit/bundle listings (42), moving a cutover instant (44), moving a stock item between products (08a).

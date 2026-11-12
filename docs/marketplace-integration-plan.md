@@ -38,19 +38,21 @@ These decisions came from the user discussion. Do not reopen them without contra
 
 | Topic | Decision |
 | --- | --- |
-| Goods identity | The stable workspace-local internal item ID is the sole inventory identity. External names, articles, barcodes, and marketplace IDs are linked facts. |
+| Goods identity | The stable workspace-local **stock item** ID is the sole inventory identity. A product is a catalogue card (name unique per workspace, case-insensitive, archived included) with one or more stock items; operations, balances and mappings target the stock item. External names, articles and marketplace IDs are linked facts. *(revised 2026-11-12)* |
+| Barcodes | A stock item may have several barcodes; a barcode belongs to at most one stock item in the workspace, archived included. This is a core constraint, not a preset. A barcode therefore names one stock item, but an import match is still only a preselected suggestion until a member confirms the mapping. *(added 2026-11-12)* |
+| Returns | A Return is independent and has no Original operation column or field. Marketplace source references are provenance beside the record. *(added 2026-11-12)* |
 | Warehouses | The same item may have balances in several warehouses. Warehouse rows do not imply separate goods identities. |
 | Matching trust | Only a user-confirmed external product → internal goods mapping qualifies for automatic acceptance. Exact identifiers and similarity may suggest candidates. |
 | New operations | Automatically accept new, complete, valid source events with confirmed mappings through the existing ledger acceptance machinery. |
 | Source corrections | Changes or cancellations affecting accepted inventory history go through Review. |
-| Unmatched products | Review offers link existing, create distinct goods, and defer. Support bulk creation for selected products. |
+| Unmatched products | Review offers link to an existing stock item, create a stock item under an existing product, create a new product with its first stock item, and defer. Support bulk creation for selected products. |
 | Cutover | Review explicit opening balances at a chosen cutover. Older movements remain reference evidence and are not counted again. |
 | Sale timing | Remove units at confirmed physical dispatch, using the actual event time. |
 | Transportation | Track shipment state and quantities separately after dispatch; do not add these quantities back to warehouse stock or invent a transit stock location. |
 | Fetch cadence | Daily plus Sync now. Default scheduling is every 24 hours from the last successful completed sync. |
 | Stores | Goods can have multiple Store relationships. Marketplace is the usual user-facing context; identifier scope includes the account/connection where required. |
 | Extra columns | User-selectable columns expose linked external data. Required TOVER columns stay visible. This is not a request for an arbitrary user-defined schema editor. |
-| Client rules | Small versioned presets for identifier uniqueness and required fields, backed by SHACL. |
+| Client rules | Small versioned presets for required fields and stricter optional identifier rules, backed by SHACL. Product-name and barcode uniqueness are core and cannot be disabled. |
 | Initial scope | Inventory workflow: goods, warehouses, stock observations, customer dispatches/returns, and supported own-stock supply/removal movements. |
 | Deferred | Financial reports, payouts/accounting, arbitrary rule editors, embeddings, general attribute-column sorting/filtering, marketplace write-back, and multi-instance workers. |
 | Legacy Supabase | Imported source facts are useful research. Existing local-product links and accepted operations were used largely for testing and are not matching ground truth. Do not migrate them into the current ledger. |
@@ -163,9 +165,9 @@ Identity and metadata behavior:
 
 - Scope keys by workspace, connection, identifier type, and value. Preserve strings/leading zeros; absent identifiers and sentinel SKU `"0"` are unavailable.
 - Never substitute one identifier type for another or derive SKUs from barcode formatting. Preserve all supplied barcodes and source SKUs.
-- External descriptions/attributes refresh independently of user-controlled catalogue metadata. Current Article/Barcode fields stay descriptive/preferred values, not primary keys or last-source-wins fields.
+- External descriptions/attributes refresh independently of user-controlled catalogue metadata. Article stays a descriptive value on the stock item. Barcodes are a workspace-unique set on the stock item: a lookup key, never the identity and never last-source-wins; external barcodes are adopted only by explicit member choice at mapping confirmation.
 - A confirmed mapping survives article/name changes. Changes to identity-relevant variants or units suspend automatic acceptance until reviewed.
-- Multiple external products can map to one goods ID through explicit confirmation. Same names never establish equivalence; explicit distinct-variant creation remains possible despite a name collision.
+- Multiple external products can map to one goods ID through explicit confirmation. Same names never establish equivalence. Because product names are unique, a listing whose name is already used becomes a new stock item of that product (distinct variant label) or a product under a different name; it never creates a second product with the same name.
 - Mapping corrections affect future proposals. Accepted operations require explicit reviewed revisions.
 - Migrate single Store assignments into a collection without losing IDs. Display the union of explicit assignments and confirmed-listing stores. Keep account scope distinct from the Store/marketplace.
 - Preserve warehouse location keys/aliases. Multiple conflicting Store defaults require context or selection; an imported warehouse cannot silently be replaced by a default.
@@ -215,7 +217,7 @@ Create sanitized fixtures for:
 - Same names with different variants, unit/pack mismatches, and incorrectly typed legacy product-ID fields.
 - Multi-line shipments, missing actual timestamps, partial responses, and late returns.
 
-Define initial policy presets: barcode resolves to one internal item in its source context; stricter barcode-to-one-article/listing; optional required fields at mapping/catalogue acceptance. Validate active bindings and proposals while preserving conflicting source evidence. Core inventory/isolation constraints cannot be disabled.
+Core rule: a barcode resolves to at most one stock item in the workspace. Define initial policy presets on top: stricter barcode-to-one-article/listing; optional required fields at mapping/catalogue acceptance. Validate active bindings and proposals while preserving conflicting source evidence. Core inventory/isolation constraints cannot be disabled.
 
 Completion gate: fixtures distinguish valid, ambiguous, incomplete, and contradictory records without live Ozon or legacy local mappings.
 
@@ -271,7 +273,7 @@ Completion gate: cutover does not double-count openings/earlier movements. Dispa
 
 **Status: pending. Depends on M5.**
 
-Add manager-controlled connection validation, pause/reconnect, and encrypted server-side credentials using the installed encryption facilities with a separate connector key. Exclude credentials from logs, browser responses, payloads, and fixtures.
+Add Owner/Admin-controlled connection validation, pause/reconnect, and encrypted server-side credentials using the installed encryption facilities with a separate connector key. Exclude credentials from logs, browser responses, payloads, and fixtures.
 
 Implement an explicit read-endpoint allowlist for inventory domains, detail enrichment, related SKUs, and attribute metadata. Preserve int64 identifiers/exact decimals; bound requests, validate full pagination/detail batches, detect repeated cursors, and respect endpoint pacing.
 
@@ -289,7 +291,7 @@ Refresh known non-terminal/unresolved records beyond the incremental discovery w
 
 Automatic acceptance requires an enabled connection, completed baseline coverage, user-confirmed goods/warehouse mappings, complete compatible quantities/units/dates/locations, no user edits or unresolved source conflicts, current policy/core validation, and a new event rather than a historical change. Process eligible events in business chronology. Leave exceptions in Review.
 
-Managers control connections/automation; active members resolve ordinary inventory Review items. Recheck the connection state before automatic commits.
+Owners and Admins control connections/automation; active members resolve ordinary inventory Review items. Recheck the connection state before automatic commits.
 
 Completion gate: restart, pause, authentication failure, provider outage, duplicate Sync now, and manual-review races preserve progress and inventory. Progress, successful coverage, and failures are accurately visible.
 
@@ -484,3 +486,11 @@ Verification:
 - No migration, production deployment, remote database inspection/mutation, live Ozon fetch, credentials, scheduler or browser/UI changes were performed. Browser checks and a new release rehearsal were outside this milestone. The v0.3.0 deployment and its recorded restore-rehearsal limitation remain unchanged.
 - Limits for later milestones: M2 must provide the complete competing effective bindings/mappings and catalogue context inside the transaction; the test graph builder is not a production codec. M4 supplies real normalization, stable event/line identity, ledger validation and deduplication. M6 must verify account permissions/current pagination and the unresolved FBO dispatch, return receipt, supply acceptance and removal completion evidence before enabling conversion. No legacy local mappings are accepted as truth.
 - **Gate: M1 complete. Next: M2.** Implement external persistence and bounded queries in the existing repository, preserve source revisions and observed identifier history, then add the Store-collection migration and prove reopen/rebuild preservation. Keep live fetching deferred to M6.
+
+### 2026-11-12 — Stakeholder identity decisions and board alignment
+
+- Decisions: unique product name; stock item as child of product owning barcodes, unit and quantities; workspace-unique barcodes; Return loses "Original operation"; barcode match on import is a preselected suggestion confirmed once by a member.
+- "Goods" in M2–M9 now means stock item wherever identity, quantity or mapping is concerned. M2 adds the product/stock-item split and barcode set; existing goods become one product with one stock item keeping the same ID.
+- The prooph board carries the target flows: 08 (products), 08a (stock items), 40 connect, 41 sync, 42 product matching, 43 warehouse matching, 44 cutover, 45 imported operations and automatic acceptance, 46 transit, 47 columns and source inspection. Store mapping and cutover grouping: `docs/bel-architecture.md` §12.
+- "Manager" means workspace Owner or Admin.
+- Open hotspots on the board: kit/bundle listings, moving a cutover instant, Defect vs Write-off, sale Party, moving a stock item between products.
