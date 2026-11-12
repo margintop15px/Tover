@@ -41,11 +41,14 @@
 
 
 (defn resolve-locale
+  "The account language, then this browser's choice. A recovery session cannot save the account language,
+  so its choice in this browser comes first."
   {:malli/schema [:=> [:cat :map] :string]}
   [request]
-  (or (supported (get-in request [:tover/identity :user :locale]))
-      (supported (get-in request [:cookies "tover-language" :value]))
-      (browser-locale (get-in request [:headers "accept-language"]))))
+  (let [account (supported (get-in request [:tover/identity :user :locale]))
+        browser (supported (get-in request [:cookies "tover-language" :value]))]
+    (or (if (get-in request [:tover/identity :password-required?]) (or browser account) (or account browser))
+        (browser-locale (get-in request [:headers "accept-language"])))))
 
 
 (defn plural-category

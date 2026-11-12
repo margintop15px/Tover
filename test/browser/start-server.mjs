@@ -30,15 +30,17 @@ const program = `
   ${process.env.TOVER_BROWSER_MANAGEMENT_FIXTURES === 'true' ? `
   (let [state (:state identities)
         workspace-id (java.util.UUID/fromString "00000000-0000-4000-8000-000000000103")
-        user (fn [id email] {:user-id (java.util.UUID/fromString id) :email email
-                             :email-confirmed? true :password "tover-development"})
-        users [(user "00000000-0000-4000-8000-000000000011" "zero@example.test")
-               (user "00000000-0000-4000-8000-000000000012" "manager@example.test")
-               (user "00000000-0000-4000-8000-000000000013" "admin@example.test")
-               (user "00000000-0000-4000-8000-000000000014" "suspended-member-with-an-intentionally-long-email-address@example.test")
-               (user "00000000-0000-4000-8000-000000000015" "invited@example.test")
-               (user "00000000-0000-4000-8000-000000000016" "native-en@example.test")
-               (user "00000000-0000-4000-8000-000000000017" "native-ru@example.test")]
+        ;; Users who sign in have names, so profile setup does not stop them; the others show only their email.
+        user (fn [id email display-name] (cond-> {:user-id (java.util.UUID/fromString id) :email email
+                                                  :email-confirmed? true :password "tover-development"}
+                                           display-name (assoc :display-name display-name :name-revision 1)))
+        users [(user "00000000-0000-4000-8000-000000000011" "zero@example.test" "Zero")
+               (user "00000000-0000-4000-8000-000000000012" "manager@example.test" nil)
+               (user "00000000-0000-4000-8000-000000000013" "admin@example.test" "Admin")
+               (user "00000000-0000-4000-8000-000000000014" "suspended-member-with-an-intentionally-long-email-address@example.test" nil)
+               (user "00000000-0000-4000-8000-000000000015" "invited@example.test" nil)
+               (user "00000000-0000-4000-8000-000000000016" "native-en@example.test" "Native EN")
+               (user "00000000-0000-4000-8000-000000000017" "native-ru@example.test" "Native RU")]
         [zero manager admin suspended invited] (map :user-id users)
         membership (fn [role status] {:role role :status status :created-at "2026-01-01T00:00:00Z"})
         invitation (fn [id email role status] {:id (java.util.UUID/fromString id)
@@ -58,9 +60,11 @@ const program = `
                        suspended (membership :member :suspended) invited (membership :member :invited)})
                     (update :invitations into (map (juxt :id clojure.core/identity) invites))))))
   ` : ''}
+  (def sessions (session-store/memory-store))
   (def system (app/start! (app/system-config ${port} ${JSON.stringify(join(project, 'inventory'))}
                            {:auth (:auth identities) :workspaces (:workspaces identities)
-                            :session-store (session-store/memory-store)
+                            :session-store sessions
+                            :bel/system (identity/bel-system (assoc identities :session-store sessions))
                             :origin "http://127.0.0.1:${port}" :development? true})))
   (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable #(app/stop! system)))
   @(promise)

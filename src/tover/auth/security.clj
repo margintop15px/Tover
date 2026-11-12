@@ -3,6 +3,7 @@
     [bel.validation :as validation]
     [com.brunobonacci.mulog :as mu]
     [ring.middleware.session.store :as ring-store]
+    [ring.util.codec :as codec]
     [tover.auth.core :as auth]
     [tover.auth.sessions :as sessions]
     [tover.shared.i18n :as i18n])
@@ -94,12 +95,28 @@
   (= "true" (get-in request [:headers "datastar-request"])))
 
 
+(defn local-path
+  "A same-origin path to return to; anything else becomes the home page."
+  {:malli/schema [:=> [:cat :any] :string]}
+  [value]
+  (if (and (string? value) (re-matches #"/(?!/)[^\r\n\\]*" value)) value "/"))
+
+
+(defn- profile-location
+  {:malli/schema [:=> [:cat :map] :string]}
+  [{:keys [request-method uri query-string]}]
+  (if (= :get request-method)
+    (str "/account/profile?return-to=" (codec/url-encode (str uri (when query-string (str "?" query-string)))))
+    "/account/profile"))
+
+
 (defn- response
   {:malli/schema [:=> [:cat :map :int :keyword :string] :map]} [request status code message]
   (let [location (case code
                    :unauthenticated "/auth/login"
                    :workspace-required "/workspace"
                    :password-required "/auth/password"
+                   :profile-required (profile-location request)
                    nil)]
     (if (and location (= :get (:request-method request)) (not (datastar-request? request)))
       {:status 303 :headers {"location" location} :body ""}
@@ -110,7 +127,7 @@
 
 
 (def IdentityPolicy
-  [:enum :optional :authenticated :workspace :manager :password :finish :logout])
+  [:enum :optional :authenticated :workspace :manager :password :finish :logout :profile])
 
 
 (defn- local-identity
@@ -159,13 +176,16 @@
                  (failure 409 :workspace-changed "Workspace changed. Reload this page before continuing."))))
            (when (and protected? (not (contains? #{:password :finish} policy)) (:password-required? identity))
              (failure 409 :password-required "Set your password before continuing."))
+           (when (and protected? (not (contains? #{:password :finish :profile} policy)) (not (:profile-complete? identity)))
+             (failure 409 :profile-required "Add your name before continuing."))
            (when (and (contains? #{:workspace :manager} policy) (nil? (:workspace-id identity)))
              (failure 409 :workspace-required "Create or select a workspace first."))
            (when (= policy :manager)
              (require-manager! identity))
            (let [request (assoc request :tover/identity identity)
                  locale  (i18n/resolve-locale request)]
-             ((i18n/wrap-locale handler) (assoc request :bel/context (assoc identity :locale locale)
+             ((i18n/wrap-locale handler) (assoc request :bel/context (cond-> (assoc identity :locale locale)
+                                                                       identity (assoc :session-id (get-in request [:session :bel/session-id])))
                                                 :bel/realtime-context (when identity
                                                                         {:scope-id        (:workspace-id identity)
                                                                          :auth-session-id (:auth-session-id identity)

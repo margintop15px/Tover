@@ -16,9 +16,11 @@ const program = `
   (require '[tover.app :as app] '[tover.identity :as identity]
            '[tover.session-store :as session-store] '[tover.viewport-fixture :as fixture] '[tover.shared.rdf :as rdf])
   (def identities (identity/fixtures))
+  (def sessions (session-store/memory-store))
   (def config (app/system-config ${port} ${JSON.stringify(join(project, 'inventory'))}
                {:auth (:auth identities) :workspaces (:workspaces identities)
-                :session-store (session-store/memory-store)
+                :session-store sessions
+                :bel/system (identity/bel-system (assoc identities :session-store sessions))
                 :origin "http://127.0.0.1:${port}" :development? true}))
   (def repository (rdf/native-store ${JSON.stringify(join(project, 'inventory'))}))
   (fixture/seed! repository)

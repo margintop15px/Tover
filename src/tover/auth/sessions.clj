@@ -36,7 +36,7 @@
    :expires-at (.plusSeconds (Instant/now) (* 30 24 60 60))})
 
 
-(defrecord Store [transaction]
+(defrecord Store [transaction user-keys]
   ring/SessionStore
   (read-session [_ key]
     (if key
@@ -62,7 +62,7 @@
 
 
 ;; Record constructors participate in the same development instrumentation as functions.
-(alter-meta! #'->Store assoc :malli/schema [:=> [:cat [:fn ifn?]] :map])
+(alter-meta! #'->Store assoc :malli/schema [:=> [:cat [:fn ifn?] [:fn ifn?]] :map])
 (alter-meta! #'map->Store assoc :malli/schema [:=> [:cat :map] :map])
 
 
@@ -71,6 +71,13 @@
   (when key
     ((:transaction store) key
                           (fn [row] (if (expired? row) [nil nil] [row row])))))
+
+
+(defn session-keys-for-user
+  "Keys of this user's unexpired sessions."
+  {:malli/schema [:=> [:cat :map :uuid] [:vector :string]]}
+  [store user-id]
+  (vec ((:user-keys store) user-id)))
 
 
 (defn update-session!
@@ -145,4 +152,8 @@
                   (and row (nil? updated))
                   (mu/trace ::persist {:pairs [:operation :delete]}
                     (jdbc/execute-one! tx ["delete from app_private.sessions where id=?" id])))
-                value))))))))
+                value)))))
+      (fn [user-id]
+        (with-open [connection (database/connection datasource)]
+          (mapv :id (jdbc/execute! connection ["select id from app_private.sessions where user_id=? and expires_at > now()" user-id]
+                                   {:builder-fn result-set/as-unqualified-lower-maps})))))))

@@ -42,6 +42,9 @@
   (let [request {:headers {"accept-language" "ru"} :cookies {"tover-language" {:value "en"}}}]
     (is (= "en" (i18n/resolve-locale request))))
   (is (= "ru" (i18n/resolve-locale {:tover/identity {:user {:locale "ru"}} :cookies {"tover-language" {:value "en"}}})))
+  (is (= "en" (i18n/resolve-locale {:tover/identity {:user {:locale "ru"} :password-required? true}
+                                    :cookies        {"tover-language" {:value "en"}}})))
+  (is (= "ru" (i18n/resolve-locale {:tover/identity {:user {:locale "ru"} :password-required? true}})))
   (is (= "en" (i18n/resolve-locale {:cookies {"tover-language" {:value "invalid"}}})))
   (doseq [[n expected] [[1 "1 товар"] [2 "2 товара"] [5 "5 товаров"] [11 "11 товаров"]
                         [21 "21 товар"] [22 "22 товара"] [25 "25 товаров"] [111 "111 товаров"]]]
@@ -118,9 +121,9 @@
         (is (str/includes? (:body (request! :get "/auth/login" {} {:headers {"accept-language" "ru-RU"}})) "Войти"))
         (is (= 403 (:status (request! :post "/action/tover.auth.web/set-language" {"locale" "ru"} {:csrf? false}))))
         (is (= 303 (:status (support/login! browser (first users)))))
-        (is (= 303 (:status (request! :post "/action/tover.auth.web/set-language" {"locale" "ru" "return-to" "/"}))))
+        (is (= 303 (:status (support/set-language! browser "ru"))))
+        (is (= "ru" (get-in @state [:users (:user-id (first users)) :language])))
         ;; A separate browser/session reads the account language from its token claims.
-        (swap! state assoc-in [:users (:user-id (first users)) :locale] "ru")
         (let [other (support/browser handler)]
           (support/login! other (first users))
           (is (str/includes? (:body ((:request! other) :get "/workspace")) "Рабочие пространства")))
@@ -148,7 +151,7 @@
       (fn [{:keys [browser users]}]
         (let [request! (:request! browser)]
           (support/login! browser (first users))
-          (request! :post "/action/tover.auth.web/set-language" {"locale" locale})
+          (support/set-language! browser locale)
           (doseq [[route input message] [["/action/tover.workspaces.web/select-workspace"
                                           {"workspace-id" (str (random-uuid))} "This workspace is not accessible."]
                                          ["/action/tover.teams.core/invite"

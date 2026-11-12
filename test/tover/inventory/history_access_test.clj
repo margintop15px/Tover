@@ -64,7 +64,7 @@
         (submit! context [a unrelated])
         (let [valid (html (open-operation context {:itemId "A" :operationId (:id a) :revision 1}))]
           (is (str/includes? valid "id=\"history-operation-details\""))
-          (is (str/includes? valid "owner@example.test"))
+          (is (str/includes? valid "Owner"))
           (is (not (str/includes? valid (str (:user-id context))))))
         (doseq [input [{:itemId "A" :operationId (:id unrelated) :revision 1}
                        {:itemId "C" :operationId (:id a) :revision 1}
@@ -163,7 +163,7 @@
               (is (str/includes? (html (web/open-history context input)) "item-history-grid"))
               (is (str/includes? (html (web/open-history context (assoc input :mode "lineage"))) "lineage-parent-strip"))
               (is (str/includes? (html (open-operation context {:itemId "B" :operationId (:id opening) :revision 1}))
-                                 "owner@example.test"))
+                                 "Owner"))
               (let [denied (html (open-operation context {:itemId "B" :operationId (:id unrelated) :revision 1}))]
                 (is (str/includes? denied "role=\"alert\""))
                 (is (not (str/includes? denied "Unrelated secret"))))

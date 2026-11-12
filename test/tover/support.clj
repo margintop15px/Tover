@@ -86,6 +86,7 @@
          repo     (rdf/native-store path)
          services (configure (assoc (identity/fixtures) :session-store (session-store/memory-store)
                                     :origin "http://localhost:3030" :development? true :repo repo))
+         services (update services :bel/system #(or % (identity/bel-system services)))
          realtime (app/realtime services)
          services (assoc services :realtime realtime)
          handler  (app/create-handler services)]
@@ -103,6 +104,26 @@
   (let [response (request! :post (bel/action-url :tover.auth.web/sign-in) {"email" (:email user) "password" (:password user)})]
     (when (= 303 (:status response)) (request! :get "/workspace"))
     response))
+
+
+(defn set-language!
+  "Switch the signed-in account language from the header of a page."
+  {:malli/schema [:=> [:cat :map :string] :map]}
+  [{:keys [request!]} locale]
+  (let [body (:body (request! :get "/workspace"))]
+    (request! :post (bel/action-url :tover.auth.web/set-language)
+              {"locale"            locale "return-to" "/workspace" "account" (hidden-value body "account")
+               "language-revision" (hidden-value body "language-revision")})))
+
+
+(defn complete-profile!
+  "Save a first display name on the profile page the gate sends a new account to."
+  {:malli/schema [:=> [:cat :map :string] :map]}
+  [{:keys [request!]} display-name]
+  (let [body (:body (request! :get "/account/profile" {"return-to" "/workspace"}))]
+    (request! :post (bel/action-url :tover.accounts.profile.web/save-name)
+              (assoc (into {} (for [name ["account" "name-revision" "return-to"]] [name (hidden-value body name)]))
+                     "display-name" display-name))))
 
 
 (defn session-key

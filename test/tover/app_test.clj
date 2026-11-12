@@ -503,18 +503,19 @@
                                   (when-let [route (:bel/route (meta definition))]
                                     [id route])))
                        (:pages registry))]
-    (is (= {:tover.auth.web/login       "/auth/login"
-            :tover.auth.web/signup      "/auth/signup"
-            :tover.auth.web/recover     "/auth/recover"
-            :tover.auth.web/verify      "/auth/verify"
-            :tover.auth.web/confirm     "/auth/confirm"
-            :tover.auth.web/password    "/auth/password"
-            :tover.stock.web/page       "/"
-            :tover.operations.web/page  "/operations"
-            :tover.catalogues.web/index "/catalogues"
-            :tover.catalogues.web/page  "/catalogues/:kind"
-            :tover.workspaces.web/page  "/workspace"
-            :tover.teams.core/page      "/team"}
+    (is (= {:tover.auth.web/login               "/auth/login"
+            :tover.auth.web/signup              "/auth/signup"
+            :tover.auth.web/recover             "/auth/recover"
+            :tover.auth.web/verify              "/auth/verify"
+            :tover.auth.web/confirm             "/auth/confirm"
+            :tover.auth.web/password            "/auth/password"
+            :tover.accounts.profile.web/profile "/account/profile"
+            :tover.stock.web/page               "/"
+            :tover.operations.web/page          "/operations"
+            :tover.catalogues.web/index         "/catalogues"
+            :tover.catalogues.web/page          "/catalogues/:kind"
+            :tover.workspaces.web/page          "/workspace"
+            :tover.teams.core/page              "/team"}
            routes))
     (doseq [id [:tover.stock.web/page :tover.operations.web/page
                 :tover.catalogues.web/index :tover.catalogues.web/page
@@ -598,3 +599,28 @@
             (is (instance? java.lang.AutoCloseable (:bel.delivery/worker system)))
             (is (nil? (app/stop! system)))
             (is (= [:worker-close :pool-close] @calls))))))))
+
+
+(deftest unnamed-user-is-sent-to-profile-with-return-to
+  (support/with-application
+    (fn [{:keys [browser users]}]
+      (let [{:keys [request!]} browser
+            user               (some #(when (= "unnamed@example.test" (:email %)) %) users)]
+        (support/login! browser user)
+        (doseq [[uri query location] [["/catalogues/x" {} "/account/profile?return-to=%2Fcatalogues%2Fx"]
+                                      ["/workspace" {"a" "1"} "/account/profile?return-to=%2Fworkspace%3Fa%3D1"]]]
+          (let [response (request! :get uri query)]
+            (is (= 303 (:status response)) uri)
+            (is (= location (get-in response [:headers "location"])) uri)))
+        (is (= 200 (:status (request! :get "/account/profile"))))
+        (let [response (request! :get "/workspace" {} {:headers {"datastar-request" "true" "x-tover-context" (:context @(:state browser))}})]
+          (is (= 409 (:status response)))
+          (is (= "profile-required" (get-in response [:headers "x-tover-error"])))
+          (is (= "/account/profile?return-to=%2Fworkspace" (get-in response [:headers "x-tover-redirect"]))))))))
+
+
+(deftest return-to-rejects-other-origins
+  (doseq [value ["//evil.test" "https://evil.test" "/\\evil" "/a\r\nLocation: //evil.test" "" nil]]
+    (is (= "/" (security/local-path value)) (pr-str value)))
+  (doseq [value ["/" "/workspace" "/catalogues/goods?q=a%20b"]]
+    (is (= value (security/local-path value)))))

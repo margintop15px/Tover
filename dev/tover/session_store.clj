@@ -11,4 +11,7 @@
         (locking rows
           (let [[row result] (f (get @rows id))]
             (swap! rows #(if row (assoc % id row) (dissoc % id)))
-            result))))))
+            result)))
+      (fn [user-id]
+        (locking rows
+          (into [] (keep (fn [[id row]] (when (= user-id (:user-id row)) id))) @rows))))))

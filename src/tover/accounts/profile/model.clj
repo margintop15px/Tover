@@ -2,7 +2,10 @@
   (:require
     [bel.core :refer [defcommand defevent defmodel defreadmodel]]
     [bel.runtime :as runtime]
-    [clojure.string :as str]))
+    [clojure.string :as str]
+    [com.brunobonacci.mulog :as mu]
+    [tover.auth.security :as security]
+    [tover.auth.sessions :as sessions]))
 
 
 (def DisplayName
@@ -31,10 +34,14 @@
                 (or (not (contains? input :account)) (= (:account input) user-id)))))
 
 
-;; ponytail: Task 4 wires the session claims refresh; until then saves only persist.
+;; The accepted save stands even when a session cannot be refreshed; its claims catch up on the next token refresh.
 (defmethod runtime/effect! :tover.auth/refresh-claims
-  [_ _ _]
-  nil)
+  [_ {:keys [actor resources]} _]
+  (doseq [key (sessions/session-keys-for-user (:session-store resources) actor)]
+    (try
+      (security/refresh-claims! resources key)
+      (catch Exception error
+        (mu/log ::refresh-claims-failed :error-type (.getName (class error)))))))
 
 
 (defevent display-name-changed

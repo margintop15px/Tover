@@ -130,6 +130,10 @@ test('Russian signup and recovery preserve account language across real sessions
     await expect(page.getByRole('heading', { name: 'Проверьте почту' })).toBeVisible();
     await page.goto(await emailLink(request, email, 'email', baseURL));
     await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
+    // A new account has no name yet, so profile setup comes first and then returns to the workspace.
+    await expect(page).toHaveURL(/\/account\/profile\?return-to=%2Fworkspace$/);
+    await page.getByLabel('Отображаемое имя', { exact: true }).fill('Браузер');
+    await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
     await expect(page).toHaveURL(/\/workspace$/);
     await selectLanguage(page, 'en');
     const otherContext = await browser.newContext({ baseURL, locale: 'ru-RU' });

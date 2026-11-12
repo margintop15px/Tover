@@ -1,8 +1,11 @@
 (ns tover.identity
   "Offline identity fixtures. This namespace is absent from the production classpath."
   (:require
+    [bel.runtime :as runtime]
+    [bel.store :as store]
     [clojure.string :as str]
     [tover.auth.core :as auth]
+    [tover.auth.sessions :as sessions]
     [tover.workspaces.core :as workspaces])
   (:import
     [java.time Instant]
@@ -45,7 +48,7 @@
   (let [user (get-in state [:users user-id])]
     {:sub              (str user-id)
      :email            (:email user)
-     :language         (:locale user)
+     :language         (:language user)
      :profile_complete (not (str/blank? (:display-name user)))
      :email_confirmed  (boolean (:email-confirmed? user))
      :memberships      (->> (:memberships state)
@@ -157,18 +160,22 @@
 
 
 (defn fixtures
-  "Return fresh offline services. All fixture accounts use password tover-development."
+  "Return fresh offline services. All fixture accounts use password tover-development.
+  unnamed@example.test has no display name yet, so profile setup gates it."
   {:malli/schema [:=> [:cat] :map]}
   []
   (let [workspace-id         (UUID/fromString "00000000-0000-4000-8000-000000000101")
         other-workspace-id   (UUID/fromString "00000000-0000-4000-8000-000000000102")
-        users                (mapv (fn [id email]
-                                     {:user-id  (UUID/fromString id) :email email :email-confirmed? true
-                                      :password "tover-development"})
+        users                (mapv (fn [id email display-name]
+                                     (cond-> {:user-id  (UUID/fromString id) :email email :email-confirmed? true
+                                              :password "tover-development"}
+                                       display-name (assoc :display-name display-name :name-revision 1)))
                                    ["00000000-0000-4000-8000-000000000001"
                                     "00000000-0000-4000-8000-000000000002"
-                                    "00000000-0000-4000-8000-000000000003"]
-                                   ["owner@example.test" "member@example.test" "other@example.test"])
+                                    "00000000-0000-4000-8000-000000000003"
+                                    "00000000-0000-4000-8000-000000000004"]
+                                   ["owner@example.test" "member@example.test" "other@example.test" "unnamed@example.test"]
+                                   ["Owner" "Member" "Other" nil])
         [owner member other] (map :user-id users)
         state                (atom {:users       (into {} (map (juxt :user-id identity)) users)
                                     :workspaces  {workspace-id       {:name "Development workspace"}
@@ -187,7 +194,9 @@
               (when (find-user @state email) (auth/fail! :email-exists 422 false))
               (let [user {:user-id          (UUID/randomUUID) :email    (normalized-email email)
                           :email-confirmed? false             :password password}]
-                (swap! state assoc-in [:users (:user-id user)] (cond-> user (:locale input) (assoc :locale (:locale input))))
+                ;; Auth keeps the signup locale in metadata; the profile language starts from it.
+                (swap! state assoc-in [:users (:user-id user)]
+                       (cond-> user (:locale input) (assoc :locale (:locale input) :language (:locale input))))
                 (when-not (str/blank? workspace-name) (add-workspace! state (:user-id user) workspace-name))
                 (queue-email! state :signup input)
                 {:user (public-user user)})))
@@ -314,3 +323,54 @@
                          (sort-by :created-at #(compare %2 %1)))))))))]
     {:auth               provider           :workspaces          provider           :users users :workspace-id workspace-id
      :other-workspace-id other-workspace-id :second-workspace-id other-workspace-id :state state}))
+
+
+;; The profile slice runs on fixture users: a saved name or language is what their next token claims show.
+(defrecord FixtureDirectory [state journal]
+  store/Transactional
+  (-transact [_ _ f] (f nil))
+
+  store/Store
+  (-load [_ _ _ _ id]
+    (when-let [user (get-in @state [:users id])]
+      (cond-> {:user-id id :name-revision (:name-revision user 0) :language-revision (:language-revision user 0)}
+        (:display-name user) (assoc :display-name (:display-name user))
+        (:language user) (assoc :language (:language user)))))
+  (-create! [_ _ _ _ _] (throw (ex-info "Fixture profiles exist with their users" {:type :configuration})))
+  (-write! [_ _ _ _ fields row]
+    (swap! state update-in [:users (:user-id row)] #(merge (apply dissoc % fields) row)))
+
+  store/Journal
+  (-receipt [_ _ _ command-id] (some #(when (= command-id (:command-id %)) %) @journal))
+  (-append! [_ _ _ delivery] (swap! journal conj delivery))
+  (-history [_ _ _] @journal))
+
+
+(defrecord FixtureSession [state session-store]
+  runtime/Authority
+  (-principal [_ _ {:keys [actor user-id scope auth-session-id session-id]}]
+    (let [row (sessions/session session-store auth-session-id)]
+      (when-not (and (= scope {:user-id user-id}) (= actor user-id) row
+                     (= user-id (:user-id row)) (= session-id (get-in row [:data :bel/session-id])))
+        (throw (ex-info "A current user session is required" {:type :forbidden :status 403})))
+      {:user-id            user-id
+       :confirmed?         (boolean (get-in @state [:users user-id :email-confirmed?]))
+       :password-required? (boolean (get-in row [:data :identity/password-required?]))
+       :memberships        []})))
+
+
+(alter-meta! #'->FixtureDirectory assoc :malli/schema [:=> [:cat :any :any] :map])
+(alter-meta! #'map->FixtureDirectory assoc :malli/schema [:=> [:cat :map] :map])
+(alter-meta! #'->FixtureSession assoc :malli/schema [:=> [:cat :any :any] :map])
+(alter-meta! #'map->FixtureSession assoc :malli/schema [:=> [:cat :map] :map])
+
+
+(defn bel-system
+  "A Bel system whose directory is the fixture identity state, checked against the current session like CurrentSession."
+  {:malli/schema [:=> [:cat [:map [:state :any] [:auth :any] [:session-store :any]]] :map]}
+  [{:keys [state auth session-store]}]
+  {:stores    {:directory (->FixtureDirectory state (atom []))}
+   :journal   :directory
+   :scope     :workspace
+   :authority {:store :directory :impl (->FixtureSession state session-store)}
+   :resources {:auth auth :session-store session-store}})

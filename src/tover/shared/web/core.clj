@@ -2,6 +2,8 @@
   (:require
     [bel.core :refer [defpage]]
     [bel.expressions :refer [->expr]]
+    [bel.runtime :as runtime]
+    [tover.accounts.profile.model :as profile]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.core :as ui]))
@@ -41,7 +43,8 @@
     [:script {:type "module" :src "/stock-entry.js?v=workflow-2"}]
     [:script {:type "module" :src "/stock-operations.js?v=workflow-2"}]]
    (into [:body
-          (when (get-in request [:tover/identity :workspace-id])
+          ;; Profile setup comes first: until then the workspace stream would only answer profile-required.
+          (when (and (get-in request [:tover/identity :workspace-id]) (get-in request [:tover/identity :profile-complete?]))
             {:data-init (->expr (@realtime {:tabId  ~(str (random-uuid))
                                             :topics ["tover.stock.web/changed"
                                                      "tover.stock.web/draft-changed"
@@ -50,10 +53,13 @@
 
 
 (defn query-shell
+  "The header's language switch carries the account language revision it was rendered from."
   {:malli/schema [:=> [:cat :map :map] :map]}
-  [{:keys [request]} _input]
+  [{:keys [request] :as context} _input]
   {:request  request
    :identity (:tover/identity request)
+   :profile  (when (and (:tover/identity request) (:bel/system context))
+               (runtime/read-model context ::profile/my-profile {}))
    :path     (:uri request)
    :error    (:tover/error request)})
 

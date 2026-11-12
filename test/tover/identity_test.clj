@@ -19,6 +19,9 @@
           (is (str/includes? (:body response) "Check your email"))
           (request! :get "/auth/confirm" {"token_hash" (:token-hash email) "type" "signup"})
           (is (= 303 (:status (request! :post (bel/action-url :tover.auth.web/verify-email) {"token-hash" (:token-hash email) "type" "signup"}))))
+          (is (= "/account/profile?return-to=%2Fworkspace" (get-in (request! :get "/workspace") [:headers "location"])))
+          (is (not (str/includes? (:body (request! :get "/account/profile")) "@realtime")))
+          (is (= "/workspace" (get-in (support/complete-profile! browser "New user") [:headers "location"])))
           (let [workspace (request! :get "/workspace")]
             (is (str/includes? (:body workspace) "New signup workspace")))
           (is (= 303 (:status (request! :post (bel/action-url :tover.workspaces.web/create-workspace) {"name" "Another workspace"}))))

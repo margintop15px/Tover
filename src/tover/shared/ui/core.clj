@@ -18,14 +18,23 @@
     [:path {:d "M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"}]]])
 
 
+(def LanguageSwitchProps
+  [:map
+   [:request :map]
+   [:profile {:optional true} [:maybe [:map [:user-id :uuid] [:language-revision :int]]]]])
+
+
 (defn language-switch
-  {:malli/schema [:=> [:cat :map] schema/Hiccup]}
-  [request]
+  "A signed-in switch posts the account and the language revision it was rendered from."
+  {:malli/schema [:=> [:cat LanguageSwitchProps] schema/Hiccup]}
+  [{:keys [request profile]}]
   [:form.language-switch {:method "post"  :action     "/action/tover.auth.web/set-language"
                           :role   "group" :aria-label (i18n/t "Language")}
    [:input {:type "hidden" :name "__anti-forgery-token" :value (force (:anti-forgery-token request))}]
    [:input {:type "hidden" :name "return-to" :value (or (get-in request [:params :return-to])
                                                         (str (:uri request) (when-let [query (:query-string request)] (str "?" query))))}]
+   (when profile [:input {:type "hidden" :name "account" :value (str (:user-id profile))}])
+   (when profile [:input {:type "hidden" :name "language-revision" :value (str (:language-revision profile))}])
    (for [[locale text label] [["en" "EN" (i18n/t "English")] ["ru" "RU" (i18n/t "Russian")]]]
      [:button.language-toggle {:type         "submit" :name "locale" :value locale
                                :aria-label   label :title   label
@@ -35,7 +44,7 @@
 
 (defn app-shell
   {:malli/schema [:=> [:cat :map [:* :any]] schema/Hiccup]}
-  [{:keys [identity path error request]} & children]
+  [{:keys [identity path error request profile]} & children]
   [:div#tover-app
    [:nav.app-nav {:aria-label (i18n/t "Application")}
     [:div.app-nav-pages
@@ -56,7 +65,12 @@
         [:svg {:viewBox "0 0 24 24" :aria-hidden true}
          [:circle {:cx 9 :cy 8 :r 3}]
          [:path {:d "M3 21v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M21 21v-2a6 6 0 0 0-4-5.65"}]]])
-     (language-switch request)
+     [:a.nav-icon (nav/link "/account/profile" {:aria-label   (i18n/t "Profile") :title (i18n/t "Profile")
+                                                :aria-current (when (= path "/account/profile") "page")})
+      [:svg {:viewBox "0 0 24 24" :aria-hidden true}
+       [:circle {:cx 12 :cy 8 :r 4}]
+       [:path {:d "M4 21v-1a8 8 0 0 1 16 0v1"}]]]
+     (language-switch {:request request :profile profile})
      (theme-toggle)]]
    (when error [:p.app-notice.error {:role "alert"} error])
    (into [:main#page-content {:tabindex -1}] children)])

@@ -3,7 +3,10 @@
     [bel.core :as bel :refer [defaction defpage]]
     [bel.handler :as html]
     [bel.realtime :as realtime]
+    [bel.runtime :as runtime]
     [ring.middleware.session.store :as ring-store]
+    [tover.accounts.profile.model :as profile]
+    [tover.accounts.profile.web :as profile-web]
     [tover.auth.core :as auth]
     [tover.auth.security :as security]
     [tover.auth.sessions :as sessions]
@@ -32,7 +35,7 @@
     [:script {:src "/theme.js" :defer true}]
     [:script {:src "/identity.js" :defer true}]]
    [:body.identity-document
-    (into [:main.identity [:div.identity-theme (ui/language-switch request) (ui/theme-toggle)]] children)]])
+    (into [:main.identity [:div.identity-theme (ui/language-switch {:request request}) (ui/theme-toggle)]] children)]])
 
 
 (defn- page-content
@@ -235,13 +238,45 @@
     {:type :page :id ::login :reload? true :session nil}))
 
 
+(defn- language-not-saved
+  "The account language stays as saved; a stale switch names the language saved elsewhere."
+  {:malli/schema [:=> [:cat :map :string [:fn #(instance? ExceptionInfo %)]] :map]}
+  [request return-to error]
+  (let [latest (get-in (ex-data error) [:latest :language])]
+    (assoc (page request (i18n/t "Language not changed")
+                 [:div
+                  [:p (profile-web/error-message error (i18n/t "Could not save language. Please try again."))]
+                  (when latest
+                    [:p (i18n/t "Your account language is {language}." {:language (i18n/t (if (= "ru" latest) "Russian" "English"))})])
+                  [:p [:a {:href return-to} (i18n/t "Back")]]])
+           :status (profile-web/error-status error))))
+
+
 (defaction set-language
-  {:schema     [:map [:locale [:enum "en" "ru"]] [:return-to {:optional true} :string]]
+  {:schema     [:map [:locale [:enum "en" "ru"]] [:return-to {:optional true} :string] [:display-name {:optional true} :string]]
    :route-data {:tover/access :optional}}
-  [{:keys [request]} {:keys [locale return-to]}]
-  ;; ponytail: signed-in users keep only the cookie until Task 4 executes the Bel change-account-language command here.
-  {:status  303
-   :headers {"location" (if (and (string? return-to) (re-matches #"/(?!/)[^\r\n\\]*" return-to)) return-to "/")}
-   :cookies {"tover-language" {:value  locale :path "/" :max-age 31536000 :http-only true :same-site :lax
-                               :secure (= :https (:scheme request))}}
-   :body    ""})
+  [{:keys [request] :as context} {:keys [locale return-to] :as input}]
+  (let [return-to (security/local-path return-to)
+        identity  (:tover/identity request)
+        draft?    (contains? input :display-name)
+        cookies   {"tover-language" {:value  locale :path "/" :max-age 31536000 :http-only true :same-site :lax
+                                     :secure (= :https (:scheme request))}}
+        redirect  {:status 303 :headers {"location" return-to} :cookies cookies :body ""}]
+    ;; A guest, or a recovery session that may not edit the profile, keeps the choice in this browser only.
+    (if (or (nil? identity) (:password-required? identity))
+      redirect
+      (try
+        (runtime/execute! context ::profile/change-account-language
+                          {:command-id (str (random-uuid))
+                           :input      {:account           (:account input)           :language locale
+                                        :language-revision (:language-revision input)}})
+        (profile-web/refresh-session! context)
+        (if draft?
+          (assoc (profile-web/page-response request 200 {:draft (:display-name input) :return-to return-to}) :cookies cookies)
+          redirect)
+        (catch ExceptionInfo error
+          (if draft?
+            (profile-web/page-response request (profile-web/error-status error)
+                                       {:draft (:display-name input) :return-to return-to
+                                        :error (profile-web/error-message error (i18n/t "Could not save language. Please try again."))})
+            (language-not-saved request return-to error)))))))

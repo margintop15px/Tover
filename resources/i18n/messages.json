@@ -571,7 +571,17 @@
     "This goods name now exists. Choose a catalogue item before submitting.": "This goods name now exists. Choose a catalogue item before submitting.",
     "Choose a record or enter a new relationship name.": "Choose a record or enter a new relationship name.",
     "An existing stock row keeps its goods identity.": "An existing stock row keeps its goods identity.",
-    "Several goods have this name. Choose a catalogue item.": "Several goods have this name. Choose a catalogue item."
+    "Several goods have this name. Choose a catalogue item.": "Several goods have this name. Choose a catalogue item.",
+    "Profile": "Profile",
+    "Profile · Tover": "Profile · Tover",
+    "Display name": "Display name",
+    "Saved name: {name}": "Saved name: {name}",
+    "Add your name before continuing.": "Add your name before continuing.",
+    "This profile changed. Review the latest value.": "This profile changed. Review the latest value.",
+    "Enter a name of 1 to 100 characters.": "Enter a name of 1 to 100 characters.",
+    "Language not changed": "Language not changed",
+    "Your account language is {language}.": "Your account language is {language}.",
+    "Back": "Back"
   },
   "ru": {
     "Stock": "Остатки",
@@ -1149,6 +1159,16 @@
     "This goods name now exists. Choose a catalogue item before submitting.": "Товар с таким названием уже появился. Выберите товар из справочника перед подтверждением.",
     "Choose a record or enter a new relationship name.": "Выберите запись или введите название новой связанной записи.",
     "An existing stock row keeps its goods identity.": "В существующей строке остатков нельзя заменить товар другим.",
-    "Several goods have this name. Choose a catalogue item.": "Несколько товаров имеют это название. Выберите товар из справочника."
+    "Several goods have this name. Choose a catalogue item.": "Несколько товаров имеют это название. Выберите товар из справочника.",
+    "Profile": "Профиль",
+    "Profile · Tover": "Профиль · Tover",
+    "Display name": "Отображаемое имя",
+    "Saved name: {name}": "Сохранённое имя: {name}",
+    "Add your name before continuing.": "Укажите имя, чтобы продолжить.",
+    "This profile changed. Review the latest value.": "Профиль изменился. Проверьте последнее значение.",
+    "Enter a name of 1 to 100 characters.": "Введите имя длиной от 1 до 100 символов.",
+    "Language not changed": "Язык не изменён",
+    "Your account language is {language}.": "Язык вашего аккаунта: {language}.",
+    "Back": "Назад"
   }
 }

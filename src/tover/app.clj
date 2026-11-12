@@ -202,7 +202,7 @@
                     :workspaces    (ig/ref ::workspaces)
                     :session-store (ig/ref ::session-store)
                     :repo          (ig/ref ::repo)}
-   ::handler       (merge (select-keys services [:origin :development? :identity-health])
+   ::handler       (merge (select-keys services [:origin :development? :identity-health :bel/system])
                           {:repo          (ig/ref ::repo)
                            :realtime      (ig/ref ::realtime)
                            :auth          (ig/ref ::auth)

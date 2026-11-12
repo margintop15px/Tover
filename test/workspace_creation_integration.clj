@@ -21,6 +21,7 @@
     [taoensso.nippy :as nippy]
     [tover.accounts.persistence :as accounts]
     [tover.accounts.profile.model :as profile-model]
+    [tover.auth.sessions :as sessions]
     [tover.shared.bel :as wiring]
     [tover.workspaces.create.model :as model]
     [tover.workspaces.create.web :as web]
@@ -498,6 +499,22 @@
            (runtime/read-model ctx ::profile-model/my-profile {})))
     (is (= :stale-profile (:type (error-data #(save-profile ctx ::profile-model/set-display-name "S"
                                                             {:display-name "Other" :name-revision 0})))))))
+
+
+(deftest live-workspace-system-runs-user-scoped-profile-saves
+  ;; The application's system defaults to workspace scope; the profile commands declare user scope.
+  (let [ctx (assoc (context) :bel/system (wiring/system {:datasource (db "tover_app")}) :workspace-id (random-uuid))]
+    (is (= :accepted (:status (save-profile ctx ::profile-model/set-display-name "W" {:display-name "Alicia" :name-revision 0}))))
+    (is (= "Alicia" (:display-name (runtime/read-model ctx ::profile-model/my-profile {}))))))
+
+
+(deftest session-keys-for-user-lists-only-current-sessions-of-that-user
+  (let [{:keys [user-id auth-session-id]} (context)
+        expired (str "test-session-" (random-uuid))
+        store (sessions/jdbc-store {:datasource (db "tover_app") :encryption-key "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})]
+    (admin! ["insert into app_private.sessions(id,user_id,data,expires_at) values(?,?,'{}',now()-interval '1 minute')" expired user-id])
+    (is (= [auth-session-id] (sessions/session-keys-for-user store user-id)))
+    (is (= [] (sessions/session-keys-for-user store (random-uuid))))))
 
 
 (deftest repeated-command-returns-original-after-later-edit

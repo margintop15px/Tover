@@ -87,7 +87,7 @@ for (const locale of ['en', 'ru']) {
     const owner = rowFor(page, 'manager@example.test');
     await expect(owner.locator('.management-name')).toHaveText('Alexandra Workspace Manager With A Long Name');
     await expect(owner.locator('.management-secondary')).toHaveText('manager@example.test');
-    await expect(rowFor(page, 'admin@example.test').locator('.management-secondary')).toHaveCount(0);
+    await expect(rowFor(page, 'suspended-member-with-an-intentionally-long-email-address@example.test').locator('.management-secondary')).toHaveCount(0);
     for (const [email, status, recovery] of [
       ['manager@example.test', 'Active', true], ['admin@example.test', 'Active', true],
       ['suspended-member-with-an-intentionally-long-email-address@example.test', 'Suspended', false], ['invited@example.test', 'Invited', false],
