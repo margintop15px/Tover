@@ -2,6 +2,7 @@
   (:require [bel.fixture :as fixture]
             [clojure.test :refer [deftest is]]
             [instrumentation :as instrumentation]
+            [malli.clj-kondo :as clj-kondo]
             [malli.core :as m]
             [tover.app :as app]))
 
@@ -17,6 +18,15 @@
       (is (get-in (m/function-schemas) [(ns-name ns) name]) (str var))
       (is (:malli.instrument/original (meta @var)) (str var))))
   (is (thrown? clojure.lang.ExceptionInfo (app/system-config "invalid-port" "/tmp/unused" {}))))
+
+
+(deftest instrumentation-emits-lint-config-once-per-start
+  (let [emissions (atom 0)]
+    (with-redefs [clj-kondo/emit! (fn [_] (swap! emissions inc))]
+      (dotimes [_ 2]
+        (reset! emissions 0)
+        (is (pos? (instrumentation/start!)))
+        (is (= 1 @emissions))))))
 
 
 (deftest instrumentation-restarts-after-namespace-and-var-removal

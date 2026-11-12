@@ -52,9 +52,10 @@
         options {:filters [(instrument/-filter-var (set vars))] :report (pretty/thrower)}]
     (when (seq missing)
       (throw (ex-info "Application functions are missing Malli schemas." {:vars missing})))
-    (dev/start! options)
-    ;; collect! scans public vars; use Malli's collector for private helpers too.
+    ;; Collect private helpers before the watcher emits lint config on every registration.
+    (with-out-str (dev/stop!))
     (doseq [var vars] (instrument/-collect! var))
+    (dev/start! options)
     (count (instrument/instrument! options))))
 
 
