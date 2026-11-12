@@ -493,4 +493,9 @@ Verification:
 - "Goods" in M2–M9 now means stock item wherever identity, quantity or mapping is concerned. M2 adds the product/stock-item split and barcode set; existing goods become one product with one stock item keeping the same ID.
 - The prooph board carries the target flows: 08 (products), 08a (stock items), 40 connect, 41 sync, 42 product matching, 43 warehouse matching, 44 cutover, 45 imported operations and automatic acceptance, 46 transit, 47 columns and source inspection. Store mapping and cutover grouping: `docs/bel-architecture.md` §12.
 - "Manager" means workspace Owner or Admin.
-- Open hotspots on the board: kit/bundle listings, moving a cutover instant, Defect vs Write-off, sale Party, moving a stock item between products.
+- Board hotspots decided, none open (`docs/bel-architecture.md` §12.5):
+  - Defect moves quantity to the stock item's Defective counterpart and conserves the total; only Write-off removes stock. Marketplace defect or disposal reports map accordingly: defect to Defect, disposal or loss to Write-off.
+  - Sale has no party.
+  - A kit/bundle listing maps to its own bundle stock item, filled by Production; no one-to-many mapping.
+  - The cutover baseline instant is immutable; fix a wrong baseline with Stock Correction.
+  - A stock item can be moved to another product explicitly; its ID, history, barcodes and mappings stay.

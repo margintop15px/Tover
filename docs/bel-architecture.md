@@ -291,7 +291,7 @@ The one-store rule holds for every board command under this table. The automatic
 ### 12.2 Identity model
 
 - Product: catalogue card. Name unique per workspace, trimmed and case-insensitive, archived products included.
-- Stock item: child of a product; variant label unique within the product; owns unit (locked by first quantity record), article (descriptive) and barcodes. A barcode belongs to at most one stock item per workspace, archived items included, so a barcode names one stock item.
+- Stock item: child of a product; variant label unique within the product; owns unit (locked by first quantity record), article (descriptive) and barcodes. A barcode belongs to at most one stock item per workspace, archived items included, so a barcode names one stock item. Condition is Regular or Defective (§12.5).
 - Every quantity-bearing line and every marketplace mapping targets a stock item id. The product is reached through it.
 - External listing `(connection, provider product id)` → member-confirmed mapping → stock item. Barcode, article and name only rank candidates.
 
@@ -310,4 +310,12 @@ Two principals reach it: a member (`::confirmed-user` policy) and a connector se
 5. **One writer path.** Catalogues (08–12), inventory (13–28, 32a) and marketplace (40–47) share models, so they cut over together: products, stock items, warehouses and the ledger get their Bel writers in one step, and legacy `tover.catalogues.store`, `tover.stock` and `tover.inventory.*` writers are removed in the same step. The legacy Return "Original operation" column and scalar `barcode`/`article`/`unit` on goods are not ported.
 6. **Existing data.** Each existing good becomes one product with one stock item (same id for the stock item, so ledger history is untouched). Duplicate names and duplicate barcodes in existing stores must be listed and resolved by a member before the uniqueness constraints are installed; this is a reviewed semantic migration with a restored-backup rehearsal.
 
-Open board hotspots that block their slices: Defect vs Write-off (23), sale Party (19), kit/bundle listings (42), moving a cutover instant (44), moving a stock item between products (08a).
+### 12.5 Decided hotspots (2026-11-12)
+
+The board has no open hotspots. Decisions:
+
+- **Defect (23).** Defect moves quantity from a stock item to its Defective counterpart; total quantity is conserved. The counterpart is a stock item with condition Defective under the same product, registered on the first Defect. From there the quantity is repaired back (Production consuming the Defective item and producing the Regular item), sold marked down, or written off. Only Write-off removes quantity from stock.
+- **Sale Party (19).** Sale has no party. Store is optional.
+- **Bundles (42).** A bundle listing maps to its own stock item, filled by Production from component stock items. One listing never maps to several stock items.
+- **Cutover instant (44).** The baseline instant is immutable once accepted. A wrong baseline is fixed by Stock Correction, not by moving the instant.
+- **Stock item move (08a).** `Move Stock Item to Another Product` is explicit; the stock item id, history, barcodes and mappings are unchanged; the variant label must be unique in the target product.
