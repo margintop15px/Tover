@@ -257,19 +257,23 @@
    :route-data {:tover/access :optional}}
   [{:keys [request] :as context} {:keys [locale return-to] :as input}]
   (let [return-to (security/local-path return-to)
-        identity  (:tover/identity request)
+        signed-in (:tover/identity request)
         draft?    (contains? input :display-name)
         cookies   {"tover-language" {:value  locale :path "/" :max-age 31536000 :http-only true :same-site :lax
                                      :secure (= :https (:scheme request))}}
         redirect  {:status 303 :headers {"location" return-to} :cookies cookies :body ""}]
     ;; A guest, or a recovery session that may not edit the profile, keeps the choice in this browser only.
-    (if (or (nil? identity) (:password-required? identity))
+    (if (or (nil? signed-in) (:password-required? signed-in))
       redirect
       (try
+        ;; The profile form posts its account and revision, so a stale save there is caught. The header switch
+        ;; posts only the language: it saves for the signed-in account at the revision read now.
         (runtime/execute! context ::profile/change-account-language
                           {:command-id (str (random-uuid))
-                           :input      {:account           (:account input)           :language locale
-                                        :language-revision (:language-revision input)}})
+                           :input      {:account           (or (:account input) (:user-id signed-in))
+                                        :language          locale
+                                        :language-revision (or (:language-revision input)
+                                                               (:language-revision (runtime/read-model context ::profile/my-profile {})))}})
         (profile-web/refresh-session! context)
         (if draft?
           (assoc (profile-web/page-response request 200 {:draft (:display-name input) :return-to return-to}) :cookies cookies)

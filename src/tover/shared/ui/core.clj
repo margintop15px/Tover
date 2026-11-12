@@ -19,22 +19,18 @@
 
 
 (def LanguageSwitchProps
-  [:map
-   [:request :map]
-   [:profile {:optional true} [:maybe [:map [:user-id :uuid] [:language-revision :int]]]]])
+  [:map [:request :map]])
 
 
 (defn language-switch
-  "A signed-in switch posts the account and the language revision it was rendered from."
+  "Posts only the language; a signed-in save reads the current revision itself."
   {:malli/schema [:=> [:cat LanguageSwitchProps] schema/Hiccup]}
-  [{:keys [request profile]}]
+  [{:keys [request]}]
   [:form.language-switch {:method "post"  :action     "/action/tover.auth.web/set-language"
                           :role   "group" :aria-label (i18n/t "Language")}
    [:input {:type "hidden" :name "__anti-forgery-token" :value (force (:anti-forgery-token request))}]
    [:input {:type "hidden" :name "return-to" :value (or (get-in request [:params :return-to])
                                                         (str (:uri request) (when-let [query (:query-string request)] (str "?" query))))}]
-   (when profile [:input {:type "hidden" :name "account" :value (str (:user-id profile))}])
-   (when profile [:input {:type "hidden" :name "language-revision" :value (str (:language-revision profile))}])
    (for [[locale text label] [["en" "EN" (i18n/t "English")] ["ru" "RU" (i18n/t "Russian")]]]
      [:button.language-toggle {:type         "submit" :name "locale" :value locale
                                :aria-label   label :title   label
@@ -44,7 +40,7 @@
 
 (defn app-shell
   {:malli/schema [:=> [:cat :map [:* :any]] schema/Hiccup]}
-  [{:keys [identity path error request profile]} & children]
+  [{:keys [identity path error request]} & children]
   [:div#tover-app
    [:nav.app-nav {:aria-label (i18n/t "Application")}
     [:div.app-nav-pages
@@ -70,7 +66,7 @@
       [:svg {:viewBox "0 0 24 24" :aria-hidden true}
        [:circle {:cx 12 :cy 8 :r 4}]
        [:path {:d "M4 21v-1a8 8 0 0 1 16 0v1"}]]]
-     (language-switch {:request request :profile profile})
+     (language-switch {:request request})
      (theme-toggle)]]
    (when error [:p.app-notice.error {:role "alert"} error])
    (into [:main#page-content {:tabindex -1}] children)])

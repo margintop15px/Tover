@@ -620,7 +620,9 @@
 
 
 (deftest return-to-rejects-other-origins
-  (doseq [value ["//evil.test" "https://evil.test" "/\\evil" "/a\r\nLocation: //evil.test" "" nil]]
+  ;; Browsers strip tab and newline, so "/\t/evil.test" would resolve to //evil.test.
+  (doseq [value ["//evil.test" "https://evil.test" "/\\evil" "/a\r\nLocation: //evil.test" "/\t/evil.test" "/\n/evil.test"
+                 "/\u0000x" "" nil]]
     (is (= "/" (security/local-path value)) (pr-str value)))
   (doseq [value ["/" "/workspace" "/catalogues/goods?q=a%20b"]]
     (is (= value (security/local-path value)))))

@@ -96,10 +96,11 @@
 
 
 (defn local-path
-  "A same-origin path to return to; anything else becomes the home page."
+  "A same-origin path to return to; anything else becomes the home page.
+  Control characters are rejected: browsers drop tab and newline, so /<tab>/host would leave the origin."
   {:malli/schema [:=> [:cat :any] :string]}
   [value]
-  (if (and (string? value) (re-matches #"/(?!/)[^\r\n\\]*" value)) value "/"))
+  (if (and (string? value) (re-matches #"/(?!/)[^\p{Cntrl}\\]*" value)) value "/"))
 
 
 (defn- profile-location

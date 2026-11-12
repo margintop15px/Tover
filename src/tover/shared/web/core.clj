@@ -2,8 +2,6 @@
   (:require
     [bel.core :refer [defpage]]
     [bel.expressions :refer [->expr]]
-    [bel.runtime :as runtime]
-    [tover.accounts.profile.model :as profile]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.core :as ui]))
@@ -53,13 +51,10 @@
 
 
 (defn query-shell
-  "The header's language switch carries the account language revision it was rendered from."
   {:malli/schema [:=> [:cat :map :map] :map]}
-  [{:keys [request] :as context} _input]
+  [{:keys [request]} _input]
   {:request  request
    :identity (:tover/identity request)
-   :profile  (when (and (:tover/identity request) (:bel/system context))
-               (runtime/read-model context ::profile/my-profile {}))
    :path     (:uri request)
    :error    (:tover/error request)})
 

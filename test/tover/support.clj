@@ -110,10 +110,8 @@
   "Switch the signed-in account language from the header of a page."
   {:malli/schema [:=> [:cat :map :string] :map]}
   [{:keys [request!]} locale]
-  (let [body (:body (request! :get "/workspace"))]
-    (request! :post (bel/action-url :tover.auth.web/set-language)
-              {"locale"            locale "return-to" "/workspace" "account" (hidden-value body "account")
-               "language-revision" (hidden-value body "language-revision")})))
+  (request! :get "/workspace")
+  (request! :post (bel/action-url :tover.auth.web/set-language) {"locale" locale "return-to" "/workspace"}))
 
 
 (defn complete-profile!

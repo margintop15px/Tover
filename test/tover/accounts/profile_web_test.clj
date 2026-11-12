@@ -2,6 +2,7 @@
   "Profile setup and the signed-in language switch through the application handler."
   (:require
     [bel.core :as bel]
+    [bel.runtime :as runtime]
     [clojure.string :as str]
     [clojure.test :refer [deftest is]]
     [tover.auth.core :as auth]
@@ -89,10 +90,10 @@
             metadata           (get-in @state [:users (:user-id user) :locale])]
         (support/login! browser user)
         (let [body     (:body (request! :get "/workspace"))
-              response (request! :post (bel/action-url :tover.auth.web/set-language)
-                                 {"locale"            "ru" "return-to" "/workspace"
-                                  "account"           (form-value body "account")
-                                  "language-revision" (form-value body "language-revision")})]
+              ;; The header switch posts only the language; the revision is read when it is saved.
+              response (request! :post (bel/action-url :tover.auth.web/set-language) {"locale" "ru" "return-to" "/workspace"})]
+          (is (nil? (form-value body "language-revision")))
+          (is (nil? (form-value body "account")))
           (is (= 303 (:status response)))
           (is (= "/workspace" (get-in response [:headers "location"])))
           (is (= metadata (get-in @state [:users (:user-id user) :locale])))
@@ -162,10 +163,8 @@
             other (support/browser handler)]
         (support/login! browser user)
         (support/login! other user)
-        (let [body (:body ((:request! browser) :get "/workspace"))]
-          ((:request! browser) :post (bel/action-url :tover.auth.web/set-language)
-                               {"locale"            "ru" "return-to" "/workspace" "account" (form-value body "account")
-                                "language-revision" (form-value body "language-revision")}))
+        ((:request! browser) :get "/workspace")
+        ((:request! browser) :post (bel/action-url :tover.auth.web/set-language) {"locale" "ru" "return-to" "/workspace"})
         ;; The effect runs after the response; wait for it boundedly.
         (let [locale #(get-in (security/authenticate services (support/session-key other)) [:user :locale])]
           (is (= "ru" (loop [attempt 0]
@@ -192,3 +191,32 @@
             (is (= 422 (:status blank)))
             (is (str/includes? (:body blank) "Enter a name of 1 to 100 characters.")))
           (is (= "Bob" (get-in @state [:users (:user-id user) :display-name]))))))))
+
+
+(deftest shell-pages-do-not-read-the-profile
+  (support/with-application
+    (fn [{:keys [browser users]}]
+      (support/login! browser (first users))
+      (let [read runtime/read-model]
+        (with-redefs [runtime/read-model (fn [context id input]
+                                           (if (= id :tover.accounts.profile.model/my-profile)
+                                             (throw (ex-info "No profile read on page renders" {}))
+                                             (read context id input)))]
+          (is (= 200 (:status ((:request! browser) :get "/workspace")))))))))
+
+
+(deftest identity-document-switch-saves-the-signed-in-language
+  (support/with-application
+    (fn [{:keys [browser users state]}]
+      (let [{:keys [request!]} browser
+            user               (first users)]
+        (support/login! browser user)
+        ;; A signed-in identity page renders the same switch: locale and return-to only.
+        (let [body     (:body (request! :get "/auth/login"))
+              response (request! :post (bel/action-url :tover.auth.web/set-language)
+                                 {"locale" "ru" "return-to" (form-value body "return-to")})]
+          (is (nil? (form-value body "language-revision")))
+          (is (= 303 (:status response)))
+          (is (= "/auth/login" (get-in response [:headers "location"])))
+          (is (= {:language "ru" :language-revision 1}
+                 (select-keys (get-in @state [:users (:user-id user)]) [:language :language-revision]))))))))
