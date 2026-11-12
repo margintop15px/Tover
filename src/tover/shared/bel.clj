@@ -6,6 +6,7 @@
     [tover.accounts.persistence :as accounts]
     [tover.auth.bel :as authority]
     [tover.catalogues.persistence :as catalogues]
+    [tover.invitations.persistence :as invitations]
     [tover.workspaces.persistence :as workspaces]))
 
 
@@ -16,7 +17,7 @@
                              [:session-store {:optional true} :any]]] :map]}
   [{:keys [repo datasource realtime auth session-store]}]
   {:stores    (cond-> {}
-                datasource (assoc :directory (postgres/store {:datasource datasource :tables (merge workspaces/tables accounts/tables)}))
+                datasource (assoc :directory (postgres/store {:datasource datasource :tables (merge workspaces/tables accounts/tables invitations/tables)}))
                 repo (assoc :catalogue (rdf/store {:repo repo :graphs catalogues/graphs :guard catalogues/legacy-guard})))
    :journal   :directory
    :scope     :workspace

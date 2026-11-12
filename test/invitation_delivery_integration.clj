@@ -1,10 +1,25 @@
 (ns invitation-delivery-integration
   "Run only through scripts/test-bel-workspace.sh against its newly created cluster."
   (:require
+    [bel.core :as bel]
+    [bel.core-test :as fixture]
+    [bel.runtime :as runtime]
     [charred.api :as json]
-    [clojure.test :refer [deftest is]]
+    [clojure.test :refer [deftest is use-fixtures]]
     [next.jdbc :as jdbc]
+    [tover.invitations.issue.model :as issue]
+    [tover.shared.bel :as wiring]
     [workspace-creation-integration :as workspace]))
+
+
+(defn register
+  {:malli/schema [:=> [:cat [:fn fn?]] :any]}
+  [f]
+  (bel/build-registry! ['tover.accounts.profile.model 'tover.workspaces.create.model 'tover.invitations.issue.model])
+  (f))
+
+
+(use-fixtures :each fixture/isolated-registry register)
 
 
 (defn sql-state
@@ -101,3 +116,44 @@
 
 (deftest app-role-cannot-update-delivery-status
   (is (= "42501" (sql-state "tover_app" "update public.invitation_deliveries set status='stopped'"))))
+
+
+(defn owner-context
+  "An owner session in a freshly created workspace, under the workspace-scoped system.
+  tover_app cannot yet write workspace-scope journal rows (migration 036 grants that only to tover_journal, which
+  has no session access), so the owning transaction runs as the cluster owner; table grants and RLS are checked
+  separately above."
+  {:malli/schema [:=> [:cat] :map]}
+  []
+  (let [ctx (workspace/context) id (random-uuid)]
+    (workspace/execute ctx {:command-id "C" :input {:workspace-id id :name "Shop"}})
+    (assoc ctx :workspace-id id :bel/system (wiring/system {:datasource (workspace/db "postgres")}))))
+
+
+(defn invite-counts
+  {:malli/schema [:=> [:cat :uuid] [:vector :int]]}
+  [workspace-id]
+  (mapv (fn [table] (:n (workspace/admin! [(str "select count(*) as n from public." table " where organization_id=?") workspace-id])))
+        ["organization_invites" "invitation_deliveries"]))
+
+
+(deftest invite-teammate-commits-offer-and-delivery
+  (let [ctx     (owner-context)
+        request {:command-id "invite-1" :input {:email " Ann@Example.test "}}
+        receipt (runtime/execute! ctx ::issue/invite-teammate request)
+        invite  (workspace/admin! ["select email, role_id, status, invited_by, expires_at - created_at as lifetime from public.organization_invites where organization_id=?"
+                                   (:workspace-id ctx)])
+        pending (workspace/admin! ["select status, attempts, requested_by from public.invitation_deliveries where organization_id=?"
+                                   (:workspace-id ctx)])]
+    (is (= :accepted (:status receipt)))
+    (is (= 1 (count (:event-ids receipt))) "one event feeds both tables")
+    (is (= [1 1] (invite-counts (:workspace-id ctx))))
+    (is (= {:email "ann@example.test" :role_id "member" :status "pending" :invited_by (:user-id ctx)}
+           (select-keys invite [:email :role_id :status :invited_by])))
+    (is (= "queued" (:status pending)))
+    (is (= 0 (:attempts pending)))
+    (is (= (:user-id ctx) (:requested_by pending)))
+    (is (= receipt (runtime/execute! ctx ::issue/invite-teammate request)))
+    (is (= [1 1] (invite-counts (:workspace-id ctx))))
+    (runtime/execute! ctx ::issue/invite-teammate {:command-id "invite-2" :input {:email "ANN@example.test"}})
+    (is (= [1 1] (invite-counts (:workspace-id ctx))))))
