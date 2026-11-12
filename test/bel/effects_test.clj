@@ -15,6 +15,7 @@
 (def effect-contexts (atom []))
 (def delivered (atom (promise)))
 (def continuation-contexts (atom []))
+(def conflicts (atom 0))
 
 
 (defmethod runtime/effect! ::send
@@ -53,6 +54,23 @@
   {})
 
 
+(defcommand note-after-conflict
+  {:input [:map [:outcome [:map-of :keyword :any]]] :policy ::open :emits #{::noted}}
+  [_ input]
+  (when (pos? (first (swap-vals! conflicts dec)))
+    (throw (ex-info "Concurrent change" {:type :conflict :retryable? true})))
+  (deliver @delivered [:then input])
+  {})
+
+
+(defcommand start-contended
+  {:input [:map] :policy ::open :emits #{::noted}}
+  [_ _]
+  {:fx [{:id    ::send :input {}
+         :then  (ref-of ::note-after-conflict {})
+         :catch (ref-of ::note-catch {})}]})
+
+
 (defcommand start
   {:input [:map [:n :int]] :policy ::open :emits #{::noted}}
   [_ {:keys [n]}]
@@ -86,6 +104,14 @@
   (rt/context (rt/memory)))
 
 
+(defn- journaled?
+  "The continuation delivers its promise before its own commit; wait up to 2 s for the journal entry."
+  [ctx command-id]
+  (loop [n 0]
+    (or (some #(= command-id (:command-id %)) @(:journal (get-in ctx [:bel/system :stores :memory])))
+        (when (< n 200) (Thread/sleep 10) (recur (inc n))))))
+
+
 (defn- await-delivery
   []
   (deref @delivered 2000 :timeout))
@@ -95,7 +121,7 @@
   (let [ctx (setup (fn [_] {:message-id "m1"}))]
     (runtime/execute! ctx ::start {:command-id "S1" :input {:n 1}})
     (is (= [:then {:outcome {:message-id "m1"}}] (await-delivery)))
-    (is (some #(= "S1/0/then" (:command-id %)) @(:journal (get-in ctx [:bel/system :stores :memory]))))))
+    (is (journaled? ctx "S1/0/then"))))
 
 
 (deftest non-map-return-becomes-empty-outcome
@@ -108,7 +134,7 @@
   (let [ctx (setup (fn [_] (throw (ex-info "x" {:type :permanent}))))]
     (runtime/execute! ctx ::start {:command-id "S3" :input {:n 1}})
     (is (= [:catch {:problem {:type :permanent :message "x"}}] (await-delivery)))
-    (is (some #(= "S3/0/catch" (:command-id %)) @(:journal (get-in ctx [:bel/system :stores :memory]))))))
+    (is (journaled? ctx "S3/0/catch"))))
 
 
 (deftest unexpected-error-is-uncertain
@@ -153,3 +179,10 @@
     (runtime/execute! ctx ::start-tuple {:command-id "S9" :input {}})
     (Thread/sleep 200)
     (is (= 1 @calls))))
+
+
+(deftest retryable-continuation-conflict-is-retried
+  (let [ctx (setup (fn [_] {}))]
+    (reset! conflicts 1)
+    (runtime/execute! ctx ::start-contended {:command-id "R1" :input {}})
+    (is (= [:then {:outcome {}}] (await-delivery)))))

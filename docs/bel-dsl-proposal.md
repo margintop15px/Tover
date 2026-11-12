@@ -258,7 +258,7 @@ The polling worker scans pending source records and processes them sequentially.
 
 Read models compose models and other read models through `:cofx`; views receive the composed result. Pure domain functions can calculate dependent results before a command returns its plan. Commands keep the same contract whether invoked by a user or another flow.
 
-Event-driven composition uses after-commit processors. This remains proposed. Processors return command requests only; effects belong to commands.
+Event-driven composition uses processors. Processors return command requests only; effects belong to commands. Implemented (P6) as todo-list automations: `(defprocessor name {:todo ::due-work} [item] request)` polls a Tover coeffect for due work; Bel executes each returned request under a service principal with a command id derived from the request, so reruns are no-ops. Accepted state lives in the owning store, so timers and restarts need no queue. The selector form below is not implemented.
 
 ```clojure
 (defprocessor invitation-delivery
@@ -289,13 +289,13 @@ Use `:then` and `:catch` everywhere. Actions already return command descriptors 
        :catch {:type :command :id ::record-delivery-problem :input {:delivery-id delivery-id}}}]}
 ```
 
-These effect descriptors are proposed, not executable in the current runtime. Preserve `[effect-id request]` as shorthand when continuations are unnecessary. Registration determines delivery guarantees: transient Auth, durable invitation email, or best-effort publication. Do not expose infrastructure delivery options in each business command.
+Effect descriptors with command continuations in `:fx` are implemented (P6); they run only after a fresh acceptance, and the `:catch` problem type is `:temporary`, `:permanent` or `:uncertain`. Effect-level `:then`/`:catch` on action results (the Auth example) remains proposed. Preserve `[effect-id request]` as shorthand when continuations are unnecessary. Registration determines delivery guarantees: transient Auth, durable invitation email, or best-effort publication. Do not expose infrastructure delivery options in each business command.
 
 `:then` follows confirmed success: database acceptance for a command, acknowledged completion for an effect. `:catch` receives a structured problem and distinguishes definite failure from uncertainty. A failed continuation cannot undo acceptance or repeat a completed external operation. Save durable outcomes and callback requests together; retries of callbacks must not repeat the external call. A late callback targets its exact attempt and cannot replace a newer attempt's result.
 
 Passwords and authentication tokens remain transient or in private encrypted session infrastructure. They never enter command receipts, business events, jobs, logs or view data. Auth adapters pass only verified non-secret outcomes to completion commands through trusted context. Neutral provider responses do not establish account creation or email delivery. Do not automatically retry credential-bearing effects after uncertain outcomes.
 
-The implemented `:fx` vector supports repeatable notifications such as `:bel/publish`. They execute on a background virtual thread after commit and cannot reject or delay acceptance. They may be lost on process failure or repeated on retry. General processors, external-effect delivery, Auth effects, sagas and caching remain subsequent milestones. The journal delivery above is implemented separately from best-effort publication.
+The implemented `:fx` vector supports repeatable notifications such as `:bel/publish`. They execute on a background virtual thread after commit and cannot reject or delay acceptance. They may be lost on process failure or repeated on retry. Auth effects, sagas and caching remain subsequent milestones. The journal delivery above is implemented separately from best-effort publication.
 
 ## Adoption
 

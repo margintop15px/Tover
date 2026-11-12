@@ -5,11 +5,14 @@
     [bel.core-test :as fixture]
     [bel.runtime :as runtime]
     [charred.api :as json]
-    [clojure.test :refer [deftest is use-fixtures]]
+    [clojure.string :as str]
+    [clojure.test :refer [deftest is testing use-fixtures]]
     [next.jdbc :as jdbc]
     [tover.invitations.delivery.model]
     [tover.invitations.issue.model :as issue]
+    [tover.invitations.status.model :as status]
     [tover.shared.bel :as wiring]
+    [tover.shared.email :as mailer]
     [workspace-creation-integration :as workspace]))
 
 
@@ -17,7 +20,8 @@
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
   (bel/build-registry! ['tover.accounts.profile.model 'tover.workspaces.create.model 'tover.invitations.issue.model
-                        'tover.invitations.delivery.model])
+                        'tover.invitations.delivery.model
+                        'tover.invitations.status.model])
   (f))
 
 
@@ -178,3 +182,113 @@
                                                          workspace user])
                           :inserted
                           (catch java.sql.SQLException error (.getSQLState error))))))))
+
+
+(defn worker-system
+  "The delivery worker on the journal login, with `mailer` as its effect resource."
+  {:malli/schema [:=> [:cat [:fn fn?]] :map]}
+  [mailer]
+  (wiring/delivery-system {:datasource (workspace/db "tover_journal") :mailer mailer :origin "https://app.test"}))
+
+
+(defn invited!
+  "An owner context whose workspace has one issued invitation to `email`."
+  {:malli/schema [:=> [:cat :string] :map]}
+  [email]
+  (let [ctx (owner-context)]
+    (runtime/execute! ctx ::issue/invite-teammate {:command-id "invite-1" :input {:email email}})
+    ctx))
+
+
+(defn delivery-row
+  {:malli/schema [:=> [:cat :uuid] [:maybe :map]]}
+  [workspace-id]
+  (workspace/admin! ["select status, attempts, last_problem, next_attempt_at, submitted_at,
+                             extract(epoch from next_attempt_at - attempted_at) as wait
+                      from public.invitation_deliveries where organization_id=?" workspace-id]))
+
+
+(defn await-row
+  "Effects and their outcomes run after commit on another thread; wait up to 5 s for `done?`."
+  {:malli/schema [:=> [:cat :uuid [:fn fn?]] [:maybe :map]]}
+  [workspace-id done?]
+  (loop [n 0]
+    (let [row (delivery-row workspace-id)]
+      (if (or (done? row) (= n 50)) row (do (Thread/sleep 100) (recur (inc n)))))))
+
+
+(defn recorder
+  "A mailer that records messages to `email` and answers with `outcome` (a map, or a thrown ex-info)."
+  {:malli/schema [:=> [:cat :any :string [:or :map [:fn #(instance? Throwable %)]]] [:fn fn?]]}
+  [sent email outcome]
+  (fn [message]
+    (when (= email (:to message)) (swap! sent conj message))
+    (if (map? outcome) outcome (throw outcome))))
+
+
+(deftest issued-invitation-is-submitted
+  (let [email (str "sub-" (random-uuid) "@example.test")
+        sent  (atom [])
+        ctx   (invited! (str " " (str/upper-case email) " "))]
+    (runtime/run-processors! (worker-system (recorder sent email {})))
+    (let [row (await-row (:workspace-id ctx) #(= "submitted" (:status %)))]
+      (is (= {:status "submitted" :attempts 1} (select-keys row [:status :attempts])))
+      (is (some? (:submitted_at row)))
+      (is (nil? (:next_attempt_at row)) "the attempt clears the due time"))
+    (is (= 1 (count @sent)))
+    (is (str/includes? (:text (first @sent)) "https://app.test/invitations/"))
+    (testing "a second pass does not resend"
+      (runtime/run-processors! (worker-system (recorder sent email {})))
+      (Thread/sleep 300)
+      (is (= 1 (count @sent)))
+      (is (= 1 (:attempts (delivery-row (:workspace-id ctx))))))))
+
+
+(deftest temporary-failure-schedules-retry
+  (let [email (str "tmp-" (random-uuid) "@example.test")
+        sent  (atom [])
+        ctx   (invited! email)]
+    (runtime/run-processors! (worker-system (recorder sent email (ex-info "busy" {:type :temporary}))))
+    (let [row (await-row (:workspace-id ctx) #(= "retrying" (:status %)))]
+      (is (= {:status "retrying" :attempts 1 :last_problem "temporary"} (select-keys row [:status :attempts :last_problem])))
+      (is (<= 60 (double (:wait row)) 70) "first retry waits one minute"))
+    (testing "the retry is not due yet"
+      (runtime/run-processors! (worker-system (recorder sent email {})))
+      (Thread/sleep 300)
+      (is (= 1 (count @sent)))
+      (is (= "retrying" (:status (delivery-row (:workspace-id ctx))))))))
+
+
+(defn mailpit-messages
+  "Messages the disposable Mailpit holds for `email`."
+  {:malli/schema [:=> [:cat :string] [:sequential :map]]}
+  [email]
+  (:messages (json/read-json (slurp (str (System/getenv "TOVER_BEL_TEST_MAILPIT_URL") "/api/v1/search?query="
+                                         (java.net.URLEncoder/encode (str "to:" email) "UTF-8")))
+                             :key-fn keyword)))
+
+
+(deftest smtp-mailer-reaches-mailpit
+  (let [email  (str "smtp-" (random-uuid) "@example.test")
+        mailer (mailer/smtp-mailer {:host "127.0.0.1"          :port (parse-long (System/getenv "TOVER_BEL_TEST_SMTP_PORT"))
+                                    :from "tover@example.test"})
+        ctx    (invited! email)]
+    (runtime/run-processors! (worker-system mailer))
+    (is (= "submitted" (:status (await-row (:workspace-id ctx) #(= "submitted" (:status %))))))
+    (let [messages (mailpit-messages email)]
+      (is (= 1 (count messages)))
+      (is (str/includes? (:Subject (first messages)) "Shop")))))
+
+
+(deftest status-reads-latest-offer-and-delivery
+  (let [email (str "status-" (random-uuid) "@example.test")
+        ctx   (invited! email)
+        read  #(runtime/read-model ctx ::status/invitation-status {:email %})]
+    (is (= "queued" (get-in (read email) [:delivery :status])))
+    (runtime/run-processors! (worker-system (recorder (atom []) email (ex-info "busy" {:type :temporary}))))
+    (await-row (:workspace-id ctx) #(= "retrying" (:status %)))
+    (let [status (read (str " " (str/upper-case email) " "))]
+      (is (= {:email email :role "member" :status "pending"} (select-keys status [:email :role :status])))
+      (is (= {:status "failed" :attempts-remaining 3} (select-keys (:delivery status) [:status :attempts-remaining])))
+      (is (some? (get-in status [:delivery :next-attempt-at]))))
+    (is (nil? (read "nobody@example.test")))))

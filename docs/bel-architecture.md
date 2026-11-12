@@ -31,7 +31,7 @@ Tover never writes flow: no transaction opening, no receipt handling, no retry l
 | Command | `defcommand` | Pure `[facts input] -> {:events :fx}`. |
 | Event | `defevent` | Immutable payload schema. |
 | Information | `defreadmodel` | Composed authorized read, possibly across stores. Entity state behind it is `defmodel`. |
-| Automation | `defprocessor` (later) | Reacts to accepted events with command requests only. |
+| Automation | `defprocessor` | Todo-list automation: polls a Tover coeffect for due work and returns command requests only. |
 | Translation | Inbound processor (later) | Marketplace sources. |
 | User lane | Policy id, e.g. `::confirmed-user` | |
 | System lane | Store key: `:directory` or `:catalogue` | Many lanes to one store: Workspace Directory, Workspace Session and Invitations all use `:directory`. |
@@ -103,7 +103,7 @@ The guarantees Bel owns. Each lives in one place.
 | C3 | Model mappings and the journal batch (colocated) or outbox record (separate) commit together in the owning store. | `runtime/accept` |
 | C4 | The outbox delivers exactly the recorded batch, never reruns a decision; identical redelivery succeeds, different content stays pending. | `bel.delivery` |
 | C5 | An event's `:set` fields replace those fields on the entity named by the payload identity; other fields stay. `:create` inserts a complete entity and refuses an existing identity with `:identity-conflict`. Same meaning on every store. | `Store/-write!`, `Store/-create!` |
-| C6 | Effects run after commit, best effort, may repeat; never affect acceptance. | `runtime/dispatch-effects!` |
+| C6 | Effects run after commit, best effort, may repeat; never affect acceptance. A descriptor `{:id :input :then :catch}` runs only after a fresh acceptance and records its outcome through the continuation command. Continuations and processor requests retry a concurrent-change conflict with the same command id (three attempts); an outcome still lost stays unknown and the effect is never rerun. | `runtime/dispatch-effects!` |
 | C7 | `:scope`, `:actor`, `:command-id`, `:now` come from trusted context, never input. | `prepare-context` |
 
 Chapter 03 (display name) is the first `:set` update on PostgreSQL; its migration grants the runtime role UPDATE on the mapped columns. Chapters 03/03a are live: every profile name and language writer runs the `tover.accounts.profile` commands. PostgreSQL CHECK violations (SQLState 23514) surface as `:validation`.
@@ -241,7 +241,7 @@ Each phase keeps all tests green.
 | P3 Principal — done 2026-11-11 | Authority record returns principal; policies read it; hook contexts trimmed (§6.3); `:postgres/membership` → `::membership`, `:postgres/receipt` → `:bel/receipt`. | Both slices' policies use principal only. | Chapter 03 |
 | P4 System — done 2026-11-11 | `bel/system` and delivery worker as Integrant keys in `tover.app` (`::bel-system` reaches the handler as `:bel/system`; `::journal-datasource`, `::delivery-system` and `:bel.delivery/worker` exist only when both `TOVER_JOURNAL_DB_USER` and `TOVER_JOURNAL_DB_PASSWORD` are set); `runtime-config`/`delivery-context` were already deleted in P1. | Dev system starts with slices excluded; worker running. | Any cutover |
 | P5 Chapter 03/03a — done 2026-11-12 | Profile, name, language built on the new structure via §8. `/account/profile` and the signed-in language switch execute `set-display-name`/`change-account-language` (`:user` scope); signed-in users without a name are sent there first. Requests read identity, language, profile completeness and memberships from access-token claims (migration 037 hook) instead of calling Auth and the directory; the `:tover.auth/refresh-claims` effect reissues the actor's session tokens after a profile change. | Board scenarios pass; profile writers cut over. | Validates the design on an update flow |
-| P6 Processors and effects | `defprocessor`, effect descriptors with `:then`/`:catch`. | Chapter 05 delivery scenarios. | 05, 05a, 05b, 01, 02 |
+| P6 Processors and effects — done 2026-11-12 | `defprocessor` (todo-list automations run by the delivery worker under a service principal `{:service id}`, with command ids derived from the request), effect descriptors with `:then`/`:catch`. Chapter 05 is an isolated slice (`tover.invitations`, excluded from discovery): Invite Teammate, the invitation delivery processor with a durable four-attempt budget, Invitation Status, and an SMTP mailer sharing Auth's relay. Migration 038 adds `invitation_deliveries`, gives the worker login narrow invitation reads and delivery updates, and lets the runtime role journal workspace-scoped directory commands. | Chapter 05 delivery scenarios. | 05, 05a, 05b, 01, 02 |
 
 ## 10. Decisions (2026-11-11)
 

@@ -10,6 +10,10 @@
     [tover.workspaces.persistence :as workspaces]))
 
 
+(def ^:private directory-tables
+  (merge workspaces/tables accounts/tables invitations/tables))
+
+
 (defn system
   "Directory on PostgreSQL, catalogue on RDF; either is omitted when its resource is absent."
   {:malli/schema [:=> [:cat [:map [:repo {:optional true} :any] [:datasource {:optional true} :any]
@@ -17,7 +21,7 @@
                              [:session-store {:optional true} :any]]] :map]}
   [{:keys [repo datasource realtime auth session-store]}]
   {:stores    (cond-> {}
-                datasource (assoc :directory (postgres/store {:datasource datasource :tables (merge workspaces/tables accounts/tables invitations/tables)}))
+                datasource (assoc :directory (postgres/store {:datasource datasource :tables directory-tables}))
                 repo (assoc :catalogue (rdf/store {:repo repo :graphs catalogues/graphs :guard catalogues/legacy-guard})))
    :journal   :directory
    :scope     :workspace
@@ -26,9 +30,13 @@
 
 
 (defn delivery-system
-  "Use the private journal writer resource; accepted work does not depend on a user session."
-  {:malli/schema [:=> [:cat [:map [:repo :any] [:datasource :any]]] :map]}
-  [{:keys [repo datasource]}]
-  {:stores  {:catalogue      (rdf/store {:repo repo :graphs catalogues/graphs})
-             :journal-writer (postgres/store {:datasource datasource})}
-   :journal :journal-writer})
+  "The worker's private login: journal delivery and processors, which act as a service, not a user session.
+  `mailer` and `origin` are effect resources for processors that send email."
+  {:malli/schema [:=> [:cat [:map [:repo {:optional true} :any] [:datasource :any] [:mailer {:optional true} :any]
+                             [:origin {:optional true} :string]]] :map]}
+  [{:keys [repo datasource mailer origin]}]
+  {:stores    (cond-> {:directory (postgres/store {:datasource datasource :tables directory-tables})}
+                repo (assoc :catalogue (rdf/store {:repo repo :graphs catalogues/graphs})))
+   :journal   :directory
+   :scope     :workspace
+   :resources {:mailer mailer :origin origin}})

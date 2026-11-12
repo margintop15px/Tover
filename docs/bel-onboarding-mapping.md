@@ -45,6 +45,8 @@ Move saved language into the Postgres profile during the profile milestone. Init
 
 Status 2026-11-12: chapters 03 and 03a run on Bel (`tover.accounts.profile`); migration 037 stores `language`, `name_revision` and `language_revision` on the profile and seeds language from the signup locale. Request identity comes from access-token claims (`language`, `profile_complete`, `email_confirmed`, `memberships`) added by the `custom_access_token_hook`; only writes and the profile page read the profile. A claim change reaches other sessions at their next token refresh (at most `JWT_EXP`); the acting user's sessions are refreshed after their own profile change and after invitation acceptance or workspace creation.
 
+Status 2026-11-12 (P6): chapter 05 exists as an isolated Bel slice (`tover.invitations`, excluded from discovery). Invite Teammate issues an offer with a queued delivery request in one acceptance; the `invitation-delivery` processor sends the email through Tover's SMTP mailer (same relay as Auth), recording each attempt before sending and its outcome afterwards; temporary failures retry after 1, 5 and 30 minutes within four attempts; uncertain outcomes stay Unconfirmed. The live Team screen and legacy invitation functions are unchanged until the 05/05a/05b/06 cutover, which also adds migration 038 to the `identity.sh`/`production.sh` chains (until then only the integration script applies it), SMTP settings to deployment, and a unique pending-offer index after legacy resend retires.
+
 ## Fixed defaults
 
 | Rule | Decision |

@@ -38,11 +38,12 @@
 
 (defmethod runtime/coeffect ::due-deliveries
   [_ context _]
+  ;; Due times are written from the application clock, so compare with it, not the database's now().
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx]}]
       (db/execute! tx {:select   [[:id :delivery-id] [:organization_id :workspace-id] [:requested_by :requested-by] :attempts]
                        :from     [:public.invitation_deliveries]
-                       :where    [:and [:in :status ["queued" "retrying"]] [:<= :next_attempt_at [:now]]]
+                       :where    [:and [:in :status ["queued" "retrying"]] [:<= :next_attempt_at (runtime/coeffect :bel/now context {})]]
                        :order-by [:next_attempt_at]
                        :limit    100}))))
 
@@ -59,3 +60,23 @@
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx]}]
       (:name (db/execute-one! tx {:select [:name] :from [:public.organizations] :where [:= :id (:workspace-id scope)]})))))
+
+
+(defmethod runtime/coeffect ::latest-invitation
+  [_ {:keys [scope] :as context} {:keys [email]}]
+  (runtime/with-store context :directory :repeatable-read
+    (fn [{:keys [tx]}]
+      (let [{:keys [table columns]} (::model/invitations tables)]
+        (db/execute-one! tx {:select   (db/selection columns) :from [table]
+                             :where    [:and [:= :organization_id (:workspace-id scope)] [:= [:lower [:btrim :email]] email]]
+                             :order-by [[:created_at :desc]] :limit 1})))))
+
+
+(defmethod runtime/coeffect ::latest-delivery
+  [_ context {:keys [invitation-id]}]
+  (when invitation-id
+    (runtime/with-store context :directory :repeatable-read
+      (fn [{:keys [tx]}]
+        (let [{:keys [table columns]} (::model/deliveries tables)]
+          (db/execute-one! tx {:select   (db/selection columns)  :from  [table] :where [:= :invitation_id invitation-id]
+                               :order-by [[:requested_at :desc]] :limit 1}))))))

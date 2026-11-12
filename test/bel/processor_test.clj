@@ -14,6 +14,7 @@
 (def actor (random-uuid))
 (def items (atom []))
 (def policy-seen (atom []))
+(def conflicts (atom 0))
 
 
 (defmethod runtime/coeffect ::due
@@ -35,6 +36,8 @@
   {:input [:map [:n :int]] :policy ::service-only :emits #{::recorded} :scope :workspace}
   [{:keys [command-id]} {:keys [n]}]
   (when (= n -1) (throw (ex-info "Rejected" {:type :validation})))
+  (when (and (= n -2) (pos? (first (swap-vals! conflicts dec))))
+    (throw (ex-info "Concurrent change" {:type :conflict :retryable? true})))
   {:events [{:type ::recorded :data {:test/n n}}]})
 
 
@@ -125,3 +128,16 @@
     (is (= {:executed 0 :failed 1} (run-only ::hostile-processor system)))
     (is (empty? @(:journal store)))
     (is (empty? @policy-seen))))
+
+
+(deftest retryable-conflict-is-retried-with-the-same-identity
+  (let [[store system] (setup nil [-2])]
+    (reset! conflicts 1)
+    (is (= {:executed 1 :failed 0} (run-only ::the-processor system)))
+    (is (= 1 (count @(:journal store))))))
+
+
+(deftest persistent-conflict-is-a-failure
+  (let [[_ system] (setup nil [-2])]
+    (reset! conflicts 10)
+    (is (= {:executed 0 :failed 1} (run-only ::the-processor system)))))

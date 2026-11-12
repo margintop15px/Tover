@@ -5,9 +5,11 @@ set -euo pipefail
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 test_root=$(mktemp -d /private/tmp/tover-bel-workspace.XXXXXX)
 test_container=''
+mail_container=''
 test_data="/var/lib/postgresql/data/$(basename "$test_root")"
 cleanup() {
   if [[ -n "$test_container" ]]; then docker stop "$test_container" >/dev/null; fi
+  if [[ -n "$mail_container" ]]; then docker stop "$mail_container" >/dev/null; fi
   rm -rf "$test_root"
 }
 trap cleanup EXIT
@@ -48,6 +50,12 @@ docker exec "$test_container" psql -X -q -U postgres -d postgres \
 # Only the freshly created disposable cluster gets a direct worker login.
 docker exec "$test_container" psql -X -q -U postgres -d postgres \
   -v ON_ERROR_STOP=1 -c 'ALTER ROLE tover_journal LOGIN'
+# A disposable Mailpit receives the SMTP mailer's real submission.
+mail_container=$(docker run --rm -d -p 127.0.0.1::1025 -p 127.0.0.1::8025 axllent/mailpit:v1.27.8)
+mail_smtp=$(docker port "$mail_container" 1025/tcp)
+mail_api=$(docker port "$mail_container" 8025/tcp)
+export TOVER_BEL_TEST_SMTP_PORT=${mail_smtp##*:}
+export TOVER_BEL_TEST_MAILPIT_URL="http://127.0.0.1:${mail_api##*:}"
 export TOVER_BEL_TEST_URL="jdbc:postgresql://127.0.0.1:$test_port/postgres"
 export TOVER_BEL_TEST_STATE="$test_root/receipt.bin"
 export TOVER_BEL_TEST_ROOT="$test_root"
