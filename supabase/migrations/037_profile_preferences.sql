@@ -31,6 +31,9 @@ DROP TRIGGER IF EXISTS profiles_default_language ON public.profiles;
 CREATE TRIGGER profiles_default_language BEFORE INSERT ON public.profiles
   FOR EACH ROW EXECUTE FUNCTION app_private.profile_default_language();
 
+-- Accounts older than every signup trigger may lack a profile; without one the setup gate cannot be passed.
+INSERT INTO public.profiles (user_id) SELECT id FROM auth.users ON CONFLICT (user_id) DO NOTHING;
+
 -- Legacy rows: blank names become NULL; over-long names are left untouched (no silent truncation).
 UPDATE public.profiles SET display_name = NULL
 WHERE display_name IS NOT NULL AND btrim(display_name) = '';

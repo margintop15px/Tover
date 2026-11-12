@@ -554,7 +554,11 @@
                       id))
         blank     (legacy "   " "ru")
         long-name (legacy (apply str (repeat 101 "a")) "ru")
-        fine      (legacy "Carol" "en")]
+        fine      (legacy "Carol" "en")
+        ;; An account created before any signup trigger has no profile row; the gate would lock it out.
+        orphan    (let [id (profile-user! "Seed" "ru")]
+                    (admin! ["delete from public.profiles where user_id=?" id])
+                    id)]
     (admin! ["alter table public.profiles drop constraint if exists profiles_display_name_check"])
     (with-open [connection (jdbc/get-connection (db "postgres"))
                 statement  (.createStatement connection)]
@@ -564,6 +568,8 @@
     (is (= 101 (count (:display_name (profile long-name)))))
     (is (nil? (:language (admin! ["select language from public.profiles where user_id=?" long-name]))))
     (is (= "en" (:language (admin! ["select language from public.profiles where user_id=?" fine]))))
+    (is (= {:display_name nil :language "ru" :name_revision 0 :language_revision 0}
+           (admin! ["select display_name, language, name_revision, language_revision from public.profiles where user_id=?" orphan])))
     (is (= 1 (:n (admin! ["select count(*) as n from pg_constraint where conname='profiles_display_name_check'"]))))))
 
 
