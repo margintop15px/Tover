@@ -43,6 +43,8 @@ Auth effects must not place passwords or tokens in event history, receipts, jobs
 
 Move saved language into the Postgres profile during the profile milestone. Initialize existing locales from Auth without overwriting accepted preferences. Auth email hooks read the profile; initial signup uses the new account's selected language. Auth keeps credential and verification ownership.
 
+Status 2026-11-12: chapters 03 and 03a run on Bel (`tover.accounts.profile`); migration 037 stores `language`, `name_revision` and `language_revision` on the profile and seeds language from the signup locale. Request identity comes from access-token claims (`language`, `profile_complete`, `email_confirmed`, `memberships`) added by the `custom_access_token_hook`; only writes and the profile page read the profile. A claim change reaches other sessions at their next token refresh (at most `JWT_EXP`); the acting user's sessions are refreshed after their own profile change and after invitation acceptance or workspace creation.
+
 ## Fixed defaults
 
 | Rule | Decision |

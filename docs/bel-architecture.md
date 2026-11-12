@@ -106,7 +106,7 @@ The guarantees Bel owns. Each lives in one place.
 | C6 | Effects run after commit, best effort, may repeat; never affect acceptance. | `runtime/dispatch-effects!` |
 | C7 | `:scope`, `:actor`, `:command-id`, `:now` come from trusted context, never input. | `prepare-context` |
 
-Chapter 03 (display name) is the first `:set` update on PostgreSQL; its migration grants the runtime role UPDATE on the mapped columns.
+Chapter 03 (display name) is the first `:set` update on PostgreSQL; its migration grants the runtime role UPDATE on the mapped columns. Chapters 03/03a are live: every profile name and language writer runs the `tover.accounts.profile` commands. PostgreSQL CHECK violations (SQLState 23514) surface as `:validation`.
 
 Errors use one vocabulary, translated by adapters inside `-transact`: `:validation`, `:forbidden`, `:not-found`, `:conflict` (retryable), `:identity-conflict`, `:idempotency-conflict`, `:journal-unavailable` (retryable), `:journal-conflict`, `:migration-required`, `:configuration`, plus business types (`:stale-catalogue`, `:profile-incomplete`).
 
@@ -240,7 +240,7 @@ Each phase keeps all tests green.
 | P2 Upsert (C5) — done 2026-11-11 | Mappings are `{:create […]}` (plain insert, `:identity-conflict` on an existing entity) or `{:set […]}`; `-write!` upserts on both adapters (Postgres `UPDATE` of the mapped columns, then `INSERT` only when no row exists and the entity is complete; updates need only UPDATE privilege); Create Workspace uses `:create`. | Postgres update-event integration test. | Chapter 03 |
 | P3 Principal — done 2026-11-11 | Authority record returns principal; policies read it; hook contexts trimmed (§6.3); `:postgres/membership` → `::membership`, `:postgres/receipt` → `:bel/receipt`. | Both slices' policies use principal only. | Chapter 03 |
 | P4 System — done 2026-11-11 | `bel/system` and delivery worker as Integrant keys in `tover.app` (`::bel-system` reaches the handler as `:bel/system`; `::journal-datasource`, `::delivery-system` and `:bel.delivery/worker` exist only when both `TOVER_JOURNAL_DB_USER` and `TOVER_JOURNAL_DB_PASSWORD` are set); `runtime-config`/`delivery-context` were already deleted in P1. | Dev system starts with slices excluded; worker running. | Any cutover |
-| P5 Chapter 03/03a | Profile, name, language built on the new structure via §8. | Board scenarios pass; profile writers cut over. | Validates the design on an update flow |
+| P5 Chapter 03/03a — done 2026-11-12 | Profile, name, language built on the new structure via §8. `/account/profile` and the signed-in language switch execute `set-display-name`/`change-account-language` (`:user` scope); signed-in users without a name are sent there first. Requests read identity, language, profile completeness and memberships from access-token claims (migration 037 hook) instead of calling Auth and the directory; the `:tover.auth/refresh-claims` effect reissues the actor's session tokens after a profile change. | Board scenarios pass; profile writers cut over. | Validates the design on an update flow |
 | P6 Processors and effects | `defprocessor`, effect descriptors with `:then`/`:catch`. | Chapter 05 delivery scenarios. | 05, 05a, 05b, 01, 02 |
 
 ## 10. Decisions (2026-11-11)
