@@ -198,22 +198,23 @@
 
 
 (defn- accept
-  {:malli/schema [:=> [:cat :map :keyword [:sequential :keyword] :map [:fn fn?]] :map]}
+  {:malli/schema [:=> [:cat :map :keyword [:sequential :keyword] :map [:fn fn?]] [:map [:result :map] [:fresh? :boolean]]]}
   [context owning reads invocation decide]
   (try
     (with-authority context (conj (set reads) owning) :serializable
       #(store/with-store % owning :serializable
          (fn [context]
-           (or (recover context owning invocation)
-               (let [{:keys [events fx]} (with-stores context reads :repeatable-read decide)
-                     result              {:receipt {:command-id (:command-id invocation) :status :accepted :event-ids (mapv :id events)}
-                                          :fx      fx}
-                     delivery            (assoc invocation :events events :result result)]
-                 (doseq [event events] (apply-event! context event))
-                 (if (colocated? context owning)
-                   (journal/deliver! context delivery)
-                   (adapter-call context owning :serializable (fn [s tx scope] (store/-record! s tx scope delivery))))
-                 result)))))
+           (if-let [prior (recover context owning invocation)]
+             {:result prior :fresh? false}
+             (let [{:keys [events fx]} (with-stores context reads :repeatable-read decide)
+                   result              {:receipt {:command-id (:command-id invocation) :status :accepted :event-ids (mapv :id events)}
+                                        :fx      fx}
+                   delivery            (assoc invocation :events events :result result)]
+               (doseq [event events] (apply-event! context event))
+               (if (colocated? context owning)
+                 (journal/deliver! context delivery)
+                 (adapter-call context owning :serializable (fn [s tx scope] (store/-record! s tx scope delivery))))
+               {:result result :fresh? true})))))
     (catch clojure.lang.ExceptionInfo error
       (case (:type (ex-data error))
         :identity-conflict
@@ -221,9 +222,10 @@
         (with-authority context (conj (set reads) owning) :repeatable-read
           #(store/with-store % owning :repeatable-read
              (fn [context]
-               (or (recover context owning invocation)
-                   (throw (ex-info "This identity is already in use."
-                                   {:type :identity-conflict :command-id (:command-id invocation)} error))))))
+               (if-let [prior (recover context owning invocation)]
+                 {:result prior :fresh? false}
+                 (throw (ex-info "This identity is already in use."
+                                 {:type :identity-conflict :command-id (:command-id invocation)} error))))))
         :conflict (throw (ex-info (.getMessage error) (assoc (ex-data error) :command-id (:command-id invocation)) error))
         (throw error)))))
 
@@ -307,14 +309,21 @@
   (let [plan ((:handler definition) facts input)]
     (validation/check! [:map
                         [:events {:optional true} [:vector [:map [:type :qualified-keyword] [:data :map]]]]
-                        [:fx {:optional true} [:vector [:tuple :qualified-keyword :map]]]]
+                        [:fx {:optional true} [:vector [:or [:tuple :qualified-keyword :map] core/EffectDescriptor]]]]
                        plan)
     (when (seq (remove #{:events :fx} (keys plan)))
       (throw (ex-info "Unsupported command plan" {:type :validation})))
 
-    (doseq [[id _] (:fx plan)]
+    (doseq [fx   (:fx plan)
+            :let [descriptor? (map? fx)
+                  id (if descriptor? (:id fx) (first fx))]]
       (when-not (contains? (methods effect!) id)
-        (throw (ex-info "Undeclared effect" {:type :validation :id id}))))
+        (throw (ex-info "Undeclared effect" {:type :validation :id id})))
+      (when descriptor?
+        (doseq [k    [:then :catch]
+                :let [command (get-in fx [k :id])]]
+          (when-not (contains? (:commands definitions) command)
+            (throw (ex-info "Undeclared continuation command" {:type :validation :id command}))))))
 
     {:fx     (:fx plan [])
      :events (mapv (fn [{:keys [type data] :as event}]
@@ -326,19 +335,61 @@
                    (:events plan []))}))
 
 
-(defn- dispatch-effects!
-  "Best-effort, repeatable notifications only. A retry may publish them again."
-  {:malli/schema [:=> [:cat :map [:vector [:tuple :qualified-keyword :map]]] :nil]}
-  [context effects]
+(declare execute!)
+
+
+(defn- problem
+  {:malli/schema [:=> [:cat [:fn #(instance? Throwable %)]] [:map [:type :keyword] [:message :string]]]}
+  [error]
+  (let [t (:type (ex-data error))]
+    {:type    (if (#{:temporary :permanent :uncertain} t) t :uncertain)
+     :message (let [m (str (.getMessage ^Throwable error))] (subs m 0 (min 200 (count m))))}))
+
+
+(defn- continue!
+  "Run a continuation command with the trusted context of the originating command."
+  {:malli/schema [:=> [:cat :map :string :int :keyword :map :map] :nil]}
+  [context command-id i kind ref extra]
   (try
-    (when (seq effects)
-      (Thread/startVirtualThread
-        (fn []
-          (doseq [[id input] effects]
-            (try
-              (effect! id (select-keys context [:scope :actor :resources]) input)
-              (catch Exception error
-                (mu/log ::effect-failed :effect id :error-type (.getName (class error)))))))))
+    (execute! context (:id ref) {:command-id (str command-id "/" i "/" (name kind))
+                                 :input      (merge (:input ref) extra)})
+    (catch Exception error
+      (mu/log ::continuation-failed :command (:id ref) :error-type (or (:type (ex-data error)) (.getName (class error))))))
+  nil)
+
+
+(defn- run-effect!
+  {:malli/schema [:=> [:cat :map :string :int [:or [:tuple :qualified-keyword :map] core/EffectDescriptor]] :nil]}
+  [context command-id i fx]
+  (if (map? fx)
+    (let [{:keys [id input] on-ok :then on-error :catch} fx
+          result (try {:outcome (let [r (effect! id (select-keys context [:scope :actor :resources]) input)]
+                                  (if (map? r) r {}))}
+                      (catch Throwable error
+                        (mu/log ::effect-failed :effect id :error-type (.getName (class error)))
+                        {:problem (problem error)}))]
+      (if (contains? result :outcome)
+        (continue! context command-id i :then on-ok {:outcome (:outcome result)})
+        (continue! context command-id i :catch on-error {:problem (:problem result)})))
+    (let [[id input] fx]
+      (try
+        (effect! id (select-keys context [:scope :actor :resources]) input)
+        (catch Exception error
+          (mu/log ::effect-failed :effect id :error-type (.getName (class error)))))))
+  nil)
+
+
+(defn- dispatch-effects!
+  "Best-effort notifications after commit. Tuple effects may repeat on retry; descriptors run once."
+  {:malli/schema [:=> [:cat :map :string :boolean [:vector :any]] :nil]}
+  [context command-id fresh? effects]
+  (try
+    (let [effects (if fresh? effects (filterv vector? effects))]
+      (when (seq effects)
+        (Thread/startVirtualThread
+          (fn []
+            (doseq [[i fx] (map-indexed vector effects)]
+              (run-effect! context command-id i fx))))))
     (catch Exception error
       (mu/log ::effect-dispatch-failed :error-type (.getName (class error)))))
   nil)
@@ -366,14 +417,14 @@
         invocation  {:command-id (:command-id invocation)
                      :request    {:command id :scope (:scope facts) :actor (:actor facts) :input input}}
         owning      (owning-store context definitions definition)
-        {:keys [receipt fx]}
+        {{:keys [receipt fx]} :result fresh? :fresh?}
         (accept (assoc context :bel/definitions definitions :bel/command definition) owning
                 (sort (disj (read-stores definitions id #{}) owning)) invocation
                 (fn [context]
                   (let [facts (assoc facts :command-id (:command-id invocation) :now (Instant/now))]
                     (plan definitions definition
                           (load-facts definitions definition context input facts #{}) input))))]
-    (dispatch-effects! context fx)
+    (dispatch-effects! context (:command-id invocation) fresh? fx)
     receipt))
 
 

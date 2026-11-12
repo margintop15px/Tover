@@ -316,6 +316,21 @@
      (attach-operation! (var ~name) :bel/command ~(keyword (str (ns-name *ns*)) (str name)) ~opts)))
 
 
+(def CommandRef
+  [:map
+   [:type [:= :command]]
+   [:id :qualified-keyword]
+   [:input :map]])
+
+
+(def EffectDescriptor
+  [:map
+   [:id :qualified-keyword]
+   [:input :map]
+   [:then CommandRef]
+   [:catch CommandRef]])
+
+
 (def ProcessorRequest
   [:map
    [:type [:= :command]]
