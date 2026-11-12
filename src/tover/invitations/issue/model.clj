@@ -121,7 +121,15 @@
    :schema Delivery
    :policy ::invitation-reader
    :events {::workspace-invitation-issued {:create [:invitation-id :workspace-id :requested-by :requested-at
-                                                    :delivery-status :attempts :next-attempt-at]}}})
+                                                    :delivery-status :attempts :next-attempt-at]}
+            :tover.invitations.delivery.model/invitation-delivery-attempted
+            {:set [:attempts :delivery-status :next-attempt-at :attempted-at]}
+            :tover.invitations.delivery.model/invitation-delivery-stopped
+            {:set [:delivery-status :next-attempt-at]}
+            :tover.invitations.delivery.model/invitation-email-submitted
+            {:set [:delivery-status :submitted-at]}
+            :tover.invitations.delivery.model/invitation-email-failed
+            {:set [:delivery-status :last-problem :next-attempt-at]}}})
 
 
 (defcommand invite-teammate

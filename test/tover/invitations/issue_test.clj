@@ -5,6 +5,7 @@
     [bel.core-test :as fixture]
     [bel.runtime :as runtime]
     [clojure.test :refer [deftest is use-fixtures]]
+    [tover.invitations.delivery.model]
     [tover.invitations.issue.model :as model])
   (:import
     [java.time Duration Instant]))
@@ -20,7 +21,8 @@
 (defn register
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
-  (bel/build-registry! ['tover.accounts.profile.model 'tover.workspaces.create.model 'tover.invitations.issue.model])
+  (bel/build-registry! ['tover.accounts.profile.model 'tover.workspaces.create.model 'tover.invitations.issue.model
+                        'tover.invitations.delivery.model])
   (f))
 
 

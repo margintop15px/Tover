@@ -9,6 +9,7 @@
   bel.core/defmodel          clojure.core/def
   bel.core/defcommand        clojure.core/defn
   bel.core/defreadmodel      clojure.core/defn
+  bel.core/defprocessor      clojure.core/defn
   tover.shared.rdf/with-transaction clojure.core/let
   bel-rdf.core/with-transaction clojure.core/let}
 

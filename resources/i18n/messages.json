@@ -581,7 +581,11 @@
     "Enter a name of 1 to 100 characters.": "Enter a name of 1 to 100 characters.",
     "Language not changed": "Language not changed",
     "Your account language is {language}.": "Your account language is {language}.",
-    "Back": "Back"
+    "Back": "Back",
+    "Invitation email subject": "You are invited to join {workspace} on Tover",
+    "Invitation email body": "You have been invited to join the workspace {workspace} on Tover as {role}.\nReview the invitation: {link}\nThis invitation expires on {expires}.",
+    "Invitation email role member": "a member",
+    "Invitation email role admin": "an admin"
   },
   "ru": {
     "Stock": "Остатки",
@@ -1169,6 +1173,10 @@
     "Enter a name of 1 to 100 characters.": "Введите имя длиной от 1 до 100 символов.",
     "Language not changed": "Язык не изменён",
     "Your account language is {language}.": "Язык вашего аккаунта: {language}.",
-    "Back": "Назад"
+    "Back": "Назад",
+    "Invitation email subject": "Вас приглашают в рабочее пространство {workspace} в Tover",
+    "Invitation email body": "Вас приглашают в рабочее пространство {workspace} в Tover с ролью: {role}.\nПосмотреть приглашение: {link}\nПриглашение действует до {expires}.",
+    "Invitation email role member": "участник",
+    "Invitation email role admin": "администратор"
   }
 }

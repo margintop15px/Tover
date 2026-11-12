@@ -34,3 +34,28 @@
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx]}]
       (:status (db/execute-one! tx {:select [[[:app_private.bel_recipient_membership (:workspace-id scope) email] :status]]})))))
+
+
+(defmethod runtime/coeffect ::due-deliveries
+  [_ context _]
+  (runtime/with-store context :directory :repeatable-read
+    (fn [{:keys [tx]}]
+      (db/execute! tx {:select   [[:id :delivery-id] [:organization_id :workspace-id] [:requested_by :requested-by] :attempts]
+                       :from     [:public.invitation_deliveries]
+                       :where    [:and [:in :status ["queued" "retrying"]] [:<= :next_attempt_at [:now]]]
+                       :order-by [:next_attempt_at]
+                       :limit    100}))))
+
+
+(defmethod runtime/coeffect ::recipient-language
+  [_ context {:keys [email]}]
+  (runtime/with-store context :directory :repeatable-read
+    (fn [{:keys [tx]}]
+      (:language (db/execute-one! tx {:select [[[:app_private.bel_recipient_language email] :language]]})))))
+
+
+(defmethod runtime/coeffect ::workspace-name
+  [_ {:keys [scope] :as context} _]
+  (runtime/with-store context :directory :repeatable-read
+    (fn [{:keys [tx]}]
+      (:name (db/execute-one! tx {:select [:name] :from [:public.organizations] :where [:= :id (:workspace-id scope)]})))))

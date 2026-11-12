@@ -45,6 +45,12 @@
   (jdbc/execute-one! tx (sql/format query {:quoted true}) {:builder-fn rs/as-unqualified-lower-maps}))
 
 
+(defn execute!
+  {:malli/schema [:=> [:cat :any :map] [:vector :map]]}
+  [tx query]
+  (jdbc/execute! tx (sql/format query {:quoted true}) {:builder-fn rs/as-unqualified-lower-maps}))
+
+
 (defn selection
   {:malli/schema [:=> [:cat :map] [:vector [:tuple :keyword :keyword]]]}
   [columns]
