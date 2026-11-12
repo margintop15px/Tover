@@ -23,9 +23,13 @@ ALTER TABLE public.invitation_deliveries ENABLE ROW LEVEL SECURITY;
 
 -- Private directory lookups. Neither is callable by Auth-facing roles.
 CREATE OR REPLACE FUNCTION app_private.bel_recipient_membership(p_workspace_id uuid, p_email text)
-RETURNS text LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+RETURNS text LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$
+  -- Scoped to managers of the workspace (not an account-existence oracle); VOLATILE because the membership lock is FOR SHARE.
   SELECT m.status FROM public.organization_memberships m JOIN auth.users u ON u.id = m.user_id
-    WHERE m.organization_id = p_workspace_id AND lower(btrim(u.email)) = lower(btrim(p_email))
+    WHERE m.organization_id = p_workspace_id
+      AND EXISTS (SELECT FROM app_private.bel_workspace_membership(p_workspace_id) w
+        WHERE w.role_id IN ('owner','admin') AND w.status = 'active')
+      AND lower(btrim(u.email)) = lower(btrim(p_email))
     ORDER BY (m.status = 'active') DESC, m.created_at LIMIT 1;
 $$;
 REVOKE ALL ON FUNCTION app_private.bel_recipient_membership(uuid, text)
@@ -73,6 +77,8 @@ CREATE POLICY bel_deliveries_manager_read ON public.invitation_deliveries FOR SE
 DROP POLICY IF EXISTS bel_deliveries_manager_insert ON public.invitation_deliveries;
 CREATE POLICY bel_deliveries_manager_insert ON public.invitation_deliveries FOR INSERT TO tover_app
   WITH CHECK (requested_by = nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+    AND EXISTS (SELECT FROM public.organization_invites i
+      WHERE i.id = invitation_id AND i.organization_id = invitation_deliveries.organization_id)
     AND EXISTS (SELECT FROM app_private.bel_workspace_membership(organization_id) w
       WHERE w.role_id IN ('owner','admin') AND w.status = 'active'));
 

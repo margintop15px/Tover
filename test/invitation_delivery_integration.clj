@@ -28,10 +28,23 @@
     {:user user :workspace workspace-id}))
 
 
+(defn session!
+  "A live session row for the user; returns its key."
+  {:malli/schema [:=> [:cat :uuid] :string]}
+  [user]
+  (let [key (str "test-session-" (random-uuid))]
+    (workspace/admin! ["insert into app_private.sessions(id,user_id,data) values(?,?,?)" key user (pr-str {})])
+    key))
+
+
 (defn recipient-status
-  {:malli/schema [:=> [:cat :uuid :string] [:maybe :string]]}
-  [workspace-id email]
+  "Runs the lookup as tover_app; `as` is the acting user (nil for no claim)."
+  {:malli/schema [:=> [:cat [:maybe :uuid] :uuid :string] [:maybe :string]]}
+  [as workspace-id email]
   (with-open [connection (jdbc/get-connection (workspace/db "tover_app"))]
+    (when as
+      (jdbc/execute-one! connection ["select set_config('request.jwt.claim.sub', ?, false), set_config('tover.session_key', ?, false)"
+                                     (str as) (session! as)]))
     (:status (jdbc/execute-one! connection ["select app_private.bel_recipient_membership(?, ?) as status" workspace-id email]
                                 {:builder-fn next.jdbc.result-set/as-unqualified-lower-maps}))))
 
@@ -47,9 +60,37 @@
 
 
 (deftest recipient-membership-matches-normalized-email
-  (let [{:keys [workspace]} (member! "ann@example.test")]
-    (is (= "active" (recipient-status workspace " ANN@example.test ")))
-    (is (nil? (recipient-status workspace "bob@example.test")))))
+  (let [{:keys [user workspace]} (member! "ann@example.test")]
+    (is (= "active" (recipient-status user workspace " ANN@example.test ")))
+    (is (nil? (recipient-status user workspace "bob@example.test")))))
+
+
+(deftest recipient-membership-is-not-an-oracle
+  (let [{:keys [workspace]} (member! "ann@example.test")
+        outsider            (:user (member! "eve@example.test"))]
+    (is (nil? (recipient-status outsider workspace "ann@example.test")))
+    (is (nil? (recipient-status nil workspace "ann@example.test")))))
+
+
+(deftest delivery-cannot-reference-another-workspaces-invitation
+  (let [a      (member! "a@example.test")
+        b      (member! "b@example.test")
+        invite (random-uuid)
+        insert (fn [organization-id invitation-id]
+                 (with-open [connection (jdbc/get-connection (workspace/db "tover_app"))]
+                   (jdbc/execute-one! connection ["select set_config('request.jwt.claim.sub', ?, false), set_config('tover.session_key', ?, false)"
+                                                  (str (:user a)) (session! (:user a))])
+                   (try (jdbc/execute-one! connection ["insert into public.invitation_deliveries(id,invitation_id,organization_id,requested_by,requested_at,status) values(gen_random_uuid(),?,?,?,now(),'queued')"
+                                                       invitation-id organization-id (:user a)])
+                        :inserted
+                        (catch java.sql.SQLException error (.getSQLState error)))))]
+    (workspace/admin! ["insert into public.organization_invites(id,organization_id,email,role_id,invited_by) values(?,?,'x@example.test','member',?)"
+                       invite (:workspace b) (:user b)])
+    (is (= "42501" (insert (:workspace a) invite)))
+    (let [own (random-uuid)]
+      (workspace/admin! ["insert into public.organization_invites(id,organization_id,email,role_id,invited_by) values(?,?,'y@example.test','member',?)"
+                         own (:workspace a) (:user a)])
+      (is (= :inserted (insert (:workspace a) own))))))
 
 
 (deftest recipient-language-is-null-for-unknown-email
