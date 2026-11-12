@@ -97,4 +97,16 @@ DROP POLICY IF EXISTS bel_deliveries_delivery_update ON public.invitation_delive
 CREATE POLICY bel_deliveries_delivery_update ON public.invitation_deliveries FOR UPDATE TO tover_journal
   USING (true) WITH CHECK (true);
 
+-- Colocated workspace-scoped directory commands write the journal as the runtime role, for active members only.
+DROP POLICY IF EXISTS bel_events_workspace_write ON app_private.bel_events;
+CREATE POLICY bel_events_workspace_write ON app_private.bel_events FOR INSERT TO tover_app
+  WITH CHECK (scope_kind = 'workspace' AND actor_id = nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+    AND EXISTS (SELECT FROM public.organization_memberships m
+      WHERE m.organization_id = scope_id AND m.user_id = actor_id AND m.status = 'active'));
+DROP POLICY IF EXISTS bel_receipts_workspace_write ON app_private.bel_receipts;
+CREATE POLICY bel_receipts_workspace_write ON app_private.bel_receipts FOR INSERT TO tover_app
+  WITH CHECK (scope_kind = 'workspace' AND actor_id = nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+    AND EXISTS (SELECT FROM public.organization_memberships m
+      WHERE m.organization_id = scope_id AND m.user_id = actor_id AND m.status = 'active'));
+
 COMMIT;

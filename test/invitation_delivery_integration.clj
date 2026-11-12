@@ -119,15 +119,12 @@
 
 
 (defn owner-context
-  "An owner session in a freshly created workspace, under the workspace-scoped system.
-  tover_app cannot yet write workspace-scope journal rows (migration 036 grants that only to tover_journal, which
-  has no session access), so the owning transaction runs as the cluster owner; table grants and RLS are checked
-  separately above."
+  "An owner session in a freshly created workspace, under the workspace-scoped system on the runtime role."
   {:malli/schema [:=> [:cat] :map]}
   []
   (let [ctx (workspace/context) id (random-uuid)]
     (workspace/execute ctx {:command-id "C" :input {:workspace-id id :name "Shop"}})
-    (assoc ctx :workspace-id id :bel/system (wiring/system {:datasource (workspace/db "postgres")}))))
+    (assoc ctx :workspace-id id :bel/system (wiring/system {:datasource (workspace/db "tover_app")}))))
 
 
 (defn invite-counts
@@ -157,3 +154,25 @@
     (is (= [1 1] (invite-counts (:workspace-id ctx))))
     (runtime/execute! ctx ::issue/invite-teammate {:command-id "invite-2" :input {:email "ANN@example.test"}})
     (is (= [1 1] (invite-counts (:workspace-id ctx))))))
+
+
+(deftest member-cannot-issue-invitations
+  (let [owner  (owner-context)
+        member (workspace/context)]
+    (workspace/admin! ["insert into public.organization_memberships(organization_id,user_id,role_id,status) values(?,?,'member','active')"
+                       (:workspace-id owner) (:user-id member)])
+    (is (= :forbidden (:type (workspace/error-data
+                               #(runtime/execute! (assoc member :workspace-id (:workspace-id owner) :bel/system (:bel/system owner))
+                                                  ::issue/invite-teammate {:command-id "m-1" :input {:email "x@example.test"}})))))
+    (is (= [0 0] (invite-counts (:workspace-id owner))))))
+
+
+(deftest runtime-role-cannot-journal-for-a-foreign-workspace
+  (let [{:keys [user]}      (member! "a@example.test")
+        {:keys [workspace]} (member! "b@example.test")]
+    (with-open [connection (jdbc/get-connection (workspace/db "tover_app"))]
+      (jdbc/execute-one! connection ["select set_config('request.jwt.claim.sub', ?, false)" (str user)])
+      (is (= "42501" (try (jdbc/execute-one! connection ["insert into app_private.bel_events(id,scope_kind,scope_id,actor_id,command_id,event_type,occurred_at,data) values(gen_random_uuid(),'workspace',?,?,'x','t',now(),'{}'::jsonb)"
+                                                         workspace user])
+                          :inserted
+                          (catch java.sql.SQLException error (.getSQLState error))))))))
