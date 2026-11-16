@@ -66,18 +66,19 @@ SQL
 import os, shlex, sys
 with open(sys.argv[1]) as source:
     values=dict(line.strip().split('=',1) for line in source if line.strip() and not line.startswith('#'))
-for key in ('IDENTITY_API_PORT','IDENTITY_DB_PORT','TO_DEV_SITE_URL'):
+for key in ('IDENTITY_API_PORT','IDENTITY_DB_PORT','IDENTITY_SMTP_PORT','TO_DEV_SITE_URL'):
     if key in os.environ: values[key]=os.environ[key]
 api=values.get('IDENTITY_API_PORT','58000')
 configuration={
     'TOVER_AUTH_URL':f'http://127.0.0.1:{api}/auth/v1',
-    'TOVER_REST_URL':f'http://127.0.0.1:{api}/rest/v1',
     'TOVER_API_KEY':values['ANON_KEY'],'TOVER_AUTH_ADMIN_KEY':values['SERVICE_ROLE_KEY'],
     'TOVER_ORIGIN':values.get('TO_DEV_SITE_URL','http://localhost:3030'),
     'TOVER_JDBC_URL':f"jdbc:postgresql://127.0.0.1:{values.get('IDENTITY_DB_PORT','55432')}/postgres",
     'TOVER_DB_USER':'tover_app','TOVER_DB_PASSWORD':values['TO_DEV_APP_PASSWORD'],
     'TOVER_SESSION_KEY':values['SESSION_ENCRYPTION_KEY'],
-    'TOVER_JOURNAL_DB_USER':'tover_journal','TOVER_JOURNAL_DB_PASSWORD':values['TO_DEV_JOURNAL_PASSWORD']}
+    'TOVER_JOURNAL_DB_USER':'tover_journal','TOVER_JOURNAL_DB_PASSWORD':values['TO_DEV_JOURNAL_PASSWORD'],
+    'TOVER_SMTP_HOST':'127.0.0.1','TOVER_SMTP_PORT':values.get('IDENTITY_SMTP_PORT','51025'),
+    'TOVER_SMTP_FROM':'invitations@tover.test','TOVER_SMTP_STARTTLS':'false'}
 fd=os.open(sys.argv[2],os.O_CREAT|os.O_TRUNC|os.O_WRONLY,0o600)
 os.fchmod(fd,0o600)
 with os.fdopen(fd,'w') as output:

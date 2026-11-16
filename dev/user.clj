@@ -67,7 +67,7 @@
                      (throw (ex-info "Missing local Supabase profile. Run deployment/local-identity/identity.sh init and up."
                                      {:type :configuration}))))
         settings (merge (into {} profile)
-                        (select-keys (System/getenv) ["IDENTITY_API_PORT" "IDENTITY_DB_PORT" "TO_DEV_SITE_URL"]))
+                        (select-keys (System/getenv) ["IDENTITY_API_PORT" "IDENTITY_DB_PORT" "IDENTITY_SMTP_PORT" "TO_DEV_SITE_URL"]))
         api      (str "http://127.0.0.1:" (get settings "IDENTITY_API_PORT" "58000"))]
     {"TOVER_AUTH_URL"            (str api "/auth/v1")
      "TOVER_API_KEY"             (get settings "ANON_KEY")
@@ -78,7 +78,12 @@
      "TOVER_DB_PASSWORD"         (get settings "TO_DEV_APP_PASSWORD")
      "TOVER_SESSION_KEY"         (get settings "SESSION_ENCRYPTION_KEY")
      "TOVER_JOURNAL_DB_USER"     "tover_journal"
-     "TOVER_JOURNAL_DB_PASSWORD" (get settings "TO_DEV_JOURNAL_PASSWORD")}))
+     "TOVER_JOURNAL_DB_PASSWORD" (get settings "TO_DEV_JOURNAL_PASSWORD")
+     ;; Invitation email goes to the profile's captured Mailpit inbox.
+     "TOVER_SMTP_HOST"           "127.0.0.1"
+     "TOVER_SMTP_PORT"           (get settings "IDENTITY_SMTP_PORT" "51025")
+     "TOVER_SMTP_FROM"           "invitations@tover.test"
+     "TOVER_SMTP_STARTTLS"       "false"}))
 
 
 (defn dev-config

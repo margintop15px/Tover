@@ -18,12 +18,16 @@ for (const path of ['src', 'resources']) symlinkSync(join(root, path), join(proj
 const api = `http://127.0.0.1:${local.IDENTITY_API_PORT || 58000}`;
 const env = {
   ...process.env,
-  TOVER_AUTH_URL: `${api}/auth/v1`, TOVER_REST_URL: `${api}/rest/v1`,
+  TOVER_AUTH_URL: `${api}/auth/v1`,
   TOVER_API_KEY: local.ANON_KEY, TOVER_AUTH_ADMIN_KEY: local.SERVICE_ROLE_KEY,
   TOVER_ORIGIN: `http://127.0.0.1:${port}`,
   TOVER_JDBC_URL: `jdbc:postgresql://127.0.0.1:${local.IDENTITY_DB_PORT || 55432}/postgres`,
   TOVER_DB_USER: 'tover_app', TOVER_DB_PASSWORD: local.TO_DEV_APP_PASSWORD,
+  TOVER_JOURNAL_DB_USER: 'tover_journal', TOVER_JOURNAL_DB_PASSWORD: local.TO_DEV_JOURNAL_PASSWORD,
   TOVER_SESSION_KEY: local.SESSION_ENCRYPTION_KEY,
+  // Invitation email goes to the profile's Mailpit, which identity.spec reads.
+  TOVER_SMTP_HOST: '127.0.0.1', TOVER_SMTP_PORT: local.IDENTITY_SMTP_PORT || '51025',
+  TOVER_SMTP_FROM: 'invitations@tover.test', TOVER_SMTP_STARTTLS: 'false',
 };
 const program = `(require '[tover.app :as app])
   (let [system (app/start! (app/config ${port} ${JSON.stringify(join(project, 'inventory'))} {:development? true}))]

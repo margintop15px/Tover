@@ -28,6 +28,8 @@ services:
     image: axllent/mailpit:v1.27.8
     ports:
       - 127.0.0.1:${IDENTITY_MAIL_PORT:-58025}:8025
+      # Captured SMTP for Tover's own invitation mailer (the journal worker).
+      - 127.0.0.1:${IDENTITY_SMTP_PORT:-51025}:1025
   auth:
     image: supabase/gotrue:v2.197.0
     depends_on:

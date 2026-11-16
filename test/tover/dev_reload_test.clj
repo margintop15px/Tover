@@ -200,7 +200,7 @@
 
 
 (deftest local-environment-derives-generated-profile-settings
-  (doseq [overrides [{} {"IDENTITY_API_PORT" "58111" "IDENTITY_DB_PORT" "55111" "TO_DEV_SITE_URL" "http://localhost:3099"}]]
+  (doseq [overrides [{} {"IDENTITY_API_PORT" "58111" "IDENTITY_DB_PORT" "55111" "IDENTITY_SMTP_PORT" "51111" "TO_DEV_SITE_URL" "http://localhost:3099"}]]
     (let [settings (merge {"ANON_KEY"                "synthetic-public"   "SERVICE_ROLE_KEY"       "synthetic-admin"
                            "TO_DEV_APP_PASSWORD"     "synthetic-password" "SESSION_ENCRYPTION_KEY" "synthetic-session-key"
                            "TO_DEV_JOURNAL_PASSWORD" "synthetic-journal"}
@@ -208,16 +208,19 @@
           content  (str/join "\n" (map (fn [[key value]] (str key "=" value)) settings))
           api-port (or (System/getenv "IDENTITY_API_PORT") (get settings "IDENTITY_API_PORT") "58000")
           db-port  (or (System/getenv "IDENTITY_DB_PORT") (get settings "IDENTITY_DB_PORT") "55432")
-          origin   (or (System/getenv "TO_DEV_SITE_URL") (get settings "TO_DEV_SITE_URL") "http://localhost:3030")]
+          origin   (or (System/getenv "TO_DEV_SITE_URL") (get settings "TO_DEV_SITE_URL") "http://localhost:3030")
+          smtp     (or (System/getenv "IDENTITY_SMTP_PORT") (get settings "IDENTITY_SMTP_PORT") "51025")]
       (with-redefs [io/reader (fn [path]
                                 (is (= "deployment/local-identity/.env" path))
                                 (StringReader. content))]
         (is (= {"TOVER_AUTH_URL"        (str "http://127.0.0.1:" api-port "/auth/v1")
-                "TOVER_API_KEY"         "synthetic-public" "TOVER_AUTH_ADMIN_KEY"   "synthetic-admin"
+                "TOVER_API_KEY"         "synthetic-public" "TOVER_AUTH_ADMIN_KEY"      "synthetic-admin"
                 "TOVER_ORIGIN"          origin "TOVER_JDBC_URL" (str "jdbc:postgresql://127.0.0.1:" db-port "/postgres")
-                "TOVER_DB_USER"         "tover_app" "TOVER_DB_PASSWORD"             "synthetic-password"
+                "TOVER_DB_USER"         "tover_app" "TOVER_DB_PASSWORD"                "synthetic-password"
                 "TOVER_SESSION_KEY"     "synthetic-session-key"
-                "TOVER_JOURNAL_DB_USER" "tover_journal" "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"}
+                "TOVER_JOURNAL_DB_USER" "tover_journal" "TOVER_JOURNAL_DB_PASSWORD"    "synthetic-journal"
+                "TOVER_SMTP_HOST"       "127.0.0.1" "TOVER_SMTP_PORT"                  smtp
+                "TOVER_SMTP_FROM"       "invitations@tover.test" "TOVER_SMTP_STARTTLS" "false"}
                (user/local-environment)))))))
 
 
