@@ -69,6 +69,15 @@ clj-paren-repair path/to/file.clj
 
 The repository root is the Clojure application. Read [README.md](README.md) for implementation status and [styleguide.md](styleguide.md) for formatting. The documents in [docs/](docs/README.md) describe intended behavior; release evidence requires tests and deployment checks.
 
+## Board process
+
+The prooph board is the source of truth for product behavior. Follow [docs/board-process.md](docs/board-process.md) for every task that reads or changes it.
+
+- Never load the whole board. Read one slice (`get_chapter` with `slice_ids`) or catch up with `list_changelog_events` since the instant in `docs/board-sync.edn`.
+- Implement only slices with status `planned`. Never set `planned`, `reviewed` or `deployed`; those belong to people.
+- Field schemas and rules live in shared element details on the board. Do not restate them in repo docs. To find what a change touches, search the exact element name with `detail: "none"`.
+- Feedback and requested changes go on the board as task comments, not into repo files.
+
 ## Commands
 
 Run from the repository root:

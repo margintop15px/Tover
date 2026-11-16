@@ -2,6 +2,7 @@
 
 The Clojure application lives at the repository root. The agreed first tester version uses a durable inventory ledger, shared server drafts and real identity. The [application README](../README.md) describes running and checking it; passing release checks establish readiness.
 
+- [Board process](board-process.md): how the prooph board drives work: where rules live, slice lifecycle, change impact and agent read rules. Start here.
 - [Product requirements](product-requirements.md): item identity, eight operation types, corrections and shared acceptance.
 - [Client UI](client-ui-spec.md): Stock, Operations, server editing and lazy item history.
 - [Architecture](architecture.md): ownership, authorization, transport and runtime boundaries.

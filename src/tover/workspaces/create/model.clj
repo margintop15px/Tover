@@ -8,10 +8,12 @@
 
 
 (def WorkspaceName
-  [:string {:min           1
-            :max           200
-            :decode/string (fn [value]
-                             (if (string? value) (str/trim value) value))}])
+  "Board chapter 04: 1–100 extended grapheme clusters after trimming."
+  [:and
+   [:string {:decode/string (fn [value]
+                              (if (string? value) (str/trim value) value))}]
+   [:fn {:error/message "Name must have 1 to 100 characters."}
+    (fn [value] (<= 1 (count (re-seq #"\X" value)) 100))]])
 
 
 (def CreateWorkspace
