@@ -105,7 +105,8 @@
       (let [response (invite! (:request! browser) {"email" " Otto@Example.test "})
             offer    (offer-for state "otto@example.test")]
         (is (= 303 (:status response)))
-        (is (= "/team?recipient=otto%40example.test" (get-in response [:headers "location"])))
+        (is (= (str "/team?invitation=" (:id offer)) (get-in response [:headers "location"])))
+        (is (not (str/includes? (get-in response [:headers "location"]) "otto")) "no email in the URL")
         (is (= {:status "pending" :role_id "member" :invited_by fixtures/owner-id} (select-keys offer [:status :role_id :invited_by])))
         (is (= (Duration/ofDays 7) (Duration/between (:created_at offer) (:expires_at offer))))
         (is (= ["queued"] (mapv :status (deliveries state))))

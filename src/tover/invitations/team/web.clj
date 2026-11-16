@@ -126,11 +126,12 @@
 
 
 (defn after
-  "Back to the Team screen focused on `email`'s current offer."
-  {:malli/schema [:=> [:cat [:maybe :string]] :map]}
-  [email]
+  "Back to the Team screen focused on the recipient of offer `invitation-id`. The URL carries only the offer id:
+  a recipient's email never goes into URLs, logs or browser history."
+  {:malli/schema [:=> [:cat [:maybe :uuid]] :map]}
+  [invitation-id]
   (cond-> {:type :page :id ::team}
-    email (assoc :input {:recipient email})))
+    invitation-id (assoc :input {:invitation (str invitation-id)})))
 
 
 ;; Page
@@ -260,12 +261,15 @@
 
 (defn query-team
   {:malli/schema [:=> [:cat :map :map] :map]}
-  [{:keys [request] :as context} {:keys [recipient]}]
-  (let [recipient (when (and (string? recipient) (not (str/blank? recipient))) (issue/normalize recipient))]
+  [{:keys [request] :as context} {:keys [invitation]}]
+  (let [invitation-id (when (string? invitation) (parse-uuid invitation))]
     {:request   request
      :now       (Instant/now)
      :team      (attempt #(runtime/read-model context ::model/workspace-team {}))
-     :recipient (when recipient (attempt #(runtime/read-model context ::status/invitation-status {:email recipient})))}))
+     ;; The recipient's current offer; an unknown or foreign id shows nothing.
+     :recipient (when invitation-id
+                  (attempt #(when-let [email (:email (runtime/read-model context ::issue/invitations {:invitation-id invitation-id}))]
+                              (runtime/read-model context ::status/invitation-status {:email (issue/normalize email)}))))}))
 
 
 (defn- retry
