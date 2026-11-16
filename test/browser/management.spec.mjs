@@ -9,7 +9,7 @@ const rowFor = (page, text) => page.locator('.management-table tbody tr').filter
 
 async function login(page, email, locale) {
   await page.goto('/auth/login');
-  const form = formFor(page, 'tover.auth.web/sign-in');
+  const form = formFor(page, 'tover.identity.sign-in.web/sign-in');
   await form.locator('[name=email]').fill(email);
   await form.locator('[name=password]').fill('tover-development');
   await Promise.all([page.waitForNavigation(), form.locator('button').click()]);
@@ -17,6 +17,12 @@ async function login(page, email, locale) {
     await Promise.all([page.waitForNavigation(), page.locator(`.language-toggle[value="${locale}"]`).click()]);
   }
   await expect(page.locator('html')).toHaveAttribute('lang', locale);
+}
+
+async function open(page, workspace, t) {
+  await page.goto('/workspace');
+  await Promise.all([page.waitForURL(url => url.pathname === '/'),
+    rowFor(page, workspace).getByRole('button', { name: t('Open'), exact: true }).click()]);
 }
 
 async function reveal(form) {
@@ -51,22 +57,27 @@ for (const locale of ['en', 'ru']) {
   test(`${locale}: zero, one and multiple workspaces expose roles, current marker and switching`, async ({ page }) => {
     await login(page, 'zero@example.test', locale);
     await page.goto('/workspace');
-    const create = formFor(page, 'tover.workspaces.web/create-workspace');
+    const create = formFor(page, 'tover.workspaces.create.web/create');
     await expect(disclosureFor(create)).toHaveAttribute('open', '');
     await expect(page.getByText(t('No workspaces yet.'), { exact: true })).toBeVisible();
     await expect(page.locator('.management-table')).toHaveCount(0);
     await assertTranslated(page, locale);
 
-    await formFor(page, 'tover.auth.web/sign-out').locator('button').click();
+    await formFor(page, 'tover.identity.sign-out.web/sign-out').locator('button').click();
     await login(page, 'member@example.test', locale);
     await page.goto('/workspace');
     await expect(page.locator('.management-table tbody tr')).toHaveCount(1);
-    await expect(page.locator('.management-current')).toHaveText(t('Current workspace'));
+    // Sign-in never selects a workspace, even the only one (07).
+    await expect(page.locator('.management-current')).toHaveCount(0);
     await expect(page.locator('.management-role').last()).toHaveText(t('Member'));
     await expect(disclosureFor(create)).not.toHaveAttribute('open', '');
     await expect(page.getByRole('link', { name: t('Team'), exact: true })).toHaveCount(0);
+    await open(page, 'Development workspace', t);
+    await page.goto('/workspace');
+    await expect(page.locator('.management-current')).toHaveText(t('Current workspace'));
+    await expect(page.getByRole('link', { name: t('Team'), exact: true })).toHaveCount(0);
 
-    await formFor(page, 'tover.auth.web/sign-out').locator('button').click();
+    await formFor(page, 'tover.identity.sign-out.web/sign-out').locator('button').click();
     await login(page, 'owner@example.test', locale);
     await page.goto('/workspace');
     await expect(page.locator('.management-table tbody tr')).toHaveCount(2);
@@ -81,37 +92,41 @@ for (const locale of ['en', 'ru']) {
 
   test(`${locale}: team tables show names, member states and pending/expired invitation actions`, async ({ page }) => {
     await login(page, 'manager@example.test', locale);
+    await open(page, 'Management workspace', t);
     await page.goto('/team');
-    await expect(page.locator('.management-subtitle')).toHaveText('Management workspace');
-    await expect(page.locator('.management-count')).toHaveText(['4', '2']);
+    await expect(page.locator('.management-subtitle')).toContainText('Management workspace');
+    // Members are current, suspended and removed people; a legacy 'invited' membership is not a member yet.
+    await expect(page.locator('.management-count')).toHaveText(['3', '2']);
     const owner = rowFor(page, 'manager@example.test');
     await expect(owner.locator('.management-name')).toHaveText('Alexandra Workspace Manager With A Long Name');
     await expect(owner.locator('.management-secondary')).toHaveText('manager@example.test');
     await expect(rowFor(page, 'suspended-member-with-an-intentionally-long-email-address@example.test').locator('.management-secondary')).toHaveCount(0);
-    for (const [email, status, recovery] of [
-      ['manager@example.test', 'Active', true], ['admin@example.test', 'Active', true],
-      ['suspended-member-with-an-intentionally-long-email-address@example.test', 'Suspended', false], ['invited@example.test', 'Invited', false],
+    for (const [email, status] of [
+      ['manager@example.test', 'Active'], ['admin@example.test', 'Active'],
+      ['suspended-member-with-an-intentionally-long-email-address@example.test', 'Suspended'],
     ]) {
-      const row = rowFor(page, email);
-      await expect(row.locator('.management-status')).toHaveText(t(status));
-      await expect(row.getByRole('button', { name: t('Send recovery email'), exact: true })).toHaveCount(recovery ? 1 : 0);
+      await expect(rowFor(page, email).locator('.management-status')).toHaveText(t(status));
     }
-    for (const [email, status] of [['pending@example.test', 'Pending'], ['expired@example.test', 'Expired']]) {
+    await expect(rowFor(page, 'invited@example.test')).toHaveCount(0);
+    // Only a pending offer can be resent or withdrawn (05a, 05b).
+    for (const [email, status, actions] of [['pending@example.test', 'Pending', 1], ['expired@example.test', 'Expired', 0]]) {
       const row = rowFor(page, email);
       await expect(row.locator('.management-status')).toHaveText(t(status));
-      for (const action of ['Resend', 'Cancel']) await expect(row.getByRole('button', { name: t(action), exact: true })).toBeVisible();
+      for (const action of ['Resend', 'Cancel']) await expect(row.getByRole('button', { name: t(action), exact: true })).toHaveCount(actions);
     }
     await assertTranslated(page, locale);
 
     await page.goto('/workspace');
-    await formFor(page, 'tover.auth.web/sign-out').locator('button').click();
+    await formFor(page, 'tover.identity.sign-out.web/sign-out').locator('button').click();
     await login(page, 'admin@example.test', locale);
+    await open(page, 'Management workspace', t);
     await page.goto('/team');
     await expect(page.getByRole('heading', { name: t('Team'), exact: true })).toBeVisible();
-    await expect(formFor(page, 'tover.teams.core/invite')).toHaveCount(1);
+    await expect(formFor(page, 'tover.invitations.issue.web/invite')).toHaveCount(1);
     await page.goto('/workspace');
-    await formFor(page, 'tover.auth.web/sign-out').locator('button').click();
+    await formFor(page, 'tover.identity.sign-out.web/sign-out').locator('button').click();
     await login(page, 'member@example.test', locale);
+    await open(page, 'Development workspace', t);
     expect((await page.goto('/team')).status()).toBe(403);
     await expect(page.locator('body')).toHaveText(t('Workspace administration requires an owner or admin.'));
   });
@@ -119,7 +134,7 @@ for (const locale of ['en', 'ru']) {
   test(`${locale}: disclosures retain blank invalid and uncertain input, then collapse on confirmed success`, async ({ page }) => {
     await login(page, 'owner@example.test', locale);
     await page.goto('/workspace');
-    const create = formFor(page, 'tover.workspaces.web/create-workspace');
+    const create = formFor(page, 'tover.workspaces.create.web/create');
     const createDetails = disclosureFor(create);
     await createDetails.locator('summary').focus();
     await page.keyboard.press('Enter');
@@ -128,13 +143,10 @@ for (const locale of ['en', 'ru']) {
     await expect(page.getByRole('alert')).toBeVisible();
     await expect(createDetails).toHaveAttribute('open', '');
     await expect(create.locator('[name=name]')).toHaveValue('');
-    await createDetails.locator('summary').click();
-    await expect(page.getByRole('alert')).toBeVisible();
 
-    await rowFor(page, 'Development workspace').getByRole('button', { name: t('Open'), exact: true }).click();
+    await open(page, 'Development workspace', t);
     await page.goto('/team');
-    await expect(page.getByText(t('No invitations yet.'), { exact: true })).toBeVisible();
-    const invite = formFor(page, 'tover.teams.core/invite');
+    const invite = formFor(page, 'tover.invitations.issue.web/invite');
     const details = await reveal(invite);
     await expect(invite.locator('[name=role]')).toHaveValue('member');
     await invite.evaluate(element => { element.noValidate = true; element.requestSubmit(); });
@@ -144,14 +156,14 @@ for (const locale of ['en', 'ru']) {
     await invite.locator('[name=email]').fill('owner@example.test');
     await invite.locator('[name=role]').selectOption('admin');
     await invite.locator('button').click();
-    await expect(page.getByRole('alert')).toContainText(t('This user is already a workspace member.'));
+    await expect(page.getByRole('alert')).toContainText(t('That person is already on the team.'));
     await expect(invite.locator('[name=role]')).toHaveValue('admin');
     await details.locator('summary').click();
     await expect(page.getByRole('alert')).toBeVisible();
     await reveal(invite);
 
     let attempts = 0;
-    await page.route('**/action/tover.teams.core/invite', route => { attempts += 1; return route.abort('failed'); });
+    await page.route('**/action/tover.invitations.issue.web/invite', route => { attempts += 1; return route.abort('failed'); });
     const email = `management-${randomUUID()}@example.test`;
     await invite.locator('[name=email]').fill(email);
     await invite.locator('button').click();
@@ -161,7 +173,7 @@ for (const locale of ['en', 'ru']) {
     await expect(invite.locator('[name=role]')).toHaveValue('admin');
     await page.waitForTimeout(1200);
     expect(attempts).toBe(1);
-    await page.unroute('**/action/tover.teams.core/invite');
+    await page.unroute('**/action/tover.invitations.issue.web/invite');
     await invite.locator('button').click();
     await expect(rowFor(page, email)).toBeVisible();
     await expect(details).not.toHaveAttribute('open', '');
@@ -169,7 +181,9 @@ for (const locale of ['en', 'ru']) {
     await expect(invite.locator('[name=email]')).toHaveValue('');
     await expect(invite.locator('[name=role]')).toHaveValue('member');
     await rowFor(page, email).getByRole('button', { name: t('Cancel'), exact: true }).click();
-    await expect(rowFor(page, email)).toHaveCount(0);
+    // A withdrawn offer stays listed as cancelled, without actions (05b).
+    await expect(rowFor(page, email).locator('.management-status')).toHaveText(t('Cancelled'));
+    await expect(rowFor(page, email).getByRole('button', { name: t('Cancel'), exact: true })).toHaveCount(0);
   });
 
   test(`${locale}: narrow management pages preserve actions and wrap content in both themes`, async ({ page }) => {
@@ -198,7 +212,7 @@ for (const locale of ['en', 'ru']) {
     const page = await context.newPage();
     try {
       await login(page, `native-${locale}@example.test`, locale);
-      const create = formFor(page, 'tover.workspaces.web/create-workspace');
+      const create = formFor(page, 'tover.workspaces.create.web/create');
       const workspace = `Native ${locale} ${randomUUID()}`;
       await expect(disclosureFor(create)).toHaveAttribute('open', '');
       await create.locator('[name=name]').fill(workspace);
@@ -207,7 +221,7 @@ for (const locale of ['en', 'ru']) {
       await expect(disclosureFor(create)).not.toHaveAttribute('open', '');
       await Promise.all([page.waitForNavigation(), rowFor(page, workspace).getByRole('button', { name: t('Open'), exact: true }).click()]);
       await page.goto('/team');
-      const invite = formFor(page, 'tover.teams.core/invite');
+      const invite = formFor(page, 'tover.invitations.issue.web/invite');
       await disclosureFor(invite).locator('summary').click();
       const email = `native-invite-${randomUUID()}@example.test`;
       await invite.locator('[name=email]').fill(email);

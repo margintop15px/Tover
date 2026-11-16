@@ -192,20 +192,20 @@ test('internal form failures keep input and never retry an uncertain mutation', 
   await page.getByRole('link', { name: 'Team', exact: true }).click();
   await expect(page).toHaveURL(/\/team$/);
   await markDocument(page);
-  const form = page.locator('form[action="/action/tover.teams.core/invite"]');
+  const form = page.locator('form[action="/action/tover.invitations.issue.web/invite"]');
   await form.locator('xpath=ancestor::details').locator('summary').click();
   await form.locator('[name="email"]').fill('owner@example.test');
   await form.locator('[name="role"]').selectOption('admin');
   const historyLength = await page.evaluate(() => history.length);
   await form.getByRole('button', { name: 'Send invitation' }).click();
-  await expect(page.getByRole('alert')).toContainText('This user is already a workspace member.');
+  await expect(page.getByRole('alert')).toContainText('That person is already on the team.');
   await expect(form.locator('[name="email"]')).toHaveValue('owner@example.test');
   await expect(form.locator('[name="role"]')).toHaveValue('admin');
   expect(await page.evaluate(() => history.length)).toBe(historyLength);
   await unchangedDocument(page);
 
   let attempts = 0;
-  await page.route('**/action/tover.teams.core/invite', route => { attempts += 1; return route.abort('failed'); });
+  await page.route('**/action/tover.invitations.issue.web/invite', route => { attempts += 1; return route.abort('failed'); });
   await form.locator('[name="email"]').fill('uncertain@example.test');
   await form.getByRole('button', { name: 'Send invitation' }).click();
   await expect(page.locator('#bel-navigation-notice')).toContainText('could not be confirmed');
@@ -215,11 +215,11 @@ test('internal form failures keep input and never retry an uncertain mutation', 
   await unchangedDocument(page);
 });
 
-test('successful Team actions refresh the page without another history entry', async ({ page }) => {
+test('a successful invitation opens its outcome as one new Team history entry', async ({ page }) => {
   await page.getByRole('link', { name: 'Team', exact: true }).click();
   await expect(page).toHaveURL(/\/team$/);
   await markDocument(page);
-  const form = page.locator('form[action="/action/tover.teams.core/invite"]');
+  const form = page.locator('form[action="/action/tover.invitations.issue.web/invite"]');
   await form.locator('xpath=ancestor::details').locator('summary').click();
   const email = `navigation-${Date.now()}@example.test`;
   await form.locator('[name="email"]').fill(email);
@@ -227,9 +227,10 @@ test('successful Team actions refresh the page without another history entry', a
   await form.getByRole('button', { name: 'Send invitation' }).click();
   await expect(page.locator('#page-content')).toContainText(email);
   await expect(form.locator('[name="email"]')).toHaveValue('');
-  await expect(page).toHaveURL(/\/team$/);
+  // The outcome names the invited recipient in the URL (05 · Show the accepted invitation immediately).
+  await expect(page).toHaveURL(/\/team\?recipient=[^&]+$/);
   await expect(page).toHaveTitle(/Team/);
-  expect(await page.evaluate(() => history.length)).toBe(historyLength);
+  expect(await page.evaluate(() => history.length)).toBe(historyLength + 1);
   await unchangedDocument(page);
 });
 
@@ -237,12 +238,12 @@ test('action page effects commit a different destination and support Back naviga
   await page.getByRole('link', { name: 'Team', exact: true }).click();
   await expect(page).toHaveURL(/\/team$/);
   await markDocument(page);
-  await page.route('**/action/tover.teams.core/invite', route => route.fulfill({
+  await page.route('**/action/tover.invitations.issue.web/invite', route => route.fulfill({
     status: 200, contentType: 'text/html',
     body: '<div id="bel-page" data-bel-navigation="true" data-bel-url="/workspace?from=effect" data-bel-title="Workspaces · Tover" data-bel-page="tover.stock.web/workspaces"><main id="page-content"><h1>Effect destination</h1></main></div>',
   }));
   const historyLength = await page.evaluate(() => history.length);
-  const form = page.locator('form[action="/action/tover.teams.core/invite"]');
+  const form = page.locator('form[action="/action/tover.invitations.issue.web/invite"]');
   await form.locator('xpath=ancestor::details').locator('summary').click();
   await form.locator('[name="email"]').fill('destination@example.test');
   await page.evaluate(() => { document.body.style.minHeight = '3000px'; scrollTo(0, 500); });
@@ -267,7 +268,7 @@ for (const order of ['action-first', 'navigation-first']) {
     let actionStarted;
     const actionBlocked = new Promise(resolve => { releaseAction = resolve; });
     const actionRequested = new Promise(resolve => { actionStarted = resolve; });
-    await page.route('**/action/tover.teams.core/invite', async route => {
+    await page.route('**/action/tover.invitations.issue.web/invite', async route => {
       actionStarted();
       await actionBlocked;
       await route.fulfill({ status: 200, contentType: 'text/html',
@@ -282,14 +283,14 @@ for (const order of ['action-first', 'navigation-first']) {
       await navigationBlocked;
       await route.fulfill({ status: 503, body: 'Unavailable' });
     });
-    const form = page.locator('form[action="/action/tover.teams.core/invite"]');
+    const form = page.locator('form[action="/action/tover.invitations.issue.web/invite"]');
     await form.locator('xpath=ancestor::details').locator('summary').click();
     await form.locator('[name="email"]').fill('late@example.test');
     await form.getByRole('button', { name: 'Send invitation' }).click();
     await actionRequested;
     await page.getByRole('link', { name: 'Workspaces', exact: true }).click();
     await navigationRequested;
-    const actionResponse = page.waitForResponse('**/action/tover.teams.core/invite');
+    const actionResponse = page.waitForResponse('**/action/tover.invitations.issue.web/invite');
     if (order === 'navigation-first') {
       releaseNavigation();
       await expect(page.locator('#bel-navigation-notice')).toContainText('could not be loaded');
