@@ -1,11 +1,10 @@
 (ns tover.invitations.issue-test
   "Board scenarios for Invite Teammate, decided without a store."
   (:require
-    [bel.core :as bel]
     [bel.core-test :as fixture]
     [bel.runtime :as runtime]
     [clojure.test :refer [deftest is use-fixtures]]
-    [tover.invitations.delivery.model]
+    [tover.invitations.fixtures :as invitations]
     [tover.invitations.issue.model :as model])
   (:import
     [java.time Duration Instant]))
@@ -18,15 +17,7 @@
 (def now (Instant/parse "2026-11-12T10:00:00Z"))
 
 
-(defn register
-  {:malli/schema [:=> [:cat [:fn fn?]] :any]}
-  [f]
-  (bel/build-registry! ['tover.accounts.profile.model 'tover.workspaces.create.model 'tover.invitations.issue.model
-                        'tover.invitations.delivery.model])
-  (f))
-
-
-(use-fixtures :each fixture/isolated-registry register)
+(use-fixtures :each fixture/isolated-registry invitations/register)
 
 
 (defn error-data
@@ -46,8 +37,8 @@
 
 
 (def offer
-  {:invitation-id #uuid "00000000-0000-0000-0000-0000000000e1" :role "member"
-   :expires-at    (.plus now (Duration/ofHours 1))})
+  {:invitation-id #uuid "00000000-0000-0000-0000-0000000000e1" :role       "member"
+   :expires-at    (.plus now (Duration/ofHours 1))             :created-at (.minus now (Duration/ofHours 1))})
 
 
 (deftest issues-offer-with-queued-delivery
@@ -79,11 +70,11 @@
 
 
 (deftest active-member-is-not-reinvited
-  (is (= :already-member (:type (error-data #(decide {:recipient "active"} {:email "ann@example.test"}))))))
+  (is (= :already-member (:type (error-data #(decide {:recipient {:status "active"}} {:email "ann@example.test"}))))))
 
 
 (deftest suspended-member-is-rejected
-  (is (= :member-suspended (:type (error-data #(decide {:recipient "suspended"} {:email "ann@example.test"}))))))
+  (is (= :member-suspended (:type (error-data #(decide {:recipient {:status "suspended"}} {:email "ann@example.test"}))))))
 
 
 (deftest same-role-repeat-emits-nothing

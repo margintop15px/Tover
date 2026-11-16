@@ -8,9 +8,13 @@
     [clojure.string :as str]
     [clojure.test :refer [deftest is testing use-fixtures]]
     [next.jdbc :as jdbc]
-    [tover.invitations.delivery.model]
+    [tover.invitations.accept.model :as accept]
+    [tover.invitations.cancel.model :as cancel]
+    [tover.invitations.fixtures :as invitations]
     [tover.invitations.issue.model :as issue]
+    [tover.invitations.resend.model :as resend]
     [tover.invitations.status.model :as status]
+    [tover.invitations.team.model :as team]
     [tover.shared.bel :as wiring]
     [tover.shared.email :as mailer]
     [workspace-creation-integration :as workspace]))
@@ -19,9 +23,7 @@
 (defn register
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
-  (bel/build-registry! ['tover.accounts.profile.model 'tover.workspaces.create.model 'tover.invitations.issue.model
-                        'tover.invitations.delivery.model
-                        'tover.invitations.status.model])
+  (bel/build-registry! invitations/model-namespaces)
   (f))
 
 
@@ -300,3 +302,123 @@
                                          where n.nspname = 'public' and p.prosecdef and has_function_privilege('tover_journal', p.oid, 'EXECUTE')
                                          order by 1"]
                                        {:builder-fn next.jdbc.result-set/as-unqualified-lower-maps})))))
+
+
+;; Lifecycle (migration 042)
+
+
+(deftest migration-042-applies-twice
+  (is (= 1 (:n (workspace/admin! ["select count(*) as n from pg_indexes where indexname='organization_invites_one_pending_idx'"]))))
+  (is (= 4 (:n (workspace/admin! ["select count(*) as n from pg_policies where policyname in
+                                   ('bel_invites_recipient_read','bel_invites_recipient_accept','bel_invited_member_insert','bel_invited_member_rejoin')"])))))
+
+
+(deftest one-pending-offer-per-workspace-and-recipient
+  (let [{:keys [user workspace]} (member! (str "owner-" (random-uuid) "@example.test"))
+        insert                   #(try (workspace/admin! ["insert into public.organization_invites(organization_id,email,role_id,invited_by) values(?,?,'member',?)"
+                                                          workspace % user])
+                                       :inserted
+                                       (catch java.sql.SQLException error (.getSQLState error)))]
+    (is (= :inserted (insert "pair@example.test")))
+    (is (= "23505" (insert " PAIR@example.test ")))))
+
+
+(defn recipient-context
+  "A signed-in, named user whose verified email is returned as :email."
+  {:malli/schema [:=> [:cat] :map]}
+  []
+  (let [ctx (workspace/context)]
+    (assoc ctx :email (str (:user-id ctx) "@example.test"))))
+
+
+(defn offer-id
+  {:malli/schema [:=> [:cat :uuid :string] [:maybe :uuid]]}
+  [workspace-id email]
+  (:id (workspace/admin! ["select id from public.organization_invites where organization_id=? and email=? order by created_at desc limit 1"
+                          workspace-id email])))
+
+
+(defn accept!
+  {:malli/schema [:=> [:cat :map :uuid :uuid [:? :string]] :map]}
+  ([ctx workspace-id id] (accept! ctx workspace-id id "member"))
+  ([ctx workspace-id id role]
+   (runtime/execute! ctx ::accept/accept-workspace-invitation
+                     {:command-id (str (random-uuid)) :input {:invitation-id id :workspace-id workspace-id :role role}})))
+
+
+(deftest accept-commits-offer-and-membership-together
+  (let [owner     (owner-context)
+        recipient (recipient-context)
+        _         (runtime/execute! owner ::issue/invite-teammate {:command-id "i" :input {:email (:email recipient) :role "admin"}})
+        id        (offer-id (:workspace-id owner) (:email recipient))
+        review    (runtime/read-model recipient ::accept/my-invitation {:invitation-id id})]
+    (is (= {:available? true :state "pending" :workspace-name "Shop" :role "admin"}
+           (select-keys review [:available? :state :workspace-name :role])))
+    (is (= :accepted (:status (accept! recipient (:workspace-id owner) id "admin"))))
+    (is (= {:status "active" :role_id "admin"}
+           (workspace/admin! ["select status, role_id from public.organization_memberships where organization_id=? and user_id=?"
+                              (:workspace-id owner) (:user-id recipient)])))
+    (is (= "accepted" (:status (workspace/admin! ["select status from public.organization_invites where id=?" id]))))
+    (testing "a second accept finds an active member and records nothing"
+      (let [receipt (accept! recipient (:workspace-id owner) id "admin")]
+        (is (= [] (:event-ids receipt)))))))
+
+
+(deftest another-account-cannot-read-or-accept
+  (let [owner    (owner-context)
+        intended (recipient-context)
+        other    (recipient-context)
+        _        (runtime/execute! owner ::issue/invite-teammate {:command-id "i" :input {:email (:email intended)}})
+        id       (offer-id (:workspace-id owner) (:email intended))]
+    (is (= {:available? false :invitation-id id} (runtime/read-model other ::accept/my-invitation {:invitation-id id})))
+    (is (= :invitation-unavailable (:type (workspace/error-data #(accept! other (:workspace-id owner) id)))))
+    (is (= "42501" (sql-state "tover_app" (str "insert into public.organization_memberships(organization_id,user_id,role_id,status)
+                                                 values('" (:workspace-id owner) "','" (:user-id other) "','member','active')"))))))
+
+
+(deftest cancelled-offer-cannot-be-accepted
+  (let [owner     (owner-context)
+        recipient (recipient-context)
+        _         (runtime/execute! owner ::issue/invite-teammate {:command-id "i" :input {:email (:email recipient)}})
+        id        (offer-id (:workspace-id owner) (:email recipient))]
+    (runtime/execute! owner ::cancel/cancel-invitation {:command-id "c" :input {:invitation-id id}})
+    (is (= "revoked" (:status (workspace/admin! ["select status from public.organization_invites where id=?" id]))))
+    (is (= :invitation-not-pending (:type (workspace/error-data #(accept! recipient (:workspace-id owner) id)))))
+    (is (nil? (workspace/admin! ["select 1 from public.organization_memberships where organization_id=? and user_id=?"
+                                 (:workspace-id owner) (:user-id recipient)])))))
+
+
+(deftest removed-member-rejoins-only-through-a-fresh-offer
+  (let [owner     (owner-context)
+        recipient (recipient-context)
+        _         (runtime/execute! owner ::issue/invite-teammate {:command-id "i" :input {:email (:email recipient) :role "admin"}})
+        old       (offer-id (:workspace-id owner) (:email recipient))]
+    (accept! recipient (:workspace-id owner) old "admin")
+    (workspace/admin! ["update public.organization_memberships set status='removed', removed_at=now() where organization_id=? and user_id=?"
+                       (:workspace-id owner) (:user-id recipient)])
+    (is (= :invitation-not-pending (:type (workspace/error-data #(accept! recipient (:workspace-id owner) old "admin")))))
+    (let [removed-at (:removed_at (workspace/admin! ["select removed_at from public.organization_memberships where organization_id=? and user_id=?"
+                                                     (:workspace-id owner) (:user-id recipient)]))]
+      (is (= :removal-review-required
+             (:type (workspace/error-data #(runtime/execute! owner ::issue/invite-teammate {:command-id "j" :input {:email (:email recipient)}})))))
+      (runtime/execute! owner ::issue/invite-teammate {:command-id "k" :input {:email (:email recipient) :reviewed-removal removed-at}}))
+    (let [fresh (offer-id (:workspace-id owner) (:email recipient))]
+      (is (not= old fresh))
+      (is (= :accepted (:status (accept! recipient (:workspace-id owner) fresh))))
+      (is (= {:status "active" :role_id "member"}
+             (workspace/admin! ["select status, role_id from public.organization_memberships where organization_id=? and user_id=?"
+                                (:workspace-id owner) (:user-id recipient)]))))))
+
+
+(deftest team-and-resend-for-managers
+  (let [email (str "team-" (random-uuid) "@example.test")
+        ctx   (invited! email)
+        id    (offer-id (:workspace-id ctx) email)
+        team  (runtime/read-model ctx ::team/workspace-team {})]
+    (is (= [email] (mapv :email (:invitations team))))
+    (is (= 1 (count (:members team))))
+    (is (= [] (:event-ids (runtime/execute! ctx ::resend/resend-invitation {:command-id "r1" :input {:invitation-id id}})))
+        "queued work answers without a parallel request")
+    (workspace/admin! ["update public.invitation_deliveries set status='submitted', requested_at=now() - interval '61 seconds' where invitation_id=?" id])
+    (runtime/execute! ctx ::resend/resend-invitation {:command-id "r2" :input {:invitation-id id}})
+    (is (= 2 (:n (workspace/admin! ["select count(*) as n from public.invitation_deliveries where invitation_id=?" id]))))))
