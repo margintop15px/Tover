@@ -471,16 +471,24 @@
                                   (when-let [route (:bel/route (meta definition))]
                                     [id route])))
                        (:pages registry))]
-    ;; ponytail: placeholders until chunks A/B add the onboarding pages.
-    (is (= {:tover.identity.placeholders/login     "/auth/login"
-            :tover.identity.placeholders/password  "/auth/password"
-            :tover.identity.placeholders/workspace "/workspace"
-            :tover.accounts.profile.web/profile    "/account/profile"
-            :tover.stock.web/page                  "/"
-            :tover.operations.web/page             "/operations"
-            :tover.catalogues.web/index            "/catalogues"
-            :tover.catalogues.web/page             "/catalogues/:kind"}
-           (select-keys routes [:tover.identity.placeholders/login :tover.identity.placeholders/password
+    ;; ponytail: workspace placeholder until chunk B adds the chooser.
+    (is (= {:tover.identity.sign-in.web/login             "/auth/login"
+            :tover.identity.signup.web/signup             "/auth/signup"
+            :tover.identity.resend.web/recover-signup     "/auth/resend"
+            :tover.identity.confirm.web/confirm           "/auth/confirm"
+            :tover.identity.recovery.web/recover          "/auth/recover"
+            :tover.identity.recovery.web/password         "/auth/password"
+            :tover.identity.sign-out.web/confirm-sign-out "/auth/sign-out"
+            :tover.identity.placeholders/workspace        "/workspace"
+            :tover.accounts.profile.web/profile           "/account/profile"
+            :tover.stock.web/page "/"
+            :tover.operations.web/page                    "/operations"
+            :tover.catalogues.web/index                   "/catalogues"
+            :tover.catalogues.web/page                    "/catalogues/:kind"}
+           (select-keys routes [:tover.identity.sign-in.web/login :tover.identity.signup.web/signup
+                                :tover.identity.resend.web/recover-signup :tover.identity.confirm.web/confirm
+                                :tover.identity.recovery.web/recover :tover.identity.recovery.web/password
+                                :tover.identity.sign-out.web/confirm-sign-out
                                 :tover.identity.placeholders/workspace :tover.accounts.profile.web/profile
                                 :tover.stock.web/page :tover.operations.web/page
                                 :tover.catalogues.web/index :tover.catalogues.web/page])))

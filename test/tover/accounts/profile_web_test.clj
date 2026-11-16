@@ -190,11 +190,11 @@
             user               (first users)]
         (support/sign-in! services browser (:email user) {:workspace-id fixtures/workspace-id})
         ;; A signed-in identity page renders the same switch: locale and return-to only.
-        (let [body     (:body (request! :get "/auth/login"))
+        (let [body     (:body (request! :get "/auth/sign-out"))
               response (request! :post (bel/action-url :tover.identity.shell/set-language)
                                  {"locale" "ru" "return-to" (form-value body "return-to")})]
           (is (nil? (form-value body "language-revision")))
           (is (= 303 (:status response)))
-          (is (= "/auth/login" (get-in response [:headers "location"])))
+          (is (= "/auth/sign-out" (get-in response [:headers "location"])))
           (is (= {:language "ru" :language_revision 1}
                  (select-keys (get-in @state [:db :public.profiles (:user-id user)]) [:language :language_revision]))))))))
