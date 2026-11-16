@@ -68,7 +68,7 @@
     (when as
       (jdbc/execute-one! connection ["select set_config('request.jwt.claim.sub', ?, false), set_config('tover.session_key', ?, false)"
                                      (str as) (session! as)]))
-    (:status (jdbc/execute-one! connection ["select app_private.bel_recipient_membership(?, ?) as status" workspace-id email]
+    (:status (jdbc/execute-one! connection ["select status from app_private.bel_recipient_access(?, ?)" workspace-id email]
                                 {:builder-fn next.jdbc.result-set/as-unqualified-lower-maps}))))
 
 

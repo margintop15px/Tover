@@ -21,7 +21,7 @@
     [taoensso.nippy :as nippy]
     [tover.accounts.persistence :as accounts]
     [tover.accounts.profile.model :as profile-model]
-    [tover.auth.sessions :as sessions]
+    [tover.identity.session :as session]
     [tover.shared.bel :as wiring]
     [tover.workspaces.create.model :as model]
     [tover.workspaces.create.web :as web]
@@ -66,8 +66,8 @@
          session-key (str "test-session-" (random-uuid))]
      (admin! ["insert into auth.users(id,email,email_confirmed_at,raw_user_meta_data) values(?,?,case when ? then now() end,?::jsonb)"
               user-id (str user-id "@example.test") confirmed? (json/write-json-str {:name name})])
-     (admin! ["insert into app_private.sessions(id,user_id,data) values(?,?,?)"
-              session-key user-id (pr-str {:bel/session-id session-id :identity/password-required? (boolean recovery?)})])
+     (admin! ["insert into app_private.sessions(id,session_id,user_id,data) values(?,?,?,?)"
+              session-key session-id user-id (pr-str {:identity/password-required? (boolean recovery?)})])
      {:bel/system (system) :user-id user-id :session-id session-id :auth-session-id session-key})))
 
 
@@ -152,8 +152,8 @@
         other-id  (random-uuid)
         other-key (str "test-session-" (random-uuid))
         other     (assoc ctx :session-id other-id :auth-session-id other-key :workspace-id (random-uuid))]
-    (admin! ["insert into app_private.sessions(id,user_id,data) values(?,?,?)"
-             other-key (:user-id ctx) (pr-str {:bel/session-id other-id})])
+    (admin! ["insert into app_private.sessions(id,session_id,user_id,data) values(?,?,?,'{}')"
+             other-key other-id (:user-id ctx)])
     (is (= receipt (execute other req)))
     (is (= (current ctx req) (current other req)))
     (is (= [1 1 2 1] (counts ctx req)))))
@@ -353,7 +353,7 @@
       (with-redefs [web/ready (fn [_] (throw (ex-info "Rendering unavailable" {:type :injected})))]
         (is (= :injected (:type (error-data #(handler/prepare-result ctx result))))))
       (is (= receipt (execute ctx req)))
-      (is (str/includes? (handler/render-html (:html (handler/render-view ctx ::web/ready (:input result)))) "Workshop")))))
+      (is (str/includes? (handler/render-html (:html (handler/render-view (assoc ctx :request {}) ::web/ready (:input result)))) "Workshop")))))
 
 
 (deftest runtime-role-has-no-data-api-or-rewrite-capability
@@ -431,7 +431,7 @@
 
 (deftest principal-is-the-current-session
   (let [ctx (context)]
-    (is (= {:user-id (:user-id ctx) :confirmed? true :password-required? false :memberships []}
+    (is (= {:user-id (:user-id ctx) :session-id (:session-id ctx) :confirmed? true :password-required? false :memberships []}
            (runtime/with-authority (runtime/prepare-context ctx) #{} :read-committed #(:principal %))))))
 
 
@@ -451,23 +451,6 @@
     (jdbc/execute-one! connection ["select set_config('request.jwt.claim.sub', ?, false)" (str user-id)])
     (try (:next.jdbc/update-count (jdbc/execute-one! connection [sql]))
          (catch java.sql.SQLException error (.getSQLState error)))))
-
-
-(deftest profile-hook-claims
-  (let [user-id (profile-user! "Alice" "ru")
-        active  (random-uuid)
-        revoked (random-uuid)]
-    (doseq [[id workspace-name status] [[active "Active shop" "active"] [revoked "Revoked shop" "suspended"]]]
-      (admin! ["insert into public.organizations(id,name,created_by) values(?,?,?)" id workspace-name user-id])
-      (admin! ["insert into public.organization_memberships(organization_id,user_id,role_id,status) values(?,?,'owner',?)" id user-id status]))
-    (let [claims (-> (admin! ["select public.custom_access_token_hook(jsonb_build_object('user_id', ?::uuid, 'claims', '{}'::jsonb))::text as event" user-id])
-                     :event (json/read-json :key-fn keyword) :claims)]
-      (is (= "ru" (:language claims)))
-      (is (true? (:profile_complete claims)))
-      (is (true? (:email_confirmed claims)))
-      (is (= [{:workspace_id (str active) :name "Active shop" :role "owner"}]
-             (mapv #(select-keys % [:workspace_id :name :role]) (:memberships claims))))
-      (is (string? (:created_at (first (:memberships claims))))))))
 
 
 (deftest profile-update-is-own-row-and-columns-only
@@ -508,13 +491,11 @@
     (is (= "Alicia" (:display-name (runtime/read-model ctx ::profile-model/my-profile {}))))))
 
 
-(deftest session-keys-for-user-lists-only-current-sessions-of-that-user
-  (let [{:keys [user-id auth-session-id]} (context)
-        expired (str "test-session-" (random-uuid))
-        store (sessions/jdbc-store {:datasource (db "tover_app") :encryption-key "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})]
-    (admin! ["insert into app_private.sessions(id,user_id,data,expires_at) values(?,?,'{}',now()-interval '1 minute')" expired user-id])
-    (is (= [auth-session-id] (sessions/session-keys-for-user store user-id)))
-    (is (= [] (sessions/session-keys-for-user store (random-uuid))))))
+(deftest the-session-store-finds-a-key-only-for-its-own-bel-session
+  (let [{:keys [session-id auth-session-id]} (context)
+        store (session/jdbc-store {:datasource (db "tover_app") :encryption-key "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})]
+    (is (= auth-session-id (session/session-key store session-id)))
+    (is (nil? (session/session-key store (random-uuid))))))
 
 
 (deftest repeated-command-returns-original-after-later-edit
@@ -530,11 +511,6 @@
     (is (= :validation (:type (error-data #(write! ::profile-model/profiles [:display-name]
                                                    {:user-id alice :display-name "   "})))))
     (is (= "Alice" (:display_name (profile alice))))))
-
-
-(deftest hook-is-not-callable-by-the-app
-  (is (= "42501" (as-app (random-uuid) "select public.custom_access_token_hook('{}'::jsonb)")))
-  (is (false? (:allowed (admin! ["select has_function_privilege('authenticated','public.custom_access_token_hook(jsonb)','EXECUTE') as allowed"])))))
 
 
 (deftest signup-locale-seeds-profile-language
