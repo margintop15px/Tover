@@ -424,6 +424,6 @@
     (let [db @state]
       (into {} (for [{:keys [organization_id user_id status]} (vals (get-in db [:db :public.organization_memberships]))
                      :when (and (= workspace-id organization_id) (= "active" status))
-                     :let  [name (get-in db [:db :public.profiles user_id :display_name])]
+                     :let [name (get-in db [:db :public.profiles user_id :display_name])]
                      :when name]
                  [(str user_id) name])))))
