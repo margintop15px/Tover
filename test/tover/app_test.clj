@@ -472,14 +472,14 @@
                                     [id route])))
                        (:pages registry))]
     ;; ponytail: placeholders until chunks A/B add the onboarding pages.
-    (is (= {:tover.identity.placeholders/login     "/auth/login"
-            :tover.identity.placeholders/password  "/auth/password"
-            :tover.workspaces.select.web/page      "/workspace"
-            :tover.accounts.profile.web/profile    "/account/profile"
-            :tover.stock.web/page                  "/"
-            :tover.operations.web/page             "/operations"
-            :tover.catalogues.web/index            "/catalogues"
-            :tover.catalogues.web/page             "/catalogues/:kind"}
+    (is (= {:tover.identity.placeholders/login    "/auth/login"
+            :tover.identity.placeholders/password "/auth/password"
+            :tover.workspaces.select.web/page     "/workspace"
+            :tover.accounts.profile.web/profile   "/account/profile"
+            :tover.stock.web/page                 "/"
+            :tover.operations.web/page            "/operations"
+            :tover.catalogues.web/index           "/catalogues"
+            :tover.catalogues.web/page            "/catalogues/:kind"}
            (select-keys routes [:tover.identity.placeholders/login :tover.identity.placeholders/password
                                 :tover.workspaces.select.web/page :tover.accounts.profile.web/profile
                                 :tover.stock.web/page :tover.operations.web/page
