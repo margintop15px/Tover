@@ -17,6 +17,11 @@
   4)
 
 
+(def reconciliation
+  "How long an Unconfirmed submission waits for its outcome before its request stops."
+  (Duration/ofSeconds 60))
+
+
 (def retry-waits
   "Wait after the temporary failure of attempt n, at index n - 1."
   [(Duration/ofMinutes 1) (Duration/ofMinutes 5) (Duration/ofMinutes 30)])
@@ -51,11 +56,21 @@
             [:next-attempt-at {:optional true} validation/Instant]]})
 
 
+(defevent invitation-delivery-stopped-unconfirmed
+  {:schema [:map
+            [:delivery-id :uuid]
+            [:delivery-status [:= "stopped"]]
+            [:last-problem [:= "uncertain"]]
+            [:next-attempt-at {:optional true} validation/Instant]]})
+
+
 (defevent invitation-email-submitted
   {:schema [:map
             [:delivery-id :uuid]
             [:delivery-status [:= "submitted"]]
-            [:submitted-at validation/Instant]]})
+            [:submitted-at validation/Instant]
+            ;; Absent: submission ends the reconciliation deadline.
+            [:next-attempt-at {:optional true} validation/Instant]]})
 
 
 (defevent invitation-email-failed
@@ -66,12 +81,16 @@
             [:next-attempt-at {:optional true} validation/Instant]]})
 
 
-(defprocessor ^{:malli/schema [:=> [:cat [:map [:delivery-id :uuid] [:workspace-id :uuid] [:requested-by :uuid] [:attempts :int]]]
+(defprocessor ^{:malli/schema [:=> [:cat [:map [:delivery-id :uuid] [:workspace-id :uuid] [:requested-by :uuid] [:attempts :int]
+                                          [:delivery-status {:optional true} :string]]]
                                core/ProcessorRequest]} invitation-delivery
   {:todo ::persistence/due-deliveries}
-  [{:keys [delivery-id workspace-id requested-by attempts]}]
-  {:type  :command     :id    ::send-invitation-email :scope {:workspace-id workspace-id}
-   :actor requested-by :input {:delivery-id delivery-id :attempt (inc attempts)}})
+  [{:keys [delivery-id workspace-id requested-by attempts delivery-status]}]
+  (if (= "unconfirmed" delivery-status)
+    {:type  :command     :id    ::stop-unconfirmed-delivery                  :scope {:workspace-id workspace-id}
+     :actor requested-by :input {:delivery-id delivery-id :attempt attempts}}
+    {:type  :command     :id    ::send-invitation-email :scope {:workspace-id workspace-id}
+     :actor requested-by :input {:delivery-id delivery-id :attempt (inc attempts)}}))
 
 
 (def ^:private delivery-cofx
@@ -107,7 +126,8 @@
 
     :else
     {:events [{:type ::invitation-delivery-attempted
-               :data {:delivery-id delivery-id :attempts attempt :delivery-status "unconfirmed" :attempted-at now}}]
+               :data {:delivery-id     delivery-id :attempts attempt :delivery-status "unconfirmed" :attempted-at now
+                      :next-attempt-at (.plus ^Instant now ^Duration reconciliation)}}]
      :fx     [{:id    ::email/send
                :input {:invitation-id  (:invitation-id invitation) :to   (:email invitation) :language   (or language "en")
                        :workspace-name workspace-name              :role (:role invitation)  :expires-at (:expires-at invitation)}
@@ -140,7 +160,25 @@
                    :temporary (if (< attempt attempt-budget) "retrying" "exhausted")
                    :permanent "failed"
                    :uncertain "unconfirmed")
-          retry  (when (= "retrying" status) (.plus ^Instant now ^Duration (get retry-waits (dec attempt))))]
+          ;; Uncertainty keeps the attempt's original reconciliation deadline.
+          retry  (case status
+                   "retrying" (.plus ^Instant now ^Duration (get retry-waits (dec attempt)))
+                   "unconfirmed" (:next-attempt-at delivery)
+                   nil)]
       {:events [{:type ::invitation-email-failed
                  :data (cond-> {:delivery-id delivery-id :delivery-status status :last-problem (name kind)}
                          retry (assoc :next-attempt-at retry))}]})))
+
+
+;; After the reconciliation deadline an unresolved attempt stops its request: no further sends under it.
+(defcommand stop-unconfirmed-delivery
+  {:scope :workspace :policy ::delivery-service
+   :input [:map [:delivery-id :uuid] [:attempt Attempt]]
+   :cofx  delivery-cofx
+   :emits #{::invitation-delivery-stopped-unconfirmed}}
+  [{:keys [now delivery]} {:keys [delivery-id attempt]}]
+  (if (and (current? delivery attempt) (some? (:next-attempt-at delivery))
+           (not (.isBefore ^Instant now (:next-attempt-at delivery))))
+    {:events [{:type ::invitation-delivery-stopped-unconfirmed
+               :data {:delivery-id delivery-id :delivery-status "stopped" :last-problem "uncertain"}}]}
+    {}))
