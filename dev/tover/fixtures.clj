@@ -37,7 +37,8 @@
     [tover.identity.access :as access]
     [tover.identity.provider :as provider]
     [tover.identity.session :as session]
-    [tover.shared.bel :as wiring])
+    [tover.shared.bel :as wiring]
+    [tover.workspaces.persistence :as workspaces])
   (:import
     [java.io ByteArrayInputStream]
     [java.time Instant]
@@ -201,6 +202,16 @@
             (throw (ex-info "Current workspace access is required" {:type :forbidden :status 403})))
           (assoc principal :memberships [{:workspace-id workspace :role (keyword (:role_id membership))}]))
         principal))))
+
+
+;; The directory transaction here is the state atom; membership lookups read it as SQL would.
+(extend-protocol workspaces/Memberships
+  clojure.lang.Atom
+  (-membership [state user-id workspace-id]
+    (some (fn [{:keys [id organization_id user_id role_id status]}]
+            (when (and (= workspace-id organization_id) (= user-id user_id))
+              {:membership-id id :workspace-id organization_id :user-id user_id :role role_id :status status}))
+          (vals (get-in @state [:db :public.organization_memberships])))))
 
 
 (alter-meta! #'->MemoryDirectory assoc :malli/schema [:=> [:cat :any :map] :map])

@@ -30,18 +30,3 @@
   [request]
   {:type :elements
    :html (shell/page-content request (i18n/t "Set your password") [:p (i18n/t "The service is unavailable. Please try again.")])})
-
-
-;; ponytail: placeholder until chunk B (07 · Switch workspace)
-(defpage workspace
-  {:route      "/workspace"
-   :title      "Workspaces · Tover"
-   :parent     :tover.shared.web.core/shell
-   :route-data {:tover/access :authenticated}
-   :query      web/query-request}
-  [request]
-  {:type :elements
-   :html [:section.management-page
-          [:header.management-header [:h1 (i18n/t "Workspaces")]]
-          [:ul (for [{:keys [name role]} (get-in request [:tover/identity :memberships])]
-                 [:li name " · " (clojure.core/name role)])]]})

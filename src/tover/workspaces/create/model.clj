@@ -3,17 +3,12 @@
     [bel.core :refer [defcommand defevent defmodel defreadmodel]]
     [bel.runtime :as runtime]
     [bel.validation :as validation]
-    [clojure.string :as str]
     [tover.accounts.profile.model :as profile]))
 
 
 (def WorkspaceName
-  "Board chapter 04: 1–100 extended grapheme clusters after trimming."
-  [:and
-   [:string {:decode/string (fn [value]
-                              (if (string? value) (str/trim value) value))}]
-   [:fn {:error/message "Name must have 1 to 100 characters."}
-    (fn [value] (<= 1 (count (re-seq #"\X" value)) 100))]])
+  "Board chapter 04: 1–100 extended grapheme clusters after trimming, the display-name rule."
+  profile/Name)
 
 
 (def CreateWorkspace
@@ -80,7 +75,7 @@
            [:membership-id :bel/uuid]]
    :emits #{::workspace-created ::workspace-owner-assigned}}
   [{:keys [actor now profile membership-id]} {:keys [workspace-id name]}]
-  (when (or (str/blank? (:display-name profile)) (> (count (:display-name profile)) 100))
+  (when-not (profile/valid-name? (:display-name profile))
     (throw (ex-info "Complete your profile first." {:type :profile-incomplete})))
   {:events [{:type ::workspace-created
              :data {:workspace-id workspace-id

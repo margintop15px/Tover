@@ -585,7 +585,19 @@
     "Invitation email subject": "You are invited to join {workspace} on Tover",
     "Invitation email body": "You have been invited to join the workspace {workspace} on Tover as {role}.\nReview the invitation: {link}\nThis invitation expires on {expires}.",
     "Invitation email role member": "a member",
-    "Invitation email role admin": "an admin"
+    "Invitation email role admin": "an admin",
+    "Save": "Save",
+    "1 to 100 characters.": "1 to 100 characters.",
+    "Could not load your profile.": "Could not load your profile.",
+    "1 to 100 characters. You become its first owner.": "1 to 100 characters. You become its first owner.",
+    "Back to workspace choices": "Back to workspace choices",
+    "Workspace created": "Workspace created",
+    "Your role: {role}": "Your role: {role}",
+    "Invite teammates": "Invite teammates",
+    "You no longer have access to this workspace.": "You no longer have access to this workspace.",
+    "Enter a workspace name of 1 to 100 characters.": "Enter a workspace name of 1 to 100 characters.",
+    "The workspace may already exist. Retry to check this request.": "The workspace may already exist. Retry to check this request.",
+    "Create a workspace or open an invitation you received.": "Create a workspace or open an invitation you received."
   },
   "ru": {
     "Stock": "Остатки",
@@ -1177,6 +1189,18 @@
     "Invitation email subject": "Вас приглашают в рабочее пространство {workspace} в Tover",
     "Invitation email body": "Вас приглашают в рабочее пространство {workspace} в Tover с ролью: {role}.\nПосмотреть приглашение: {link}\nПриглашение действует до {expires}.",
     "Invitation email role member": "участник",
-    "Invitation email role admin": "администратор"
+    "Invitation email role admin": "администратор",
+    "Save": "Сохранить",
+    "1 to 100 characters.": "От 1 до 100 символов.",
+    "Could not load your profile.": "Не удалось загрузить профиль.",
+    "1 to 100 characters. You become its first owner.": "От 1 до 100 символов. Вы станете его первым владельцем.",
+    "Back to workspace choices": "Назад к выбору пространства",
+    "Workspace created": "Рабочее пространство создано",
+    "Your role: {role}": "Ваша роль: {role}",
+    "Invite teammates": "Пригласить коллег",
+    "You no longer have access to this workspace.": "У вас больше нет доступа к этому рабочему пространству.",
+    "Enter a workspace name of 1 to 100 characters.": "Введите название рабочего пространства длиной от 1 до 100 символов.",
+    "The workspace may already exist. Retry to check this request.": "Рабочее пространство могло уже быть создано. Повторите, чтобы проверить этот запрос.",
+    "Create a workspace or open an invitation you received.": "Создайте рабочее пространство или откройте полученное приглашение."
   }
 }
