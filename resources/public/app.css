@@ -100,6 +100,8 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .management-empty { margin: 0; padding: 16px 12px; border-block: 1px solid var(--iw-line); color: var(--iw-muted); }
 .management-empty p { margin: 0; }
 .management-empty p + p { margin-top: 4px; }
+/* ponytail: the creation outcome patches only its form; hide the stale empty state until the next load. */
+.management-content:has(#workspace-creation[data-workspace-id]) .management-empty { display: none; }
 .management-footer { margin-top: 24px; }
 .management-footer form { margin: 0; }
 .management-footer button { color: var(--iw-muted); }

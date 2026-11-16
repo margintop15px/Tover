@@ -110,11 +110,9 @@ services:
     depends_on:
       db: {condition: service_healthy}
       auth: {condition: service_healthy}
-      rest: {condition: service_healthy}
     networks: [identity]
     environment:
       TOVER_AUTH_URL: http://auth:9999
-      TOVER_REST_URL: http://rest:3000
       TOVER_API_KEY: ${ANON_KEY:?Configure private .env}
       TOVER_AUTH_ADMIN_KEY: ${SERVICE_ROLE_KEY:?Configure private .env}
       TOVER_ORIGIN: ${TOVER_ORIGIN}

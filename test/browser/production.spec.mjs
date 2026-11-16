@@ -296,12 +296,12 @@ test('Datastar writes reject missing CSRF tokens and foreign origins', async ({ 
 test('email links require an explicit confirmation and invalid links show an error', async ({ page }) => {
   const verifications = [];
   page.on('request', request => {
-    if (request.method() === 'POST' && new URL(request.url()).pathname === '/action/tover.auth.web/verify-email') verifications.push(request);
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/action/tover.identity.confirm.web/confirm-email') verifications.push(request);
   });
-  await page.goto('/auth/verify?token_hash=expired-link&type=recovery');
+  await page.goto('/auth/confirm?token_hash=expired-link&type=signup');
   await expect(page.getByRole('heading', { name: 'Confirm email link' })).toBeVisible();
   expect(verifications).toHaveLength(0);
-  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm email', exact: true }).click();
   await expect(page.getByRole('alert')).toBeVisible();
   expect(verifications).toHaveLength(1);
 });
