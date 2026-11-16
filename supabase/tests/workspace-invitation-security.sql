@@ -45,8 +45,8 @@ END; $$;
 \ir ../migrations/038_invitation_delivery.sql
 \ir ../migrations/039_onboarding_foundation.sql
 \ir ../migrations/040_identity_flows.sql
-\ir ../migrations/042_invitation_lifecycle.sql
-\ir ../migrations/043_onboarding_cleanup.sql
+\ir ../migrations/041_invitation_lifecycle.sql
+\ir ../migrations/042_onboarding_cleanup.sql
 \ir ../migrations/034_workspace_actor_labels.sql
 \ir ../migrations/035_bel_workspace_creation.sql
 \ir ../migrations/036_bel_shared_journal.sql
@@ -54,8 +54,8 @@ END; $$;
 \ir ../migrations/038_invitation_delivery.sql
 \ir ../migrations/039_onboarding_foundation.sql
 \ir ../migrations/040_identity_flows.sql
-\ir ../migrations/042_invitation_lifecycle.sql
-\ir ../migrations/043_onboarding_cleanup.sql
+\ir ../migrations/041_invitation_lifecycle.sql
+\ir ../migrations/042_onboarding_cleanup.sql
 \if :legacy
 DO $$ BEGIN
   ASSERT EXISTS (SELECT FROM public.organization_memberships m JOIN public.organizations o ON o.id=m.organization_id

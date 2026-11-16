@@ -1,8 +1,8 @@
--- Onboarding cutover cleanup. Additive and idempotent; no data changes. Applies after 042 (every run
+-- Onboarding cutover cleanup. Additive and idempotent; no data changes. Applies after 041 (every run
 -- re-applies 034 onward, so this file must stay last for the membership lookup below).
 BEGIN;
 
--- app_private.bel_recipient_membership (038) was replaced by app_private.bel_recipient_access (042), which
+-- app_private.bel_recipient_membership (038) was replaced by app_private.bel_recipient_access (041), which
 -- also reports the latest removal. Nothing calls the old lookup, so the definer function is removed.
 DROP FUNCTION IF EXISTS app_private.bel_recipient_membership(uuid, text);
 

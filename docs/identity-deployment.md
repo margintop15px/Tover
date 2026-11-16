@@ -16,7 +16,7 @@ deployment/local-identity/identity.sh up
 scripts/test-identity-integration.sh
 ```
 
-`init` generates private random credentials in an ignored `.env` with mode 0600 and refuses to overwrite it. `up` starts Postgres, configures local database role passwords, starts Auth/PostgREST/Mailpit/gateway, applies migration 033 only when `app_private.sessions` does not exist yet (033 checks the original profile shape), then every migration from 034 on in name order (currently 034–043), configures the restricted `tover_app` session role and gives the private `tover_journal` worker role a local login. A profile created before the journal worker gets `TO_DEV_JOURNAL_PASSWORD` appended to its `.env` on the next `up`; other keys stay unchanged. Running `up` again preserves accounts and data. `stop` stops this profile without removing its volume.
+`init` generates private random credentials in an ignored `.env` with mode 0600 and refuses to overwrite it. `up` starts Postgres, configures local database role passwords, starts Auth/PostgREST/Mailpit/gateway, applies migration 033 only when `app_private.sessions` does not exist yet (033 checks the original profile shape), then every migration from 034 on in name order (currently 034–042), configures the restricted `tover_app` session role and gives the private `tover_journal` worker role a local login. A profile created before the journal worker gets `TO_DEV_JOURNAL_PASSWORD` appended to its `.env` on the next `up`; other keys stay unchanged. Running `up` again preserves accounts and data. `stop` stops this profile without removing its volume.
 
 | Service | Local address |
 | --- | --- |
@@ -65,8 +65,8 @@ The onboarding cutover adds:
 - 038: invitation deliveries and manager row policies on invitations.
 - 039: drops the legacy identity RPCs and the access-token hook; signup metadata only names the profile and never creates or joins a workspace; `app_private.sessions` gains `session_id`, `created_at` and `ended_at`; `app_private.session_boundaries` holds password-reset boundaries; session-scoped journal entries; `app_private.bel_actor_labels`.
 - 040: `app_private.password_resets` for interrupted reset completion.
-- 042: invitation lifecycle helpers (`bel_received_invitation`, `bel_recipient_access`, `bel_workspace_team`, `bel_invitation_grant`) and recipient acceptance policies.
-- 043: drops the unused `bel_recipient_membership` and makes the membership lookup behind every manager policy ignore ended sign-ins.
+- 041: invitation lifecycle helpers (`bel_received_invitation`, `bel_recipient_access`, `bel_workspace_team`, `bel_invitation_grant`) and recipient acceptance policies.
+- 042: drops the unused `bel_recipient_membership` and makes the membership lookup behind every manager policy ignore ended sign-ins.
 
 All are additive and idempotent and preserve accounts, profiles, workspaces, memberships, invitations and sessions. Every chain (`identity.sh up`, `production.sh`, the Docker test scripts) applies every file from 034 on in name order, so a new migration only adds a file.
 
@@ -81,7 +81,7 @@ scripts/test-auth-security.sh
 scripts/test-identity-integration.sh
 ```
 
-The first script creates a disposable PostgreSQL cluster with networking disabled. It tests fresh installation and an identity upgrade with retained synthetic account/inventory data through 043 (each applied twice), catalog/permission parity, rejected partial schemas, the removal of the legacy RPCs, signup metadata safeguards, the Bel row policies for outsiders, members, managers and recipients (verified email, offered role, revocation, live sign-in required), session-scoped journal entries, reset boundaries and password resets, actor-name fallbacks, and a cancellation overlapping an acceptance. It never reads project `.env` files or connects to an existing database.
+The first script creates a disposable PostgreSQL cluster with networking disabled. It tests fresh installation and an identity upgrade with retained synthetic account/inventory data through 042 (each applied twice), catalog/permission parity, rejected partial schemas, the removal of the legacy RPCs, signup metadata safeguards, the Bel row policies for outsiders, members, managers and recipients (verified email, offered role, revocation, live sign-in required), session-scoped journal entries, reset boundaries and password resets, actor-name fallbacks, and a cancellation overlapping an acceptance. It never reads project `.env` files or connects to an existing database.
 
 The integration suite uses the local profile by default. It creates uniquely named synthetic users and exercises real Auth login/user verification/refresh/logout. With the local mail catcher, it also proves confirmation/recovery delivery, fresh-client token-hash verification, replay rejection and password setup. Hosted email checks require an explicit `IDENTITY_TEST_MAIL_URL`; otherwise that part is reported as skipped. It retains synthetic accounts/workspaces and removes only temporary session rows created by its own checks. The final Clojure runner exercises `tover.identity.provider`, the encrypted JDBC session store and the Bel directory behind the real handler: an invitation link kept through sign-in, Create and Select Workspace, navigation without session rewrites, concurrent token refresh under the row lock and Sign Out. Fixture tests do not prove real provider compatibility.
 
@@ -95,6 +95,6 @@ IDENTITY_TEST_SERVICE_KEY=... \
 scripts/test-identity-integration.sh
 ```
 
-Supply secrets through the environment, not shell history. Apply 033 through 043 to that test target first; do not enable an access-token hook. The suite refuses a remote target without `IDENTITY_TEST_TARGET=disposable`. To include hosted JDBC checks, explicitly set `IDENTITY_TEST_JDBC_URL`, `IDENTITY_TEST_DB_USER`, `IDENTITY_TEST_DB_PASSWORD` and `IDENTITY_TEST_SESSION_KEY`; otherwise the suite reports that part as skipped. No production or hosted target is configured by this repository.
+Supply secrets through the environment, not shell history. Apply 033 through 042 to that test target first; do not enable an access-token hook. The suite refuses a remote target without `IDENTITY_TEST_TARGET=disposable`. To include hosted JDBC checks, explicitly set `IDENTITY_TEST_JDBC_URL`, `IDENTITY_TEST_DB_USER`, `IDENTITY_TEST_DB_PASSWORD` and `IDENTITY_TEST_SESSION_KEY`; otherwise the suite reports that part as skipped. No production or hosted target is configured by this repository.
 
 Verified on 2026-11-16 (onboarding cutover): `scripts/test-auth-security.sh` passed fresh, upgrade, parity and partial-schema checks; `scripts/test-identity-integration.sh` passed the captured-email and Auth checks and the Clojure runner (3 tests, 45 assertions) against the local profile. No hosted project or production database was contacted.

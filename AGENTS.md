@@ -122,6 +122,6 @@ Keep business constraints in the semantic package where practical. Accepted hist
 
 Never perform destructive database operations, including DELETE, TRUNCATE, DROP, resets or destructive overwrites, without explicit user approval identifying the exact target and impact. Repository cleanup does not authorize database changes.
 
-Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `044_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
+Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `043_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
 
 Keep credentials, `.data`, backups, private experiment captures and generated dependencies out of Git. Never expose privileged credentials in browser assets.
