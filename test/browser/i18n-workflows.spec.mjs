@@ -60,10 +60,12 @@ async function fields(page, draft, values) {
 async function freshWorkspace(page, locale) {
   await signIn(page); await language(page, locale);
   await page.goto('/workspace');
-  const form = page.locator('form[action$="/create-workspace"]');
-  await form.locator('xpath=ancestor::details').locator('summary').click();
-  await form.locator('input[name=name]').fill(`I18n ${locale} ${randomUUID()}`);
-  await form.locator('button').click();
+  const creation = page.locator('#workspace-creation');
+  await page.locator('details.management-disclosure').filter({ has: creation }).locator('summary').click();
+  await creation.locator('input[name=name]').fill(`I18n ${locale} ${randomUUID()}`);
+  await creation.locator('button').click();
+  // Creation never selects the workspace; its outcome offers to open it.
+  await creation.locator('form[action$="/select"]').first().locator('button').click();
   await expect(page.locator('#stock-grid')).toBeVisible();
 }
 
@@ -214,19 +216,19 @@ for (const locale of ['en', 'ru']) {
     const invitation = page.locator('.management-table tbody tr').filter({ hasText: email });
     await expect(invitation).toContainText(t('Pending'));
     await translatedInterface(page, locale);
-    await invitation.getByRole('button', { name: t('Resend'), exact: true }).click();
-    await expect(page.getByRole('alert')).toContainText(t('Too many requests. Please try again later.'));
+    // Resend waits until the first delivery is no longer in progress.
+    await expect(invitation.getByRole('button', { name: t('Resend'), exact: true })).toHaveCount(0);
     await invitation.getByRole('button', { name: t('Cancel'), exact: true }).click();
-    await expect(invitation).toHaveCount(0);
+    await expect(invitation).toContainText(t('Cancelled'));
     await translatedInterface(page, locale);
 
     await page.goto('/workspace');
     await expect(page).toHaveTitle(t('Workspaces · Tover'));
     await translatedInterface(page, locale);
-    const form = page.locator('form[action$="/select-workspace"]').first();
+    const form = page.locator('form[action$="tover.workspaces.select.web/select"]').first();
     await form.locator('[name="workspace-id"]').evaluate(input => { input.value = '00000000-0000-0000-0000-000000000000'; });
     await form.locator('button').click();
-    await expect(page.getByRole('alert')).toContainText(t('The request was rejected. Refresh the page before trying again.'));
+    await expect(page.getByRole('alert')).toContainText(t('This workspace is not accessible.'));
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: `/tmp/tover-i18n-${locale}-header.png`, fullPage: true });

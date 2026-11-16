@@ -39,7 +39,7 @@ test('guest language covers every authentication screen and persists after reloa
   const context = await browser.newContext({ baseURL, locale: 'ru-RU' });
   const page = await context.newPage();
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  for (const [url, heading] of [['/auth/login', 'Войти'], ['/auth/signup', 'Создать аккаунт'], ['/auth/recover', 'Восстановить доступ'], ['/auth/verify?type=email', 'Подтвердить ссылку из письма']]) {
+  for (const [url, heading] of [['/auth/login', 'Войти'], ['/auth/signup', 'Создать аккаунт'], ['/auth/recover', 'Восстановить доступ'], ['/auth/confirm?type=email', 'Подтвердить ссылку из письма']]) {
     await page.goto(url);
     await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
@@ -142,7 +142,7 @@ test('account language follows devices; inventory, review, history, filters and 
   await expect(page.getByRole('button', { name: 'Отправить приглашение', exact: true })).toBeVisible();
   await page.getByLabel('Электронная почта', { exact: true }).fill('owner@example.test');
   await page.getByRole('button', { name: 'Отправить приглашение', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('Пользователь уже состоит в рабочем пространстве.');
+  await expect(page.getByRole('alert')).toContainText('Этот человек уже в команде.');
   await expect(page.getByLabel('Электронная почта', { exact: true })).toHaveValue('owner@example.test');
   await page.goto('/workspace');
   await expect(page.getByRole('heading', { name: 'Рабочие пространства', exact: true })).toBeVisible();
