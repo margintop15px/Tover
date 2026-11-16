@@ -10,17 +10,13 @@
             [org.httpkit.server :as http]
             [ring.middleware.session.store :as ring-store]
             [tover.app :as app]
-            [tover.auth.security :as security]
-            [tover.auth.sessions :as sessions]
-            [tover.auth.supabase :as auth-supabase]
-            [tover.identity :as identity]
-            [tover.session-store :as session-store]
+            [tover.fixtures :as fixtures]
+            [tover.identity.access :as access]
             [tover.shared.jdbc :as database]
             [tover.shared.rdf :as rdf]
             [tover.stock.store :as store]
             [tover.support :as support])
-  (:import [java.nio.file Files]
-           [java.time Instant]))
+  (:import [java.nio.file Files]))
 
 
 (defn- with-data-path
@@ -39,10 +35,9 @@
 (defn- fixture-services
   {:malli/schema [:=> [:cat] :map]}
   []
-  (merge (select-keys (identity/fixtures) [:auth :workspaces])
-         {:session-store (session-store/memory-store)
-          :origin        "http://localhost:3031"
-          :development?  true}))
+  (assoc (select-keys (fixtures/system) [:provider :session-store])
+         :origin "http://localhost:3031"
+         :development? true))
 
 
 (defn- fixture-config
@@ -64,8 +59,8 @@
             (is (some? (bel/get-action :tover.catalogues.web/save)))
             (is (nil? (bel/get-action :tover.catalogues.rename.web/save)))
             (is (nil? (bel/get-view :tover.catalogues.rename.web/row)))
-            (is (nil? (bel/get-action :tover.workspaces.create.web/create)))
-            (is (nil? (bel/get-view :tover.workspaces.create.web/ready)))
+            (is (some? (bel/get-action :tover.workspaces.create.web/create)))
+            (is (some? (bel/get-view :tover.workspaces.create.web/ready)))
             (is (= 403 (:status (handler request))))
             (is (= 403 (:status (handler (update request :headers dissoc "origin")))))
             (is (= 403 (:status (handler (assoc-in request [:headers "origin"] "http://attacker.example")))))
@@ -78,33 +73,6 @@
             (let [response (handler {:request-method :get :uri "/operations" :headers {}})]
               (is (contains? #{303 401} (:status response))))
             (is (= 405 (:status (handler {:request-method :options :uri "/" :headers {}})))))
-          (finally
-            (realtime/stop! rt)
-            (rdf/close! repo)))))))
-
-
-(deftest tokens-without-tover-claims-fail-closed
-  (with-data-path
-    (fn [path]
-      (let [repo      (rdf/native-store path)
-            rt        (realtime/start!)
-            ;; Issued by Auth without the custom access token hook; a refresh does not add the claims either.
-            tokens    {:access-token  (support/jwt {:sub (str support/user-id) :email "person@example.test" :role "authenticated"})
-                       :refresh-token "refresh" :expires-at (+ 3600 (.getEpochSecond (Instant/now)))
-                       :user          {:user-id support/user-id :email "person@example.test" :email-confirmed? true}}
-            refreshes (atom 0)
-            services  (assoc (fixture-services)
-                             :auth (support/auth-provider (auth-supabase/auth {:auth-url "http://auth.invalid" :api-key "public" :admin-key "admin"})
-                                                          {:refresh (fn [_] (swap! refreshes inc) tokens)}))
-            key       (sessions/establish! (:session-store services) nil tokens)]
-        (try
-          (let [handler  (app/create-handler (merge services {:repo repo :realtime rt}))
-                response (handler {:request-method :get :uri "/" :headers {"cookie" (str "tover-session=" key)}})]
-            (is (= 503 (:status response)))
-            (is (nil? (get-in response [:headers "location"])))
-            (is (= "identity-claims-missing" (get-in response [:headers "x-tover-error"])))
-            (is (= 1 @refreshes))
-            (is (some? (sessions/session (:session-store services) key))))
           (finally
             (realtime/stop! rt)
             (rdf/close! repo)))))))
@@ -205,7 +173,7 @@
                         bel-handler/page-handler   #(factory :page %)
                         bel-handler/view-handler   #(factory :view %)
                         bel-handler/action-handler #(factory :action %)
-                        security/wrap-identity     (fn [handler _ _policy]
+                        access/wrap-access         (fn [handler _ _policy]
                                                      (fn [request]
                                                        (handler (assoc request :tover/identity @current-identity :bel/context @current-identity))))]
             (let [handler (app/create-handler (merge (fixture-services) context))
@@ -503,23 +471,22 @@
                                   (when-let [route (:bel/route (meta definition))]
                                     [id route])))
                        (:pages registry))]
-    (is (= {:tover.auth.web/login               "/auth/login"
-            :tover.auth.web/signup              "/auth/signup"
-            :tover.auth.web/recover             "/auth/recover"
-            :tover.auth.web/verify              "/auth/verify"
-            :tover.auth.web/confirm             "/auth/confirm"
-            :tover.auth.web/password            "/auth/password"
-            :tover.accounts.profile.web/profile "/account/profile"
-            :tover.stock.web/page               "/"
-            :tover.operations.web/page          "/operations"
-            :tover.catalogues.web/index         "/catalogues"
-            :tover.catalogues.web/page          "/catalogues/:kind"
-            :tover.workspaces.web/page          "/workspace"
-            :tover.teams.core/page              "/team"}
-           routes))
+    ;; ponytail: placeholders until chunks A/B add the onboarding pages.
+    (is (= {:tover.identity.placeholders/login     "/auth/login"
+            :tover.identity.placeholders/password  "/auth/password"
+            :tover.identity.placeholders/workspace "/workspace"
+            :tover.accounts.profile.web/profile    "/account/profile"
+            :tover.stock.web/page                  "/"
+            :tover.operations.web/page             "/operations"
+            :tover.catalogues.web/index            "/catalogues"
+            :tover.catalogues.web/page             "/catalogues/:kind"}
+           (select-keys routes [:tover.identity.placeholders/login :tover.identity.placeholders/password
+                                :tover.identity.placeholders/workspace :tover.accounts.profile.web/profile
+                                :tover.stock.web/page :tover.operations.web/page
+                                :tover.catalogues.web/index :tover.catalogues.web/page])))
+    (is (not-any? #(re-find #"^tover\.(auth|teams)\b|^tover\.workspaces\.web$" (namespace %)) (keys routes)))
     (doseq [id [:tover.stock.web/page :tover.operations.web/page
-                :tover.catalogues.web/index :tover.catalogues.web/page
-                :tover.workspaces.web/page :tover.teams.core/page]]
+                :tover.catalogues.web/index :tover.catalogues.web/page]]
       (is (= :tover.shared.web.core/shell (:bel/parent (bel/get-page id)))))
     (is (every? (fn [id]
                   (not (contains? #{"tover.actions" "tover.views" "tover.pages"
@@ -527,14 +494,12 @@
                                   (namespace id))))
                 (mapcat keys (vals registry))))
     (is (some? (bel/get-action :tover.stock.web/open-history)))
-    (is (= "/action/tover.teams.core/invite" (bel/action-url :tover.teams.core/invite)))
     (is (= "/view/tover.stock.web/stock" (bel/view-url :tover.stock.web/stock)))
     (is (some? (bel/get-stream :tover.stock.web/changed)))))
 
 
 (def ^:private environment
   {"TOVER_AUTH_URL"    "http://127.0.0.1:58000/auth/v1"
-   "TOVER_REST_URL"    "http://127.0.0.1:58000/rest/v1"
    "TOVER_API_KEY"     "synthetic-public" "TOVER_AUTH_ADMIN_KEY" "synthetic-admin"
    "TOVER_ORIGIN"      "http://localhost:3030"
    "TOVER_JDBC_URL"    "jdbc:postgresql://127.0.0.1:55432/postgres"
@@ -550,13 +515,14 @@
 
 (deftest bel-system-is-configured-for-the-handler
   (let [c (app/config 3031 "x" {:development? true :environment environment})]
-    (is (= {:repo (ig/ref ::app/repo) :datasource    (ig/ref ::app/datasource)    :realtime (ig/ref ::app/realtime)
-            :auth (ig/ref ::app/auth) :session-store (ig/ref ::app/session-store)}
+    (is (= {:repo     (ig/ref ::app/repo)     :datasource    (ig/ref ::app/datasource)    :realtime (ig/ref ::app/realtime)
+            :provider (ig/ref ::app/provider) :session-store (ig/ref ::app/session-store) :origin   "http://localhost:3030"}
            (::app/bel-system c)))
     (is (= (ig/ref ::app/bel-system) (get-in c [::app/handler :bel/system])))
     (is (not-any? #(contains? c %) [::app/journal-datasource ::app/delivery-system :bel.delivery/worker]))
-    (is (= {:realtime ::realtime :auth ::auth :session-store ::sessions}
-           (:resources (app/bel-system {:realtime ::realtime :auth ::auth :session-store ::sessions}))))))
+    (is (= {:realtime ::realtime :provider ::provider :session-store ::sessions :origin "http://localhost:3030"}
+           (:resources (app/bel-system {:realtime ::realtime              :provider ::provider :session-store ::sessions
+                                        :origin   "http://localhost:3030"}))))))
 
 
 (deftest journal-variables-configure-the-worker
@@ -565,8 +531,21 @@
                                                      "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal")})]
     (is (= {:jdbc-url (get environment "TOVER_JDBC_URL") :user "tover_journal" :password "synthetic-journal"}
            (::app/journal-datasource c)))
-    (is (= {:repo (ig/ref ::app/repo) :datasource (ig/ref ::app/journal-datasource)} (::app/delivery-system c)))
-    (is (= (ig/ref ::app/delivery-system) (:bel.delivery/worker c)))))
+    (is (= {:repo (ig/ref ::app/repo) :datasource (ig/ref ::app/journal-datasource) :origin "http://localhost:3030"}
+           (::app/delivery-system c)))
+    (is (= (ig/ref ::app/delivery-system) (:bel.delivery/worker c)))
+    (is (not (contains? c ::app/mailer)))))
+
+
+(deftest smtp-variables-give-the-worker-a-mailer
+  (let [c (app/config 3031 "x" {:development? true
+                                :environment  (assoc environment "TOVER_JOURNAL_DB_USER" "tover_journal"
+                                                     "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"
+                                                     "TOVER_SMTP_HOST" "127.0.0.1" "TOVER_SMTP_PORT" "1025"
+                                                     "TOVER_SMTP_FROM" "tover@example.test" "TOVER_SMTP_STARTTLS" "false")})]
+    (is (= {:host "127.0.0.1" :port 1025 :user nil :password nil :from "tover@example.test" :sender-name nil :starttls? false}
+           (::app/mailer c)))
+    (is (= (ig/ref ::app/mailer) (get-in c [::app/delivery-system :mailer])))))
 
 
 (deftest one-journal-variable-is-a-configuration-error
@@ -603,10 +582,9 @@
 
 (deftest unnamed-user-is-sent-to-profile-with-return-to
   (support/with-application
-    (fn [{:keys [browser users]}]
-      (let [{:keys [request!]} browser
-            user               (some #(when (= "unnamed@example.test" (:email %)) %) users)]
-        (support/login! browser user)
+    (fn [{:keys [browser] :as services}]
+      (let [{:keys [request!]} browser]
+        (support/sign-in! services browser "unnamed@example.test")
         (doseq [[uri query location] [["/catalogues/x" {} "/account/profile?return-to=%2Fcatalogues%2Fx"]
                                       ["/workspace" {"a" "1"} "/account/profile?return-to=%2Fworkspace%3Fa%3D1"]]]
           (let [response (request! :get uri query)]
@@ -623,6 +601,6 @@
   ;; Browsers strip tab and newline, so "/\t/evil.test" would resolve to //evil.test.
   (doseq [value ["//evil.test" "https://evil.test" "/\\evil" "/a\r\nLocation: //evil.test" "/\t/evil.test" "/\n/evil.test"
                  "/\u0000x" "" nil]]
-    (is (= "/" (security/local-path value)) (pr-str value)))
+    (is (= "/" (access/local-path value)) (pr-str value)))
   (doseq [value ["/" "/workspace" "/catalogues/goods?q=a%20b"]]
-    (is (= value (security/local-path value)))))
+    (is (= value (access/local-path value)))))

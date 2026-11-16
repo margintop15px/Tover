@@ -4,7 +4,7 @@
     [clojure.java.io :as io]
     [clojure.string :as str]
     [clojure.test :refer [deftest is testing]]
-    [tover.auth.core :as auth]
+    [tover.fixtures :as fixtures]
     [tover.inventory.completion :as completion]
     [tover.inventory.filters :as filters]
     [tover.inventory.grid :as grid]
@@ -14,9 +14,7 @@
     [tover.inventory.windows :as windows]
     [tover.operations.ui :as operations]
     [tover.shared.i18n :as i18n]
-    [tover.support :as support]
-    [tover.teams.core :as teams]
-    [tover.workspaces.web :as workspaces]))
+    [tover.support :as support]))
 
 
 (deftest catalog-has-complete-russian-translations-and-matching-parameters
@@ -116,18 +114,19 @@
 
 (deftest guest-and-account-preferences-survive-requests
   (support/with-application
-    (fn [{:keys [handler browser users state]}]
-      (let [request! (:request! browser)]
+    (fn [{:keys [handler browser state] :as services}]
+      (let [request! (:request! browser)
+            action   "/action/tover.identity.shell/set-language"]
         (is (str/includes? (:body (request! :get "/auth/login" {} {:headers {"accept-language" "ru-RU"}})) "Войти"))
-        (is (= 403 (:status (request! :post "/action/tover.auth.web/set-language" {"locale" "ru"} {:csrf? false}))))
-        (is (= 303 (:status (support/login! browser (first users)))))
-        (is (= 303 (:status (support/set-language! browser "ru"))))
-        (is (= "ru" (get-in @state [:users (:user-id (first users)) :language])))
-        ;; A separate browser/session reads the account language from its token claims.
+        (is (= 403 (:status (request! :post action {"locale" "ru"} {:csrf? false}))))
+        (support/sign-in! services browser "owner@example.test" {:workspace-id fixtures/workspace-id :uri "/workspace"})
+        (is (= 303 (:status (request! :post action {"locale" "ru" "return-to" "/workspace"}))))
+        (is (= "ru" (get-in @state [:db :public.profiles fixtures/owner-id :language])))
+        ;; A separate browser/session reads the account language from the profile on its next request.
         (let [other (support/browser handler)]
-          (support/login! other (first users))
+          (support/sign-in! services other "owner@example.test" {:workspace-id fixtures/workspace-id})
           (is (str/includes? (:body ((:request! other) :get "/workspace")) "Рабочие пространства")))
-        (is (= 422 (:status (request! :post "/action/tover.auth.web/set-language" {"locale" "de"}))))))))
+        (is (= 422 (:status (request! :post action {"locale" "de"}))))))))
 
 
 (deftest immutable-shape-errors-and-email-templates-have-both-languages
@@ -142,43 +141,11 @@
          (binding [i18n/*locale* "ru"] (i18n/error-message (ex-info "private upstream body" {}))))))
 
 
-(deftest specific-workspace-and-delivery-errors-survive-localization
-  (doseq [locale ["en" "ru"]]
-    (support/with-application
-      (fn [{:keys [auth] :as services}]
-        (assoc services :auth (support/auth-provider auth {:invite  (fn [_] (auth/fail! :unavailable 503 true))
-                                                           :recover (fn [_] (auth/fail! :unavailable 503 false))})))
-      (fn [{:keys [browser users]}]
-        (let [request! (:request! browser)]
-          (support/login! browser (first users))
-          (support/set-language! browser locale)
-          (doseq [[route input message] [["/action/tover.workspaces.web/select-workspace"
-                                          {"workspace-id" (str (random-uuid))} "This workspace is not accessible."]
-                                         ["/action/tover.teams.core/invite"
-                                          {"email" "uncertain@example.test" "role" "member"}
-                                          "Email delivery is unconfirmed. The invitation is still pending."]
-                                         ["/action/tover.teams.core/recovery"
-                                          {"user-id" (str (:user-id (first users)))}
-                                          "The service is unavailable. Please try again."]]]
-            (let [response (request! :post route input)]
-              (is (contains? #{403 503} (:status response)))
-              (is (str/includes? (:body response) (i18n/t locale message {}))))))))))
-
-
-(deftest team-statuses-empty-workspaces-and-provider-errors-use-the-selected-language
+(deftest provider-errors-use-the-selected-language
   (doseq [locale ["en" "ru"]]
     (binding [i18n/*locale* locale]
-      (let [members          (for [role [:owner :admin :member] status [:active :suspended]]
-                               {:email "Person" :role role :status status :user-id (random-uuid)})
-            invitations      (for [status [:pending :expired :accepted :revoked]]
-                               {:email "Recipient" :status status :id (random-uuid)})
-            markup           (html/render-html (teams/team-content {} {:members members :invitations invitations}))
-            empty-workspaces (html/render-html (workspaces/workspace-content {:tover/identity {:memberships []}}))]
-        (doseq [key ["Owner" "Admin" "Member" "Active" "Suspended" "Pending" "Expired" "Accepted" "Revoked" "Resend" "Cancel"]]
-          (is (str/includes? markup (i18n/t key)) key))
-        (is (str/includes? empty-workspaces (i18n/t "Create workspace")))
-        (doseq [[code key] i18n/identity-errors]
-          (is (= (i18n/t key) (i18n/error-message (ex-info "Identity request failed." {:code code}))) (name code)))))))
+      (doseq [[code key] i18n/identity-errors]
+        (is (= (i18n/t key) (i18n/error-message (ex-info "Identity request failed." {:code code}))) (name code))))))
 
 
 (deftest smart-unit-labels-translate-without-changing-the-unit-value

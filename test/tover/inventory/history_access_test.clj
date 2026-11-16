@@ -4,9 +4,7 @@
     [bel.handler :as handler]
     [clojure.string :as str]
     [clojure.test :refer [deftest is]]
-    [tover.auth.core :as auth]
-    [tover.auth.security :as security]
-    [tover.auth.sessions :as sessions]
+    [tover.fixtures :as fixtures]
     [tover.inventory.ledger :as ledger]
     [tover.inventory.model :as model]
     [tover.inventory.store :as store]
@@ -44,10 +42,9 @@
   {:malli/schema [:=> [:cat [:=> [:cat :map] :any]] :any]}
   [run]
   (support/with-application
-    (fn [{:keys [auth session-store users] :as services}]
-      (let [tokens (auth/sign-in! auth (first users))
-            key    (sessions/establish! session-store nil tokens)]
-        (run (merge services (security/authenticate services key) {:request {:session/key key}}))))))
+    (fn [services]
+      (let [session (fixtures/sign-in! services "owner@example.test" {:workspace-id fixtures/workspace-id})]
+        (run (merge services (fixtures/context services session) {:request {:session/key (:key session)}}))))))
 
 
 (defn- open-operation

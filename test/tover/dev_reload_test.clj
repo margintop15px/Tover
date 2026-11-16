@@ -10,8 +10,7 @@
     [ring.hot-reload.core :as hot]
     [ring.hot-reload.watcher :as watcher]
     [tover.app :as app]
-    [tover.identity :as identity]
-    [tover.session-store :as session-store]
+    [tover.fixtures :as fixtures]
     [user])
   (:import
     [java.io FileNotFoundException StringReader]
@@ -95,13 +94,10 @@
 
 
 (deftest explicit-services-compose-without-development-reload-components
-  (let [fixtures      (identity/fixtures)
-        services      {:auth          (:auth fixtures)             :workspaces   (:workspaces fixtures)
-                       :session-store (session-store/memory-store)
-                       :origin        "http://localhost:3030"      :development? true}
+  (let [services      (assoc (select-keys (fixtures/system) [:provider :session-store])
+                             :origin "http://localhost:3030" :development? true)
         configuration (app/system-config 3030 ".data/inventory" services)]
-    (is (identical? (:auth services) (get-in configuration [::app/auth :instance])))
-    (is (identical? (:workspaces services) (get-in configuration [::app/workspaces :instance])))
+    (is (identical? (:provider services) (get-in configuration [::app/provider :instance])))
     (is (identical? (:session-store services) (get-in configuration [::app/session-store :instance])))
     (is (= (ig/ref ::app/handler) (get-in configuration [::app/server :handler])))
     (is (= (select-keys services [:origin :development?])
@@ -116,10 +112,8 @@
   (let [program
         (pr-str
           '(do
-             (require '[tover.app :as app] '[tover.auth.core :as auth] '[tover.workspaces.core :as workspaces]
-                      '[integrant.core :as ig] '[ring.middleware.session.store :as ring] '[user])
+             (require '[tover.app :as app] '[integrant.core :as ig] '[ring.middleware.session.store :as ring] '[user])
              (let [environment      {"TOVER_AUTH_URL"        "http://127.0.0.1:58000/auth/v1"
-                                     "TOVER_REST_URL"        "http://127.0.0.1:58000/rest/v1"
                                      "TOVER_API_KEY"         "synthetic-public" "TOVER_AUTH_ADMIN_KEY"   "synthetic-admin"
                                      "TOVER_ORIGIN"          "http://localhost:3030"
                                      "TOVER_JDBC_URL"        "jdbc:postgresql://127.0.0.1:55432/postgres"
@@ -138,11 +132,9 @@
                            :inventory-path             (get-in development [:tover.app/repo :path])
                            :development-error          (:error development)
                            :provider-options?          (= {:auth-url  (get environment "TOVER_AUTH_URL")
-                                                           :rest-url  (get environment "TOVER_REST_URL")
                                                            :api-key   (get environment "TOVER_API_KEY")
                                                            :admin-key (get environment "TOVER_AUTH_ADMIN_KEY")}
-                                                          (:tover.app/auth development)
-                                                          (:tover.app/workspaces development))
+                                                          (:tover.app/provider development))
                            :jdbc-sessions?             (and (= {:jdbc-url (get environment "TOVER_JDBC_URL")
                                                                 :user     (get environment "TOVER_DB_USER")
                                                                 :password (get environment "TOVER_DB_PASSWORD")}
@@ -152,8 +144,7 @@
                                                                (:tover.app/session-store development))
                                                             (= (ig/ref :tover.app/datasource)
                                                                (get-in development [:user/handler :identity-health :datasource])))
-                           :fixture-auth?              (satisfies? auth/Auth (get-in development [:tover.app/auth :instance]))
-                           :fixture-workspaces?        (satisfies? workspaces/Directory (get-in development [:tover.app/workspaces :instance]))
+                           :fixture-provider?          (some? (get-in development [:tover.app/provider :instance]))
                            :fixture-sessions?          (satisfies? ring/SessionStore (get-in development [:tover.app/session-store :instance]))
                            :dev-handler?               (= (ig/ref :user/handler) (get-in development [:tover.app/server :handler]))
                            :reload-dependency?         (= (ig/ref :user/browser-reload) (get-in development [:user/handler :browser-reload]))
@@ -192,14 +183,14 @@
     (is (= ".data/tester-inventory-v1" (:inventory-path result)))
     (is (every? true? (map result [:provider-options? :jdbc-sessions? :dev-handler? :reload-dependency? :production-handler-absent? :development? :worker? :bel-system?]))
         (pr-str result))
-    (is (every? false? (map result [:fixture-auth? :fixture-workspaces? :fixture-sessions? :seed-dependency? :scoped-seed?]))
+    (is (every? false? (map result [:fixture-provider? :fixture-sessions? :seed-dependency? :scoped-seed?]))
         (pr-str result))))
 
 
 (deftest runtime-fixture-mode-is-no-longer-available
   (let [result (isolated-config-check "fixtures")]
     (is (= :configuration (:development-error result)))
-    (is (false? (:fixture-auth? result)))
+    (is (false? (:fixture-provider? result)))
     (is (false? (:seed-dependency? result)))))
 
 
@@ -222,7 +213,6 @@
                                 (is (= "deployment/local-identity/.env" path))
                                 (StringReader. content))]
         (is (= {"TOVER_AUTH_URL"        (str "http://127.0.0.1:" api-port "/auth/v1")
-                "TOVER_REST_URL"        (str "http://127.0.0.1:" api-port "/rest/v1")
                 "TOVER_API_KEY"         "synthetic-public" "TOVER_AUTH_ADMIN_KEY"   "synthetic-admin"
                 "TOVER_ORIGIN"          origin "TOVER_JDBC_URL" (str "jdbc:postgresql://127.0.0.1:" db-port "/postgres")
                 "TOVER_DB_USER"         "tover_app" "TOVER_DB_PASSWORD"             "synthetic-password"

@@ -17,7 +17,7 @@
 
 
 (def refresh
-  [[:tover.auth/refresh-claims {}]])
+  [])
 
 
 (defn register
