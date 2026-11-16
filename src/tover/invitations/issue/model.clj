@@ -1,6 +1,6 @@
 (ns tover.invitations.issue.model
   "Invite Teammate: one open offer per workspace and recipient, queued for email delivery.
-  The delivery model's later events are mapped by Task 6 using fully qualified keywords."
+  Later events of the delivery, resend, cancel and accept slices are mapped here by fully qualified keyword."
   (:require
     [bel.core :refer [defcommand defevent defmodel]]
     [bel.runtime :as runtime]
@@ -16,11 +16,18 @@
   (Duration/ofHours 168))
 
 
+(defn normalize
+  "Recipient matching: trimmed and lower-cased, never guessing that different addresses are one person."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [email]
+  (str/lower-case (str/trim email)))
+
+
 (def Email
   [:and
    [:string {:max           320
              :decode/string (fn [value]
-                              (if (string? value) (str/lower-case (str/trim value)) value))}]
+                              (if (string? value) (normalize value) value))}]
    [:re #"^[^@\s]+@[^@\s]+$"]])
 
 
@@ -29,9 +36,34 @@
 
 
 (def InviteTeammate
+  "`reviewed-removal` is the removal instant the manager reviewed before inviting a removed member again."
   [:map
    [:email Email]
-   [:role Role]])
+   [:role Role]
+   [:reviewed-removal {:optional true} validation/Instant]])
+
+
+(def Recipient
+  "The recipient's membership in the workspace, if any."
+  [:maybe [:map [:status :string] [:removed-at {:optional true} [:maybe validation/Instant]]]])
+
+
+(defn invalidated?
+  "Removal invalidates every offer created at or before the latest removal."
+  {:malli/schema [:=> [:cat [:maybe :map] [:map [:created-at validation/Instant]]] :boolean]}
+  [membership {:keys [created-at]}]
+  (boolean (and (= "removed" (:status membership)) (:removed-at membership)
+                (not (.isAfter ^java.time.Instant created-at (:removed-at membership))))))
+
+
+(defn check-recipient!
+  "Active members are already on the team; suspended access needs reinstatement, not an invitation."
+  {:malli/schema [:=> [:cat Recipient] :nil]}
+  [recipient]
+  (case (:status recipient)
+    "active" (throw (ex-info "That person is already on the team." {:type :already-member}))
+    "suspended" (throw (ex-info "That person's access is suspended." {:type :member-suspended}))
+    nil))
 
 
 (def Invitation
@@ -111,8 +143,10 @@
    :store  :directory
    :schema Invitation
    :policy ::invitation-reader
-   :events {::workspace-invitation-issued  {:create [:workspace-id :email :role :invited-by :status :expires-at :created-at]}
-            ::workspace-invitation-expired {:set [:status]}}})
+   :events {::workspace-invitation-issued {:create [:workspace-id :email :role :invited-by :status :expires-at :created-at]}
+            ::workspace-invitation-expired {:set [:status]}
+            :tover.invitations.cancel.model/workspace-invitation-cancelled {:set [:status]}
+            :tover.invitations.accept.model/workspace-invitation-accepted  {:set [:status]}}})
 
 
 (defmodel deliveries
@@ -122,12 +156,16 @@
    :policy ::invitation-reader
    :events {::workspace-invitation-issued {:create [:invitation-id :workspace-id :requested-by :requested-at
                                                     :delivery-status :attempts :next-attempt-at]}
+            :tover.invitations.resend.model/invitation-resend-requested
+            {:create [:invitation-id :workspace-id :requested-by :requested-at :delivery-status :attempts :next-attempt-at]}
             :tover.invitations.delivery.model/invitation-delivery-attempted
             {:set [:attempts :delivery-status :next-attempt-at :attempted-at]}
             :tover.invitations.delivery.model/invitation-delivery-stopped
             {:set [:delivery-status :next-attempt-at]}
+            :tover.invitations.delivery.model/invitation-delivery-stopped-unconfirmed
+            {:set [:delivery-status :next-attempt-at :last-problem]}
             :tover.invitations.delivery.model/invitation-email-submitted
-            {:set [:delivery-status :submitted-at]}
+            {:set [:delivery-status :submitted-at :next-attempt-at]}
             :tover.invitations.delivery.model/invitation-email-failed
             {:set [:delivery-status :last-problem :next-attempt-at]}}})
 
@@ -135,16 +173,18 @@
 (defcommand invite-teammate
   {:scope :workspace :input InviteTeammate :policy ::invitation-manager
    :cofx  [[:open :tover.invitations.persistence/open-invitation (fn [_ input] (select-keys input [:email]))]
-           [:recipient :tover.invitations.persistence/recipient-membership (fn [_ input] (select-keys input [:email]))]
+           [:recipient :tover.invitations.persistence/recipient-access (fn [_ input] (select-keys input [:email]))]
            [:invitation-id :bel/uuid]
            [:delivery-id :bel/uuid]]
    :emits #{::workspace-invitation-issued ::workspace-invitation-expired}}
-  [{:keys [actor now open recipient invitation-id delivery-id scope]} {:keys [email role]}]
-  (case recipient
-    "active" (throw (ex-info "That person is already on the team." {:type :already-member}))
-    "suspended" (throw (ex-info "That person's access is suspended." {:type :member-suspended}))
-    nil)
-  (let [live? (and open (.isAfter ^java.time.Instant (:expires-at open) now))]
+  [{:keys [actor now open recipient invitation-id delivery-id scope]} {:keys [email role reviewed-removal]}]
+  (check-recipient! recipient)
+  ;; A form prepared before the latest removal, or without reviewing it, cannot authorize rejoining.
+  (when (and (= "removed" (:status recipient)) (not= reviewed-removal (:removed-at recipient)))
+    (throw (ex-info "This person was removed from the workspace. Review the removal before inviting them again."
+                    {:type :removal-review-required})))
+  ;; An offer invalidated by a later removal can no longer be accepted; it is closed like an expired one.
+  (let [live? (and open (.isAfter ^java.time.Instant (:expires-at open) now) (not (invalidated? recipient open)))]
     (cond
       (and live? (= role (:role open))) {}
       live? (throw (ex-info "An invitation is already open." {:type :invitation-exists :invitation-id (:invitation-id open)}))

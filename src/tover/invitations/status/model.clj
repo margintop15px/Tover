@@ -18,6 +18,19 @@
   [:map [:email issue/Email]])
 
 
+(def Delivery
+  "Board vocabulary. `reconcile-by` is an Unconfirmed attempt's 60-second deadline; `active?` means queued,
+  sending or scheduled work exists, so no parallel resend may start."
+  [:map
+   [:status [:enum "queued" "submitted" "failed" "unconfirmed" "stopped" "stopped-unconfirmed"]]
+   [:problem {:optional true} [:maybe [:enum "temporary" "permanent" "uncertain"]]]
+   [:attempts-remaining :int]
+   [:next-attempt-at [:maybe validation/Instant]]
+   [:reconcile-by {:optional true} [:maybe validation/Instant]]
+   [:active? {:optional true} :boolean]
+   [:next-resend-at validation/Instant]])
+
+
 (def Status
   [:maybe
    [:map
@@ -26,12 +39,7 @@
     [:role :string]
     [:status [:enum "pending" "expired" "accepted" "revoked"]]
     [:expires-at validation/Instant]
-    [:delivery {:optional true}
-     [:map
-      [:status [:enum "queued" "submitted" "failed" "unconfirmed" "stopped"]]
-      [:attempts-remaining :int]
-      [:next-attempt-at [:maybe validation/Instant]]
-      [:next-resend-at validation/Instant]]]]])
+    [:delivery {:optional true} Delivery]]])
 
 
 (def ^:private delivery-statuses
@@ -45,12 +53,18 @@
 
 
 (defn delivery-status
-  "Board vocabulary: retries and exhaustion read as Failed, with remaining attempts shown separately."
-  {:malli/schema [:=> [:cat :map] :map]}
-  [{:keys [delivery-status attempts next-attempt-at requested-at]}]
-  {:status             (delivery-statuses delivery-status)
+  "Board vocabulary: retries and exhaustion read as Failed, with remaining attempts shown separately; a request
+  stopped after Unconfirmed reconciliation reads Stopped — Unconfirmed."
+  {:malli/schema [:=> [:cat :map] Delivery]}
+  [{:keys [delivery-status attempts next-attempt-at requested-at last-problem]}]
+  {:status             (if (and (= "stopped" delivery-status) (= "uncertain" last-problem))
+                         "stopped-unconfirmed"
+                         (delivery-statuses delivery-status))
+   :problem            last-problem
    :attempts-remaining (- attempt-budget attempts)
    :next-attempt-at    (when (= "retrying" delivery-status) next-attempt-at)
+   :reconcile-by       (when (= "unconfirmed" delivery-status) next-attempt-at)
+   :active?            (contains? #{"queued" "retrying" "unconfirmed"} delivery-status)
    :next-resend-at     (.plus ^Instant requested-at resend-cooldown)})
 
 

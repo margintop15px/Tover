@@ -1,13 +1,13 @@
 (ns tover.invitations.delivery-test
   "Board scenarios for the invitation delivery processor and its outcome commands."
   (:require
-    [bel.core :as bel]
     [bel.core-test :as fixture]
     [bel.runtime :as runtime]
     [clojure.string :as str]
     [clojure.test :refer [deftest is use-fixtures]]
     [tover.invitations.delivery.email :as email]
     [tover.invitations.delivery.model :as model]
+    [tover.invitations.fixtures :as invitations]
     [tover.invitations.persistence :as persistence])
   (:import
     [java.time Duration Instant]))
@@ -21,15 +21,7 @@
 (def expires (.plus now (Duration/ofHours 100)))
 
 
-(defn register
-  {:malli/schema [:=> [:cat [:fn fn?]] :any]}
-  [f]
-  (bel/build-registry! ['tover.accounts.profile.model 'tover.workspaces.create.model
-                        'tover.invitations.issue.model 'tover.invitations.delivery.model])
-  (f))
-
-
-(use-fixtures :each fixture/isolated-registry register)
+(use-fixtures :each fixture/isolated-registry invitations/register)
 
 
 (def delivery
@@ -66,7 +58,8 @@
 (deftest first-attempt-is-recorded-and-sends
   (let [{:keys [events fx]} (send! {} 1)]
     (is (= [{:type ::model/invitation-delivery-attempted
-             :data {:delivery-id delivery-id :attempts 1 :delivery-status "unconfirmed" :attempted-at now}}]
+             :data {:delivery-id     delivery-id :attempts 1 :delivery-status "unconfirmed" :attempted-at now
+                    :next-attempt-at (.plus now (Duration/ofSeconds 60))}}]
            (mapv #(select-keys % [:type :data]) events)))
     (is (= [{:id    ::email/send
              :input {:invitation-id invitation-id :to         "ann@example.test" :language "en" :workspace-name "Acme"
@@ -81,7 +74,6 @@
 
 
 (deftest clearing-events-omit-the-cleared-field
-  (is (not (contains? (get-in (send! {} 1) [:events 0 :data]) :next-attempt-at)))
   (is (not (contains? (get-in (send! {:invitation (assoc invitation :status "revoked")} 1) [:events 0 :data]) :next-attempt-at)))
   (is (not (contains? (get-in (decide ::model/record-email-failed {:delivery (assoc delivery :attempts 1 :delivery-status "unconfirmed")}
                                       {:delivery-id delivery-id :attempt 1 :problem {:type :permanent :message "x"}})
@@ -160,6 +152,53 @@
 (deftest uncertain-is-unconfirmed
   (is (= {:delivery-id delivery-id :delivery-status "unconfirmed" :last-problem "uncertain"}
          (get-in (failed 2 :uncertain) [:events 0 :data]))))
+
+
+(def deadline (.plus now (Duration/ofSeconds 60)))
+
+
+(deftest uncertain-keeps-the-reconciliation-deadline
+  (is (= deadline
+         (get-in (decide ::model/record-email-failed
+                         {:delivery (assoc delivery :attempts 1 :delivery-status "unconfirmed" :next-attempt-at deadline)}
+                         {:delivery-id delivery-id :attempt 1 :problem {:type :uncertain :message "timeout"}})
+                 [:events 0 :data :next-attempt-at]))))
+
+
+(deftest processor-stops-unconfirmed-request-at-its-deadline
+  (is (= {:type  :command :id ::model/stop-unconfirmed-delivery :scope {:workspace-id workspace} :actor actor
+          :input {:delivery-id delivery-id :attempt 2}}
+         (model/invitation-delivery {:delivery-id     delivery-id   :workspace-id workspace :requested-by actor :attempts 2
+                                     :delivery-status "unconfirmed"}))))
+
+
+(defn stop!
+  {:malli/schema [:=> [:cat :map] :map]}
+  [facts]
+  (decide ::model/stop-unconfirmed-delivery facts {:delivery-id delivery-id :attempt 1}))
+
+
+(def unconfirmed (assoc delivery :attempts 1 :delivery-status "unconfirmed" :next-attempt-at deadline))
+
+
+(deftest an-unconfirmed-attempt-consuming-budget
+  (is (= 3 (- model/attempt-budget (:attempts unconfirmed))))
+  (is (empty? (:events (stop! {:delivery unconfirmed}))) "reconciliation continues until the deadline")
+  (is (= [{:type ::model/invitation-delivery-stopped-unconfirmed
+           :data {:delivery-id delivery-id :delivery-status "stopped" :last-problem "uncertain"}}]
+         (mapv #(select-keys % [:type :data]) (:events (stop! {:delivery unconfirmed :now deadline}))))))
+
+
+(deftest a-late-email-or-old-outcome-after-newer-work
+  (let [stopped (assoc unconfirmed :delivery-status "stopped" :last-problem "uncertain")]
+    (is (empty? (:events (submitted stopped 1))) "a late success cannot restart a stopped request")
+    (is (empty? (:events (decide ::model/record-email-failed {:delivery stopped}
+                                 {:delivery-id delivery-id :attempt 1 :problem {:type :temporary :message "x"}}))))
+    (is (empty? (:events (stop! {:delivery (assoc unconfirmed :delivery-status "submitted") :now deadline}))))))
+
+
+(deftest submission-clears-the-reconciliation-deadline
+  (is (not (contains? (get-in (submitted (assoc sent :next-attempt-at deadline) 1) [:events 0 :data]) :next-attempt-at))))
 
 
 (def input
