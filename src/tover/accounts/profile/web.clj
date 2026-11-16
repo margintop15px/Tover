@@ -4,9 +4,8 @@
     [bel.core :as bel :refer [defaction defpage]]
     [bel.handler :as html]
     [bel.runtime :as runtime]
-    [com.brunobonacci.mulog :as mu]
     [tover.accounts.profile.model :as model]
-    [tover.auth.security :as security]
+    [tover.identity.access :as access]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.forms :refer [csrf-field]])
@@ -52,7 +51,7 @@
     [:button {:type "submit"} (i18n/t "Continue")]
     [:div.profile-language {:role "group" :aria-label (i18n/t "Language")}
      (for [[locale text label] [["en" "EN" (i18n/t "English")] ["ru" "RU" (i18n/t "Russian")]]]
-       [:button {:type         "submit" :formaction (bel/action-url :tover.auth.web/set-language) :formnovalidate true
+       [:button {:type         "submit" :formaction (bel/action-url :tover.identity.shell/set-language) :formnovalidate true
                  :name         "locale" :value      locale
                  :aria-label   label :title         label
                  :aria-pressed (str (= locale i18n/*locale*))}
@@ -66,7 +65,7 @@
    :profile   (runtime/read-model context ::model/my-profile {})
    :email     (get-in request [:tover/identity :user :email])
    :draft     (get-in request [:params :display-name])
-   :return-to (security/local-path (get-in request [:params :return-to]))
+   :return-to (access/local-path (get-in request [:params :return-to]))
    :latest    (:tover/latest-profile request)})
 
 
@@ -116,26 +115,14 @@
     (cond-> response (= 200 (:status response)) (assoc :status status))))
 
 
-(defn refresh-session!
-  "Apply an accepted save to this session's claims before answering; other sessions follow through the effect."
-  {:malli/schema [:=> [:cat :map] :nil]}
-  [{:keys [auth-session-id] :as context}]
-  (try
-    (security/refresh-claims! context auth-session-id)
-    (catch Exception error
-      (mu/log ::refresh-claims-failed :error-type (.getName (class error)))))
-  nil)
-
-
 (defaction save-name
   {:schema     [:map [:display-name {:optional true} :string] [:return-to {:optional true} :string]]
    :route-data {:tover/access :profile}}
   [{:keys [request] :as context} {:keys [display-name return-to] :as input}]
-  (let [return-to (security/local-path return-to)]
+  (let [return-to (access/local-path return-to)]
     (try
       (runtime/execute! context ::model/set-display-name
                         {:command-id (str (random-uuid)) :input (select-keys input [:account :display-name :name-revision])})
-      (refresh-session! context)
       {:status 303 :headers {"location" return-to} :body ""}
       (catch ExceptionInfo error
         (page-response request (error-status error)

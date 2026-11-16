@@ -17,20 +17,17 @@
     [ring.middleware.not-modified :refer [wrap-not-modified]]
     [ring.middleware.params :refer [wrap-params]]
     [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
-    [tover.auth.core :as auth]
-    [tover.auth.security :as security]
-    [tover.auth.sessions :as sessions]
-    [tover.auth.supabase :as auth-supabase]
+    [tover.identity.access :as access]
+    [tover.identity.provider :as provider]
+    [tover.identity.session :as session-store]
     [tover.inventory.smart-web]
     [tover.shared.bel :as wiring]
+    [tover.shared.email :as email]
     [tover.shared.i18n :as i18n]
     [tover.shared.jdbc :as database]
     [tover.shared.rdf :as rdf]
     [tover.shared.schema :as schema]
-    [tover.shared.supabase :as supabase]
-    [tover.shared.web.errors :as errors]
-    [tover.workspaces.core :as workspaces]
-    [tover.workspaces.supabase :as workspace-supabase])
+    [tover.shared.web.errors :as errors])
   (:import
     [clojure.lang ExceptionInfo]))
 
@@ -51,8 +48,7 @@
   [:map
    [:repo rdf/Repository]
    [:realtime realtime/Realtime]
-   [:auth [:fn #(satisfies? auth/Auth %)]]
-   [:workspaces [:fn #(satisfies? workspaces/Directory %)]]
+   [:provider provider/Provider]
    [:session-store :any]
    [:origin schema/Text]
    [:development? {:optional true} :boolean]
@@ -76,9 +72,9 @@
   [:map
    [::repo rdf/Repository]
    [::realtime realtime/Realtime]
-   [::auth :any]
-   [::workspaces :any]
+   [::provider :any]
    [::session-store :any]
+   [::mailer {:optional true} :any]
    [::datasource {:optional true} :any]
    [::bel-system {:optional true} :map]
    [::journal-datasource {:optional true} :any]
@@ -113,12 +109,10 @@
   (rdf/with-transaction [connection {:repo repo :level :snapshot}]
     (.size ^org.eclipse.rdf4j.repository.RepositoryConnection connection
            (make-array org.eclipse.rdf4j.model.Resource 0)))
-  (when-let [{:keys [datasource auth-url rest-url api-key]} identity-health]
+  (when-let [{:keys [datasource auth-url api-key]} identity-health]
     (with-open [connection (database/connection datasource)]
       (jdbc/execute-one! connection ["select 1 from app_private.sessions limit 1"] {:timeout 2}))
-    (doseq [url [(str auth-url "/health") (str rest-url "/")]]
-      (supabase/request! {:client (supabase/client) :api-key api-key :timeout-ms 2000}
-                         {:url url :method :get})))
+    (provider/health! {:auth-url auth-url :api-key api-key}))
   true)
 
 
@@ -152,10 +146,10 @@
    [:=> [:cat HandlerOptions] schema/Handler]}
   [options]
   ;; Isolated milestones enter live discovery only with their complete cutover.
-  (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename 'tover.workspaces.create 'tover.invitations]})
+  (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename]})
 
   (let [{:keys [realtime session-store origin development?]} (validation/check! HandlerOptions options)
-        context (select-keys options [:repo :realtime :auth :workspaces :session-store :origin :bel/system])
+        context (select-keys options [:repo :realtime :provider :session-store :origin :bel/system])
         extra-routes (mapv (fn [[path data]]
                              [path (assoc data :tover/access :workspace)])
                            (realtime/routes realtime))
@@ -163,7 +157,7 @@
                  (ring/router (handler/routes context extra-routes)
                               {:reitit.ring/default-options-endpoint nil
                                :data {:middleware [wrap-keyword-params
-                                                   (security/identity-middleware context)
+                                                   (access/access-middleware context)
                                                    errors/form-exception-middleware]}})
                  (ring/create-default-handler))
         secured (fn [request]
@@ -176,7 +170,7 @@
                         (wrap-anti-forgery {:error-handler (fn [_request]
                                                              {:status 403 :headers {"content-type" "text/plain; charset=utf-8"}
                                                               :body   (i18n/t "Invalid anti-forgery token")})})
-                        (security/wrap-origin origin)
+                        (access/wrap-origin origin)
                         i18n/wrap-locale
                         wrap-params
                         (session/wrap-session {:store        session-store :cookie-name "tover-session"
@@ -195,18 +189,15 @@
   (validation/check! Port port)
   (validation/check! schema/Text path)
   {::repo          {:path path}
-   ::auth          {:instance (:auth services)}
-   ::workspaces    {:instance (:workspaces services)}
+   ::provider      {:instance (:provider services)}
    ::session-store {:instance (:session-store services)}
-   ::realtime      {:auth          (ig/ref ::auth)
-                    :workspaces    (ig/ref ::workspaces)
+   ::realtime      {:provider      (ig/ref ::provider)
                     :session-store (ig/ref ::session-store)
                     :repo          (ig/ref ::repo)}
    ::handler       (merge (select-keys services [:origin :development? :identity-health :bel/system])
                           {:repo          (ig/ref ::repo)
                            :realtime      (ig/ref ::realtime)
-                           :auth          (ig/ref ::auth)
-                           :workspaces    (ig/ref ::workspaces)
+                           :provider      (ig/ref ::provider)
                            :session-store (ig/ref ::session-store)})
    ::server        {:repo          (ig/ref ::repo)
                     :handler       (ig/ref ::handler)
@@ -238,35 +229,48 @@
          required      (fn [name]
                          (or (not-empty (get environment name))
                              (throw (ex-info (str "Missing configuration: " name) {:type :configuration}))))
-         provider      {:auth-url (required "TOVER_AUTH_URL") :rest-url  (required "TOVER_REST_URL")
+         provider      {:auth-url (required "TOVER_AUTH_URL")
                         :api-key  (required "TOVER_API_KEY")  :admin-key (required "TOVER_AUTH_ADMIN_KEY")}
+         smtp-host     (not-empty (get environment "TOVER_SMTP_HOST"))
          origin        (required "TOVER_ORIGIN")
          configuration (system-config port path {:origin origin :development? development?})]
      (when-not (or (re-matches #"https://[^/]+" origin)
                    (and development? (re-matches #"http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?" origin)))
        (throw (ex-info "Production origin must be an HTTPS origin" {:type :configuration})))
      (-> configuration
-         (assoc ::auth provider ::workspaces provider
+         (assoc ::provider provider
                 ::logging {:env (if development? :dev :prod)})
          (assoc-in [::handler :logging] (ig/ref ::logging))
          (assoc-in [::realtime :logging] (ig/ref ::logging))
          (assoc-in [::handler :identity-health]
-                   (merge (select-keys provider [:auth-url :rest-url :api-key])
+                   (merge (select-keys provider [:auth-url :api-key])
                           {:datasource (ig/ref ::datasource)}))
          (assoc ::datasource {:jdbc-url (required "TOVER_JDBC_URL")
                               :user     (required "TOVER_DB_USER")  :password (required "TOVER_DB_PASSWORD")})
          (assoc ::session-store {:datasource     (ig/ref ::datasource)
                                  :encryption-key (required "TOVER_SESSION_KEY")})
          (assoc ::bel-system {:repo          (ig/ref ::repo)          :datasource (ig/ref ::datasource) :realtime (ig/ref ::realtime)
-                              :auth          (ig/ref ::auth)
+                              :provider      (ig/ref ::provider)      :origin     origin
                               :session-store (ig/ref ::session-store)})
          (assoc-in [::handler :bel/system] (ig/ref ::bel-system))
          (cond-> (some #(not-empty (get environment %)) ["TOVER_JOURNAL_DB_USER" "TOVER_JOURNAL_DB_PASSWORD"])
            (assoc ::journal-datasource {:jdbc-url (required "TOVER_JDBC_URL")
                                         :user     (required "TOVER_JOURNAL_DB_USER")
                                         :password (required "TOVER_JOURNAL_DB_PASSWORD")}
-                  ::delivery-system {:repo (ig/ref ::repo) :datasource (ig/ref ::journal-datasource)}
-                  :bel.delivery/worker (ig/ref ::delivery-system)))))))
+                  ::delivery-system (cond-> {:repo (ig/ref ::repo) :datasource (ig/ref ::journal-datasource) :origin origin}
+                                      smtp-host (assoc :mailer (ig/ref ::mailer)))
+                  :bel.delivery/worker (ig/ref ::delivery-system)))
+           ;; Without TOVER_SMTP_HOST the worker runs without a mailer; invitation sends then fail as recorded attempts.
+         (cond-> smtp-host
+           (assoc ::mailer {:host        smtp-host
+                            :port        (try (Integer/parseInt (or (get environment "TOVER_SMTP_PORT") "587"))
+                                              (catch NumberFormatException _
+                                                (throw (ex-info "Invalid TOVER_SMTP_PORT" {:type :configuration}))))
+                            :user        (not-empty (get environment "TOVER_SMTP_USER"))
+                            :password    (not-empty (get environment "TOVER_SMTP_PASSWORD"))
+                            :from        (required "TOVER_SMTP_FROM")
+                            :sender-name (not-empty (get environment "TOVER_SMTP_SENDER_NAME"))
+                            :starttls?   (not= "false" (get environment "TOVER_SMTP_STARTTLS"))}))))))
 
 
 (defn repo
@@ -287,26 +291,28 @@
                     (render)))
      :authorize (fn [{:keys [auth-session-id auth-version scope-id locale]}]
                   (when auth-session-id
-                    (let [identity (security/authenticate options auth-session-id)]
+                    (let [identity (try (access/current-identity options auth-session-id)
+                                        (catch clojure.lang.ExceptionInfo _ nil))]
                       (when (and identity (= scope-id (:workspace-id identity)) (= auth-version (:auth-version identity))
                                  (or (nil? (get-in identity [:user :locale]))
                                      (= locale (get-in identity [:user :locale]))))
                         (merge (select-keys options [:repo]) {:locale locale} identity)))))}))
 
 
-(defn auth
-  {:malli/schema [:=> [:cat :map] [:fn #(satisfies? auth/Auth %)]]} [{:keys [instance] :as options}]
-  (or instance (auth-supabase/auth options)))
-
-
-(defn workspaces
-  {:malli/schema [:=> [:cat :map] [:fn #(satisfies? workspaces/Directory %)]]} [{:keys [instance] :as options}]
-  (or instance (workspace-supabase/workspaces options)))
+(defn provider
+  {:malli/schema [:=> [:cat :map] provider/Provider]} [{:keys [instance] :as options}]
+  (or instance (provider/client options)))
 
 
 (defn session-store
   {:malli/schema [:=> [:cat :map] :any]} [{:keys [instance] :as options}]
-  (or instance (sessions/jdbc-store options)))
+  (or instance (session-store/jdbc-store options)))
+
+
+(defn mailer
+  {:malli/schema [:=> [:cat email/Config] [:fn fn?]]}
+  [options]
+  (email/smtp-mailer options))
 
 
 (defn datasource

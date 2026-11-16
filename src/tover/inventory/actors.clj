@@ -1,8 +1,10 @@
 (ns tover.inventory.actors
   (:require
-    [tover.auth.security :as security]
-    [tover.shared.i18n :as i18n]
-    [tover.workspaces.core :as workspaces]))
+    [bel-postgres.jdbc :as db]
+    [bel.runtime :as runtime]
+    [charred.api :as json]
+    [com.brunobonacci.mulog :as mu]
+    [tover.shared.i18n :as i18n]))
 
 
 (def actor-fields
@@ -10,13 +12,22 @@
 
 
 (defn labels
+  "Display labels of workspace members, read from the directory store as the signed-in user."
   {:malli/schema [:=> [:cat :map [:sequential :map]] [:map-of :string :string]]}
-  [{:keys [workspaces request workspace-id] :as context} records]
+  [{:keys [user-id workspace-id] :as context} records]
   (let [ids (vec (distinct (keep #(some-> % str parse-uuid) (mapcat #(keep % (keys actor-fields)) records))))]
-    (if (and workspaces request (seq ids))
+    (if (and user-id workspace-id (get-in context [:bel/system :stores :directory]) (seq ids))
       (try
-        (workspaces/actor-labels workspaces (security/access-token context request) workspace-id ids)
-        (catch clojure.lang.ExceptionInfo _ {}))
+        (runtime/with-store context :directory :read-committed
+          (fn [{:keys [tx]}]
+            (db/execute-one! tx {:select [[[:set_config "request.jwt.claim.sub" [:cast user-id :text] true]]]})
+            (json/read-json (str (:labels (db/execute-one! tx {:select [[[:app_private.bel_actor_labels workspace-id
+                                                                          [:cast [:array ids] [:raw "uuid[]"]]]
+                                                                         :labels]]})))
+                            :key-fn str)))
+        (catch Exception error
+          (mu/log ::labels-unavailable :error-type (.getName (class error)))
+          {}))
       {})))
 
 

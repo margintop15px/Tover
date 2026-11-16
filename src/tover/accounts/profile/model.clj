@@ -2,10 +2,7 @@
   (:require
     [bel.core :refer [defcommand defevent defmodel defreadmodel]]
     [bel.runtime :as runtime]
-    [clojure.string :as str]
-    [com.brunobonacci.mulog :as mu]
-    [tover.auth.security :as security]
-    [tover.auth.sessions :as sessions]))
+    [clojure.string :as str]))
 
 
 (def DisplayName
@@ -34,16 +31,6 @@
                 (or (not (contains? input :account)) (= (:account input) user-id)))))
 
 
-;; The accepted save stands even when a session cannot be refreshed; its claims catch up on the next token refresh.
-(defmethod runtime/effect! :tover.auth/refresh-claims
-  [_ {:keys [actor resources]} _]
-  (doseq [key (sessions/session-keys-for-user (:session-store resources) actor)]
-    (try
-      (security/refresh-claims! resources key)
-      (catch Exception error
-        (mu/log ::refresh-claims-failed :error-type (.getName (class error)))))))
-
-
 (defevent display-name-changed
   {:schema [:map [:user-id :uuid] [:display-name DisplayName] [:name-revision :int]]})
 
@@ -67,26 +54,20 @@
   {:user-id actor})
 
 
-(def refresh-claims
-  [:tover.auth/refresh-claims {}])
-
-
 (defn change
-  "Save one revisioned profile field: unchanged is a no-op, a stale revision returns the latest value.
-  Every outcome refreshes the session claims."
+  "Save one revisioned profile field: unchanged is a no-op, a stale revision returns the latest value."
   {:malli/schema [:=> [:cat :qualified-keyword [:maybe :map] :keyword :keyword :any :int] :map]}
   [event profile field revision value expected]
   (cond
     (= value (get profile field))
-    {:fx [refresh-claims]}
+    {}
 
     (not= expected (get profile revision))
     (throw (ex-info "This profile changed. Review the latest value."
                     {:type :stale-profile :latest (select-keys profile [field revision])}))
 
     :else
-    {:events [{:type event :data {:user-id (:user-id profile) field value revision (inc expected)}}]
-     :fx     [refresh-claims]}))
+    {:events [{:type event :data {:user-id (:user-id profile) field value revision (inc expected)}}]}))
 
 
 (defcommand set-display-name

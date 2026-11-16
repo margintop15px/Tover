@@ -1,4 +1,6 @@
-{:linters {:unquote-not-syntax-quoted {:level :off}}
+{:linters {:unquote-not-syntax-quoted {:level :off}
+           ;; clojure.core/merge-deep is newer than the installed clj-kondo analysis.
+           :unresolved-symbol         {:exclude [merge-deep]}}
  :lint-as
  {backtick/defquote          clojure.core/def
   bel.core/defpage           clojure.core/defn

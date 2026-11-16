@@ -26,7 +26,7 @@
   "Posts only the language; a signed-in save reads the current revision itself."
   {:malli/schema [:=> [:cat LanguageSwitchProps] schema/Hiccup]}
   [{:keys [request]}]
-  [:form.language-switch {:method "post"  :action     "/action/tover.auth.web/set-language"
+  [:form.language-switch {:method "post"  :action     "/action/tover.identity.shell/set-language"
                           :role   "group" :aria-label (i18n/t "Language")}
    [:input {:type "hidden" :name "__anti-forgery-token" :value (force (:anti-forgery-token request))}]
    [:input {:type "hidden" :name "return-to" :value (or (get-in request [:params :return-to])

@@ -19,7 +19,7 @@
 (defn malli
   {:malli/schema [:=> [:cat :map] :int]}
   [_options]
-  (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename 'tover.workspaces.create 'tover.invitations]})
+  (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename]})
   (instrumentation/start!))
 
 
@@ -46,7 +46,7 @@
   [{:keys [browser-reload] :as options}]
   (let [base-handler (app/create-handler options)]
     (-> (fn [request]
-          (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename 'tover.workspaces.create 'tover.invitations]})
+          (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename]})
           ;; Jspreadsheet and Datastar need a fresh page after source changes.
           (inject/inject-into-response
             (base-handler request)
@@ -70,7 +70,6 @@
                         (select-keys (System/getenv) ["IDENTITY_API_PORT" "IDENTITY_DB_PORT" "TO_DEV_SITE_URL"]))
         api      (str "http://127.0.0.1:" (get settings "IDENTITY_API_PORT" "58000"))]
     {"TOVER_AUTH_URL"            (str api "/auth/v1")
-     "TOVER_REST_URL"            (str api "/rest/v1")
      "TOVER_API_KEY"             (get settings "ANON_KEY")
      "TOVER_AUTH_ADMIN_KEY"      (get settings "SERVICE_ROLE_KEY")
      "TOVER_ORIGIN"              (get settings "TO_DEV_SITE_URL" "http://localhost:3030")
