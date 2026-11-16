@@ -1,6 +1,6 @@
 # Tover
 
-Tover is a Clojure inventory application using Bel/Datastar, Jspreadsheet CE and RDF4J NativeStore. Supabase Auth/Postgres/PostgREST provide accounts, workspaces, invitations and private sessions. The [current specifications](docs/README.md) define the first tester contract; complete the release checks before inviting testers.
+Tover is a Clojure inventory application using Bel/Datastar, Jspreadsheet CE and RDF4J NativeStore. Supabase Auth (GoTrue) holds credentials and sends account email; Postgres holds profiles, workspaces, invitations and private sessions, written by Bel commands. The [current specifications](docs/README.md) define the first tester contract; complete the release checks before inviting testers.
 
 ## Run locally
 
@@ -28,7 +28,7 @@ Development enables loopback nREPL, Malli instrumentation and hot reload. Route/
 
 Bel emits μ/log traces for HTTP processing, page/view queries, rendering, actions, fragment writes and realtime delivery. Integrant owns the publisher: development writes JSON lines to ignored `logs/events.jsonl`; production writes JSON to stdout for Docker log rotation. Query recent development events with `(bel.log/recent 20)`. Durations use nanoseconds, and `:request-id`, `:mulog/root-trace` and `:mulog/parent-trace` correlate nested spans across SSE callbacks. Published fields exclude request payloads, URLs, identities, credentials and exception messages/data.
 
-Identity spans measure JDBC connection acquisition, session transactions, changed-row persistence, Auth user verification and membership lookup. Session storage and readiness share an Integrant-owned HikariCP pool with 2 idle connections, at most 8 connections and a 2-second acquisition timeout. Unchanged sessions do not rewrite encrypted credentials; every protected request still verifies the current Auth user and workspace membership.
+Identity spans measure JDBC connection acquisition, session transactions and changed-row persistence. Session storage, the Bel directory and readiness share an Integrant-owned HikariCP pool with 2 idle connections, at most 8 connections and a 2-second acquisition timeout. Unchanged sessions do not rewrite encrypted credentials; every protected request reads the session, profile, active memberships and reset boundary from Postgres in one locked transaction.
 
 Every response carries `X-Request-Id` and `Server-Timing: app;dur=...` in milliseconds. This measures server processing through response preparation, including authentication and session middleware. Datastar fragment writes have separate spans; network latency and browser rendering are outside the server timer. In DevTools, use the response request ID to locate its JSON trace and compare the server duration with TTFB.
 
@@ -60,7 +60,7 @@ The header switches between English and Russian and reloads the current page. Si
 
 ## Identity and storage
 
-Signup, email confirmation, login/logout, recovery, workspace creation, invitations, joining and workspace switching use the real identity adapters. Every protected request and realtime delivery checks current membership. Managers administer Team; active members can edit and submit inventory drafts. Provider tokens stay encrypted in private Postgres sessions; cookies contain opaque identifiers. Mutations require CSRF and the configured origin/page context.
+Board chapters 01–07 (signup and confirmation, sign-in, password recovery and interrupted-reset completion, sign-out, profile and language, workspace creation, invitations with resend/cancel/accept and durable email delivery, and workspace selection) run on Bel; see [the onboarding mapping](docs/bel-onboarding-mapping.md). Sign-in never selects a workspace or accepts an invitation; a person chooses both explicitly. Every protected request and realtime delivery checks the current session and membership. Teammate recovery and membership management (chapters 29, 34–39) are not implemented. Managers administer Team; active members can edit and submit inventory drafts. Provider tokens stay encrypted in private Postgres sessions; cookies contain opaque identifiers. Mutations require CSRF and the configured origin/page context.
 
 RDF stores workspace items, immutable accepted operation/correction revisions, shared drafts, projection revisions and submission receipts. A versioned RDF/OWL/SHACL/SPARQL package defines domain relationships and constraints wherever practical. Clojure coordinates authorization, transactions, concurrency, semantic validation and delivery. Stock quantities and history rebuild from effective accepted records; current labels come from the canonical catalogue graph. Existing prototype stores and anonymous graphs are preserved; they are not assigned to new workspaces.
 
@@ -92,9 +92,9 @@ deployment/production/production.sh check
 deployment/production/production.sh install-fresh
 ```
 
-The production profile uses a new dedicated inventory volume and does not read local identity credentials or `.data`. `clojure -M:run` requires explicit `TOVER_*` identity/database settings, a 32-byte Base64 session key and an HTTPS origin. `TOVER_PORT` defaults to 3030; `TOVER_INVENTORY_PATH` selects the store. `/healthz` checks the running process; `/readyz` checks RDF, JDBC sessions, Auth and PostgREST.
+The production profile uses a new dedicated inventory volume and does not read local identity credentials or `.data`. `clojure -M:run` requires explicit `TOVER_*` identity/database settings, a 32-byte Base64 session key and an HTTPS origin. `TOVER_PORT` defaults to 3030; `TOVER_INVENTORY_PATH` selects the store. `/healthz` checks the running process; `/readyz` checks RDF, JDBC sessions and Auth.
 
-Back up identity, shared drafts and accepted inventory together. The production helper stops writers and closes the stores before copying them, keeps logical Postgres dumps and restores only into a fresh target. Preserve immutable SQL migrations: 033 installs fresh identity or upgrades the complete 032 contract; 034 adds member-authorized actor labels. Apply both before this application version. The inventory ledger requires no SQL migration.
+Back up identity, shared drafts and accepted inventory together. The production helper stops writers and closes the stores before copying them, keeps logical Postgres dumps and restores only into a fresh target. Preserve immutable SQL migrations: 033 installs fresh identity or upgrades the complete 032 contract; 034–043 are additive and add actor labels, the Bel journal, profile preferences, invitation delivery and the onboarding cutover (see [identity deployments](docs/identity-deployment.md)). Apply every file from 034 on in order before this application version. The inventory ledger requires no SQL migration.
 
 The ordered timeline query has quadratic worst-case growth within the affected component and a 15-second query limit. Complete multi-line operations and references can connect a large portion of inventory. Keep the first rollout small; see [measured timings and operating limits](docs/production-deployment.md) before expanding tester histories.
 
@@ -106,6 +106,7 @@ clojure -M:fmt check
 clj-kondo --lint src dev .clj-kondo/hooks/datastar.clj
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test/production -v
 scripts/test-auth-security.sh
+scripts/test-bel-workspace.sh
 scripts/test-identity-integration.sh
 ```
 
@@ -137,6 +138,6 @@ Release gates include all eight operations, heavy lineage/replay coverage, concu
 
 ## Repository boundaries
 
-`src/tover` groups Auth, Workspaces, Teams, Stock, Operations and inventory services, with application authorization and persistence bindings. `src/bel` owns declarations, rendering, transport, flows and infrastructure contracts. Optional storage implementations live separately in `src/bel_rdf` and `src/bel_postgres`; Tover loads and wires them. Shared application infrastructure is under `tover.shared`. Production resources include browser assets and the semantic package. `dev` contains REPL tooling and isolated fixtures; `test` mirrors domains and contains browser/deployment checks.
+`src/tover` groups Identity, Accounts, Workspaces, Invitations, Stock, Operations and inventory services, with application authorization and persistence bindings. `src/bel` owns declarations, rendering, transport, flows and infrastructure contracts. Optional storage implementations live separately in `src/bel_rdf` and `src/bel_postgres`; Tover loads and wires them. Shared application infrastructure is under `tover.shared`. Production resources include browser assets and the semantic package. `dev` contains REPL tooling and isolated fixtures; `test` mirrors domains and contains browser/deployment checks.
 
-Imports, marketplace integrations, evidence uploads and accounting reports are deferred. [Legacy contracts](docs/legacy-contracts/README.md) retain historical integration behavior. [Experiment findings](docs/bel-experiment-findings.md) summarize the retired prototypes. The [Bel DSL](docs/bel-dsl-proposal.md) has isolated [Goods rename and Create Workspace slices](docs/bel-next-milestone.md) sharing a PostgreSQL event/receipt journal. Goods domain data remains RDF; live routes and existing stores remain unchanged. Keep credentials, private captures, generated dependencies and all persistent stores out of Git.
+Imports, marketplace integrations, evidence uploads and accounting reports are deferred. [Legacy contracts](docs/legacy-contracts/README.md) retain historical integration behavior. [Experiment findings](docs/bel-experiment-findings.md) summarize the retired prototypes. The [Bel DSL](docs/bel-dsl-proposal.md) runs onboarding live and an isolated [Goods rename slice](docs/bel-next-milestone.md), sharing a PostgreSQL event/receipt journal. Goods domain data remains RDF. Inventory and catalogue browser specs predate the cutover's explicit workspace selection and may fail until their own cutover. Keep credentials, private captures, generated dependencies and all persistent stores out of Git.

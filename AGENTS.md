@@ -94,18 +94,18 @@ The development alias is required for tests because Kaocha hooks and instrumenta
 
 ## Structure and limits
 
-- `src/tover`: domain folders for Auth, Workspaces, Teams, Stock and Operations; shared UI/web/infrastructure under `shared`; Integrant composition in `app.clj`.
+- `src/tover`: domain folders for Identity (`tover.identity`: access policy, sessions, GoTrue provider, signup/sign-in/recovery/sign-out slices), Accounts (profile), Workspaces (create, select), Invitations, Stock and Operations; shared UI/web/infrastructure under `shared`; Integrant composition in `app.clj`. Onboarding slices are listed in `docs/bel-onboarding-mapping.md`.
 - `src/bel`: declaration, rendering, validation and realtime transport support.
 - `resources/public`: Datastar/Jspreadsheet CE browser adapters and static assets.
 - `resources/inventory`: versioned RDF/OWL vocabulary, SHACL constraints and executable SPARQL projections/invariants.
 - `src/tover/inventory`: semantic ledger, replay, shared drafts, acceptance and workbench. Whole quantities aggregate by stable item ID and location; no per-unit identities or automatic receipt allocation.
-- `dev`: isolated fixtures, instrumentation and REPL lifecycle. Keep development fixtures out of the production classpath.
+- `dev`: isolated fixtures (`tover.fixtures`: in-memory directory, sessions and fake GoTrue), instrumentation and REPL lifecycle. Keep development fixtures out of the production classpath.
 - `test`: Clojure tests; `test/browser` has independent Playwright tooling.
-- `supabase/migrations`: immutable SQL history; 033 supports fresh identity installation and upgrade from 032. See `docs/identity-deployment.md` for the local Auth/Postgres/PostgREST profile.
+- `supabase/migrations`: immutable SQL history; 033 supports fresh identity installation and upgrade from 032; every chain applies each file from 034 on in name order. See `docs/identity-deployment.md` for the local Auth/Postgres profile.
 - `docs/legacy-contracts`: historical behavior and sanitized fixtures for later ports. Do not treat legacy inventory semantics as new requirements.
 - `docs/bel-experiment-findings.md`: historical findings from retired experiments; use `docs/bel-dsl-proposal.md` and `docs/bel-next-milestone.md` for the proposed direction and next bounded step.
 
-Keep changes small and testable. Identity, workspace isolation, durable shared drafts and atomic ledger Submit are implemented. Default development uses the local self-hosted profile (`TOVER_IDENTITY_MODE=local`). Production requires credentials and has no fixture fallback. Browser adapters forward edits and render authoritative server results. Imports, marketplace integrations, uploads and accounting reports remain deferred.
+Keep changes small and testable. Onboarding (board chapters 01–07) runs on Bel; identity is read from Postgres on every request. Workspace isolation, durable shared drafts and atomic ledger Submit are implemented. Default development uses the local self-hosted profile (`TOVER_IDENTITY_MODE=local`). Production requires credentials and has no fixture fallback. Browser adapters forward edits and render authoritative server results. Imports, marketplace integrations, uploads and accounting reports remain deferred.
 
 Keep business constraints in the semantic package where practical. Accepted history is structured RDF; stock and lineage derive from effective revisions. Semantic resource checksums are immutable within a store. Change ontology/shapes/queries only through an explicit reviewed migration and restored-backup rehearsal; never silently replace installed semantics. Preserve old stores and select a separate `TOVER_INVENTORY_PATH` for empty tester inventory.
 
@@ -122,6 +122,6 @@ Keep business constraints in the semantic package where practical. Accepted hist
 
 Never perform destructive database operations, including DELETE, TRUNCATE, DROP, resets or destructive overwrites, without explicit user approval identifying the exact target and impact. Repository cleanup does not authorize database changes.
 
-Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `037_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
+Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `044_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
 
 Keep credentials, `.data`, backups, private experiment captures and generated dependencies out of Git. Never expose privileged credentials in browser assets.
