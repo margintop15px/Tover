@@ -23,19 +23,26 @@
 
 
 (defn language-switch
-  "Posts only the language; a signed-in save reads the current revision itself."
+  "Posts only the language. An ordinary sign-in saves the account language (the save reads the current
+  revision itself); a guest or a recovery sign-in keeps the choice in this browser."
   {:malli/schema [:=> [:cat LanguageSwitchProps] schema/Hiccup]}
   [{:keys [request]}]
-  [:form.language-switch {:method "post"  :action     "/action/tover.identity.shell/set-language"
-                          :role   "group" :aria-label (i18n/t "Language")}
-   [:input {:type "hidden" :name "__anti-forgery-token" :value (force (:anti-forgery-token request))}]
-   [:input {:type "hidden" :name "return-to" :value (or (get-in request [:params :return-to])
-                                                        (str (:uri request) (when-let [query (:query-string request)] (str "?" query))))}]
-   (for [[locale text label] [["en" "EN" (i18n/t "English")] ["ru" "RU" (i18n/t "Russian")]]]
-     [:button.language-toggle {:type         "submit" :name "locale" :value locale
-                               :aria-label   label :title   label
-                               :aria-pressed (str (= locale i18n/*locale*))}
-      text])])
+  (let [identity (:tover/identity request)
+        account? (and identity (not (:password-required? identity)))]
+    [:form.language-switch {:method "post"  :action     (if account?
+                                                         "/action/tover.accounts.profile.web/set-language"
+                                                         "/action/tover.identity.shell/set-language")
+                            :role   "group" :aria-label (i18n/t "Language")}
+     [:input {:type "hidden" :name "__anti-forgery-token" :value (force (:anti-forgery-token request))}]
+     (when identity
+       [:input {:type "hidden" :name "_tover-context" :value (str (:auth-version identity))}])
+     [:input {:type "hidden" :name "return-to" :value (or (get-in request [:params :return-to])
+                                                          (str (:uri request) (when-let [query (:query-string request)] (str "?" query))))}]
+     (for [[locale text label] [["en" "EN" (i18n/t "English")] ["ru" "RU" (i18n/t "Russian")]]]
+       [:button.language-toggle {:type         "submit" :name "locale" :value locale
+                                 :aria-label   label :title   label
+                                 :aria-pressed (str (= locale i18n/*locale*))}
+        text])]))
 
 
 (defn app-shell
@@ -50,6 +57,9 @@
          [:a (nav/link url {:class        (when active? "active")
                             :aria-current (when active? "page")}) label]))]
     [:div.app-nav-tools
+     ;; The selected workspace is named wherever its data is shown.
+     (when-let [current (some #(when (= (:workspace-id identity) (:workspace-id %)) %) (:memberships identity))]
+       [:span.management-secondary {:data-workspace-id (str (:workspace-id current))} (:name current)])
      [:a.nav-icon (nav/link "/workspace" {:aria-label   (i18n/t "Workspaces")               :title (i18n/t "Workspaces")
                                           :aria-current (when (= path "/workspace") "page")})
       [:svg {:viewBox "0 0 24 24" :aria-hidden true}

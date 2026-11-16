@@ -107,3 +107,50 @@
                                                  {:display-name (apply str (repeat 101 "a")) :name-revision 0})))))
   (is (= 1 (get-in (decide ::model/set-display-name {} {:display-name (apply str (repeat 100 "a")) :name-revision 0})
                    [:events 0 :data :name-revision]))))
+
+
+(deftest single-character-and-duplicate-names-are-accepted
+  (is (= "A" (get-in (decide ::model/set-display-name {} {:display-name "A" :name-revision 0}) [:events 0 :data :display-name])))
+  (is (= "Bob" (get-in (decide ::model/set-display-name {} {:display-name "Bob" :name-revision 0}) [:events 0 :data :display-name]))))
+
+
+(deftest name-counts-grapheme-clusters-after-trimming
+  (let [accepted? #(= 1 (count (:events (decide ::model/set-display-name {} {:display-name % :name-revision 0}))))
+        family    "👨‍👩‍👧‍👦"
+        composed  "é"
+        combining "é"]
+    (is (accepted? (apply str (repeat 100 family))))
+    (is (accepted? (apply str (repeat 100 composed))))
+    (is (accepted? (apply str (repeat 100 combining))))
+    (is (accepted? (str "   " (apply str (repeat 100 "x")) "   ")))
+    (is (= :validation (:type (error-data #(decide ::model/set-display-name {}
+                                                   {:display-name (apply str (repeat 101 combining)) :name-revision 0})))))
+    (is (= "Ann  Lee, Jr." (get-in (decide ::model/set-display-name {} {:display-name " Ann  Lee, Jr. " :name-revision 0})
+                                   [:events 0 :data :display-name])))))
+
+
+(deftest language-change-does-not-make-a-name-edit-stale
+  (let [{:keys [events]} (decide ::model/set-display-name {:display-name "Alice" :name-revision 2 :language "ru" :language-revision 7}
+                                 {:display-name "Alicia" :name-revision 2})]
+    (is (= [{:user-id alice :display-name "Alicia" :name-revision 3}] (mapv :data events)))))
+
+
+(deftest unchanged-language-emits-nothing
+  (is (= [] (:events (decide ::model/change-account-language {:language "ru" :language-revision 4}
+                             {:language "ru" :language-revision 4})))))
+
+
+(deftest stale-language-is-rejected-with-latest
+  (let [data (error-data #(decide ::model/change-account-language {:language "en" :language-revision 3}
+                                  {:language "ru" :language-revision 2}))]
+    (is (= :stale-profile (:type data)))
+    (is (= {:language "en" :language-revision 3} (:latest data)))))
+
+
+(deftest readiness-derives-from-the-saved-name
+  (is (model/valid-name? "Alice"))
+  (is (model/valid-name? (apply str (repeat 100 "👨‍👩‍👧‍👦"))))
+  (is (not (model/valid-name? nil)))
+  (is (not (model/valid-name? "")))
+  (is (not (model/valid-name? "  Alice")))
+  (is (not (model/valid-name? (apply str (repeat 101 "x"))))))

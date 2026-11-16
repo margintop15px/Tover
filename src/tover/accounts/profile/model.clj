@@ -5,11 +5,30 @@
     [clojure.string :as str]))
 
 
+(defn graphemes
+  "User-perceived characters: Unicode extended grapheme clusters."
+  {:malli/schema [:=> [:cat :string] :int]}
+  [value]
+  (count (re-seq #"\X" value)))
+
+
+(defn valid-name?
+  "Trimmed and 1–100 grapheme clusters: the rule for display names and workspace names."
+  {:malli/schema [:=> [:cat [:maybe :string]] :boolean]}
+  [value]
+  (boolean (and (string? value) (= value (str/trim value)) (<= 1 (graphemes value) 100))))
+
+
+(def Name
+  "Board chapters 03 and 04: trimmed, then 1–100 extended grapheme clusters."
+  [:and
+   [:string {:decode/string (fn [value]
+                              (if (string? value) (str/trim value) value))}]
+   [:fn {:error/message "Name must have 1 to 100 characters."} valid-name?]])
+
+
 (def DisplayName
-  [:string {:min           1
-            :max           100
-            :decode/string (fn [value]
-                             (if (string? value) (str/trim value) value))}])
+  Name)
 
 
 (def Language

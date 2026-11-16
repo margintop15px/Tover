@@ -27,7 +27,8 @@
   "Open the profile page and return the hidden values its form posts."
   {:malli/schema [:=> [:cat [:fn ifn?] :map] :map]}
   [request! params]
-  (let [body (:body (request! :get "/account/profile" params))]
+  (let [body (:body (request! :get "/account/profile" params))
+        body (subs body (str/index-of body "profile-form"))]
     (into {} (for [name ["account" "name-revision" "language-revision" "return-to"]] [name (form-value body name)]))))
 
 
@@ -53,7 +54,7 @@
       (let [{:keys [request!]} browser]
         (support/sign-in! services browser "unnamed@example.test")
         (let [form     (profile-form request! {"return-to" "/workspace"})
-              response (request! :post (bel/action-url :tover.identity.shell/set-language)
+              response (request! :post (bel/action-url :tover.accounts.profile.web/set-language)
                                  (assoc form "display-name" "Draft" "locale" "ru"))]
           (is (= 200 (:status response)))
           (is (str/includes? (:body response) "value=\"Draft\""))
@@ -69,7 +70,7 @@
         (support/sign-in! services browser (:email user) {:workspace-id fixtures/workspace-id})
         (let [body     (:body (request! :get "/workspace"))
               ;; The header switch posts only the language; the revision is read when it is saved.
-              response (request! :post (bel/action-url :tover.identity.shell/set-language) {"locale" "ru" "return-to" "/workspace"})]
+              response (request! :post (bel/action-url :tover.accounts.profile.web/set-language) {"locale" "ru" "return-to" "/workspace"})]
           (is (nil? (form-value body "language-revision")))
           (is (nil? (form-value body "account")))
           (is (= 303 (:status response)))
@@ -85,7 +86,7 @@
     (fn [{:keys [browser users state] :as services}]
       (let [{:keys [request!]} browser
             user               (first users)
-            save!              #(request! :post (bel/action-url :tover.identity.shell/set-language)
+            save!              #(request! :post (bel/action-url :tover.accounts.profile.web/set-language)
                                           (merge {"locale" "ru" "return-to" "/workspace" "account" (str (:user-id user))} %))]
         (support/sign-in! services browser (:email user) {:workspace-id fixtures/workspace-id})
         (request! :get "/workspace")
@@ -142,7 +143,7 @@
         (support/sign-in! services browser (:email user) {:workspace-id fixtures/workspace-id})
         (support/sign-in! services other (:email user) {:workspace-id fixtures/workspace-id})
         ((:request! browser) :get "/workspace")
-        ((:request! browser) :post (bel/action-url :tover.identity.shell/set-language) {"locale" "ru" "return-to" "/workspace"})
+        ((:request! browser) :post (bel/action-url :tover.accounts.profile.web/set-language) {"locale" "ru" "return-to" "/workspace"})
         ;; The effect runs after the response; wait for it boundedly.
         (let [locale #(get-in (access/current-identity services (support/session-key other)) [:user :locale])]
           (is (= "ru" (loop [attempt 0]
@@ -191,10 +192,111 @@
         (support/sign-in! services browser (:email user) {:workspace-id fixtures/workspace-id})
         ;; A signed-in identity page renders the same switch: locale and return-to only.
         (let [body     (:body (request! :get "/auth/login"))
-              response (request! :post (bel/action-url :tover.identity.shell/set-language)
-                                 {"locale" "ru" "return-to" (form-value body "return-to")})]
+              action   (second (re-find #"<form class=\"language-switch\"[^>]*action=\"([^\"]+)\"" body))
+              response (request! :post action {"locale" "ru" "return-to" (form-value body "return-to")})]
+          (is (= (bel/action-url :tover.accounts.profile.web/set-language) action))
           (is (nil? (form-value body "language-revision")))
           (is (= 303 (:status response)))
           (is (= "/auth/login" (get-in response [:headers "location"])))
           (is (= {:language "ru" :language_revision 1}
                  (select-keys (get-in @state [:db :public.profiles (:user-id user)]) [:language :language_revision]))))))))
+
+
+(defn- name-changes
+  {:malli/schema [:=> [:cat :any] :int]}
+  [state]
+  (count (filter #(= :tover.accounts.profile.model/display-name-changed (:type %)) (mapcat :events (:journal @state)))))
+
+
+(deftest setup-says-continue-and-later-edits-say-save
+  (support/with-application
+    (fn [{:keys [handler browser] :as services}]
+      (support/sign-in! services browser "unnamed@example.test")
+      (is (str/includes? (:body ((:request! browser) :get "/account/profile")) ">Continue</button>"))
+      (let [named (support/browser handler)]
+        (support/sign-in! services named "owner@example.test")
+        (is (str/includes? (:body ((:request! named) :get "/account/profile")) ">Save</button>"))))))
+
+
+(deftest continue-without-a-destination-opens-the-workspace-chooser
+  (support/with-application
+    (fn [{:keys [browser] :as services}]
+      (support/sign-in! services browser "unnamed@example.test")
+      (let [{:keys [request!]} browser
+            form               (profile-form request! {})
+            response           (request! :post (bel/action-url :tover.accounts.profile.web/save-name)
+                                         (assoc form "display-name" "Una"))]
+        (is (= "/workspace" (get form "return-to")))
+        (is (= "/workspace" (get-in response [:headers "location"])))))))
+
+
+(deftest an-accepted-save-with-a-lost-response-is-recovered
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (support/sign-in! services browser "unnamed@example.test")
+      (let [{:keys [request!]} browser
+            params             (assoc (profile-form request! {"return-to" "/workspace"})
+                                      "display-name" "Una" "command-id" "save-1")
+            save!              #(request! :post (bel/action-url :tover.accounts.profile.web/save-name) params)]
+        (is (= 303 (:status (save!))))
+        ;; The response was lost; the browser repeats the same request.
+        (is (= 303 (:status (save!))))
+        (is (= 1 (name-changes state)))
+        (is (= "Una" (get-in @state [:db :public.profiles fixtures/unnamed-id :display_name])))))))
+
+
+(deftest an-old-save-retried-after-a-newer-name-is-not-reapplied
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (support/sign-in! services browser "unnamed@example.test")
+      (let [{:keys [request!]} browser
+            save!              #(request! :post (bel/action-url :tover.accounts.profile.web/save-name) %)
+            old                (assoc (profile-form request! {"return-to" "/workspace"}) "display-name" "Una" "command-id" "old")]
+        (save! old)
+        (save! (assoc (profile-form request! {"return-to" "/workspace"}) "display-name" "Uma" "command-id" "new"))
+        (is (= 303 (:status (save! old))))
+        (is (= "Uma" (get-in @state [:db :public.profiles fixtures/unnamed-id :display_name])))
+        (is (= 2 (name-changes state)))))))
+
+
+(deftest a-form-of-account-a-is-rejected-under-b-sign-in
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (support/sign-in! services browser "unnamed@example.test")
+      (let [{:keys [request!]} browser
+            form               (profile-form request! {"return-to" "/workspace"})]
+        ;; Bob signs in on the same browser before Alice's form is submitted.
+        (support/sign-in! services browser "member@example.test")
+        (let [response (request! :post (bel/action-url :tover.accounts.profile.web/save-name)
+                                 (assoc form "display-name" "Una" "name-revision" "1"))]
+          (is (= 403 (:status response))))
+        (is (= "Max Member" (get-in @state [:db :public.profiles fixtures/member-id :display_name])))
+        (is (nil? (get-in @state [:db :public.profiles fixtures/unnamed-id :display_name])))))))
+
+
+(deftest an-overlong-name-is-rejected-and-kept-in-full
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (support/sign-in! services browser "unnamed@example.test")
+      (let [{:keys [request!]} browser
+            long               (apply str (repeat 101 "é"))
+            response           (request! :post (bel/action-url :tover.accounts.profile.web/save-name)
+                                         (assoc (profile-form request! {"return-to" "/workspace"}) "display-name" long))]
+        (is (= 422 (:status response)))
+        (is (str/includes? (:body response) (str "value=\"" long "\"")))
+        (is (nil? (get-in @state [:db :public.profiles fixtures/unnamed-id :display_name])))))))
+
+
+(deftest a-failed-profile-read-offers-retry
+  (support/with-application
+    (fn [{:keys [browser] :as services}]
+      (support/sign-in! services browser "owner@example.test")
+      (let [read runtime/read-model]
+        (with-redefs [runtime/read-model (fn [context id input]
+                                           (if (= id :tover.accounts.profile.model/my-profile)
+                                             (throw (ex-info "Directory unavailable" {:type :unavailable}))
+                                             (read context id input)))]
+          (let [body (:body ((:request! browser) :get "/account/profile"))]
+            (is (str/includes? body "Could not load your profile."))
+            (is (str/includes? body "Retry"))
+            (is (not (str/includes? body "name=\"display-name\"")))))))))
