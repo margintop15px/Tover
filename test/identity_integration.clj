@@ -1,24 +1,27 @@
 (ns identity-integration
-  "Explicit disposable-target checks using the actual Clojure adapters and JDBC store."
+  "Explicit disposable-target checks: the real GoTrue provider, the encrypted PostgreSQL session store and the
+  Bel directory behind the application handler. Run through scripts/test-identity-integration.sh."
   (:require
     [bel.core :as bel]
+    [bel.realtime :as realtime]
+    [clojure.java.io :as io]
     [clojure.string :as str]
-    [clojure.test :refer [deftest is run-tests]]
+    [clojure.test :refer [deftest is run-tests testing]]
     [next.jdbc :as jdbc]
     [next.jdbc.result-set :as result-set]
     [org.httpkit.client :as client]
     [org.httpkit.server :as server]
     [ring.middleware.session.store :as ring]
-    [tover.auth.core :as auth]
-    [tover.auth.security :as security]
-    [tover.auth.sessions :as sessions]
-    [tover.auth.sessions-test :as session-tests]
-    [tover.auth.supabase :as supabase]
+    [tover.app :as app]
+    [tover.identity.access :as access]
+    [tover.identity.provider :as provider]
+    [tover.identity.session :as session]
+    [tover.shared.bel :as wiring]
     [tover.shared.jdbc :as database]
-    [tover.shared.supabase :as http]
-    [tover.support :as support]
-    [tover.workspaces.core :as workspaces]
-    [tover.workspaces.supabase :as workspace-provider]))
+    [tover.shared.rdf :as rdf]
+    [tover.support :as support])
+  (:import
+    [java.nio.file Files]))
 
 
 (def ^:dynamic *options*
@@ -32,11 +35,9 @@
                       (catch java.io.FileNotFoundException _ {}))
         value    (fn [name fallback] (or (System/getenv name) fallback))
         provider {:auth-url  (value "IDENTITY_TEST_AUTH_URL" "http://127.0.0.1:58000/auth/v1")
-                  :rest-url  (value "IDENTITY_TEST_REST_URL" "http://127.0.0.1:58000/rest/v1")
                   :api-key   (value "IDENTITY_TEST_PUBLIC_KEY" (get local "ANON_KEY"))
                   :admin-key (value "IDENTITY_TEST_SERVICE_KEY" (get local "SERVICE_ROLE_KEY"))}
-        remote?  (some #(not (contains? #{"localhost" "127.0.0.1" "::1"} (.getHost (java.net.URI/create %))))
-                       [(:auth-url provider) (:rest-url provider)])]
+        remote?  (not (contains? #{"localhost" "127.0.0.1" "::1"} (.getHost (java.net.URI/create (:auth-url provider)))))]
     (when (and remote? (not= "disposable" (System/getenv "IDENTITY_TEST_TARGET")))
       (throw (ex-info "Integration requires an explicitly disposable remote target" {})))
     (when (and remote? (not-every? #(not-empty (System/getenv %))
@@ -54,85 +55,192 @@
                   :encryption-key (value "IDENTITY_TEST_SESSION_KEY" (get local "SESSION_ENCRYPTION_KEY"))})}))
 
 
-(defn- check-datastar!
-  [handler browser]
+(defn- account!
+  "A confirmed account named `name` created through the provider's admin API; returns {:email :password :user-id}."
+  [provider name]
+  (let [email    (str "clojure-identity-" (random-uuid) "@example.test")
+        password (session/random-key)
+        user     ((:request! provider) {:admin? true :path "/admin/users"
+                                        :body   {:email         email :password password :email_confirm true
+                                                 ;; Signup metadata may name the profile, never create a workspace.
+                                                 :user_metadata {:name name :organization_name "Ignored workspace"}}})]
+    {:email email :password password :user-id (parse-uuid (:id user))}))
+
+
+(defn- with-live-application
+  "The application handler over the live provider, session store and Bel directory."
+  [settings f]
+  (let [path     (.toFile (Files/createTempDirectory "tover-identity-integration-" (make-array java.nio.file.attribute.FileAttribute 0)))
+        repo     (rdf/native-store path)
+        services {:repo          repo
+                  :provider      (provider/client (:provider *options*))
+                  :session-store (session/jdbc-store settings)
+                  :origin        "http://localhost:3030"}
+        live     (app/realtime services)
+        services (assoc services :realtime live)
+        services (assoc services :bel/system (wiring/system (assoc services :datasource (:datasource settings))))
+        handler  (app/create-handler services)]
+    (try (f (assoc services :handler handler :browser (support/browser handler)))
+         (finally
+           (realtime/stop! live)
+           (rdf/close! repo)
+           (doseq [file (reverse (file-seq path))] (io/delete-file file))))))
+
+
+(defn- with-http
+  [handler f]
   (let [http-server (server/run-server handler {:port 0 :legacy-return-value? false})]
-    (try
-      (doseq [uri ["/operations" "/"]]
-        (let [response @(client/request
-                          {:url     (str "http://127.0.0.1:" (server/server-port http-server) uri "?datastar=%7B%7D")
-                           :method  :get :timeout 5000
-                           :headers {"datastar-request" "true"
-                                     "cookie"           (:cookie @(:state browser))
-                                     "x-tover-context"  (:context @(:state browser))}})]
-          (is (= 200 (:status response)))
-          (is (str/includes? (:body response) "datastar-patch-elements"))))
-      (finally @(server/server-stop! http-server {:timeout 2000})))))
+    (try (f (str "http://127.0.0.1:" (server/server-port http-server)))
+         (finally @(server/server-stop! http-server {:timeout 2000})))))
 
 
-(deftest live-clojure-provider-contract
-  (let [provider    (:provider *options*)
-        auth        (supabase/auth provider)
-        directory   (workspace-provider/workspaces provider)
-        email       (str "clojure-m2-" (random-uuid) "@example.test")
-        password    (sessions/random-key)
-        _           (http/request! {:client (http/client) :api-key (:admin-key provider)}
-                                   {:url  (str (:auth-url provider) "/admin/users") :token (:admin-key provider)
-                                    :body {:email         email :password password :email_confirm true
-                                           :user_metadata {:organization_name "Clojure integration workspace"}}})
-        tokens      (auth/sign-in! auth {:email email :password password})
-        claims      (auth/token-identity auth (:access-token tokens))
-        memberships (:memberships claims)]
-    (is (= email (get-in claims [:user :email])))
-    (is (= :owner (:role (first memberships))))
-    (is (= {(str (get-in tokens [:user :user-id])) email}
-           (workspaces/actor-labels directory (:access-token tokens) (:workspace-id (first memberships))
-                                    [(get-in tokens [:user :user-id]) (random-uuid)])))
-    (is (= 0 (workspaces/accept-invites! directory (:access-token tokens))))
-    (when-let [settings (:session *options*)]
-      (support/with-application
-        #(assoc % :auth auth :workspaces directory :session-store (sessions/jdbc-store settings))
-        (fn [{:keys [browser handler]}]
-          (let [request! (:request! browser)]
-            (is (= 200 (:status (request! :get "/auth/login"))))
-            (is (= 303 (:status (request! :post (bel/action-url :tover.auth.web/sign-in) {"email" email "password" password}))))
-            (is (= 200 (:status (request! :get "/workspace"))))
-            (is (= 200 (:status (request! :get "/"))))
-            (let [snapshot #(jdbc/execute! (:datasource settings)
-                                           ["select updated_at,md5(data) as data,md5(tokens) as tokens from app_private.sessions where user_id=? order by id"
-                                            (get-in tokens [:user :user-id])]
-                                           {:builder-fn result-set/as-unqualified-lower-maps})
-                  before   (snapshot)]
-              (dotimes [_ 3]
-                (is (= 200 (:status (request! :get "/operations"))))
-                (is (= 200 (:status (request! :get "/")))))
-              (check-datastar! handler browser)
-              (is (= before (snapshot)) "Authenticated navigation does not rewrite the session"))
-            (is (= 303 (:status (request! :post (bel/action-url :tover.workspaces.web/create-workspace) {"name" "Live Clojure workspace"}))))
-            (is (= 200 (:status (request! :get "/workspace"))))
-            (is (= 303 (:status (request! :post (bel/action-url :tover.auth.web/sign-out)))))
-            (is (= 303 (:status (request! :get "/"))))))))
-    (when-let [settings (:session *options*)]
-      (let [store    (sessions/jdbc-store settings)
-            key      (sessions/establish! store nil tokens)
-            services {:auth auth :workspaces directory :session-store store}]
-        (try
-          (is (= (:workspace-id (first memberships)) (:workspace-id (security/authenticate services key))))
-          (sessions/update-session! store key #(vector (assoc-in % [:tokens :expires-at] 0) nil))
-          (let [requests (mapv (fn [_] (future (security/authenticate services key))) (range 4))]
-            (doseq [request requests]
-              (is (= (:user-id (:user tokens)) (:user-id (deref request 30000 nil))))))
-          (is (not= (:refresh-token tokens) (get-in (sessions/session store key) [:tokens :refresh-token])))
-          (finally (ring/delete-session store key)))))
-    (let [rotated (if (:session *options*) tokens (auth/refresh! auth (:refresh-token tokens)))]
-      (is (string? (:refresh-token rotated)))
-      (auth/sign-out! auth (:access-token rotated))
-      (is (thrown? clojure.lang.ExceptionInfo (auth/refresh! auth (:refresh-token rotated)))))))
+(defn- datastar!
+  "A Datastar request from `browser` over real HTTP (Bel actions answer with server-sent events)."
+  [base browser method uri form]
+  @(client/request
+     {:url         (str base uri) :method method :timeout 10000
+      :headers     (cond-> {"datastar-request" "true" "origin" "http://localhost:3030"
+                            "cookie"           (:cookie @(:state browser))
+                            "x-tover-context"  (:context @(:state browser))}
+                     form (assoc "content-type" "application/x-www-form-urlencoded"))
+      :form-params (when form (assoc form "__anti-forgery-token" (:csrf @(:state browser))))}))
+
+
+(defn- hidden-value
+  [body name]
+  (second (re-find (re-pattern (str "name=\"" name "\"[^>]*value=\"([^\"]*)\"")) body)))
+
+
+(defn- query
+  [settings sql & params]
+  (jdbc/execute! (:datasource settings) (into [sql] params) {:builder-fn result-set/as-unqualified-lower-maps}))
+
+
+(defn- query-as
+  "Query as the runtime role on behalf of `user-id`, under its row policies."
+  [settings user-id sql & params]
+  (jdbc/with-transaction [tx (:datasource settings)]
+    (jdbc/execute-one! tx ["select set_config('request.jwt.claim.sub', ?, true)" (str user-id)])
+    (jdbc/execute! tx (into [sql] params) {:builder-fn result-set/as-unqualified-lower-maps})))
+
+
+(deftest live-provider-contract
+  (let [provider (provider/client (:provider *options*))
+        {:keys [email password user-id]} (account! provider "Live tester")
+        tokens (provider/sign-in! provider {:email email :password password})
+        rotated (provider/refresh! provider (:refresh-token tokens))]
+    (is (= user-id (get-in tokens [:user :user-id])))
+    (is (true? (get-in tokens [:user :email-confirmed?])))
+    (is (not= (:refresh-token tokens) (:refresh-token rotated)))
+    (is (= :rejected (try (provider/sign-in! provider {:email email :password "wrong-password"}) nil
+                          (catch clojure.lang.ExceptionInfo error
+                            (when (#{400 401 422} (:status (ex-data error))) :rejected)))))
+    (provider/sign-out! provider (:access-token rotated) "local")
+    (is (thrown? clojure.lang.ExceptionInfo (provider/refresh! provider (:refresh-token rotated))))))
+
+
+(deftest live-application-journey
+  (when-let [settings (:session *options*)]
+    (with-live-application
+      settings
+      (fn [{:keys [browser handler session-store] :as services}]
+        (let [{:keys [email password user-id]} (account! (:provider services) "Live tester")
+              request! (:request! browser)
+              invitation (str "/invitations/" (random-uuid))]
+          (testing "signup metadata names the profile and creates no workspace"
+            (is (= [{:display_name "Live tester"}] (query-as settings user-id "select display_name from public.profiles where user_id=?" user-id)))
+            (is (= [] (query-as settings user-id "select organization_id from public.organization_memberships where user_id=?" user-id))))
+          (testing "a signed-out invitation link survives sign-in without being accepted"
+            (is (= "/auth/login" (get-in (request! :get invitation) [:headers "location"])))
+            (request! :get "/auth/login")
+            (is (= invitation (get-in (request! :post (bel/action-url :tover.identity.sign-in.web/sign-in)
+                                                {"email" email "password" password})
+                                      [:headers "location"])))
+            (is (= 1 (count (query settings "select id from app_private.sessions where user_id=? and ended_at is null" user-id)))))
+          (let [chooser (:body (request! :get "/workspace"))
+                north   (random-uuid)]
+            (is (str/includes? chooser "No workspaces yet."))
+            (with-http handler
+              (fn [base]
+                (testing "Create Workspace through the Bel action over HTTP"
+                  (let [response (datastar! base browser :post (bel/action-url :tover.workspaces.create.web/create)
+                                            {"command-id"     (str (random-uuid))          "workspace-id" (str north) "name" "Live workshop"
+                                             "_tover-context" (:context @(:state browser))})]
+                    (is (= 200 (:status response)))
+                    (is (str/includes? (:body response) "Workspace created"))
+                    (is (= [{:role_id "owner" :status "active"}]
+                           (query-as settings user-id "select role_id, status from public.organization_memberships where organization_id=? and user_id=?" north user-id)))))
+                (let [body  (:body (request! :get "/workspace" {"workspace-id" (str north)}))
+                      offer (second (re-find #"(?s)data-target-workspace-id=\"[^\"]*\">(.*?)</section>" body))]
+                  (is (= 303 (:status (request! :post (bel/action-url :tover.workspaces.select.web/select)
+                                                (into {} (for [name ["workspace-id" "expected-version" "command-id" "return-to"]]
+                                                           [name (hidden-value offer name)])))))))
+                (is (= 200 (:status (request! :get "/"))))
+                (let [snapshot #(query settings "select updated_at,md5(data) as data,md5(tokens) as tokens from app_private.sessions where user_id=? order by id" user-id)
+                      before   (snapshot)]
+                  (dotimes [_ 3]
+                    (is (= 200 (:status (request! :get "/operations"))))
+                    (is (= 200 (:status (request! :get "/")))))
+                  (doseq [uri ["/operations?datastar=%7B%7D" "/?datastar=%7B%7D"]]
+                    (let [response (datastar! base browser :get uri nil)]
+                      (is (= 200 (:status response)))
+                      (is (str/includes? (:body response) "datastar-patch-elements"))))
+                  (is (= before (snapshot)) "Authenticated navigation does not rewrite the session")))))
+          (testing "concurrent requests refresh expiring provider tokens once under the row lock"
+            (let [key    (support/session-key browser)
+                  before (:tokens (session/session session-store key))]
+              (session/update-session! session-store key #(vector (assoc-in % [:tokens :expires-at] 0) nil))
+              (doseq [result (mapv (fn [_] (future (access/current-identity services key))) (range 4))]
+                (is (= user-id (:user-id (deref result 30000 nil)))))
+              (is (not= (:refresh-token before) (get-in (session/session session-store key) [:tokens :refresh-token])))))
+          (testing "Sign Out ends this sign-in"
+            (let [body (:body (request! :get "/workspace"))
+                  form (second (re-find #"(?s)<form class=\"sign-out\"(.*?)</form>" body))]
+              (is (= "/auth/login" (get-in (request! :post (bel/action-url :tover.identity.sign-out.web/sign-out)
+                                                     {"session-id" (hidden-value form "session-id")})
+                                           [:headers "location"])))
+              (is (= "/auth/login" (get-in (request! :get "/") [:headers "location"]))))))))))
 
 
 (deftest live-jdbc-session-contract
   (if-let [settings (:session *options*)]
-    (session-tests/check-jdbc! settings)
+    (let [store    (session/jdbc-store settings)
+          tokens   {:access-token "synthetic-access" :refresh-token "synthetic-refresh" :expires-at 4102444800
+                    :user         {:user-id (random-uuid) :email "synthetic@example.test" :email-confirmed? true}}
+          key      (session/random-key)
+          _        (session/transact! store key (fn [_ _] [(assoc (session/new-row key) :tokens tokens :user-id (get-in tokens [:user :user-id])) nil]))
+          snapshot #(first (query settings "select data,tokens,updated_at from app_private.sessions where id=?" key))]
+      (try
+        (testing "an anonymous session gets its own key and never sees tokens"
+          (let [anonymous (ring/write-session store nil {:draft "retained"})]
+            (is (not= key anonymous))
+            (is (= "retained" (:draft (ring/read-session store anonymous))))
+            (ring/delete-session store anonymous)))
+        (is (nil? (:identity/tokens (ring/read-session store key))))
+        (ring/write-session store key (ring/read-session store key))
+        (let [before (snapshot)]
+          (is (not (str/includes? (:tokens before) "synthetic")) "Tokens are encrypted at rest")
+          (dotimes [_ 3]
+            (session/session store key)
+            (session/update-session! store key #(vector % nil))
+            (ring/write-session store key (ring/read-session store key)))
+          (is (= before (snapshot)) "Unchanged reads and writes preserve ciphertext and updated_at")
+          (is (thrown? IllegalStateException
+                       (session/update-session! store key (fn [_] (throw (IllegalStateException. "rollback"))))))
+          (is (= before (snapshot))))
+        (testing "an ended key is never revived"
+          (session/update-session! store key #(vector (assoc % :ended-at (java.time.Instant/now)) nil))
+          (let [renewed (ring/write-session store key {:draft "after"})]
+            (is (not= key renewed))
+            (ring/delete-session store renewed)))
+        (let [borrowed (mapv (fn [_] (database/connection (:datasource settings))) (range 8))
+              started  (System/nanoTime)]
+          (try
+            (is (thrown? java.sql.SQLException (database/connection (:datasource settings))))
+            (is (< 1500 (/ (- (System/nanoTime) started) 1e6) 5000))
+            (finally (run! #(.close ^java.sql.Connection %) borrowed))))
+        (is (= [{:one 1}] (query settings "select 1 as one")) "Pool recovers after exhaustion")
+        (finally (ring/delete-session store key))))
     (is (nil? (:session *options*)) "Hosted JDBC credentials were not configured; provider checks run separately.")))
 
 
