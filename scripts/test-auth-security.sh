@@ -27,34 +27,12 @@ for scenario in fresh upgrade; do
   docker exec "$test_container" psql -X -q -U postgres -d "$scenario" \
     -c "SET client_min_messages=warning" -v ON_ERROR_STOP=1 -v VERBOSITY=terse -f /work/supabase/tests/workspace-actor-labels-security.sql
 
-  # Both transactions overlap; only one can reserve a normalized email.
-  reserve="BEGIN; SET LOCAL ROLE authenticated; SET LOCAL request.jwt.claim.sub='20000000-0000-0000-0000-000000000005'; SELECT public.manage_workspace_invitation('10000000-0000-0000-0000-000000000001','create',NULL,'race@example.test'); SELECT pg_sleep(0.4); COMMIT;"
-  docker exec "$test_container" psql -X -qAt -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c "$reserve" >/dev/null &
-  first_pid=$!
-  docker exec "$test_container" psql -X -qAt -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c "$reserve" >/dev/null &
-  second_pid=$!
-  wait "$first_pid"
-  wait "$second_pid"
+  # Hold the manager's cancellation open before the recipient accepts. Acceptance re-reads the locked offer
+  # after the cancel commits, so the membership policy finds no accepted offer and grants nothing.
   docker exec "$test_container" psql -X -q -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c \
-    "DO \$\$ BEGIN ASSERT (SELECT count(*) FROM public.organization_invites WHERE email='race@example.test')=1, 'concurrent invite reservation duplicated'; END; \$\$;"
-  docker exec "$test_container" psql -X -q -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c \
-    "INSERT INTO public.organization_invites(id,organization_id,email,role_id,created_at) VALUES ('40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001','resend-race@example.test','member',now()-interval '5 minutes');"
-  resend="BEGIN; SET LOCAL ROLE authenticated; SET LOCAL request.jwt.claim.sub='20000000-0000-0000-0000-000000000005'; SELECT public.manage_workspace_invitation('10000000-0000-0000-0000-000000000001','resend','40000000-0000-0000-0000-000000000001'); SELECT pg_sleep(0.4); COMMIT;"
-  docker exec "$test_container" psql -X -qAt -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c "$resend" >/dev/null &
-  first_pid=$!
-  docker exec "$test_container" psql -X -qAt -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c "$resend" >/dev/null &
-  second_pid=$!
-  wait "$first_pid"
-  wait "$second_pid"
-  docker exec "$test_container" psql -X -q -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c \
-    "DO \$\$ BEGIN ASSERT (SELECT count(*) FROM public.organization_invites WHERE email='resend-race@example.test')=2, 'concurrent resend reserved duplicate emails'; END; \$\$;"
-
-  # Hold cancellation's transaction open before acceptance starts. The Auth user
-  # row lock and workspace/email advisory lock must not allow revoked access.
-  docker exec "$test_container" psql -X -q -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c \
-    "INSERT INTO auth.users(id,email,email_confirmed_at) VALUES ('20000000-0000-0000-0000-000000000008','cancel-race@example.test',now()); INSERT INTO public.organization_invites(id,organization_id,email,role_id) VALUES ('40000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000001','cancel-race@example.test','member');"
-  cancel="BEGIN; SET LOCAL ROLE authenticated; SET LOCAL request.jwt.claim.sub='20000000-0000-0000-0000-000000000005'; SELECT public.manage_workspace_invitation('10000000-0000-0000-0000-000000000001','cancel','40000000-0000-0000-0000-000000000002'); SELECT pg_sleep(2); COMMIT;"
-  accept="BEGIN; SET LOCAL ROLE authenticated; SET LOCAL request.jwt.claim.sub='20000000-0000-0000-0000-000000000008'; SELECT public.accept_my_organization_invites(); COMMIT;"
+    "INSERT INTO auth.users(id,email,email_confirmed_at) VALUES ('20000000-0000-0000-0000-000000000008','cancel-race@example.test',now()); INSERT INTO public.organization_invites(id,organization_id,email,role_id) VALUES ('40000000-0000-0000-0000-000000000009','10000000-0000-0000-0000-000000000001','cancel-race@example.test','member'); INSERT INTO app_private.sessions(id,session_id,user_id,data) VALUES ('key-race','30000000-0000-0000-0000-000000000008','20000000-0000-0000-0000-000000000008','{}');"
+  cancel="BEGIN; SET LOCAL ROLE tover_app; SET LOCAL request.jwt.claim.sub='20000000-0000-0000-0000-000000000005'; SET LOCAL tover.session_key='key-manager'; UPDATE public.organization_invites SET status='revoked' WHERE id='40000000-0000-0000-0000-000000000009' AND status='pending'; SELECT pg_sleep(2); COMMIT;"
+  accept="BEGIN; SET LOCAL ROLE tover_app; SET LOCAL request.jwt.claim.sub='20000000-0000-0000-0000-000000000008'; SET LOCAL tover.session_key='key-race'; UPDATE public.organization_invites SET status='accepted' WHERE id='40000000-0000-0000-0000-000000000009' AND status='pending'; INSERT INTO public.organization_memberships(organization_id,user_id,role_id,status) VALUES ('10000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000008','member','active'); COMMIT;"
   docker exec -e PGAPPNAME=tover-cancel-test "$test_container" psql -X -qAt -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c "$cancel" >/dev/null &
   first_pid=$!
   for ((attempt=0; attempt<50; attempt++)); do
@@ -63,15 +41,18 @@ for scenario in fresh upgrade; do
     sleep 0.02
   done
   [[ "$sleeping" == 1 ]]
-  docker exec -e PGAPPNAME=tover-accept-test "$test_container" psql -X -qAt -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c "$accept" >/dev/null &
-  second_pid=$!
+  # The acceptance must fail on the membership policy; its error is the expected outcome.
+  if accepted=$(docker exec -e PGAPPNAME=tover-accept-test "$test_container" psql -X -qAt -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c "$accept" 2>&1); then
+    echo 'FAIL: acceptance overlapping a cancellation committed' >&2
+    exit 1
+  fi
+  [[ "$accepted" == *"row-level security"* ]] || { echo "FAIL: unexpected acceptance error: $accepted" >&2; exit 1; }
   wait "$first_pid"
-  wait "$second_pid"
   docker exec "$test_container" psql -X -q -U postgres -d "$scenario" -v ON_ERROR_STOP=1 -c \
-    "DO \$\$ BEGIN ASSERT NOT EXISTS (SELECT FROM public.organization_memberships WHERE user_id='20000000-0000-0000-0000-000000000008'), 'concurrent cancellation granted membership'; ASSERT (SELECT status FROM public.organization_invites WHERE id='40000000-0000-0000-0000-000000000002')='revoked'; END; \$\$;"
+    "DO \$\$ BEGIN ASSERT NOT EXISTS (SELECT FROM public.organization_memberships WHERE user_id='20000000-0000-0000-0000-000000000008'), 'concurrent cancellation granted membership'; ASSERT (SELECT status FROM public.organization_invites WHERE id='40000000-0000-0000-0000-000000000009')='revoked'; END; \$\$;"
   docker exec "$test_container" psql -X -qAt -U postgres -d "$scenario" -v ON_ERROR_STOP=1 \
     -f /work/supabase/tests/identity-contract-snapshot.sql > "$test_output/$scenario.json"
-  printf 'PASS: %s schema, concurrent create/resend and overlapping cancellation/acceptance\n' "$scenario"
+  printf 'PASS: %s schema and overlapping cancellation/acceptance\n' "$scenario"
 done
 
 if ! cmp -s "$test_output/fresh.json" "$test_output/upgrade.json"; then

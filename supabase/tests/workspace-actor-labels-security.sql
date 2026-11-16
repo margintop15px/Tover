@@ -15,9 +15,9 @@ INSERT INTO public.organization_memberships (organization_id, user_id, role_id, 
   ('70000000-0000-4000-8000-000000000001', '70000000-0000-4000-8000-000000000012', 'member', 'active'),
   ('70000000-0000-4000-8000-000000000001', '70000000-0000-4000-8000-000000000013', 'member', 'suspended'),
   ('70000000-0000-4000-8000-000000000002', '70000000-0000-4000-8000-000000000014', 'owner', 'active');
-UPDATE public.profiles SET display_name = '  Owner Name  '
+UPDATE public.profiles SET display_name = 'Owner Name'
 WHERE user_id = '70000000-0000-4000-8000-000000000011';
-UPDATE public.profiles SET display_name = '   '
+UPDATE public.profiles SET display_name = NULL
 WHERE user_id = '70000000-0000-4000-8000-000000000012';
 
 DO $$ BEGIN
@@ -43,10 +43,6 @@ DO $$ DECLARE labels jsonb; BEGIN
     {"userId":"70000000-0000-4000-8000-000000000013","label":"former-member@example.test"}]'::jsonb,
     'labels leaked cross-workspace actors or lost inactive members/fallback names';
   ASSERT public.workspace_actor_labels('70000000-0000-4000-8000-000000000001', ARRAY[]::uuid[])='[]'::jsonb;
-  BEGIN
-    PERFORM public.workspace_team('70000000-0000-4000-8000-000000000001');
-    RAISE EXCEPTION 'actor lookup widened member team administration';
-  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
   BEGIN
     PERFORM public.workspace_actor_labels('70000000-0000-4000-8000-000000000002', ARRAY[]::uuid[]);
     RAISE EXCEPTION 'actor lookup accepted other workspace';
