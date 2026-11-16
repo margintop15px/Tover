@@ -126,11 +126,17 @@
       {:user-id (:user-id row) :session-id (:session-id row) :auth-version (:version row) :auth-session-id key})))
 
 
+(defn- requested-path
+  {:malli/schema [:=> [:cat :map] :string]}
+  [{:keys [uri query-string]}]
+  (local-path (str uri (when query-string (str "?" query-string)))))
+
+
 (defn- profile-location
   {:malli/schema [:=> [:cat :map] :string]}
-  [{:keys [request-method uri query-string]}]
+  [{:keys [request-method] :as request}]
   (if (= :get request-method)
-    (str "/account/profile?return-to=" (codec/url-encode (str uri (when query-string (str "?" query-string)))))
+    (str "/account/profile?return-to=" (codec/url-encode (requested-path request)))
     "/account/profile"))
 
 
@@ -143,7 +149,10 @@
                    :profile-required (profile-location request)
                    nil)]
     (if (and location (= :get (:request-method request)) (not (datastar-request? request)))
-      {:status 303 :headers {"location" location} :body ""}
+      (cond-> {:status 303 :headers {"location" location} :body ""}
+        ;; Sign-in continues to the requested screen (such as an invitation); it never acts on it.
+        (= code :unauthenticated)
+        (assoc :session (assoc (:session request) :identity/return-to (requested-path request))))
       {:status  status
        :headers (cond-> {"content-type" "text/plain; charset=utf-8" "x-tover-error" (name code)}
                   location (assoc "x-tover-redirect" location))

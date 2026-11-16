@@ -166,3 +166,27 @@
         (is (= key (support/session-key browser)))
         (is (= fixtures/owner-id (:user-id (access/current-identity services key))))
         (is (empty? (signed-in-events state)))))))
+
+
+(deftest a-signed-out-request-continues-there-after-sign-in-and-profile-setup
+  (support/with-application
+    (fn [{:keys [browser]}]
+      (let [path     "/invitations/7f4a2a8e-1c0b-4d7e-9a55-0f1e2d3c4b5a"
+            redirect ((:request! browser) :get path)]
+        (is (= "/auth/login" (get-in redirect [:headers "location"])))
+        (testing "the requested path is kept for sign-in, not acted on"
+          (is (= path (get-in (sign-in! browser "owner@example.test" fixtures/password) [:headers "location"])))))))
+  (support/with-application
+    (fn [{:keys [browser]}]
+      ((:request! browser) :get "/invitations/abc?x=1")
+      (is (= "/account/profile?return-to=%2Finvitations%2Fabc%3Fx%3D1"
+             (get-in (sign-in! browser "unnamed@example.test" fixtures/password) [:headers "location"]))))))
+
+
+(deftest a-complete-profile-uses-the-display-name-rule
+  (let [family "👨‍👩‍👧"]
+    (is (session/profile-complete? {:display-name (apply str (repeat 100 family))}))
+    (is (not (session/profile-complete? {:display-name (apply str (repeat 101 family))})))
+    (is (session/profile-complete? {:display-name " Ana "}))
+    (is (not (session/profile-complete? {:display-name "   "})))
+    (is (not (session/profile-complete? nil)))))

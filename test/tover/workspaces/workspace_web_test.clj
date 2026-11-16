@@ -6,9 +6,10 @@
     [bel.realtime :as realtime]
     [bel.runtime :as runtime]
     [clojure.string :as str]
-    [clojure.test :refer [deftest is]]
+    [clojure.test :refer [deftest is testing]]
     [tover.fixtures :as fixtures]
     [tover.identity.access :as access]
+    [tover.identity.sign-out.web :as sign-out]
     [tover.support :as support]
     [tover.workspaces.create.web :as create]
     [tover.workspaces.select.model :as model]
@@ -49,8 +50,21 @@
         (is (str/includes? body "Development workspace"))
         (is (str/includes? body "Other workspace"))
         (is (re-find (re-pattern (str "(?s)<tr data-workspace-id=\"" fixtures/workspace-id "\">(?:(?!</tr>).)*Current workspace.*?</tr>")) body))
-        (is (str/includes? body (str "action=\"" (bel/action-url select/sign-out-action) "\"")))
+        (is (str/includes? body (str "action=\"" (bel/action-url ::sign-out/sign-out) "\"")))
         (is (str/includes? body (bel/action-url ::create/create)))))))
+
+
+(deftest the-chooser-signs-out-this-sign-in
+  (support/with-application
+    (fn [{:keys [browser] :as services}]
+      (let [session (support/sign-in! services browser "owner@example.test")
+            body    (:body ((:request! browser) :get "/workspace"))
+            footer  (second (re-find #"(?s)<footer class=\"management-footer\">(.*?)</footer>" body))
+            params  (into {} (for [name ["_tover-context" "session-id"]] [name (form-value footer name)]))]
+        (is (= (str (:version session)) (get params "_tover-context")))
+        (let [response ((:request! browser) :post (bel/action-url ::sign-out/sign-out) params)]
+          (is (= "/auth/login" (get-in response [:headers "location"]))))
+        (is (nil? (access/current-identity services (:key session))))))))
 
 
 (deftest repeated-names-show-a-distinguishing-reference
@@ -90,6 +104,24 @@
         (is (= [(:key session)] @closed))
         (is (= fixtures/other-workspace-id (:workspace-id (access/current-identity services (:key session)))))
         (is (some? realtime))))))
+
+
+(deftest a-linked-workspace-is-offered-but-never-selected-automatically
+  (support/with-application
+    (fn [{:keys [browser] :as services}]
+      (let [session (support/sign-in! services browser "owner@example.test" {:workspace-id fixtures/workspace-id})
+            body    (:body ((:request! browser) :get "/workspace" {"workspace-id" (str fixtures/other-workspace-id)}))
+            offer   (second (re-find #"(?s)data-target-workspace-id=\"[^\"]*\">(.*?)</section>" body))]
+        (is (str/includes? offer "Other workspace"))
+        (is (= (str fixtures/other-workspace-id) (form-value offer "workspace-id")))
+        (is (= fixtures/workspace-id (selected services session)))
+        (is (= 303 (:status ((:request! browser) :post (bel/action-url ::select/select)
+                                                 (into {} (for [name ["workspace-id" "expected-version" "command-id" "return-to"]]
+                                                            [name (form-value offer name)]))))))
+        (is (= fixtures/other-workspace-id (selected services session)))
+        (testing "a workspace without a current membership is not offered"
+          (is (not (str/includes? (:body ((:request! browser) :get "/workspace" {"workspace-id" (str (random-uuid))}))
+                                  "data-target-workspace-id"))))))))
 
 
 (deftest the-same-workspace-is-chosen-again

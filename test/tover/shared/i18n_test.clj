@@ -116,9 +116,10 @@
   (support/with-application
     (fn [{:keys [handler browser state] :as services}]
       (let [request! (:request! browser)
-            action   "/action/tover.identity.shell/set-language"]
+            guest    "/action/tover.identity.shell/set-language"
+            action   "/action/tover.accounts.profile.web/set-language"]
         (is (str/includes? (:body (request! :get "/auth/login" {} {:headers {"accept-language" "ru-RU"}})) "Войти"))
-        (is (= 403 (:status (request! :post action {"locale" "ru"} {:csrf? false}))))
+        (is (= 403 (:status (request! :post guest {"locale" "ru"} {:csrf? false}))))
         (support/sign-in! services browser "owner@example.test" {:workspace-id fixtures/workspace-id :uri "/workspace"})
         (is (= 303 (:status (request! :post action {"locale" "ru" "return-to" "/workspace"}))))
         (is (= "ru" (get-in @state [:db :public.profiles fixtures/owner-id :language])))

@@ -8,19 +8,14 @@
     [bel.runtime :as runtime]
     [clojure.string :as str]
     [tover.identity.access :as access]
+    [tover.identity.sign-out.web :as sign-out]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
-    [tover.shared.ui.forms :refer [form]]
     [tover.shared.web.core :as web]
     [tover.workspaces.create.web :as create]
     [tover.workspaces.select.model :as model])
   (:import
     [clojure.lang ExceptionInfo]))
-
-
-(def sign-out-action
-  "Chunk A's sign-out (02b)."
-  :tover.identity.sign-out.web/sign-out)
 
 
 (defn reference
@@ -35,8 +30,15 @@
   [request]
   (let [{:keys [memberships workspace-id]} (:tover/identity request)
         repeated (into #{} (keep (fn [[name n]] (when (> n 1) name))) (frequencies (map :name memberships)))
-        return-to (access/local-path (get-in request [:params :return-to]))]
+        return-to (access/local-path (get-in request [:params :return-to]))
+        ;; A link may name a workspace (an accepted invitation's "Open workspace"); it is offered, never selected.
+        target (let [id (parse-uuid (str (get-in request [:params :workspace-id])))]
+                 (some #(when (= id (:workspace-id %)) %) memberships))]
     [:div.management-content
+     (when target
+       [:section.management-section {:aria-label (i18n/t "Open workspace") :data-target-workspace-id (str (:workspace-id target))}
+        [:p [:span.management-name (:name target)]]
+        (create/select-form request (:workspace-id target) return-to (i18n/t "Open workspace"))])
      [:details.management-disclosure {:open (or (empty? memberships) (contains? (:params request) :name))}
       [:summary (i18n/t "Create workspace")]
       (create/create-form {:request request})]
@@ -67,7 +69,7 @@
          [:p (i18n/t "No workspaces yet.")]
          [:p (i18n/t "Create a workspace or open an invitation you received.")]])]
      [:footer.management-footer
-      (form request (bel/action-url sign-out-action) (i18n/t "Sign out"))]]))
+      (sign-out/sign-out-form {:request request})]]))
 
 
 (defpage page

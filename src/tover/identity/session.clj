@@ -23,6 +23,7 @@
     [next.jdbc.date-time :as date-time]
     [next.jdbc.result-set :as result-set]
     [ring.middleware.session.store :as ring]
+    [tover.accounts.profile.model :as profile]
     [tover.shared.jdbc :as database])
   (:import
     [java.time Instant]
@@ -138,10 +139,10 @@
 
 
 (defn profile-complete?
+  "A display name the profile rule accepts (03: trimmed, 1–100 grapheme clusters)."
   {:malli/schema [:=> [:cat [:maybe :map]] :boolean]}
   [profile]
-  (let [name (some-> (:display-name profile) str/trim)]
-    (boolean (and (seq name) (<= (count (:display-name profile)) 100)))))
+  (profile/valid-name? (some-> (:display-name profile) str/trim)))
 
 
 ;; Ring store. `transaction` is (fn [key f]); f receives the locked row (or nil) and `directory`, a
