@@ -13,19 +13,15 @@ for (const path of ['src', 'resources']) symlinkSync(join(root, path), join(proj
 mkdirSync(join(project, 'dev'));
 symlinkSync(join(root, 'dev', 'tover'), join(project, 'dev', 'tover'), 'dir');
 const program = `
-  (require '[tover.app :as app] '[tover.identity :as identity]
-           '[tover.session-store :as session-store] '[tover.viewport-fixture :as fixture] '[tover.shared.rdf :as rdf])
-  (def identities (identity/fixtures))
-  (def sessions (session-store/memory-store))
-  (def config (app/system-config ${port} ${JSON.stringify(join(project, 'inventory'))}
-               {:auth (:auth identities) :workspaces (:workspaces identities)
-                :session-store sessions
-                :bel/system (identity/bel-system (assoc identities :session-store sessions))
-                :origin "http://127.0.0.1:${port}" :development? true}))
+  (require '[tover.app :as app] '[tover.fixtures :as fixtures] '[tover.viewport-fixture :as fixture] '[tover.shared.rdf :as rdf])
+  (def services (let [services (assoc (fixtures/system) :origin "http://127.0.0.1:${port}" :development? true)]
+                  (assoc services :bel/system (fixtures/bel-system services))))
   (def repository (rdf/native-store ${JSON.stringify(join(project, 'inventory'))}))
   (fixture/seed! repository)
   (rdf/close! repository)
-  (def system (app/start! config))
+  (def system (app/start! (app/system-config ${port} ${JSON.stringify(join(project, 'inventory'))}
+                           (select-keys services [:provider :session-store :bel/system :origin :development?]))))
+  (alter-var-root #'tover.inventory.actors/labels (constantly (fixtures/actor-labels (:state services))))
   (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable #(app/stop! system)))
   @(promise)
 `;

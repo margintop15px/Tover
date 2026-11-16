@@ -78,6 +78,7 @@ const program = `
   (require '[bel.runtime :as runtime] '[tover.invitations.fixtures :as invitations])
   (doseq [[id coeffect] invitations/coeffects]
     (.addMethod ^clojure.lang.MultiFn runtime/coeffect id (fn [_ context input] (coeffect context input))))
+  (alter-var-root #'tover.inventory.actors/labels (constantly (fixtures/actor-labels (:state services))))
   (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable #(app/stop! system)))
   @(promise)
 `;

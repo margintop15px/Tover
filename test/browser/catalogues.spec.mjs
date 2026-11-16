@@ -160,7 +160,7 @@ test('save retries are idempotent and cross-workspace relationships are rejected
   const other = await browser.newContext({ baseURL: new URL(page.url()).origin });
   try {
     const outsider = await other.newPage();
-    await signIn(outsider, 'other@example.test'); await open(outsider, 'goods');
+    await signIn(outsider, 'other@example.test', undefined, 'Other workspace'); await open(outsider, 'goods');
     const { csrf, version } = await pageContext(outsider);
     const save = async data => {
       const response = await outsider.request.post('/action/tover.catalogues.web/save', {

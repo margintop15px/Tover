@@ -146,7 +146,7 @@ test('item-scoped history keeps production parents inline and only opens relevan
   await expect(details).toHaveAttribute('data-operation-id', 'viewport-production');
   const otherContext = await browser.newContext({ baseURL: new URL(page.url()).origin });
   try {
-    const other = await otherContext.newPage(); await signIn(other, 'other@example.test');
+    const other = await otherContext.newPage(); await signIn(other, 'other@example.test', undefined, 'Other workspace');
     const privateRead = await readDetail(other, 'viewport-production');
     expect(privateRead.status()).toBe(200);
     const body = await privateRead.text();
@@ -178,7 +178,7 @@ test('user and tenant tokens are isolated and shared edits preserve another memb
     const member = await memberContext.newPage(); await signIn(member, 'member@example.test');
     const memberRead = await view(member, 'grid-window', { queryId, requestId: 'member-forgery', view: 'stock', start: 200, count: 200 });
     expect(JSON.parse(memberRead._gridWindowJson).status).toBe('expired');
-    const other = await otherContext.newPage(); await signIn(other, 'other@example.test');
+    const other = await otherContext.newPage(); await signIn(other, 'other@example.test', undefined, 'Other workspace');
     const otherRead = await view(other, 'grid-window', { queryId, requestId: 'other-forgery', view: 'stock', start: 0, count: 200 });
     expect(JSON.parse(otherRead._gridWindowJson).status).toBe('expired');
     const detail = await view(other, 'operation-details', { queryId, operationId: 'viewport-opening', requestId: 'other-detail-forgery' });

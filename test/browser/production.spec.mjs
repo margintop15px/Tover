@@ -267,7 +267,7 @@ test('logout invalidates the session and refreshes sibling tabs', async ({ page,
   await other.goto('/');
   await expect(other.locator('#stock-grid')).toBeVisible();
   await page.goto('/workspace');
-  await page.locator('form[action="/action/tover.auth.web/sign-out"]').getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.locator('form[action="/action/tover.identity.sign-out.web/sign-out"]').getByRole('button', { name: 'Sign out', exact: true }).click();
   await expect(page).toHaveURL(/\/auth\/login$/);
   await expect(other).toHaveURL(/\/auth\/login$/);
   const status = await context.request.post('/action/tover.stock.web/edit-stock', {
@@ -298,6 +298,8 @@ test('email links require an explicit confirmation and invalid links show an err
   page.on('request', request => {
     if (request.method() === 'POST' && new URL(request.url()).pathname === '/action/tover.identity.confirm.web/confirm-email') verifications.push(request);
   });
+  // Signed out: a signed-in person is first asked to keep this sign-in or sign out.
+  await page.context().clearCookies();
   await page.goto('/auth/confirm?token_hash=expired-link&type=signup');
   await expect(page.getByRole('heading', { name: 'Confirm email link' })).toBeVisible();
   expect(verifications).toHaveLength(0);

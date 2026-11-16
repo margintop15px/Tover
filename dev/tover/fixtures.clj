@@ -413,3 +413,17 @@
   [services {:keys [key]}]
   (merge (select-keys services [:session-store :provider :origin :bel/system])
          (assoc (access/current-identity services key) :locale "en")))
+
+
+(defn actor-labels
+  "tover.inventory.actors/labels over the fixture `state`: display names of the workspace's active members. The
+  real function reads them with SQL, which the in-memory directory cannot run; browser test servers swap it in."
+  {:malli/schema [:=> [:cat :any] [:fn ifn?]]}
+  [state]
+  (fn [{:keys [workspace-id]} _records]
+    (let [db @state]
+      (into {} (for [{:keys [organization_id user_id status]} (vals (get-in db [:db :public.organization_memberships]))
+                     :when (and (= workspace-id organization_id) (= "active" status))
+                     :let  [name (get-in db [:db :public.profiles user_id :display_name])]
+                     :when name]
+                 [(str user_id) name])))))
