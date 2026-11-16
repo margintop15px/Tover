@@ -53,8 +53,11 @@
 
 
 (defn resume!
-  "Retain the completion obligation independently of the browser: retry `finish!` in the background with
-  bounded backoff. The boundary stays the one fixed at password acceptance."
+  "Retry `finish!` in the background with bounded backoff, independently of the browser. The boundary stays the
+  one fixed at password acceptance. ponytail: in-process only. Blocking older sign-ins survives a restart anyway:
+  the retained `requested` attempt blocks them (session/effective-boundary). After a restart the person sees
+  Unconfirmed and resubmits or signs in. Tover cannot learn the provider's outcome by itself, because any
+  durable record of acceptance fails the same way completion does."
   {:malli/schema [:=> [:cat :map :string :uuid inst?] :nil]}
   [context key attempt-id valid-after]
   (Thread/startVirtualThread

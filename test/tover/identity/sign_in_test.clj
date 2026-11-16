@@ -183,6 +183,17 @@
              (get-in (sign-in! browser "unnamed@example.test" fixtures/password) [:headers "location"]))))))
 
 
+(deftest an-expired-sign-in-is-signed-out-and-signs-in-again
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (let [{:keys [key]} (support/sign-in! services browser "owner@example.test" {:workspace-id fixtures/workspace-id})]
+        (swap! state assoc-in [:db :app_private.sessions key :expires_at] (.minusSeconds (java.time.Instant/now) 1))
+        (is (nil? (access/current-identity services key)))
+        (is (= "/auth/login" (get-in ((:request! browser) :get "/workspace") [:headers "location"])))
+        (is (= 303 (:status (sign-in! browser "owner@example.test" fixtures/password))))
+        (is (= fixtures/owner-id (:user-id (access/current-identity services (support/session-key browser)))))))))
+
+
 (deftest a-complete-profile-uses-the-display-name-rule
   (let [family "👨‍👩‍👧"]
     (is (session/profile-complete? {:display-name (apply str (repeat 100 family))}))

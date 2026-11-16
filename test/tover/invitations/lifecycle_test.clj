@@ -293,3 +293,11 @@
         {:keys [invitations]} (team/team {:members [member] :invitations [offer] :deliveries []} now)]
     (is (= {:state "invalidated" :can-resend? false :can-cancel? false}
            (select-keys (first invitations) [:state :can-resend? :can-cancel?])))))
+
+
+(deftest an-offer-delivered-after-removal-cannot-grant-access
+  ;; The queued email may still go out; its link never grants access to a person removed after the offer.
+  (is (= {:type :invitation-not-pending :status "invalidated"}
+         (select-keys (error-data #(accept {:membership {:membership-id membership-id :role "member" :status "removed"
+                                                         :removed-at    (.plusSeconds ^java.time.Instant (:created-at received) 1)}}))
+                      [:type :status]))))

@@ -145,7 +145,7 @@
           (is (nil? (access/current-identity services (:key other)))))))))
 
 
-(deftest an-unknown-password-change-stays-unconfirmed-and-is-never-resubmitted
+(deftest an-unknown-password-change-stays-unconfirmed-blocks-older-sign-ins-and-is-never-resubmitted
   (let [puts (atom 0)]
     (support/with-application
       (fn [services]
@@ -160,7 +160,10 @@
             (is (str/includes? (:body response) "/auth/recover"))
             (is (= 1 @puts))
             (is (empty? (completed-events state)))
-            (is (some? (access/current-identity services (:key other)))))
+            (testing "older sign-ins stay blocked while the outcome is unknown; signing in again works"
+              (is (nil? (access/current-identity services (:key other))))
+              (is (some? (access/current-identity
+                           services (:key (support/sign-in! services (support/browser handler) "owner@example.test")))))))
           (testing "the status survives a later visit"
             (is (str/includes? (:body ((:request! browser) :get "/auth/password")) "Password change unconfirmed"))))))))
 

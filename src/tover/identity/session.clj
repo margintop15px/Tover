@@ -128,6 +128,18 @@
   (boolean (and row (nil? (:ended-at row)) (.isAfter ^Instant (:expires-at row) (Instant/now)))))
 
 
+(defn effective-boundary
+  "The later of the completed reset boundary and the user's latest unresolved reset attempt (02c). An attempt is
+  retained before the provider is asked to change the password, so older sign-ins stay blocked while its outcome
+  is unknown or its completion is pending, across restarts; a definite rejection lifts the block."
+  {:malli/schema [:=> [:cat [:maybe :map] [:maybe [:map [:requested-at inst?] [:session-id :uuid]]]] [:maybe :map]]}
+  [boundary attempt]
+  (let [attempt (when attempt {:valid-after (:requested-at attempt) :kept-session-id (:session-id attempt)})]
+    (if (and boundary attempt (.isBefore ^Instant (:valid-after attempt) (:valid-after boundary)))
+      boundary
+      (or attempt boundary))))
+
+
 (defn valid?
   "Live and not covered by the user's reset boundary; the sign-in that performed the reset is kept."
   {:malli/schema [:=> [:cat [:maybe :map] [:maybe :map]] :boolean]}
@@ -236,14 +248,16 @@
 
 
 (def ^:private directory-query
-  "select p.display_name, p.language, b.valid_after, b.kept_session_id,
+  "select p.display_name, p.language, b.valid_after, b.kept_session_id, r.requested_at, r.session_id,
      coalesce((select jsonb_agg(jsonb_build_object('workspace-id', o.id, 'name', o.name, 'role', m.role_id,
                                                    'created-at', m.created_at) order by m.created_at, o.id)
                from public.organization_memberships m join public.organizations o on o.id = m.organization_id
                where m.user_id = u.id and m.status = 'active'), '[]'::jsonb)::text as memberships
    from (select ?::uuid as id) u
    left join public.profiles p on p.user_id = u.id
-   left join app_private.session_boundaries b on b.user_id = u.id")
+   left join app_private.session_boundaries b on b.user_id = u.id
+   left join lateral (select requested_at, session_id from app_private.password_resets
+                      where user_id = u.id and status = 'requested' order by requested_at desc limit 1) r on true")
 
 
 (defn- read-directory
@@ -253,7 +267,9 @@
   (jdbc/execute-one! tx ["select set_config('request.jwt.claim.sub', ?, true)" (str user-id)])
   (let [row (jdbc/execute-one! tx [directory-query user-id] {:builder-fn result-set/as-unqualified-lower-maps})]
     {:profile     (when row {:display-name (:display_name row) :language (:language row)})
-     :boundary    (when (:valid_after row) {:valid-after (:valid_after row) :kept-session-id (:kept_session_id row)})
+     :boundary    (effective-boundary
+                    (when (:valid_after row) {:valid-after (:valid_after row) :kept-session-id (:kept_session_id row)})
+                    (when (:requested_at row) {:requested-at (:requested_at row) :session-id (:session_id row)}))
      :memberships (mapv (fn [{:keys [workspace-id name role created-at]}]
                           {:workspace-id (parse-uuid workspace-id) :name name :role (keyword role) :created-at created-at})
                         (json/read-json (:memberships row) :key-fn keyword))}))
@@ -348,8 +364,13 @@
     (db/execute-one! tx {:select [[[:set_config "request.jwt.claim.sub" [:cast actor :text] true]]
                                   [[:set_config "tover.session_key" auth-session-id true]]]})
     (let [boundary (db/execute-one! tx {:select [:valid_after :kept_session_id] :from [:app_private.session_boundaries]
-                                        :where  [:= :user_id user-id]           :for  :share})]
-      (when-not (valid? row (when boundary {:valid-after (:valid_after boundary) :kept-session-id (:kept_session_id boundary)}))
+                                        :where  [:= :user_id user-id]           :for  :share})
+          attempt  (db/execute-one! tx {:select   [:requested_at :session_id] :from [:app_private.password_resets]
+                                        :where    [:and [:= :user_id user-id] [:= :status "requested"]]
+                                        :order-by [[:requested_at :desc]] :limit    1})]
+      (when-not (valid? row (effective-boundary
+                              (when boundary {:valid-after (:valid_after boundary) :kept-session-id (:kept_session_id boundary)})
+                              (when attempt {:requested-at (:requested_at attempt) :session-id (:session_id attempt)})))
         (ended!)))
     (let [principal {:user-id            user-id
                      :session-id         session-id

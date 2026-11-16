@@ -154,7 +154,12 @@
   (let [profile  (get-in db [:public.profiles user-id])
         boundary (get-in db [:app_private.session_boundaries user-id])]
     {:profile     (when profile {:display-name (:display_name profile) :language (:language profile)})
-     :boundary    (when boundary {:valid-after (:valid_after boundary) :kept-session-id (:kept_session_id boundary)})
+     :boundary    (session/effective-boundary
+                    (when boundary {:valid-after (:valid_after boundary) :kept-session-id (:kept_session_id boundary)})
+                    (some->> (vals (:app_private.password_resets db))
+                             (filter #(and (= user-id (:user_id %)) (= "requested" (:status %))))
+                             seq (apply max-key #(.toEpochMilli ^java.time.Instant (:requested_at %)))
+                             ((fn [r] {:requested-at (:requested_at r) :session-id (:session_id r)}))))
      :memberships (->> (vals (:public.organization_memberships db))
                        (filter #(and (= user-id (:user_id %)) (= "active" (:status %))))
                        (sort-by (juxt :created_at :organization_id))
