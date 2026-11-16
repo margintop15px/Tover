@@ -39,9 +39,10 @@ migrate() {
     "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
       < "$repo_dir/supabase/migrations/033_identity_and_sessions.sql"
   fi
-  for migration in 034_workspace_actor_labels 035_bel_workspace_creation 036_bel_shared_journal 037_profile_preferences; do
-    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
-      < "$repo_dir/supabase/migrations/$migration.sql"
+  # Every later migration is additive and idempotent; apply 034 onward in order on every run.
+  for migration in "$repo_dir"/supabase/migrations/0[3-9][0-9]_*.sql; do
+    [[ "$(basename "$migration")" < 034 ]] && continue
+    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 < "$migration"
   done
   "${compose[@]}" exec -T db sh -c \
     'psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 --set=app_password="$TOVER_DB_PASSWORD"' <<'SQL'

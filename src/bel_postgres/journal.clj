@@ -11,7 +11,7 @@
 (defn- scope-columns
   {:malli/schema [:=> [:cat :map] :map]}
   [{{:keys [kind id]} :scope}]
-  (if (contains? #{:user :workspace} kind)
+  (if (contains? #{:user :session :workspace} kind)
     {:scope_kind (name kind) :scope_id id}
     (throw (ex-info "Unsupported journal scope" {:type :configuration}))))
 

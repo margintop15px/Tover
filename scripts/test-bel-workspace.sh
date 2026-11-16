@@ -27,26 +27,16 @@ wait_ready() {
 wait_ready
 test_port=$(docker port "$test_container" 5432/tcp)
 test_port=${test_port##*:}
-for migration in supabase/tests/auth-stub.sql \
-  supabase/migrations/033_identity_and_sessions.sql \
-  supabase/migrations/034_workspace_actor_labels.sql \
-  supabase/migrations/035_bel_workspace_creation.sql \
-  supabase/migrations/036_bel_shared_journal.sql \
-  supabase/migrations/037_profile_preferences.sql \
-  supabase/migrations/038_invitation_delivery.sql; do
+# 033 runs once on the fresh cluster; 034 onward are additive and run twice to check idempotence.
+later=()
+for migration in supabase/migrations/0[3-9][0-9]_*.sql; do
+  [[ "$(basename "$migration")" < 034 ]] || later+=("$migration")
+done
+for migration in supabase/tests/auth-stub.sql supabase/migrations/033_identity_and_sessions.sql \
+  "${later[@]}" "${later[@]}"; do
   docker exec "$test_container" psql -X -q -U postgres -d postgres \
     -v ON_ERROR_STOP=1 -c 'SET client_min_messages=warning' -f "/work/$migration"
 done
-# Check that the additive migration can be applied twice.
-docker exec "$test_container" psql -X -q -U postgres -d postgres \
-  -v ON_ERROR_STOP=1 -c 'SET client_min_messages=warning' \
-  -f /work/supabase/migrations/036_bel_shared_journal.sql
-docker exec "$test_container" psql -X -q -U postgres -d postgres \
-  -v ON_ERROR_STOP=1 -c 'SET client_min_messages=warning' \
-  -f /work/supabase/migrations/037_profile_preferences.sql
-docker exec "$test_container" psql -X -q -U postgres -d postgres \
-  -v ON_ERROR_STOP=1 -c 'SET client_min_messages=warning' \
-  -f /work/supabase/migrations/038_invitation_delivery.sql
 # Only the freshly created disposable cluster gets a direct worker login.
 docker exec "$test_container" psql -X -q -U postgres -d postgres \
   -v ON_ERROR_STOP=1 -c 'ALTER ROLE tover_journal LOGIN'
