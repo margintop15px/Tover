@@ -94,14 +94,16 @@
       (let [session (support/sign-in! services browser "owner@example.test" {:workspace-id fixtures/workspace-id})
             body    (:body ((:request! browser) :get "/workspace"))
             closed  (atom [])]
-        (with-redefs [realtime/close-session! (fn [_ key] (swap! closed conj key))]
+        (with-redefs [realtime/close-session! (fn [_ key keep] (swap! closed conj [key keep]))]
           (let [response ((:request! browser) :post (bel/action-url ::select/select)
                                               (open-params body fixtures/other-workspace-id))]
             (is (= 303 (:status response)))
-            (is (= "/" (get-in response [:headers "location"])))))
+            (is (= "/" (get-in response [:headers "location"]))))
+          ;; The command's effect runs after commit; it keeps streams opened for the new workspace.
+          (loop [n 100] (when (and (empty? @closed) (pos? n)) (Thread/sleep 10) (recur (dec n)))))
         (is (= fixtures/other-workspace-id (selected services session)))
         (is (not= (:version session) (version services session)))
-        (is (= [(:key session)] @closed))
+        (is (= [[(:key session) fixtures/other-workspace-id]] @closed))
         (is (= fixtures/other-workspace-id (:workspace-id (access/current-identity services (:key session)))))
         (is (some? realtime))))))
 

@@ -3,7 +3,9 @@
   its `version` changes with every accepted selection, so forms and streams of the old one go stale."
   (:require
     [bel.core :refer [defcommand defevent defmodel]]
-    [bel.runtime :as runtime]))
+    [bel.realtime :as realtime]
+    [bel.runtime :as runtime]
+    [tover.identity.session :as session]))
 
 
 (def Selection
@@ -37,6 +39,14 @@
    :events {::workspace-selected {:set [:workspace-id :version]}}})
 
 
+(defmethod runtime/effect! ::close-other-streams
+  ;; Streams of the previous selection close so its private updates cannot reach the new screen. Streams
+  ;; already opened for the new workspace stay, so this may run after the redirect.
+  [_ {{:keys [realtime session-store]} :resources} {:keys [session-id workspace-id]}]
+  (when-let [key (and realtime (session/session-key session-store session-id))]
+    (realtime/close-session! realtime key workspace-id)))
+
+
 (defcommand select-workspace
   {:scope  :session
    :input  SelectWorkspace
@@ -59,4 +69,5 @@
 
     :else
     {:events [{:type ::workspace-selected
-               :data {:session-id (:session-id selection) :workspace-id workspace-id :version version}}]}))
+               :data {:session-id (:session-id selection) :workspace-id workspace-id :version version}}]
+     :fx     [[::close-other-streams {:session-id (:session-id selection) :workspace-id workspace-id}]]}))

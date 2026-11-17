@@ -130,18 +130,6 @@
   (send-prepared! sse (prepare-result context result)))
 
 
-(defn- run-after!
-  "Run a descriptor's :after effects synchronously; each is best-effort and only logs its failure."
-  {:malli/schema [:=> [:cat :map [:maybe [:vector :any]]] :nil]}
-  [context effects]
-  (doseq [[id input] effects]
-    (try
-      (runtime/effect! id {:actor (:user-id context) :resources (get-in context [:bel/system :resources])} input)
-      (catch Exception error
-        (mu/log ::after-failed :effect id :error-type (.getName (class error))))))
-  nil)
-
-
 (defn execute-action
   {:malli/schema [:=> [:cat :map :qualified-keyword :map] core/ActionResponse]}
   [context id input]
@@ -159,29 +147,23 @@
                                           [:and core/ActionResult output])
                                         (fn context input))]
           (if (= :command (:type result))
-            (do
-              (doseq [[effect] (:after result)]
-                (when-not (contains? (methods runtime/effect!) effect)
-                  (throw (ex-info "Unknown effect" {:type :configuration :effect effect}))))
-              (try
-                (let [receipt (runtime/execute! context (:id result) (select-keys result [:command-id :input]))]
-                  (when (seq (:event-ids receipt))
-                    (run-after! context (:after result)))
-                  (:then result))
-                (catch ExceptionInfo error
-                  (let [{:keys [type retryable?]} (ex-data error)]
-                    (cond
-                      (and (:catch result) (not retryable?) (not (contains? #{:forbidden :configuration :conflict} type)))
-                      (let [catch (:catch result)]
-                        (if (= :page (:type catch))
-                          (assoc-in catch [:input :problem] (some-> type name))
-                          (assoc-in catch [:input :error] (assoc (ex-data error) :message (.getMessage error)))))
+            (try
+              (runtime/execute! context (:id result) (select-keys result [:command-id :input]))
+              (:then result)
+              (catch ExceptionInfo error
+                (let [{:keys [type retryable?]} (ex-data error)]
+                  (cond
+                    (and (:catch result) (not retryable?) (not (contains? #{:forbidden :configuration :conflict} type)))
+                    (let [catch (:catch result)]
+                      (if (= :page (:type catch))
+                        (assoc-in catch [:input :problem] (some-> type name))
+                        (assoc-in catch [:input :error] (assoc (ex-data error) :message (.getMessage error)))))
 
-                      ;; A command that rejects its input answers like invalid action input: the route's error page.
-                      (= :validation type)
-                      (throw (ex-info (.getMessage error) (assoc (ex-data error) :bel/input-error? true) error))
+                    ;; A command that rejects its input answers like invalid action input: the route's error page.
+                    (= :validation type)
+                    (throw (ex-info (.getMessage error) (assoc (ex-data error) :bel/input-error? true) error))
 
-                      :else (throw error))))))
+                    :else (throw error)))))
             result))))
     (throw (ex-info "Undeclared action" {:type :validation :id id}))))
 

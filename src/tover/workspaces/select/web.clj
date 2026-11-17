@@ -3,11 +3,8 @@
   chapter 04's create form and the sign-out control."
   (:require
     [bel.core :as bel :refer [defaction defpage]]
-    [bel.realtime :as realtime]
-    [bel.runtime :as runtime]
     [clojure.string :as str]
     [tover.identity.access :as access]
-    [tover.identity.session :as session]
     [tover.identity.sign-out.web :as sign-out]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
@@ -84,13 +81,6 @@
           (workspace-content request)]})
 
 
-(defmethod runtime/effect! ::close-streams
-  ;; Streams of the previous selection close so its private updates cannot reach the new screen.
-  [_ {{:keys [realtime session-store]} :resources} {:keys [session-id]}]
-  (when-let [key (and realtime (session/session-key session-store session-id))]
-    (realtime/close-session! realtime key)))
-
-
 (def ^:private problems
   (let [unavailable [403 "This workspace is not accessible."]
         changed     [409 "Workspace changed. Reload this page before continuing."]]
@@ -101,12 +91,11 @@
 (defaction select
   "Select an explicit, currently authorized workspace for this sign-in, then open the requested screen (Home
   by default). A rejection keeps the accepted selection and shows the chooser again; streams of the previous
-  selection close before the redirect, only when the selection changed."
+  selection close once it changed (select-workspace's effect)."
   {:schema     [:map [:workspace-id :uuid] [:expected-version :uuid] [:command-id [:string {:min 1 :max 100}]]
                 [:return-to {:optional true} :string]]
    :route-data {:tover/access :authenticated :bel/error-page ::page :tover/problems problems}}
-  [{:keys [request]} {:keys [workspace-id expected-version command-id return-to]}]
+  [_ {:keys [workspace-id expected-version command-id return-to]}]
   {:type  :command :id ::model/select-workspace :command-id command-id
    :input {:workspace-id workspace-id :expected-version expected-version}
-   :after [[::close-streams {:session-id (get-in request [:tover/identity :session-id])}]]
    :then  {:status 303 :headers {"location" (access/local-path return-to)} :body ""}})

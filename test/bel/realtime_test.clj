@@ -494,6 +494,21 @@
         (is (= 1 (count (get-in @(:state rt) [:connections sid]))))))))
 
 
+(deftest closing-a-session-can-keep-streams-of-the-new-scope
+  ;; A late close after a workspace switch must not end the new page's streams.
+  (with-realtime
+    (fn [rt]
+      (let [sid  (UUID/randomUUID)
+            old  (UUID/randomUUID)
+            new  (UUID/randomUUID)
+            tids (repeatedly 3 #(UUID/randomUUID))
+            tabs (mapv #(connection rt sid % [::events]) tids)]
+        (doseq [[tid tab scope] (map vector tids tabs [old new nil])]
+          (realtime/open! rt sid tid [::events] (:sse tab) (cond-> {:auth-session-id "session-a"} scope (assoc :scope-id scope))))
+        (realtime/close-session! rt "session-a" new)
+        (is (= [true false true] (mapv #(deref (:closed %)) tabs)))))))
+
+
 (deftest stream-registration-retains-only-trusted-metadata
   (with-realtime
     (fn [rt]

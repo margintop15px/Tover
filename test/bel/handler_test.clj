@@ -762,34 +762,19 @@
         (is (= data (validation/decode-input schema wire)))))))
 
 
-(def after-calls (atom []))
-
-
-(defmethod runtime/effect! ::after
-  [_ context input]
-  (swap! after-calls conj [(:resources context) input]))
-
-
-(deftest command-descriptors-answer-with-then-after-a-change
-  (let [descriptor {:type  :command :id ::command :command-id "c" :input {}
-                    :after [[::after {:n 1}]]
-                    :then  {:status 303 :headers {"location" "/next"} :body ""}}
+(deftest command-descriptors-answer-with-then-or-map-rejections
+  (let [descriptor {:type :command :id ::command :command-id "c" :input {}
+                    :then {:status 303 :headers {"location" "/next"} :body ""}}
         action     {:bel/schema [:map] :bel/output core/ActionResult :bel/fn (fn [_ _] descriptor)}
-        context    {:bel/system {:resources {:realtime :rt}}}
-        receipt    (atom {:event-ids [1]})]
+        outcome    (atom {:event-ids [1]})]
     (with-redefs [core/get-action  (constantly action)
-                  runtime/execute! (fn [_ _ _] (let [r @receipt] (if (instance? Throwable r) (throw r) r)))]
-      (reset! after-calls [])
-      (is (= (:then descriptor) (handler/execute-action context ::action {})))
-      (is (= [[{:realtime :rt} {:n 1}]] @after-calls) ":after runs once the command accepted a change")
-      (reset! receipt {:event-ids []})
-      (handler/execute-action context ::action {})
-      (is (= 1 (count @after-calls)) "a receipt without events changed nothing, so :after does not run")
-      (reset! receipt (ex-info "Too long" {:type :validation}))
-      (is (:bel/input-error? (ex-data (try (handler/execute-action context ::action {}) (catch Exception e e))))
+                  runtime/execute! (fn [_ _ _] (let [r @outcome] (if (instance? Throwable r) (throw r) r)))]
+      (is (= (:then descriptor) (handler/execute-action {} ::action {})) ":then may be a Ring response")
+      (reset! outcome (ex-info "Too long" {:type :validation}))
+      (is (:bel/input-error? (ex-data (try (handler/execute-action {} ::action {}) (catch Exception e e))))
           "a rejected command input answers like invalid action input")
       (with-redefs [core/get-action (constantly (assoc action :bel/fn (fn [_ _] (assoc descriptor :catch {:type :page :id ::review}))))]
-        (reset! receipt (ex-info "Gone" {:type :invitation-not-pending :secret "x"}))
+        (reset! outcome (ex-info "Gone" {:type :invitation-not-pending :secret "x"}))
         (is (= {:type :page :id ::review :input {:problem "invitation-not-pending"}}
-               (handler/execute-action context ::action {}))
+               (handler/execute-action {} ::action {}))
             "a page catch receives only the rejection type")))))

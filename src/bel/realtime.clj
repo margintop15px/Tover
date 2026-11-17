@@ -198,14 +198,16 @@
 
 
 (defn close-session!
-  "Close all connections associated with an application authentication session."
-  {:malli/schema [:=> [:cat Realtime :string] :nil]}
-  [realtime auth-session-id]
-  (doseq [[session-id tabs]   (:connections @(:state realtime))
-          [tab-id connection] tabs
-          :when               (= auth-session-id (:auth-session-id connection))]
-    (close-connection! realtime session-id tab-id (:sse connection)))
-  nil)
+  "Close the connections of an application authentication session, except those opened for `keep-scope-id`."
+  {:malli/schema [:function [:=> [:cat Realtime :string] :nil] [:=> [:cat Realtime :string [:maybe :uuid]] :nil]]}
+  ([realtime auth-session-id] (close-session! realtime auth-session-id nil))
+  ([realtime auth-session-id keep-scope-id]
+   (doseq [[session-id tabs]   (:connections @(:state realtime))
+           [tab-id connection] tabs
+           :when               (and (= auth-session-id (:auth-session-id connection))
+                                    (or (nil? keep-scope-id) (not= keep-scope-id (:scope-id connection))))]
+     (close-connection! realtime session-id tab-id (:sse connection)))
+   nil))
 
 
 (defn open!
