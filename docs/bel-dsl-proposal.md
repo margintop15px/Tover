@@ -111,6 +111,34 @@ A coeffect is a declared input: `[local-name source-id]` supplies `{}` to its so
 
 Trusted facts contain `:scope` and `:actor`; commands also receive `:command-id` and `:now`. User, session and workspace identities are native UUIDs; `:now` is a `java.time.Instant`. Malli decodes transport strings at the boundary. Command IDs remain opaque strings. Bindings cannot replace these facts. Read-model dependencies must be acyclic. Composed reads share one owning-store snapshot; command reads share the write transaction. Each nested operation retains its authorization check.
 
+### Actions return command descriptors
+
+An action that runs a command returns its descriptor and does not call `runtime/execute!`. The handler executes the descriptor and answers with `:then` on success. A test asserts the returned map without a store; an inline call needs a running system and hides the outcome in control flow.
+
+```clojure
+(defaction accept
+  {:schema Accept}
+  [_ {:keys [command-id invitation-id] :as input}]
+  (let [path-params {:invitation-id (str invitation-id)}]
+    {:type  :command :id ::model/accept-workspace-invitation :command-id command-id
+     :input (dissoc input :command-id)
+     :then  {:type :page :id ::joined :path-params path-params}
+     :catch {:type :page :id ::review :path-params path-params}}))
+```
+
+- `:then` is any result: a view, elements, signals or a page redirect.
+- `:catch` is a view or a page. A view receives the rejection as `:error`. A page receives only the rejection type name as `:problem`, because page input becomes the URL. Forbidden, configuration, conflict and retryable errors are never caught.
+- Without `:catch`, a rejection propagates. Tover form routes then render `:bel/error-page` with the status from the route's `:tover/problems` (`{type status}` or `{type [status message]}`).
+- Preconditions on the request, such as "the form's workspace is still the selected one", are checked before returning the descriptor. They do not need `execute!`.
+
+Call `runtime/execute!` in an action only when a descriptor cannot express the work, and name the reason in the docstring:
+
+- the command is one step of a workflow with provider calls or session-store changes around it (sign-in, sign-out, password reset);
+- synchronous work after acceptance depends on the receipt (workspace selection closes the previous selection's streams only when it changed);
+- the response depends on rejection data that a view or page cannot read back (the profile form shows the latest saved value from the conflict).
+
+Keep such calls in one named function per workflow, not spread through the action body.
+
 ### Operation scopes
 
 | Scope | Trusted identity | Examples |

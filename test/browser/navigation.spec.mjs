@@ -227,8 +227,8 @@ test('a successful invitation opens its outcome as one new Team history entry', 
   await form.getByRole('button', { name: 'Send invitation' }).click();
   await expect(page.locator('#page-content')).toContainText(email);
   await expect(form.locator('[name="email"]')).toHaveValue('');
-  // The outcome names the invited recipient in the URL (05 · Show the accepted invitation immediately).
-  await expect(page).toHaveURL(/\/team\?recipient=[^&]+$/);
+  // The outcome names the offer, never the recipient's email, in the URL (05 · Show the accepted invitation immediately).
+  await expect(page).toHaveURL(/\/team\?invitation=[0-9a-f-]{36}$/);
   await expect(page).toHaveTitle(/Team/);
   expect(await page.evaluate(() => history.length)).toBe(historyLength + 1);
   await unchangedDocument(page);

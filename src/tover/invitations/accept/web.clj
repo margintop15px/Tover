@@ -142,19 +142,15 @@
 
 
 (defaction accept
+  "Business rejections go back to the review, which shows the current offer and the reason."
   {:schema     (conj model/Reviewed [:command-id [:string {:min 1 :max 100}]])
    :route-data {:tover/access :authenticated}}
-  [context {:keys [command-id invitation-id] :as input}]
-  (try
-    (runtime/execute! context ::model/accept-workspace-invitation
-                      {:command-id command-id :input (dissoc input :command-id)})
-    {:type :page :id ::joined :path-params {:invitation-id (str invitation-id)}}
-    (catch ExceptionInfo error
-      ;; Business rejections go back to the review, which shows the current offer and the reason.
-      (let [code (some-> (:type (ex-data error)) name)]
-        (if (contains? problems code)
-          {:type :page :id ::review :path-params {:invitation-id (str invitation-id)} :input {:problem code}}
-          (throw error))))))
+  [_ {:keys [command-id invitation-id] :as input}]
+  (let [path-params {:invitation-id (str invitation-id)}]
+    {:type  :command :id ::model/accept-workspace-invitation :command-id command-id
+     :input (dissoc input :command-id)
+     :then  {:type :page :id ::joined :path-params path-params}
+     :catch {:type :page :id ::review :path-params path-params}}))
 
 
 (defaction leave

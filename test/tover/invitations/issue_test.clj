@@ -30,8 +30,8 @@
   {:malli/schema [:=> [:cat :map :map] :map]}
   [facts input]
   (runtime/decide ::model/invite-teammate
-                  (merge {:actor         actor         :now         now         :scope {:workspace-id workspace}
-                          :invitation-id invitation-id :delivery-id delivery-id}
+                  (merge {:actor  actor         :now         now         :scope {:workspace-id workspace}
+                          :new-id invitation-id :delivery-id delivery-id}
                          facts)
                   input))
 

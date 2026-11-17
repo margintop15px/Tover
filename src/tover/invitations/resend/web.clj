@@ -8,7 +8,6 @@
 
 (defaction resend
   {:schema     (conj team/Command [:invitation-id :uuid])
-   :route-data {:tover/access :manager :bel/error-page ::team/team}}
+   :route-data {:tover/access :manager :bel/error-page ::team/team :tover/problems team/problems}}
   [context input]
-  (team/execute! context ::model/resend-invitation input)
-  (team/after (:invitation-id input)))
+  (team/command context ::model/resend-invitation input))

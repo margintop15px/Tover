@@ -57,7 +57,7 @@
   {:malli/schema [:=> [:cat :map :map] :map]}
   [facts input]
   (runtime/decide ::issue/invite-teammate
-                  (merge {:actor manager :now now :scope {:workspace-id workspace} :invitation-id invitation-id :delivery-id delivery-id}
+                  (merge {:actor manager :now now :scope {:workspace-id workspace} :new-id invitation-id :delivery-id delivery-id}
                          facts)
                   (merge {:email "ann@example.test"} input)))
 

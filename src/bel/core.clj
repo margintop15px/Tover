@@ -81,11 +81,14 @@
    [:command-id [:string {:min 1 :max 100}]]
    [:input :map]
    [:then Result]
+   ;; A view receives the rejection as `:error`; a page receives only its type name as `:problem`,
+   ;; because page input becomes the URL.
    [:catch {:optional true}
     [:map
-     [:type [:= :view]]
+     [:type [:enum :view :page]]
      [:id :qualified-keyword]
-     [:input {:optional true} :map]]]])
+     [:input {:optional true} :map]
+     [:path-params {:optional true} :map]]]])
 
 
 (def ActionResult

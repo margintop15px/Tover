@@ -150,6 +150,8 @@
 
 
 (defaction save-name
+  "Save the display name. Calls `runtime/execute!` inline: a rejection re-renders the form with its status and
+  the latest saved value from the conflict, which a descriptor's `:catch` cannot pass on."
   {:schema     [:map [:display-name {:optional true} :string] [:return-to {:optional true} :string]
                 [:command-id {:optional true} [:string {:min 1 :max 100}]]]
    :route-data {:tover/access :profile}}
@@ -189,7 +191,9 @@
 
 (defaction set-language
   "The signed-in account language (03a). The profile form posts its account and revisions, so a stale or
-  foreign save is caught; the header switch posts only the language and saves at the revision read now."
+  foreign save is caught; the header switch posts only the language and saves at the revision read now.
+  Calls `runtime/execute!` inline: the answer sets a cookie, keeps the draft name, and names the language
+  saved elsewhere on a conflict."
   {:schema     [:map [:locale [:enum "en" "ru"]] [:return-to {:optional true} :string] [:display-name {:optional true} :string]]
    :route-data {:tover/access :profile}}
   [{:keys [request] :as context} {:keys [locale] :as input}]

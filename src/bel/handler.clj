@@ -153,7 +153,10 @@
               (catch ExceptionInfo error
                 (if (and (:catch result) (not (:retryable? (ex-data error)))
                          (not (contains? #{:forbidden :configuration :conflict} (:type (ex-data error)))))
-                  (assoc-in (:catch result) [:input :error] (assoc (ex-data error) :message (.getMessage error)))
+                  (let [catch (:catch result)]
+                    (if (= :page (:type catch))
+                      (assoc-in catch [:input :problem] (some-> (:type (ex-data error)) name))
+                      (assoc-in catch [:input :error] (assoc (ex-data error) :message (.getMessage error)))))
                   (throw error))))
             result))))
     (throw (ex-info "Undeclared action" {:type :validation :id id}))))

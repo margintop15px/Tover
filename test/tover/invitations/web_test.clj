@@ -26,7 +26,8 @@
   {:malli/schema [:=> [:cat [:fn ifn?] :map] :map]}
   [request! params]
   (request! :post (bel/action-url :tover.invitations.issue.web/invite)
-            (merge {"email" "otto@example.test" "role" "member" "command-id" (str (random-uuid)) "workspace-id" workspace} params)))
+            (merge {"email"        "otto@example.test" "role" "member" "command-id" (str (random-uuid)) "invitation-id" (str (random-uuid))
+                    "workspace-id" workspace} params)))
 
 
 (defn- page
@@ -121,7 +122,7 @@
   (support/with-application
     (fn [{:keys [browser state] :as services}]
       (as-owner services)
-      (let [params {"command-id" "issue-once"}]
+      (let [params {"command-id" "issue-once" "invitation-id" (str (random-uuid))}]
         (invite! (:request! browser) params)
         (invite! (:request! browser) params)
         (invite! (:request! browser) {})

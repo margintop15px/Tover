@@ -36,8 +36,11 @@
 
 
 (def InviteTeammate
-  "`reviewed-removal` is the removal instant the manager reviewed before inviting a removed member again."
+  "`invitation-id` is the proposed id of a new offer, stable across retries of one form; without it the
+  offer gets a fresh id.
+  `reviewed-removal` is the removal instant the manager reviewed before inviting a removed member again."
   [:map
+   [:invitation-id {:optional true} :uuid]
    [:email Email]
    [:role Role]
    [:reviewed-removal {:optional true} validation/Instant]])
@@ -174,10 +177,10 @@
   {:scope :workspace :input InviteTeammate :policy ::invitation-manager
    :cofx  [[:open :tover.invitations.persistence/open-invitation (fn [_ input] (select-keys input [:email]))]
            [:recipient :tover.invitations.persistence/recipient-access (fn [_ input] (select-keys input [:email]))]
-           [:invitation-id :bel/uuid]
+           [:new-id :bel/uuid]
            [:delivery-id :bel/uuid]]
    :emits #{::workspace-invitation-issued ::workspace-invitation-expired}}
-  [{:keys [actor now open recipient invitation-id delivery-id scope]} {:keys [email role reviewed-removal]}]
+  [{:keys [actor now open recipient new-id delivery-id scope]} {:keys [invitation-id email role reviewed-removal]}]
   (check-recipient! recipient)
   ;; A form prepared before the latest removal, or without reviewing it, cannot authorize rejoining.
   (when (and (= "removed" (:status recipient)) (not= reviewed-removal (:removed-at recipient)))
@@ -192,11 +195,11 @@
                        open (conj {:type ::workspace-invitation-expired
                                    :data {:invitation-id (:invitation-id open) :status "expired"}})
                        :always (conj {:type ::workspace-invitation-issued
-                                      :data {:invitation-id   invitation-id :delivery-id delivery-id
+                                      :data {:invitation-id   (or invitation-id new-id)               :delivery-id delivery-id
                                              :workspace-id    (:workspace-id scope)
-                                             :email           email :role                role        :invited-by      actor
+                                             :email           email :role role :invited-by          actor
                                              :status          "pending"
                                              :expires-at      (.plus ^java.time.Instant now lifetime)
                                              :created-at      now
-                                             :requested-by    actor :requested-at        now
-                                             :delivery-status "queued" :attempts         0           :next-attempt-at now}}))})))
+                                             :requested-by    actor :requested-at now
+                                             :delivery-status "queued" :attempts 0 :next-attempt-at now}}))})))

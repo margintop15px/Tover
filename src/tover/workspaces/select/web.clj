@@ -108,7 +108,8 @@
 (defaction select
   "Select an explicit, currently authorized workspace for this sign-in, then open the requested screen (Home
   by default). A rejection keeps the accepted selection and shows the chooser again; streams of the previous
-  selection close so its private updates cannot reach the new screen."
+  selection close so its private updates cannot reach the new screen. Calls `runtime/execute!` inline: the
+  streams close before the redirect, and only when the receipt shows the selection changed."
   {:schema     [:map [:workspace-id :uuid] [:expected-version :uuid] [:command-id [:string {:min 1 :max 100}]]
                 [:return-to {:optional true} :string]]
    :route-data {:tover/access :authenticated}}

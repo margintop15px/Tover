@@ -9,10 +9,19 @@
 
 
 (defn- form-error-response
-  {:malli/schema [:=> [:cat :qualified-keyword [:sequential :string] :any :map] :map]}
-  [page-id retained error request]
-  (if-let [status (or (:status (ex-data error)) (when (:bel/input-error? (ex-data error)) 422))]
-    (let [code      (or (:code (ex-data error)) (when (:bel/input-error? (ex-data error)) :invalid-input) :identity-error)
+  "Render the route's error page for a known failure: an error with `:status`, invalid input, or a business
+  rejection whose `:type` is in the route's `:tover/problems` (type -> status, or [status message])."
+  {:malli/schema [:=> [:cat :qualified-keyword [:sequential :string] :map :any :map] :map]}
+  [page-id retained problems error request]
+  (if-let [status (or (:status (ex-data error))
+                      (when (:bel/input-error? (ex-data error)) 422)
+                      (let [problem (problems (:type (ex-data error)))] (if (vector? problem) (first problem) problem)))]
+    (let [problem   (problems (:type (ex-data error)))
+          error     (if (vector? problem)
+                      (ex-info (second problem) (assoc (ex-data error) :message-key (second problem)) error)
+                      error)
+          code      (or (:code (ex-data error)) (when (:bel/input-error? (ex-data error)) :invalid-input)
+                        (when problem (:type (ex-data error))) :identity-error)
           security? (or (contains? #{401 403} status)
                         (contains? #{:workspace-changed :workspace-required :password-required} code))]
       (if (and security? (access/datastar-request? request))
@@ -30,8 +39,8 @@
 
 (def form-exception-middleware
   {:name    ::form-exceptions
-   :compile (fn [{:bel/keys [error-page retain]} _options]
+   :compile (fn [{:bel/keys [error-page retain] :tover/keys [problems]} _options]
               (when error-page
                 (exception/create-exception-middleware
-                  {ExceptionInfo       (partial form-error-response error-page (or retain []))
+                  {ExceptionInfo       (partial form-error-response error-page (or retain []) (or problems {}))
                    ::exception/default (fn [error _request] (throw error))})))})

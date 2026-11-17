@@ -87,30 +87,28 @@
 ;; Commands from the Team screen
 
 
-(def ^:private problems
-  "Business rejections as page errors; the message is the command's catalog message."
-  {:already-member     409 :member-suspended       409 :invitation-exists      409 :removal-review-required 409
-   :invitation-changed 409 :invitation-invalidated 409 :invitation-not-pending 409 :permanent-failure       409
-   :resend-cooldown    429 :conflict               409 :identity-conflict      409})
+(def problems
+  "Business rejections of the Team commands, shown on the Team page with these statuses (route `:tover/problems`)."
+  (let [changed [409 "This invitation changed. Reload the page."]]
+    {:already-member     409 :member-suspended       409     :invitation-exists      409     :removal-review-required 409
+     :invitation-changed 409 :invitation-invalidated 409     :invitation-not-pending 409     :permanent-failure       409
+     :resend-cooldown    429 :conflict               changed :identity-conflict      changed}))
 
 
-(defn execute!
-  "Run a manager command for the selected workspace. The form's workspace must still be the selected one;
-  rejections become errors the Team page shows."
-  {:malli/schema [:=> [:cat :map :qualified-keyword :map] :any]}
-  [{:keys [request] :as context} command {:keys [command-id workspace-id] :as input}]
+(declare after)
+
+
+(defn command
+  "A manager command for the selected workspace as a descriptor; success returns to the Team screen focused on
+  offer `invitation-id`. The form's workspace must still be the selected one. Rejections go to the route's
+  error page through `problems`."
+  {:malli/schema [:=> [:cat :map :qualified-keyword :map] :map]}
+  [{:keys [request]} id {:keys [command-id workspace-id invitation-id] :as input}]
   (when-not (= workspace-id (get-in request [:tover/identity :workspace-id]))
     (access/failure 409 :workspace-changed "Workspace changed. Reload this page before continuing."))
-  (try
-    (runtime/execute! context command {:command-id command-id :input (dissoc input :command-id :workspace-id)})
-    (catch ExceptionInfo error
-      (if-let [status (problems (:type (ex-data error)))]
-        (throw (ex-info (if (contains? #{:conflict :identity-conflict} (:type (ex-data error)))
-                          "This invitation changed. Reload the page."
-                          (.getMessage error))
-                        {:type :invitation :status status :code (:type (ex-data error))}
-                        error))
-        (throw error)))))
+  {:type  :command :id id :command-id command-id
+   :input (dissoc input :command-id :workspace-id)
+   :then  (after invitation-id)})
 
 
 (def Command
@@ -123,6 +121,13 @@
   [request]
   [[:input {:type "hidden" :name "command-id" :value (str (random-uuid))}]
    [:input {:type "hidden" :name "workspace-id" :value (str (get-in request [:tover/identity :workspace-id]))}]])
+
+
+(defn invite-fields
+  "Command fields plus the proposed offer id, stable across retries of this form."
+  {:malli/schema [:=> [:cat :map] [:vector :any]]}
+  [request]
+  (conj (command-fields request) [:input {:type "hidden" :name "invitation-id" :value (str (random-uuid))}]))
 
 
 (defn after
@@ -199,7 +204,7 @@
                             [:input {:type "hidden" :name "reviewed-removal" :value (str (:removed-at member))}]
                             [:p.management-secondary (i18n/t "Removed on") " " (moment (:removed-at member))]
                             (role-select nil)
-                            (command-fields request))]])]]))]]
+                            (invite-fields request))]])]]))]]
      [:p.management-empty (i18n/t "No members yet.")])])
 
 
@@ -304,7 +309,7 @@
                       [:label (i18n/t "Email")
                        [:input {:name "email" :type "email" :required true :value (get params :email "")}]]
                       (role-select (get params :role))
-                      (command-fields request))
+                      (invite-fields request))
                [:p.management-secondary (i18n/t "The invitation is valid for 7 days.")]]]
              (cond
                (:failed? recipient) (retry request)

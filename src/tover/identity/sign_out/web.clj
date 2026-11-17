@@ -92,6 +92,8 @@
 
 
 (defaction sign-out
+  "End this sign-in. Calls `runtime/execute!` inline: a workflow step between reading the stored tokens and
+  closing streams and the provider session, which run only after the end is accepted."
   {:schema     [:map [:session-id {:optional true} :uuid] [:return-to {:optional true} :string]]
    :route-data {:tover/access :logout}}
   [{:keys [request realtime session-store provider] :as context} {:keys [session-id return-to]}]
