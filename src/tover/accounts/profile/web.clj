@@ -2,7 +2,6 @@
   "Profile setup: the display name and account language, saved through the profile commands."
   (:require
     [bel.core :as bel :refer [defaction defpage]]
-    [bel.handler :as html]
     [bel.runtime :as runtime]
     [clojure.string :as str]
     [com.brunobonacci.mulog :as mu]
@@ -61,6 +60,9 @@
      [:span.management-secondary (i18n/t "1 to 100 characters.")]]
     (when-let [saved (:display-name latest)]
       [:p.profile-latest {:role "status"} (i18n/t "Saved name: {name}" {:name saved})])
+    (when-let [language (:language latest)]
+      [:p.profile-latest {:role "status"}
+       (i18n/t "Your account language is {language}." {:language (i18n/t (if (= "ru" language) "Russian" "English"))})])
     ;; First in tree order, so Enter in the name field saves instead of switching language.
     [:button {:type "submit"} (if (model/valid-name? (:display-name profile)) (i18n/t "Save") (i18n/t "Continue"))]
     [:div.profile-language {:role "group" :aria-label (i18n/t "Language")}
@@ -76,18 +78,23 @@
   "A failed read is not an empty profile: the page offers Retry instead of a blank form."
   {:malli/schema [:=> [:cat :map :map] FormProps]}
   [{:keys [request] :as context} _input]
-  (let [params (:params request)]
+  (let [params    (:params request)
+        profile   (try (runtime/read-model context ::model/my-profile {})
+                       (catch ExceptionInfo error
+                         (when (= :forbidden (:type (ex-data error))) (throw error))
+                         (mu/log ::profile-unavailable :error-type (:type (ex-data error)))
+                         nil))
+        rejection (:tover/rejection request)]
     {:request    request
-     :profile    (try (runtime/read-model context ::model/my-profile {})
-                      (catch ExceptionInfo error
-                        (when (= :forbidden (:type (ex-data error))) (throw error))
-                        (mu/log ::profile-unavailable :error-type (:type (ex-data error)))
-                        nil))
+     :profile    profile
      :email      (get-in request [:tover/identity :user :email])
      :draft      (:display-name params)
      :command-id (or (not-empty (:command-id params)) (str (random-uuid)))
      :return-to  (destination (:return-to params))
-     :latest     (:tover/latest-profile request)}))
+     ;; After a conflict: the saved value from the rejection, or the one read now when another request used
+     ;; the attempt id.
+     :latest     (when (contains? #{:stale-profile :idempotency-conflict} (:type rejection))
+                   (or (:latest rejection) (select-keys profile [:display-name :name-revision])))}))
 
 
 (defpage profile
@@ -107,66 +114,24 @@
              [:p [:a {:href (str (:uri request) (some->> (:query-string request) (str "?")))} (i18n/t "Retry")]]])]})
 
 
-(defn error-status
-  {:malli/schema [:=> [:cat [:fn #(instance? Throwable %)]] :int]}
-  [error]
-  (case (:type (ex-data error))
-    (:stale-profile :idempotency-conflict) 409
-    :validation 422
-    :forbidden 403
-    (or (:status (ex-data error)) 500)))
-
-
-(defn error-message
-  "The message for a failed profile save; `invalid` describes a rejected value."
-  {:malli/schema [:=> [:cat [:fn #(instance? Throwable %)] :string] :string]}
-  [error invalid]
-  (case (:type (ex-data error))
-    (:stale-profile :idempotency-conflict) (i18n/t "This profile changed. Review the latest value.")
-    :validation invalid
-    :forbidden (i18n/t "You do not have permission to do this.")
-    (i18n/error-message error)))
-
-
-(defn page-response
-  "Render the profile page in answer to a form post, keeping the submitted name."
-  {:malli/schema [:=> [:cat :map :int [:map [:draft {:optional true} [:maybe :string]] [:return-to :string]
-                                       [:error {:optional true} :string] [:latest {:optional true} [:maybe :map]]]] :map]}
-  [request status {:keys [draft return-to error latest]}]
-  (let [response (html/error-page-response (cond-> request
-                                             error (assoc :tover/error error)
-                                             latest (assoc :tover/latest-profile latest))
-                                           ::profile (cond-> {"return-to" return-to} draft (assoc "display-name" draft)))]
-    (cond-> response (= 200 (:status response)) (assoc :status status))))
-
-
-(defn- latest
-  "The saved name after a conflict: from the rejection, or read again when another request used the attempt id."
-  {:malli/schema [:=> [:cat :map [:fn #(instance? Throwable %)]] [:maybe :map]]}
-  [context error]
-  (or (:latest (ex-data error))
-      (when (= :idempotency-conflict (:type (ex-data error)))
-        (select-keys (runtime/read-model context ::model/my-profile {}) [:display-name :name-revision]))))
+(defn- problems
+  "Profile rejections shown on the profile form; `invalid` describes a rejected value."
+  {:malli/schema [:=> [:cat :string] :map]}
+  [invalid]
+  (let [changed [409 "This profile changed. Review the latest value."]]
+    {:stale-profile changed :idempotency-conflict changed :validation [422 invalid]
+     :forbidden     [403 "You do not have permission to do this."]}))
 
 
 (defaction save-name
-  "Save the display name. Calls `runtime/execute!` inline: a rejection re-renders the form with its status and
-  the latest saved value from the conflict, which a descriptor's `:catch` cannot pass on."
   {:schema     [:map [:display-name {:optional true} :string] [:return-to {:optional true} :string]
                 [:command-id {:optional true} [:string {:min 1 :max 100}]]]
-   :route-data {:tover/access :profile}}
-  [{:keys [request] :as context} {:keys [display-name command-id] :as input}]
-  (let [return-to (destination (:return-to input))]
-    (try
-      (runtime/execute! context ::model/set-display-name
-                        {:command-id (or command-id (str (random-uuid)))
-                         :input      (select-keys input [:account :display-name :name-revision])})
-      {:status 303 :headers {"location" return-to} :body ""}
-      (catch ExceptionInfo error
-        (page-response request (error-status error)
-                       {:draft  display-name :return-to return-to
-                        :error  (error-message error (i18n/t "Enter a name of 1 to 100 characters."))
-                        :latest (latest context error)})))))
+   :route-data {:tover/access   :profile :bel/error-page ::profile :bel/retain ["display-name" "return-to"]
+                :tover/problems (problems "Enter a name of 1 to 100 characters.")}}
+  [_ {:keys [command-id] :as input}]
+  {:type  :command :id ::model/set-display-name :command-id (or command-id (str (random-uuid)))
+   :input (select-keys input [:account :display-name :name-revision])
+   :then  {:status 303 :headers {"location" (destination (:return-to input))} :body ""}})
 
 
 (defn- language-cookie
@@ -176,44 +141,21 @@
                      :secure (= :https (:scheme request))}})
 
 
-(defn- language-not-saved
-  "The account language stays as saved; a stale switch names the language saved elsewhere."
-  {:malli/schema [:=> [:cat :map :string [:fn #(instance? ExceptionInfo %)]] :map]}
-  [request return-to error]
-  (let [latest (get-in (ex-data error) [:latest :language])]
-    (page-response request (error-status error)
-                   {:return-to return-to
-                    :error     (str (error-message error (i18n/t "Could not save language. Please try again."))
-                                    (when latest
-                                      (str " " (i18n/t "Your account language is {language}."
-                                                       {:language (i18n/t (if (= "ru" latest) "Russian" "English"))}))))})))
-
-
 (defaction set-language
   "The signed-in account language (03a). The profile form posts its account and revisions, so a stale or
   foreign save is caught; the header switch posts only the language and saves at the revision read now.
-  Calls `runtime/execute!` inline: the answer sets a cookie, keeps the draft name, and names the language
-  saved elsewhere on a conflict."
+  From the profile form the page renders again in place, so the draft name survives without entering the URL."
   {:schema     [:map [:locale [:enum "en" "ru"]] [:return-to {:optional true} :string] [:display-name {:optional true} :string]]
-   :route-data {:tover/access :profile}}
-  [{:keys [request] :as context} {:keys [locale] :as input}]
-  (let [back     (access/local-path (:return-to input))
-        identity (:tover/identity request)
-        draft?   (contains? input :display-name)
-        cookies  (language-cookie request locale)]
-    (try
-      (runtime/execute! context ::model/change-account-language
-                        {:command-id (str (random-uuid))
-                         :input      {:account           (or (:account input) (:user-id identity))
-                                      :language          locale
-                                      :language-revision (or (:language-revision input)
-                                                             (:language-revision (runtime/read-model context ::model/my-profile {})))}})
-      (if draft?
-        (assoc (page-response request 200 {:draft (:display-name input) :return-to (destination (:return-to input))}) :cookies cookies)
-        {:status 303 :headers {"location" back} :cookies cookies :body ""})
-      (catch ExceptionInfo error
-        (if draft?
-          (page-response request (error-status error)
-                         {:draft (:display-name input) :return-to (destination (:return-to input))
-                          :error (error-message error (i18n/t "Could not save language. Please try again."))})
-          (language-not-saved request back error))))))
+   :route-data {:tover/access   :profile :bel/error-page ::profile :bel/retain ["display-name" "return-to"]
+                :tover/problems (problems "Could not save language. Please try again.")}}
+  [{:keys [request] :as context} {:keys [locale return-to display-name] :as input}]
+  (let [cookies (language-cookie request locale)]
+    {:type  :command :id ::model/change-account-language :command-id (str (random-uuid))
+     :input {:account           (or (:account input) (get-in request [:tover/identity :user-id]))
+             :language          locale
+             :language-revision (or (:language-revision input)
+                                    (:language-revision (runtime/read-model context ::model/my-profile {})))}
+     :then  (if (contains? input :display-name)
+              {:type :page :id ::profile :cookies cookies
+               :form (cond-> {"display-name" display-name} return-to (assoc "return-to" return-to))}
+              {:status 303 :headers {"location" (access/local-path return-to)} :cookies cookies :body ""})}))

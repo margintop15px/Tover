@@ -91,14 +91,35 @@
          :status 503))
 
 
+(defn- end!
+  "End this sign-in: a workflow, so it calls `runtime/execute!` itself. The stored tokens are read before the
+  end (an ended row has none), an already ended sign-in counts as signed out, and streams and the provider
+  session close only after the end is accepted."
+  {:malli/schema [:=> [:cat :map :string [:maybe :string]] :map]}
+  [{:keys [request realtime session-store provider] :as context} location return-to]
+  (let [key        (:session/key request)
+        session-id (get-in request [:tover/identity :session-id])
+        tokens     (:tokens (session/session session-store key))
+        ended?     (try
+                     (runtime/execute! context ::model/sign-out {:command-id (model/command-id session-id)
+                                                                 :input      {:session-id session-id}})
+                     true
+                     (catch ExceptionInfo error
+                       ;; Forbidden: this sign-in already ended or is no longer valid, a safe no-op.
+                       (= :forbidden (:type (ex-data error))))
+                     (catch Exception _ false))]
+    (if ended?
+      (do (when realtime (realtime/close-session! realtime key))
+          (provider-cleanup! provider tokens)
+          (signed-out context location))
+      (retry-response request return-to))))
+
+
 (defaction sign-out
-  "End this sign-in. Calls `runtime/execute!` inline: a workflow step between reading the stored tokens and
-  closing streams and the provider session, which run only after the end is accepted."
   {:schema     [:map [:session-id {:optional true} :uuid] [:return-to {:optional true} :string]]
    :route-data {:tover/access :logout}}
-  [{:keys [request realtime session-store provider] :as context} {:keys [session-id return-to]}]
+  [{:keys [request] :as context} {:keys [session-id return-to]}]
   (let [identity (:tover/identity request)
-        key      (:session/key request)
         location (public-destination return-to)]
     (cond
       ;; Already signed out: nothing to end and no credentials needed.
@@ -110,18 +131,4 @@
       {:status 303 :headers {"location" "/auth/login"} :body ""}
 
       :else
-      (let [session-id (:session-id identity)
-            tokens     (:tokens (session/session session-store key))
-            ended?     (try
-                         (runtime/execute! context ::model/sign-out {:command-id (model/command-id session-id)
-                                                                     :input      {:session-id session-id}})
-                         true
-                         (catch ExceptionInfo error
-                       ;; Forbidden: this sign-in already ended or is no longer valid, a safe no-op.
-                           (= :forbidden (:type (ex-data error))))
-                         (catch Exception _ false))]
-        (if ended?
-          (do (when realtime (realtime/close-session! realtime key))
-              (provider-cleanup! provider tokens)
-              (signed-out context location))
-          (retry-response request return-to))))))
+      (end! context location return-to))))

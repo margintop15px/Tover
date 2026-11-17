@@ -46,7 +46,9 @@
            [:id :qualified-keyword]
            [:input {:optional true} :map]
            [:path-params {:optional true} :map]
-           [:reload? {:optional true} :boolean]]]])
+           [:reload? {:optional true} :boolean]
+           ;; Form state rendered in place with the page, never put in its URL.
+           [:form {:optional true} [:map-of :string :string]]]]])
 
 
 (def Result
@@ -80,7 +82,9 @@
    [:id :qualified-keyword]
    [:command-id [:string {:min 1 :max 100}]]
    [:input :map]
-   [:then Result]
+   [:then ActionResponse]
+   ;; Effects run synchronously after the command accepted a change, before :then is answered.
+   [:after {:optional true} [:vector [:tuple :qualified-keyword :map]]]
    ;; A view receives the rejection as `:error`; a page receives only its type name as `:problem`,
    ;; because page input becomes the URL.
    [:catch {:optional true}

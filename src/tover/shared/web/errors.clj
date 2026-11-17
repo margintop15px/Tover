@@ -10,7 +10,8 @@
 
 (defn- form-error-response
   "Render the route's error page for a known failure: an error with `:status`, invalid input, or a business
-  rejection whose `:type` is in the route's `:tover/problems` (type -> status, or [status message])."
+  rejection whose `:type` is in the route's `:tover/problems` (type -> status, or [status message]). The page
+  receives the message as `:tover/error` and the rejection's data as `:tover/rejection`."
   {:malli/schema [:=> [:cat :qualified-keyword [:sequential :string] :map :any :map] :map]}
   [page-id retained problems error request]
   (if-let [status (or (:status (ex-data error))
@@ -27,7 +28,8 @@
       (if (and security? (access/datastar-request? request))
         (throw error)
         (let [response (html/error-page-response
-                         (assoc request :tover/error (i18n/error-message error))
+                         ;; The page may read the rejection's data, such as the latest saved value.
+                         (assoc request :tover/error (i18n/error-message error) :tover/rejection (ex-data error))
                          page-id (select-keys (:form-params request) retained))]
           (if (= 200 (:status response))
             (-> response

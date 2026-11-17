@@ -63,7 +63,7 @@ clj-paren-repair path/to/file.clj
 ## Patterns to follow
 
 - Always prefer an open map spec in Malli (don't put `{:closed true}` on `:map` unless strictly necessary)
-- A `defaction` that runs a command returns a command descriptor (`{:type :command :id … :command-id … :input … :then … :catch …}`) and never calls `runtime/execute!` itself. Test the returned map. Map rejections with `:catch` or the route's `:bel/error-page` plus `:tover/problems`. Inline `execute!` is only for workflows a descriptor cannot express; the docstring names why. Rules and allowed exceptions: [docs/bel-dsl-proposal.md](docs/bel-dsl-proposal.md#actions-return-command-descriptors).
+- A `defaction` that runs a command returns a command descriptor (`{:type :command :id … :command-id … :input … :then … :catch …}`) and never calls `runtime/execute!` itself. Test the returned map. Map rejections with `:catch` or the route's `:bel/error-page` plus `:tover/problems`; post-commit work goes in `:after`. Inline `execute!` is only for workflows a descriptor cannot express; the docstring names why. Rules and allowed exceptions: [docs/bel-dsl-proposal.md](docs/bel-dsl-proposal.md#actions-return-command-descriptors).
 
 
 # Tover
