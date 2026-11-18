@@ -99,6 +99,17 @@
           (is (= "/account/profile?return-to=%2Finvitations%2Fabc" (get-in response [:headers "location"]))))))))
 
 
+(deftest a-visit-from-an-invitation-link-says-to-sign-in-or-create-an-account
+  (support/with-application
+    (fn [{:keys [browser]}]
+      (let [{:keys [request!]} browser
+            hint               "role=\"status\">To open your invitation"]
+        (is (not (str/includes? (:body (request! :get "/auth/login")) hint)))
+        (is (= "/auth/login" (get-in (request! :get (str "/invitations/" (random-uuid))) [:headers "location"])))
+        (is (str/includes? (:body (request! :get "/auth/login")) hint))
+        (is (str/includes? (:body (request! :get "/auth/signup")) hint))))))
+
+
 (deftest rejected-sign-in-is-neutral-retains-the-email-and-clears-the-password
   (support/with-application
     (fn [{:keys [browser state] :as services}]

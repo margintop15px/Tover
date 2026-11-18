@@ -6,7 +6,7 @@
     [bel.realtime :as realtime]
     [bel.runtime :as runtime]
     [clojure.string :as str]
-    [clojure.test :refer [deftest is testing]]
+    [clojure.test :refer [deftest is]]
     [tover.fixtures :as fixtures]
     [tover.identity.access :as access]
     [tover.identity.sign-out.web :as sign-out]
@@ -106,24 +106,6 @@
         (is (= [[(:key session) fixtures/other-workspace-id]] @closed))
         (is (= fixtures/other-workspace-id (:workspace-id (access/current-identity services (:key session)))))
         (is (some? realtime))))))
-
-
-(deftest a-linked-workspace-is-offered-but-never-selected-automatically
-  (support/with-application
-    (fn [{:keys [browser] :as services}]
-      (let [session (support/sign-in! services browser "owner@example.test" {:workspace-id fixtures/workspace-id})
-            body    (:body ((:request! browser) :get "/workspace" {"workspace-id" (str fixtures/other-workspace-id)}))
-            offer   (second (re-find #"(?s)data-target-workspace-id=\"[^\"]*\">(.*?)</section>" body))]
-        (is (str/includes? offer "Other workspace"))
-        (is (= (str fixtures/other-workspace-id) (form-value offer "workspace-id")))
-        (is (= fixtures/workspace-id (selected services session)))
-        (is (= 303 (:status ((:request! browser) :post (bel/action-url ::select/select)
-                                                 (into {} (for [name ["workspace-id" "expected-version" "command-id" "return-to"]]
-                                                            [name (form-value offer name)]))))))
-        (is (= fixtures/other-workspace-id (selected services session)))
-        (testing "a workspace without a current membership is not offered"
-          (is (not (str/includes? (:body ((:request! browser) :get "/workspace" {"workspace-id" (str (random-uuid))}))
-                                  "data-target-workspace-id"))))))))
 
 
 (deftest the-same-workspace-is-chosen-again

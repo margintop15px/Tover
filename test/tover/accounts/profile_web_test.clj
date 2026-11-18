@@ -29,7 +29,7 @@
   [request! params]
   (let [body (:body (request! :get "/account/profile" params))
         body (subs body (str/index-of body "profile-form"))]
-    (into {} (for [name ["account" "name-revision" "language-revision" "return-to"]] [name (form-value body name)]))))
+    (into {} (for [name ["account" "name-revision" "return-to"]] [name (form-value body name)]))))
 
 
 (deftest continue-saves-name-and-next-request-is-not-gated
@@ -46,19 +46,6 @@
           (is (= "/workspace" (get-in response [:headers "location"])))
           (is (= "Алиса" (get-in @state [:db :public.profiles (:user-id user) :display_name])))
           (is (= 200 (:status (request! :get "/workspace")))))))))
-
-
-(deftest language-switch-keeps-the-draft-name
-  (support/with-application
-    (fn [{:keys [browser users] :as services}]
-      (let [{:keys [request!]} browser]
-        (support/sign-in! services browser "unnamed@example.test")
-        (let [form     (profile-form request! {"return-to" "/workspace"})
-              response (request! :post (bel/action-url :tover.accounts.profile.web/set-language)
-                                 (assoc form "display-name" "Draft" "locale" "ru"))]
-          (is (= 200 (:status response)))
-          (is (str/includes? (:body response) "value=\"Draft\""))
-          (is (str/includes? (:body response) "lang=\"ru\"")))))))
 
 
 (deftest signed-in-language-writes-the-profile-not-auth
@@ -85,25 +72,14 @@
   (support/with-application
     (fn [{:keys [browser users state] :as services}]
       (let [{:keys [request!]} browser
-            user               (first users)
-            save!              #(request! :post (bel/action-url :tover.accounts.profile.web/set-language)
-                                          (merge {"locale" "ru" "return-to" "/workspace" "account" (str (:user-id user))} %))]
+            user               (first users)]
         (support/sign-in! services browser (:email user) {:workspace-id fixtures/workspace-id})
-        (request! :get "/workspace")
-        (swap! state update-in [:db :public.profiles (:user-id user)] assoc :language "en" :language_revision 3)
-        (let [stale (save! {"language-revision" "2"})]
-          (is (= 409 (:status stale)))
-          (is (str/includes? (:body stale) "English"))
-          (is (str/includes? (:body stale) "href=\"/workspace\""))
-          (is (nil? (get-in stale [:cookies "tover-language"]))))
-        (let [invalid (save! {"language-revision" "latest"})]
+        (let [invalid (request! :post (bel/action-url :tover.accounts.profile.web/set-language)
+                                {"locale" "de" "return-to" "/workspace"})]
           (is (= 422 (:status invalid)))
           (is (nil? (get-in invalid [:headers "location"])))
           (is (nil? (get-in invalid [:cookies "tover-language"]))))
-        (let [foreign (save! {"language-revision" "3" "account" (str (:user-id (second users)))})]
-          (is (= 403 (:status foreign))))
-        (is (= {:language "en" :language_revision 3}
-               (select-keys (get-in @state [:db :public.profiles (:user-id user)]) [:language :language_revision])))))))
+        (is (not= "de" (get-in @state [:db :public.profiles (:user-id user) :language])))))))
 
 
 (deftest recovery-session-cannot-open-profile

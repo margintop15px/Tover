@@ -311,10 +311,10 @@
                       (role-select (get params :role))
                       (invite-fields request))
                [:p.management-secondary (i18n/t "The invitation is valid for 7 days.")]]]
-             (cond
-               (:failed? recipient) (retry request)
-               recipient (recipient-status recipient now))
              (if (:failed? team)
-               (retry request)
+               ;; The just-issued offer's known result, which the team list would otherwise show in its row.
+               (list (when-not (:failed? recipient) (recipient-status recipient now))
+                     (retry request))
                (list (members-section request (:members team))
-                     (invitations-section request (:invitations team) now)))]]}))
+                     ;; An accepted offer's person is listed under members.
+                     (invitations-section request (filterv #(not= "accepted" (:state %)) (:invitations team)) now)))]]}))

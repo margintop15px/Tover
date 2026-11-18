@@ -411,7 +411,7 @@ class StockEntry extends HTMLElement {
 if (!customElements.get('stock-entry')) customElements.define('stock-entry', StockEntry);
 
 document.addEventListener('keydown', event => {
-  if (event.key.toLowerCase() !== 'k' || !(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing || event.repeat) return;
+  if (event.key?.toLowerCase() !== 'k' || !(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing || event.repeat) return;
   const entry = document.querySelector('#inventory-evidence-workbench stock-entry');
   if (!entry?.input) return;
   event.preventDefault();

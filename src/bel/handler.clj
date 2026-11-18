@@ -329,19 +329,12 @@
 
 
 (defn page-response
-  "Navigate to a named page. Datastar renders through destination middleware; forms redirect. With `:form`,
-  the page renders in place with those form params, so form state never enters the URL."
+  "Navigate to a named page. Datastar renders through destination middleware; forms redirect."
   {:malli/schema [:=> [:cat :map core/Instruction] :map]}
   [request instruction]
   (validation/check! core/Instruction instruction)
-  (cond
-    (:form instruction)
-    (dispatch-page (dissoc request :bel/reset-form?) instruction (:form instruction))
-
-    (and (datastar/datastar-request? request) (not (:reload? instruction)))
+  (if (and (datastar/datastar-request? request) (not (:reload? instruction)))
     (dispatch-page (assoc request :bel/reset-form? true) instruction {})
-
-    :else
     (let [{:keys [url]} (destination request instruction)]
       (if (datastar/datastar-request? request)
         (hk/->sse-response

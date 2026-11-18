@@ -85,11 +85,26 @@
   (support/with-application
     (fn [{:keys [browser] :as services}]
       (as-owner services)
-      (.addMethod ^clojure.lang.MultiFn runtime/coeffect :tover.invitations.persistence/team
-                  (fn [_ _ _] (throw (ex-info "unavailable" {:type :unavailable}))))
-      (let [body (page ((:request! browser) :get "/team"))]
-        (is (str/includes? body "The team could not be loaded."))
-        (is (not (str/includes? body "No invitations yet.")))))))
+      (let [response (invite! (:request! browser) {})]
+        (is (str/includes? (page (follow browser response)) "management-status\">Pending<"))
+        (is (not (str/includes? (page (follow browser response)) "Invitation: Pending"))
+            "with the team loaded, the new offer shows only in its row")
+        (.addMethod ^clojure.lang.MultiFn runtime/coeffect :tover.invitations.persistence/team
+                    (fn [_ _ _] (throw (ex-info "unavailable" {:type :unavailable}))))
+        (let [body (page (follow browser response))]
+          (is (str/includes? body "The team could not be loaded."))
+          (is (str/includes? body "Invitation: Pending") "the known result of the new offer stays visible")
+          (is (not (str/includes? body "No invitations yet."))))))))
+
+
+(deftest an-accepted-invitation-is-listed-only-as-a-member
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (as-owner services)
+      (invite! (:request! browser) {})
+      (let [{:keys [id]} (offer-for state "otto@example.test")]
+        (swap! state assoc-in [:db :public.organization_invites id :status] "accepted")
+        (is (not (str/includes? (page ((:request! browser) :get "/team")) (str "data-invitation-id=\"" id "\""))))))))
 
 
 (deftest members-cannot-manage-the-team
@@ -112,7 +127,7 @@
         (is (= (Duration/ofDays 7) (Duration/between (:created_at offer) (:expires_at offer))))
         (is (= ["queued"] (mapv :status (deliveries state))))
         (let [body (page (follow browser response))]
-          (is (str/includes? body "Invitation: Pending"))
+          (is (str/includes? body "management-status\">Pending<"))
           (is (str/includes? body "Delivery: Queued"))
           (is (not (str/includes? body ">Resend<")) "queued work blocks a parallel resend")
           (is (str/includes? body ">Cancel<")))))))
@@ -204,7 +219,7 @@
         (is (= "revoked" (:status (offer-for state "otto@example.test"))))
         (is (= 303 (:status (cancel!))) "a repeated cancel shows the current state")
         (let [body (page (follow browser response))]
-          (is (str/includes? body "Invitation: Cancelled"))
+          (is (str/includes? body "management-status\">Cancelled<"))
           (is (not (str/includes? body ">Resend<"))))
         (is (= (:public.organization_memberships (fixtures/seed)) (get-in @state [:db :public.organization_memberships]))
             "no membership changes")))))
@@ -259,7 +274,8 @@
               "joining never selects a workspace")
           (let [body (page (follow browser response))]
             (is (str/includes? body "You joined Development workspace as Member."))
-            (is (str/includes? body (str "/workspace?workspace-id=" workspace)))))
+            (is (str/includes? body (bel/action-url :tover.workspaces.select.web/select)))
+            (is (str/includes? body (str "name=\"workspace-id\" value=\"" workspace "\"")))))
         (testing "two accepts and a repeated email link after joining"
           (let [facts  #(count (mapcat :events (:journal @state)))
                 before (facts)]

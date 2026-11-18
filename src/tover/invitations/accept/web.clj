@@ -9,7 +9,8 @@
     [tover.invitations.team.web :as team]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
-    [tover.shared.ui.forms :refer [form]])
+    [tover.shared.ui.forms :refer [form]]
+    [tover.workspaces.create.web :as create])
   (:import
     [clojure.lang ExceptionInfo]))
 
@@ -65,20 +66,34 @@
   (form request (bel/action-url ::leave) label))
 
 
-(defn- open-link
-  {:malli/schema [:=> [:cat :uuid] schema/Hiccup]}
-  [workspace-id]
-  [:a {:href (str "/workspace?workspace-id=" workspace-id)} (i18n/t "Open workspace")])
+(defn- open-button
+  "Select this workspace and open it: one explicit click (07), never a selection on page load."
+  {:malli/schema [:=> [:cat :map :uuid] schema/Hiccup]}
+  [request workspace-id]
+  (create/select-form request workspace-id "/" (i18n/t "Open workspace")))
 
 
 (defn- details
   {:malli/schema [:=> [:cat model/Review] schema/Hiccup]}
   [{:keys [workspace-id workspace-name inviter role expires-at]}]
-  [:dl.management-form
-   [:dt (i18n/t "Workspace")] [:dd workspace-name " · " (subs (str workspace-id) 0 8)]
+  [:dl.invitation-details
+   [:dt (i18n/t "Workspace")] [:dd workspace-name " " [:span (subs (str workspace-id) 0 8)]]
    (when inviter (list [:dt (i18n/t "Invited by")] [:dd inviter]))
    [:dt (i18n/t "Role")] [:dd (team/role-label role)]
    [:dt (i18n/t "Expires")] [:dd (team/moment expires-at)]])
+
+
+(defn- card
+  "The offer in one box: its details or a message, then the actions in one row."
+  {:malli/schema [:=> [:cat [:* :any]] schema/Hiccup]}
+  [& body]
+  (into [:div.management-form] (remove nil? body)))
+
+
+(defn- actions
+  {:malli/schema [:=> [:cat [:* :any]] schema/Hiccup]}
+  [& buttons]
+  (into [:div.management-buttons] (remove nil? buttons)))
 
 
 (defn- retry
@@ -105,40 +120,39 @@
               (retry request)
 
               (not available?)
-              [:div
-               [:p (i18n/t "This invitation is not available to {email}." {:email (get-in request [:tover/identity :user :email] "")})]
-               [:p (i18n/t "If it was sent to another address, sign out and sign in with that account.")]
-               [:p [:a {:href "/auth/sign-out"} (i18n/t "Sign out")]]
-               (leave-form request (i18n/t "Back to workspaces"))]
+              (card
+                [:p (i18n/t "This invitation is not available to {email}." {:email (get-in request [:tover/identity :user :email] "")})]
+                [:p (i18n/t "If it was sent to another address, sign out and sign in with that account.")]
+                (actions [:a {:href "/auth/sign-out"} (i18n/t "Sign out")] (leave-form request (i18n/t "Back to workspaces"))))
 
               (= "active" membership)
-              [:div
-               (details review)
-               [:p {:role "status"} (i18n/t "You are already a member of this workspace as {role}." {:role (team/role-label current-role)})]
-               [:p (open-link workspace-id)]
-               (leave-form request (i18n/t "Back to workspaces"))]
+              (card
+                (details review)
+                [:p {:role "status"} (i18n/t "You are already a member of this workspace as {role}." {:role (team/role-label current-role)})]
+                (actions (open-button request workspace-id) (leave-form request (i18n/t "Back to workspaces"))))
 
               (= "suspended" membership)
-              [:div
-               (details review)
-               [:p (i18n/t "Your access to this workspace is suspended. Ask an owner to reinstate it.")]
-               (leave-form request (i18n/t "Back to workspaces"))]
+              (card
+                (details review)
+                [:p (i18n/t "Your access to this workspace is suspended. Ask an owner to reinstate it.")]
+                (actions (leave-form request (i18n/t "Back to workspaces"))))
 
               (model/acceptable? review)
-              [:div
-               (details review)
-               (form request (bel/action-url ::accept) (i18n/t "Accept invitation")
-                     [:input {:type "hidden" :name "invitation-id" :value (str invitation-id)}]
-                     [:input {:type "hidden" :name "workspace-id" :value (str workspace-id)}]
-                     [:input {:type "hidden" :name "role" :value (:role review)}]
-                     [:input {:type "hidden" :name "command-id" :value (str (random-uuid))}])
-               (leave-form request (i18n/t "Not now"))]
+              (card
+                (details review)
+                (actions
+                  (form request (bel/action-url ::accept) (i18n/t "Accept invitation")
+                        [:input {:type "hidden" :name "invitation-id" :value (str invitation-id)}]
+                        [:input {:type "hidden" :name "workspace-id" :value (str workspace-id)}]
+                        [:input {:type "hidden" :name "role" :value (:role review)}]
+                        [:input {:type "hidden" :name "command-id" :value (str (random-uuid))}])
+                  (leave-form request (i18n/t "Not now"))))
 
               :else
-              [:div
-               (details review)
-               [:p (i18n/t (get states state))]
-               (leave-form request (i18n/t "Back to workspaces"))])]}))
+              (card
+                (details review)
+                [:p (i18n/t (get states state))]
+                (actions (leave-form request (i18n/t "Back to workspaces")))))]}))
 
 
 (defaction accept
@@ -185,15 +199,14 @@
               [:div [:p (i18n/t "Your acceptance is saved. Current access could not be loaded.")] (retry request)]
 
               (and (= "accepted" state) (= "active" membership))
-              [:div {:role "status"}
+              [:div.management-form {:role "status"}
                [:p (i18n/t "You joined {workspace} as {role}." {:workspace workspace-name :role (team/role-label current-role)})]
-               [:p (open-link workspace-id)]
-               (leave-form request (i18n/t "Back to workspaces"))]
+               (actions (open-button request workspace-id) (leave-form request (i18n/t "Back to workspaces")))]
 
               (= "accepted" state)
-              [:div
-               [:p (i18n/t "Your acceptance was recorded, but you no longer have access to this workspace.")]
-               (leave-form request (i18n/t "Back to workspaces"))]
+              (card
+                [:p (i18n/t "Your acceptance was recorded, but you no longer have access to this workspace.")]
+                (actions (leave-form request (i18n/t "Back to workspaces"))))
 
               :else
               [:p [:a {:href (review-path invitation-id)} (i18n/t "Review the invitation")]])]}))

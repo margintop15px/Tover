@@ -110,9 +110,7 @@ test('real email signup, workspace creation, invitation, joining, recovery and s
     await expect(member).toHaveURL(new RegExp(`${new URL(invitation).pathname}$`));
     await member.getByRole('button', { name: 'Accept invitation', exact: true }).click();
     await expect(member.getByText(`You joined ${workspace} as Member.`)).toBeVisible();
-    await member.getByRole('link', { name: 'Open workspace', exact: true }).click();
-    await expect(member).toHaveURL(/\/workspace\?workspace-id=/);
-    await member.locator('[data-target-workspace-id]').getByRole('button', { name: 'Open workspace', exact: true }).click();
+    await member.getByRole('button', { name: 'Open workspace', exact: true }).click();
     await expect(member.locator('#stock-grid')).toBeVisible();
     expect((await member.goto('/team')).status()).toBe(403);
     await expect(member.getByText('Workspace administration requires an owner or admin.')).toBeVisible();

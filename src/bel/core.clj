@@ -46,9 +46,7 @@
            [:id :qualified-keyword]
            [:input {:optional true} :map]
            [:path-params {:optional true} :map]
-           [:reload? {:optional true} :boolean]
-           ;; Form state rendered in place with the page, never put in its URL.
-           [:form {:optional true} [:map-of :string :string]]]]])
+           [:reload? {:optional true} :boolean]]]])
 
 
 (def Result

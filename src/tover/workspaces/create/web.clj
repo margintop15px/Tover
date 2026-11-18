@@ -42,8 +42,7 @@
            [:label (i18n/t "Workspace name")
             ;; No maxlength: an overlong name is rejected with the full attempt kept, never truncated.
             [:input {:name "name" :type "text" :required true :value (or name "")}]
-            [:span.management-secondary (i18n/t "1 to 100 characters. You become its first owner.")]])
-     [:p [:a {:href "/workspace"} (i18n/t "Back to workspace choices")]]]))
+            [:span.management-secondary (i18n/t "1 to 100 characters. You become its first owner.")]])]))
 
 
 (defn select-form
@@ -77,16 +76,16 @@
                   :error   (i18n/t "The workspace may already exist. Retry to check this request.")})
     [:section#workspace-creation.management-form {:data-workspace-id (str (:workspace-id model)) :role "status"}
      [:p [:span.management-name (:name model)]
-      [:span.management-secondary (i18n/t "Workspace created")]]
+      [:span.management-secondary
+       (i18n/t "Workspace created")
+       (when (:can-open? model) (list " · " (i18n/t "Your role: {role}" {:role (i18n/t (str/capitalize (:role model)))})))]]
      (if (:can-open? model)
-       [:div
-        [:p (i18n/t "Your role: {role}" {:role (i18n/t (str/capitalize (:role model)))})]
-        [:div.management-actions
-         (select-form request (:workspace-id model) "/" (i18n/t "Open workspace"))
-         (when (contains? #{"owner" "admin"} (:role model))
-           (select-form request (:workspace-id model) "/team" (i18n/t "Invite teammates")))]]
-       [:p (i18n/t "You no longer have access to this workspace.")])
-     [:p [:a {:href "/workspace"} (i18n/t "Back to workspace choices")]]]))
+       [:div.management-buttons
+        (select-form request (:workspace-id model) "/" (i18n/t "Open workspace"))
+        (when (contains? #{"owner" "admin"} (:role model))
+          (select-form request (:workspace-id model) "/team" (i18n/t "Invite teammates")))]
+       [:p (i18n/t "You no longer have access to this workspace.") " "
+        [:a {:href "/workspace"} (i18n/t "Back to workspace choices")]])]))
 
 
 (def ReadyInput

@@ -47,6 +47,7 @@
    :html (shell/page-content
            request (i18n/t "Create an account")
            [:div
+            (sign-in/invitation-hint request)
             (form request (bel/action-url ::register) (i18n/t "Create account")
                   (field request "email" (i18n/t "Email") "email")
                   (field request "password" (i18n/t "Password") "password"))

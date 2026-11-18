@@ -69,13 +69,22 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .management-disclosure summary::before { content: "+"; font-size: 16px; line-height: 1; color: var(--iw-muted); }
 .management-disclosure[open] summary::before { content: "−"; }
 .management-form { margin-top: 12px; padding: 12px; border-block: 1px solid var(--iw-line); background: var(--iw-soft); }
-.management-form form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 0; }
-.management-form label { display: flex; flex-direction: column; gap: 5px; color: var(--iw-muted); font-size: 12px; }
+.management-form form { display: flex; flex-wrap: wrap; align-items: start; gap: 12px; margin: 0; }
+.management-form label { display: flex; flex-direction: column; gap: 5px; color: var(--iw-muted); font-size: 12px; line-height: 16px; }
+/* Line the button up with the inputs, not with the bottom of a label that carries a hint: caption line + gap. */
+.management-form form:has(> label) > button { margin-top: 21px; }
+.management-form > p, .management-form > dl { margin: 0 0 12px; }
+/* A row of actions: the first is primary, the rest are outlined; a link in the row looks like a button. */
+.management-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.management-buttons > a { display: inline-flex; align-items: center; min-height: 32px; padding: 5px 12px; border: 1px solid var(--iw-ink); border-radius: 3px; background: var(--iw-ink); color: var(--iw-bg); text-decoration: none; }
+.management-buttons > :not(:first-child) button, .management-buttons > a:not(:first-child) { border-color: var(--iw-line); background: var(--iw-bg); color: var(--iw-ink); }
+.invitation-details { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; }
+.invitation-details dt { color: var(--iw-muted); font-size: 12px; line-height: 20px; }
+.invitation-details dd { margin: 0; line-height: 20px; }
+.invitation-details dd span { color: var(--iw-muted); font-size: 12px; }
 .management-form input, .management-form select { width: 100%; min-height: 32px; padding: 5px 8px; border: 1px solid var(--iw-line); border-radius: 3px; background: var(--iw-bg); color: var(--iw-ink); }
 .management-form input { min-width: 240px; }
 .management-form button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--iw-ink); border-radius: 3px; background: var(--iw-ink); color: var(--iw-bg); }
-.profile-language { display: inline-flex; gap: 4px; }
-.profile-language button[aria-pressed=false] { background: var(--iw-bg); color: var(--iw-ink); }
 .profile-latest { width: 100%; margin: 0; color: var(--iw-muted); font-size: 12px; }
 .management-section { margin: 0 0 24px; }
 .management-section-heading { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 13px; font-weight: 600; }
@@ -115,6 +124,7 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
   .identity input, .identity select { font-size: 16px; }
   .management-page { padding-top: 16px; }
   .management-form form { align-items: stretch; }
+  .management-form form:has(> label) > button { margin-top: 0; }
   .management-form label { width: 100%; }
   .management-form input { min-width: 0; }
   .management-form input, .management-form select { font-size: 16px; }
@@ -126,12 +136,12 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
   .management-actions { width: 44%; white-space: normal; }
   .management-actions form { display: block; }
   .management-actions button { max-width: 100%; overflow-wrap: anywhere; }
-  .management-disclosure summary, .management-form input, .management-form select, .management-form button, .management-actions button, .management-footer button { min-height: 44px; }
+  .management-disclosure summary, .management-form input, .management-form select, .management-form button, .management-buttons > a, .management-actions button, .management-footer button { min-height: 44px; }
 }
 @media (pointer: coarse) {
   .identity button, .app-nav a, .theme-toggle, .language-toggle { min-height: 44px; }
   .language-toggle { min-width: 44px; }
-  .management-disclosure summary, .management-form input, .management-form select, .management-form button, .management-actions button, .management-footer button { min-height: 44px; }
+  .management-disclosure summary, .management-form input, .management-form select, .management-form button, .management-buttons > a, .management-actions button, .management-footer button { min-height: 44px; }
 }
 
 .catalogue-workbench { display: flex; flex-direction: column; flex: 1; min-width: 0; padding: 0 14px 12px; }

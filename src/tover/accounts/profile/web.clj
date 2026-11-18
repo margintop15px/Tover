@@ -1,5 +1,6 @@
 (ns tover.accounts.profile.web
-  "Profile setup: the display name and account language, saved through the profile commands."
+  "Profile setup: the display name, saved through the profile commands. The account language is set from the
+  header switch."
   (:require
     [bel.core :as bel :refer [defaction defpage]]
     [bel.runtime :as runtime]
@@ -39,8 +40,8 @@
 
 
 (defn profile-form
-  "One form: Continue (Save once a name is saved) saves the name; the language buttons post the same fields to
-  set-language, so the draft survives. The attempt id lets a repeated submission recover its first outcome."
+  "Continue (Save once a name is saved) saves the name. The attempt id lets a repeated submission recover its
+  first outcome."
   {:malli/schema [:=> [:cat FormProps] schema/Hiccup]}
   [{:keys [request profile email draft command-id return-to latest]}]
   [:div.management-form
@@ -50,7 +51,6 @@
     (hidden "command-id" command-id)
     (hidden "account" (:user-id profile))
     (hidden "name-revision" (:name-revision profile))
-    (hidden "language-revision" (:language-revision profile))
     (hidden "return-to" return-to)
     [:label (i18n/t "Email") [:input {:type "email" :value (or email "") :readonly true}]]
     [:label (i18n/t "Display name")
@@ -60,18 +60,7 @@
      [:span.management-secondary (i18n/t "1 to 100 characters.")]]
     (when-let [saved (:display-name latest)]
       [:p.profile-latest {:role "status"} (i18n/t "Saved name: {name}" {:name saved})])
-    (when-let [language (:language latest)]
-      [:p.profile-latest {:role "status"}
-       (i18n/t "Your account language is {language}." {:language (i18n/t (if (= "ru" language) "Russian" "English"))})])
-    ;; First in tree order, so Enter in the name field saves instead of switching language.
-    [:button {:type "submit"} (if (model/valid-name? (:display-name profile)) (i18n/t "Save") (i18n/t "Continue"))]
-    [:div.profile-language {:role "group" :aria-label (i18n/t "Language")}
-     (for [[locale text label] [["en" "EN" (i18n/t "English")] ["ru" "RU" (i18n/t "Russian")]]]
-       [:button {:type         "submit" :formaction (bel/action-url ::set-language) :formnovalidate true
-                 :name         "locale" :value      locale
-                 :aria-label   label :title         label
-                 :aria-pressed (str (= locale i18n/*locale*))}
-        text])]]])
+    [:button {:type "submit"} (if (model/valid-name? (:display-name profile)) (i18n/t "Save") (i18n/t "Continue"))]]])
 
 
 (defn query-profile
@@ -142,20 +131,13 @@
 
 
 (defaction set-language
-  "The signed-in account language (03a). The profile form posts its account and revisions, so a stale or
-  foreign save is caught; the header switch posts only the language and saves at the revision read now.
-  From the profile form the page renders again in place, so the draft name survives without entering the URL."
-  {:schema     [:map [:locale [:enum "en" "ru"]] [:return-to {:optional true} :string] [:display-name {:optional true} :string]]
-   :route-data {:tover/access   :profile :bel/error-page ::profile :bel/retain ["display-name" "return-to"]
+  "The signed-in account language (03a), posted by the header switch; it saves at the revision read now."
+  {:schema     [:map [:locale [:enum "en" "ru"]] [:return-to {:optional true} :string]]
+   :route-data {:tover/access   :profile :bel/error-page ::profile :bel/retain ["return-to"]
                 :tover/problems (problems "Could not save language. Please try again.")}}
-  [{:keys [request] :as context} {:keys [locale return-to display-name] :as input}]
-  (let [cookies (language-cookie request locale)]
-    {:type  :command :id ::model/change-account-language :command-id (str (random-uuid))
-     :input {:account           (or (:account input) (get-in request [:tover/identity :user-id]))
-             :language          locale
-             :language-revision (or (:language-revision input)
-                                    (:language-revision (runtime/read-model context ::model/my-profile {})))}
-     :then  (if (contains? input :display-name)
-              {:type :page :id ::profile :cookies cookies
-               :form (cond-> {"display-name" display-name} return-to (assoc "return-to" return-to))}
-              {:status 303 :headers {"location" (access/local-path return-to)} :cookies cookies :body ""})}))
+  [{:keys [request] :as context} {:keys [locale return-to]}]
+  {:type  :command :id ::model/change-account-language :command-id (str (random-uuid))
+   :input {:account           (get-in request [:tover/identity :user-id])
+           :language          locale
+           :language-revision (:language-revision (runtime/read-model context ::model/my-profile {}))}
+   :then  {:status 303 :headers {"location" (access/local-path return-to)} :cookies (language-cookie request locale) :body ""}})

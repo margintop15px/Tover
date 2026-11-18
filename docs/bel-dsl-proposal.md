@@ -126,7 +126,7 @@ An action that runs a command returns its descriptor and does not call `runtime/
      :catch {:type :page :id ::review :path-params path-params}}))
 ```
 
-- `:then` is any action answer: a view, elements, signals, a page, or a Ring response such as a redirect with cookies. A page with `:form` renders in place with those form params, so form state such as a draft name never enters the URL.
+- `:then` is any action answer: a view, elements, signals, a page, or a Ring response such as a redirect with cookies.
 - Work after acceptance belongs to the command's `:fx`, which runs after commit, possibly after `:then` answered. Make it independent of that order: workspace selection closes only streams opened for another workspace, so the new page's streams survive.
 - `:catch` is a view or a page. A view receives the rejection as `:error`. A page receives only the rejection type name as `:problem`, because page input becomes the URL. Forbidden, configuration, conflict and retryable errors are never caught.
 - Without `:catch`, a rejection propagates. A command that rejects its input answers like invalid action input. Tover form routes render `:bel/error-page` with the status and message from the route's `:tover/problems` (`{type status}` or `{type [status message]}`); the page reads the message as `:tover/error` and the rejection's data, such as the latest saved value, as `:tover/rejection`.

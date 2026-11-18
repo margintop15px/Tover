@@ -168,6 +168,14 @@
 ;; Screens
 
 
+(defn invitation-hint
+  "A visit that started from an invitation link says so, because the invitee may not have an account yet."
+  {:malli/schema [:=> [:cat :map] [:maybe schema/Hiccup]]}
+  [request]
+  (when (str/starts-with? (str (get-in request [:session :identity/return-to])) "/invitations/")
+    [:p {:role "status"} (i18n/t "To open your invitation, sign in or create an account with the email address it was sent to.")]))
+
+
 (defpage login
   {:route      "/auth/login"
    :title      "Sign in · Tover"
@@ -179,6 +187,7 @@
    :html (shell/page-content
            request (i18n/t "Sign in")
            [:div
+            (invitation-hint request)
             (form request (bel/action-url ::sign-in) (i18n/t "Sign in")
                   (field request "email" (i18n/t "Email") "email")
                   (field request "password" (i18n/t "Password") "password")

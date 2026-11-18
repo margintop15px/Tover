@@ -25,15 +25,8 @@
   [request]
   (let [{:keys [memberships workspace-id]} (:tover/identity request)
         repeated (into #{} (keep (fn [[name n]] (when (> n 1) name))) (frequencies (map :name memberships)))
-        return-to (access/local-path (get-in request [:params :return-to]))
-        ;; A link may name a workspace (an accepted invitation's "Open workspace"); it is offered, never selected.
-        target (let [id (parse-uuid (str (get-in request [:params :workspace-id])))]
-                 (some #(when (= id (:workspace-id %)) %) memberships))]
+        return-to (access/local-path (get-in request [:params :return-to]))]
     [:div.management-content
-     (when target
-       [:section.management-section {:aria-label (i18n/t "Open workspace") :data-target-workspace-id (str (:workspace-id target))}
-        [:p [:span.management-name (:name target)]]
-        (create/select-form request (:workspace-id target) return-to (i18n/t "Open workspace"))])
      [:details.management-disclosure {:open (or (empty? memberships) (contains? (:params request) :name))}
       [:summary (i18n/t "Create workspace")]
       (create/create-form {:request request})]
