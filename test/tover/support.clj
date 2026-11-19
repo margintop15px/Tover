@@ -1,20 +1,53 @@
 (ns tover.support
   "Application-level test helpers over the offline fixtures in `tover.fixtures`."
   (:require
+    [bel-postgres.adapter :as postgres]
+    [bel-rdf.adapter :as bel-rdf]
     [bel.realtime :as realtime]
+    [bel.system :as system]
     [charred.api :as json]
     [clojure.java.io :as io]
     [clojure.string :as str]
     [tover.app :as app]
+    [tover.catalogues.persistence :as catalogues]
     [tover.fixtures :as fixtures]
     [tover.identity.provider :as provider]
-    [tover.shared.rdf :as rdf])
+    ;; Directory coeffects that commands name by keyword.
+    [tover.invitations.persistence]
+    [tover.shared.rdf :as rdf]
+    [tover.workspaces.persistence])
   (:import
     [com.sun.net.httpserver HttpHandler HttpServer]
     [java.io ByteArrayInputStream]
     [java.net InetSocketAddress]
     [java.nio.charset StandardCharsets]
     [java.nio.file Files]))
+
+
+(defn bel-system
+  "The web Bel system as tover.app composes it, over whichever of :datasource and :repo is given."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [{:keys [datasource repo] :as resources}]
+  (system/system
+    {:stores    (cond-> {}
+                  datasource (assoc :directory (postgres/store {:datasource datasource}))
+                  repo (assoc :catalogue (bel-rdf/store {:repo repo :graphs catalogues/graphs :guard catalogues/legacy-guard})))
+     :journal   :directory
+     :scope     :workspace
+     :authority {:store :directory :impl 'tover.identity.session/->CurrentSession}
+     :resources (select-keys resources [:realtime :provider :session-store :origin])}))
+
+
+(defn delivery-system
+  "The worker's Bel system as tover.app composes it."
+  {:malli/schema [:=> [:cat [:map [:datasource :any]]] :map]}
+  [{:keys [datasource repo mailer origin]}]
+  (system/system
+    {:stores    (cond-> {:directory (postgres/store {:datasource datasource})}
+                  repo (assoc :catalogue (bel-rdf/store {:repo repo :graphs catalogues/graphs})))
+     :journal   :directory
+     :scope     :workspace
+     :resources {:mailer mailer :origin origin}}))
 
 
 (defn- hidden-value

@@ -6,6 +6,7 @@
     [bel.store :as store]
     [bel.validation :as validation]
     [clojure.string :as str]
+    [integrant.core :as ig]
     [next.jdbc :as jdbc])
   (:import [java.sql SQLException]))
 
@@ -106,3 +107,6 @@
   {:malli/schema [:=> [:cat [:map [:datasource :any]]] [:fn #(instance? PgStore %)]]}
   [{:keys [datasource]}]
   (->PgStore datasource))
+
+
+(defmethod ig/init-key ::store [_ options] (store options))

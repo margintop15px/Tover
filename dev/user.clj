@@ -96,10 +96,11 @@
                           "supabase" (app/config 3030 path {:development? true})
                           (throw (ex-info "Unknown development identity mode" {:type :configuration})))
         handler-options (assoc (::app/handler configuration) :browser-reload (ig/ref ::browser-reload))]
-    (-> configuration
-        (assoc ::malli {} ::browser-reload {} ::handler handler-options)
-        (dissoc ::app/handler)
-        (assoc-in [::app/server :handler] (ig/ref ::handler)))))
+    (doto (-> configuration
+              (assoc ::malli {} ::browser-reload {} ::handler handler-options)
+              (dissoc ::app/handler)
+              (assoc-in [::app/server :handler] (ig/ref ::handler)))
+      ig/load-namespaces)))
 
 
 (repl/set-prep! dev-config)

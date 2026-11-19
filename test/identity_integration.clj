@@ -2,6 +2,7 @@
   "Explicit disposable-target checks: the real GoTrue provider, the encrypted PostgreSQL session store and the
   Bel directory behind the application handler. Run through scripts/test-identity-integration.sh."
   (:require
+    [bel-postgres.jdbc :as pg-pool]
     [bel.core :as bel]
     [bel.realtime :as realtime]
     [clojure.java.io :as io]
@@ -16,7 +17,6 @@
     [tover.identity.access :as access]
     [tover.identity.provider :as provider]
     [tover.identity.session :as session]
-    [tover.shared.bel :as wiring]
     [tover.shared.jdbc :as database]
     [tover.shared.rdf :as rdf]
     [tover.support :as support])
@@ -78,7 +78,7 @@
                   :origin        "http://localhost:3030"}
         live     (app/realtime services)
         services (assoc services :realtime live)
-        services (assoc services :bel/system (wiring/system (assoc services :datasource (:datasource settings))))
+        services (assoc services :bel/system (support/bel-system (assoc services :datasource (:datasource settings))))
         handler  (app/create-handler services)]
     (try (f (assoc services :handler handler :browser (support/browser handler)))
          (finally
@@ -246,12 +246,12 @@
 
 (defn -main [& _]
   (let [settings   (options)
-        datasource (some-> (:session settings) database/datasource)
+        datasource (some-> (:session settings) pg-pool/datasource)
         result     (try
                      (binding [*options* (cond-> settings
                                            datasource (assoc-in [:session :datasource] datasource))]
                        (run-tests 'identity-integration))
                      (finally
-                       (when datasource (database/close! datasource))))]
+                       (when datasource (pg-pool/close! datasource))))]
     (shutdown-agents)
     (when (pos? (+ (:fail result) (:error result))) (System/exit 1))))

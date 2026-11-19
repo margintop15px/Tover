@@ -21,7 +21,7 @@
     [taoensso.nippy :as nippy]
     [tover.accounts.profile.model :as profile-model]
     [tover.identity.session :as session]
-    [tover.shared.bel :as wiring]
+    [tover.support :as support]
     [tover.workspaces.create.model :as model]
     [tover.workspaces.create.web :as web])
   (:import
@@ -53,7 +53,7 @@
 (defn system
   "Directory reads in these checks are user-scoped."
   []
-  (assoc (wiring/system {:datasource (db "tover_app")}) :scope :user))
+  (assoc (support/bel-system {:datasource (db "tover_app")}) :scope :user))
 
 
 (defn context
@@ -484,7 +484,7 @@
 
 (deftest live-workspace-system-runs-user-scoped-profile-saves
   ;; The application's system defaults to workspace scope; the profile commands declare user scope.
-  (let [ctx (assoc (context) :bel/system (wiring/system {:datasource (db "tover_app")}) :workspace-id (random-uuid))]
+  (let [ctx (assoc (context) :bel/system (support/bel-system {:datasource (db "tover_app")}) :workspace-id (random-uuid))]
     (is (= :accepted (:status (save-profile ctx ::profile-model/set-display-name "W" {:display-name "Alicia" :name-revision 0}))))
     (is (= "Alicia" (:display-name (runtime/read-model ctx ::profile-model/my-profile {}))))))
 

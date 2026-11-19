@@ -15,8 +15,8 @@
     [tover.invitations.resend.model :as resend]
     [tover.invitations.status.model :as status]
     [tover.invitations.team.model :as team]
-    [tover.shared.bel :as wiring]
     [tover.shared.email :as mailer]
+    [tover.support :as support]
     [workspace-creation-integration :as workspace]))
 
 
@@ -127,7 +127,7 @@
   []
   (let [ctx (workspace/context) id (random-uuid)]
     (workspace/execute ctx {:command-id "C" :input {:workspace-id id :name "Shop"}})
-    (assoc ctx :workspace-id id :bel/system (wiring/system {:datasource (workspace/db "tover_app")}))))
+    (assoc ctx :workspace-id id :bel/system (support/bel-system {:datasource (workspace/db "tover_app")}))))
 
 
 (defn invite-counts
@@ -185,7 +185,7 @@
   "The delivery worker on the journal login, with `mailer` as its effect resource."
   {:malli/schema [:=> [:cat [:fn fn?]] :map]}
   [mailer]
-  (wiring/delivery-system {:datasource (workspace/db "tover_journal") :mailer mailer :origin "https://app.test"}))
+  (support/delivery-system {:datasource (workspace/db "tover_journal") :mailer mailer :origin "https://app.test"}))
 
 
 (defn invited!

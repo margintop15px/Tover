@@ -1,11 +1,11 @@
 (ns tover.app
   (:require
     [bel.core :as bel]
-    [bel.delivery]
     [bel.handler :as handler]
     [bel.log :as log]
     [bel.realtime :as realtime]
     [bel.session :as session]
+    [bel.system :as system]
     [bel.validation :as validation]
     [integrant.core :as ig]
     [next.jdbc :as jdbc]
@@ -21,19 +21,16 @@
     [tover.identity.provider :as provider]
     [tover.identity.session :as session-store]
     [tover.inventory.smart-web]
-    [tover.shared.bel :as wiring]
     [tover.shared.email :as email]
     [tover.shared.i18n :as i18n]
     [tover.shared.jdbc :as database]
     [tover.shared.rdf :as rdf]
     [tover.shared.schema :as schema]
-    [tover.shared.web.errors :as errors])
-  (:import
-    [clojure.lang ExceptionInfo]))
+    [tover.shared.web.errors :as errors]))
 
 
 (def Config
-  [:map-of :keyword :map])
+  [:map-of [:or :qualified-keyword [:vector :qualified-keyword]] :map])
 
 
 (def Port
@@ -66,23 +63,6 @@
 
 (def StopFn
   [:=> [:cat] :any])
-
-
-(def SystemState
-  [:map
-   [::repo rdf/Repository]
-   [::realtime realtime/Realtime]
-   [::provider :any]
-   [::session-store :any]
-   [::mailer {:optional true} :any]
-   [::datasource {:optional true} :any]
-   [::bel-system {:optional true} :map]
-   [::journal-datasource {:optional true} :any]
-   [::delivery-system {:optional true} :map]
-   [:bel.delivery/worker {:optional true} :any]
-   [::logging {:optional true} StopFn]
-   [::handler schema/Handler]
-   [::server StopFn]])
 
 
 (defn- cleanup-error
@@ -245,20 +225,33 @@
          (assoc-in [::handler :identity-health]
                    (merge (select-keys provider [:auth-url :api-key])
                           {:datasource (ig/ref ::datasource)}))
-         (assoc ::datasource {:jdbc-url (required "TOVER_JDBC_URL")
-                              :user     (required "TOVER_DB_USER")  :password (required "TOVER_DB_PASSWORD")})
+         (assoc [:bel-postgres.jdbc/datasource ::datasource]
+                {:jdbc-url  (required "TOVER_JDBC_URL") :user (required "TOVER_DB_USER") :password (required "TOVER_DB_PASSWORD")
+                 :pool-name "tover-identity"})
          (assoc ::session-store {:datasource     (ig/ref ::datasource)
                                  :encryption-key (required "TOVER_SESSION_KEY")})
-         (assoc ::bel-system {:repo          (ig/ref ::repo)          :datasource (ig/ref ::datasource) :realtime (ig/ref ::realtime)
-                              :provider      (ig/ref ::provider)      :origin     origin
-                              :session-store (ig/ref ::session-store)})
+         (assoc [:bel-postgres.adapter/store ::directory] {:datasource (ig/ref ::datasource)}
+                [:bel-rdf.adapter/store ::catalogue] {:repo  (ig/ref ::repo) :graphs 'tover.catalogues.persistence/graphs
+                                                      :guard 'tover.catalogues.persistence/legacy-guard}
+                [:bel/system ::bel-system] {:stores    {:directory (ig/ref ::directory) :catalogue (ig/ref ::catalogue)}
+                                            :journal   :directory
+                                            :scope     :workspace
+                                            :authority {:store :directory :impl 'tover.identity.session/->CurrentSession}
+                                            :resources {:realtime      (ig/ref ::realtime)      :provider (ig/ref ::provider)
+                                                        :session-store (ig/ref ::session-store) :origin   origin}})
          (assoc-in [::handler :bel/system] (ig/ref ::bel-system))
+         ;; The worker's private login: journal delivery and processors act as a service, not a user session.
          (cond-> (some #(not-empty (get environment %)) ["TOVER_JOURNAL_DB_USER" "TOVER_JOURNAL_DB_PASSWORD"])
-           (assoc ::journal-datasource {:jdbc-url (required "TOVER_JDBC_URL")
-                                        :user     (required "TOVER_JOURNAL_DB_USER")
-                                        :password (required "TOVER_JOURNAL_DB_PASSWORD")}
-                  ::delivery-system (cond-> {:repo (ig/ref ::repo) :datasource (ig/ref ::journal-datasource) :origin origin}
-                                      smtp-host (assoc :mailer (ig/ref ::mailer)))
+           (assoc [:bel-postgres.jdbc/datasource ::journal-datasource]
+                  {:jdbc-url (required "TOVER_JDBC_URL")            :user      (required "TOVER_JOURNAL_DB_USER")
+                   :password (required "TOVER_JOURNAL_DB_PASSWORD") :pool-name "tover-journal"}
+                  [:bel-postgres.adapter/store ::journal-directory] {:datasource (ig/ref ::journal-datasource)}
+                  [:bel-rdf.adapter/store ::journal-catalogue] {:repo (ig/ref ::repo) :graphs 'tover.catalogues.persistence/graphs}
+                  [:bel/system ::delivery-system] {:stores    {:directory (ig/ref ::journal-directory)
+                                                               :catalogue (ig/ref ::journal-catalogue)}
+                                                   :journal   :directory
+                                                   :scope     :workspace
+                                                   :resources {:mailer (when smtp-host (ig/ref ::mailer)) :origin origin}}
                   :bel.delivery/worker (ig/ref ::delivery-system)))
            ;; Without TOVER_SMTP_HOST the worker runs without a mailer; invitation sends then fail as recorded attempts.
          (cond-> smtp-host
@@ -315,31 +308,6 @@
   (email/smtp-mailer options))
 
 
-(defn datasource
-  {:malli/schema [:=> [:cat :map] :any]}
-  [options]
-  (database/datasource options))
-
-
-(defn journal-datasource
-  "The private journal writer pool; only the delivery worker uses it."
-  {:malli/schema [:=> [:cat :map] :any]}
-  [options]
-  (database/datasource options))
-
-
-(defn bel-system
-  {:malli/schema [:=> [:cat :map] :map]}
-  [options]
-  (wiring/system options))
-
-
-(defn delivery-system
-  {:malli/schema [:=> [:cat :map] :map]}
-  [options]
-  (wiring/delivery-system options))
-
-
 (defn logging
   {:malli/schema [:=> [:cat :map] StopFn]}
   [options]
@@ -357,7 +325,7 @@
   {:malli/schema
    [:=> [:cat ServerOptions] StopFn]}
   [options]
-  (let [{:keys [repo handler realtime port]} (validation/check! ServerOptions options)
+  (let [{:keys [handler realtime port]} (validation/check! ServerOptions options)
         http-server (http/run-server
                       handler
                       {:port port
@@ -370,8 +338,7 @@
                                        #(if-let [stopped (http/server-stop! http-server {:timeout 2000})]
                                           @stopped
                                           (http/server-join http-server))])]
-        ;; Integrant stops halting on an error; release the store before propagating it.
-        (throw (cleanup-error error [#(rdf/close! repo)])))
+        (throw error))
       nil)))
 
 
@@ -387,55 +354,14 @@
   (rdf/close! repository))
 
 
-(defmethod ig/halt-key! ::datasource [_ datasource]
-  (database/close! datasource))
-
-
-(defmethod ig/halt-key! ::journal-datasource [_ datasource]
-  (database/close! datasource))
-
-
 (defmethod ig/halt-key! ::logging [_ stop]
   (stop))
-
-
-(defn stop!
-  {:malli/schema
-   [:=> [:cat SystemState] :nil]}
-  [system]
-  (when-let [error (cleanup-error nil
-                                  [#(ig/halt! system)
-                                   #(when-let [datasource (::datasource system)] (database/close! datasource))
-                                   #(when-let [datasource (::journal-datasource system)] (database/close! datasource))
-                                   #(when-let [stop (::logging system)] (stop))])]
-    (throw error))
-  nil)
-
-
-(defn start!
-  {:malli/schema
-   [:=> [:cat Config] SystemState]}
-  [configuration]
-  (try
-    (ig/init (validation/check! Config configuration))
-    (catch ExceptionInfo error
-      (when-let [partial-system (:system (ex-data error))]
-        (when-let [cleanup (cleanup-error nil [#(ig/halt! partial-system)])]
-          (.addSuppressed error cleanup)
-          (cleanup-error error
-                         (cond-> []
-                           (::realtime partial-system) (conj #(realtime/stop! (::realtime partial-system)))
-                           (::repo partial-system) (conj #(rdf/close! (::repo partial-system)))
-                           (::datasource partial-system) (conj #(database/close! (::datasource partial-system)))
-                           (::journal-datasource partial-system) (conj #(database/close! (::journal-datasource partial-system)))
-                           (::logging partial-system) (conj #((::logging partial-system)))))))
-      (throw error))))
 
 
 (defn -main
   {:malli/schema
    [:=> [:cat [:* :string]] :any]}
   [& _]
-  (let [system (start! (config))]
+  (let [system (system/start! (config))]
     (-> (Runtime/getRuntime)
-        (.addShutdownHook (Thread. ^Runnable #(stop! system))))))
+        (.addShutdownHook (Thread. ^Runnable #(system/stop! system))))))

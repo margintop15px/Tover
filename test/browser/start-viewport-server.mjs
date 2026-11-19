@@ -13,16 +13,16 @@ for (const path of ['src', 'resources']) symlinkSync(join(root, path), join(proj
 mkdirSync(join(project, 'dev'));
 symlinkSync(join(root, 'dev', 'tover'), join(project, 'dev', 'tover'), 'dir');
 const program = `
-  (require '[tover.app :as app] '[tover.fixtures :as fixtures] '[tover.viewport-fixture :as fixture] '[tover.shared.rdf :as rdf])
+  (require '[tover.app :as app] '[bel.system :as system] '[tover.fixtures :as fixtures] '[tover.viewport-fixture :as fixture] '[tover.shared.rdf :as rdf])
   (def services (let [services (assoc (fixtures/system) :origin "http://127.0.0.1:${port}" :development? true)]
                   (assoc services :bel/system (fixtures/bel-system services))))
   (def repository (rdf/native-store ${JSON.stringify(join(project, 'inventory'))}))
   (fixture/seed! repository)
   (rdf/close! repository)
-  (def system (app/start! (app/system-config ${port} ${JSON.stringify(join(project, 'inventory'))}
+  (def system (system/start! (app/system-config ${port} ${JSON.stringify(join(project, 'inventory'))}
                            (select-keys services [:provider :session-store :bel/system :origin :development?]))))
   (alter-var-root #'tover.inventory.actors/labels (constantly (fixtures/actor-labels (:state services))))
-  (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable #(app/stop! system)))
+  (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable #(system/stop! system)))
   @(promise)
 `;
 const child = spawn('clojure', ['-Sdeps', '{:paths ["src" "resources" "dev"]}', '-M', '-e', program], { cwd: project, stdio: 'inherit' });

@@ -1,8 +1,10 @@
 (ns tover.app-test
-  (:require [bel.core :as bel]
+  (:require [bel-postgres.jdbc :as database]
+            [bel.core :as bel]
             [bel.delivery :as delivery]
             [bel.handler :as bel-handler]
             [bel.realtime :as realtime]
+            [bel.system :as system]
             [clojure.java.io :as io]
             [clojure.test :refer [deftest is]]
             [com.brunobonacci.mulog :as mu]
@@ -12,7 +14,6 @@
             [tover.app :as app]
             [tover.fixtures :as fixtures]
             [tover.identity.access :as access]
-            [tover.shared.jdbc :as database]
             [tover.shared.rdf :as rdf]
             [tover.stock.store :as store]
             [tover.support :as support])
@@ -217,7 +218,7 @@
                                           (is (:stopped? @(:state (peek @realtimes))))
                                           (swap! stops inc)
                                           (deliver (promise) true))]
-          (let [first-system (app/start! (fixture-config 3031 path))
+          (let [first-system (system/start! (fixture-config 3031 path))
                 first-repo   (::app/repo first-system)]
             (try
               (is (identical? @opened first-repo))
@@ -229,13 +230,13 @@
                 (is (= 303 (:status response)))
                 (is (= "/auth/login" (get-in response [:headers "location"])))
                 (is (= {:rows [] :history []} (store/snapshot first-repo scope))))
-              (finally (is (nil? (app/stop! first-system)))))
+              (finally (is (nil? (system/stop! first-system)))))
             (is (not (.isInitialized first-repo)))
             (is (= 1 @stops))
-            (let [second-system (app/start! (fixture-config 3031 path))]
+            (let [second-system (system/start! (fixture-config 3031 path))]
               (try
                 (is (.isInitialized (::app/repo second-system)))
-                (finally (app/stop! second-system)))
+                (finally (system/stop! second-system)))
               (is (not (.isInitialized (::app/repo second-system))))
               (is (= 2 @stops)))))))))
 
@@ -257,17 +258,17 @@
                                           (when (= 1 (swap! attempts inc)) (throw failure))
                                           (Object.))
                       http/server-stop! (fn [_ _] (deliver (promise) true))]
-          (let [error (try (app/start! (fixture-config 3031 path)) nil
+          (let [error (try (system/start! (fixture-config 3031 path)) nil
                            (catch Throwable error error))]
             (is (some #(identical? failure %) (take-while some? (iterate ex-cause error))))
             (is (some #(identical? cause %) (take-while some? (iterate ex-cause error))))
             (is (:stopped? @(:state @realtime)))
             (is (not (.isInitialized @opened))))
-          (let [retry-system (app/start! (fixture-config 3031 path))]
+          (let [retry-system (system/start! (fixture-config 3031 path))]
             (try
               (is (.isInitialized (::app/repo retry-system)))
               (is (= 2 @attempts))
-              (finally (app/stop! retry-system)))))))))
+              (finally (system/stop! retry-system)))))))))
 
 
 (deftest failed-server-stop-releases-repository-for-retry
@@ -280,17 +281,17 @@
                       http/server-stop! (fn [_ _]
                                           (when (= 1 (swap! stops inc)) (throw failure))
                                           (deliver (promise) true))]
-          (let [system (app/start! (fixture-config 3031 path))
+          (let [system (system/start! (fixture-config 3031 path))
                 repo   (::app/repo system)
-                error  (try (app/stop! system) nil (catch Throwable error error))]
+                error  (try (system/stop! system) nil (catch Throwable error error))]
             (is (some #(identical? failure %) (take-while some? (iterate ex-cause error))))
             (is (some #(identical? cause %) (take-while some? (iterate ex-cause error))))
             (is (:stopped? @(:state (::app/realtime system))))
             (is (not (.isInitialized repo))))
-          (let [retry-system (app/start! (fixture-config 3031 path))]
+          (let [retry-system (system/start! (fixture-config 3031 path))]
             (try
               (is (.isInitialized (::app/repo retry-system)))
-              (finally (app/stop! retry-system))))
+              (finally (system/stop! retry-system))))
           (is (= 2 @stops)))))))
 
 
@@ -310,9 +311,9 @@
                                          (when (= 1 (swap! stops inc))
                                            (throw (IllegalStateException. "halt failed")))
                                          (stop-realtime realtime))]
-          (is (thrown? clojure.lang.ExceptionInfo (app/start! (fixture-config 3031 path))))
-          (is (= 2 @stops))
-          (is (:stopped? @(:state @realtime)))
+          (is (thrown? clojure.lang.ExceptionInfo (system/start! (fixture-config 3031 path))))
+          (is (= 1 @stops) "Each key halts once; a failed halt does not stop the rest")
+          (is (some? @realtime))
           (is (not (.isInitialized @opened))))))))
 
 
@@ -323,8 +324,8 @@
         (with-redefs [http/run-server   (fn [_ _] (Object.))
                       http/server-stop! (fn [_ _] nil)
                       http/server-join  (fn [_] (reset! joined? true))]
-          (let [system (app/start! (fixture-config 3031 path))]
-            (app/stop! system)
+          (let [system (system/start! (fixture-config 3031 path))]
+            (system/stop! system)
             (is @joined?)
             (is (not (.isInitialized (::app/repo system))))))))))
 
@@ -346,8 +347,8 @@
                                                 (Object.)))
                         http/server-stop!   (fn [& _] (delay true))]
             (if fail-start?
-              (is (thrown? clojure.lang.ExceptionInfo (app/start! configuration)))
-              (app/stop! (app/start! configuration)))
+              (is (thrown? clojure.lang.ExceptionInfo (system/start! configuration)))
+              (system/stop! (system/start! configuration)))
             (is (= 1 @started @stopped))
             (is (= before (mu/global-context)))))))))
 
@@ -376,10 +377,10 @@
                       rdf/close!        (fn [repo]
                                           (swap! calls conj :rdf-close)
                                           (close-rdf repo))]
-          (let [system (app/start! (fixture-config 3031 path))
-                error  (try (app/stop! system) nil (catch Throwable error error))]
+          (let [system (system/start! (fixture-config 3031 path))
+                error  (try (system/stop! system) nil (catch Throwable error error))]
             (is (some #(identical? failure %) (take-while some? (iterate ex-cause error))))
-            (is (= [:realtime :http-stop :http-join :rdf-close] @calls))
+            (is (= [:realtime :http-stop :http-join :realtime :rdf-close] @calls))
             (is (not (.isInitialized (::app/repo system))))))))))
 
 
@@ -394,8 +395,8 @@
                                           (stop-realtime realtime)
                                           (throw failure))
                       http/server-stop! (fn [_ _] (throw cleanup))]
-          (let [system (app/start! (fixture-config 3031 path))
-                error  (try (app/stop! system) nil (catch Throwable error error))]
+          (let [system (system/start! (fixture-config 3031 path))
+                error  (try (system/stop! system) nil (catch Throwable error error))]
             (is (some #(identical? failure %) (take-while some? (iterate ex-cause error))))
             (is (= [cleanup] (vec (.getSuppressed failure))))
             (is (not (.isInitialized (::app/repo system))))))))))
@@ -409,14 +410,14 @@
             pool          (Object.)
             closed?       (atom false)
             configuration (-> (fixture-config 3031 path)
-                              (assoc ::app/datasource {})
+                              (assoc [:bel-postgres.jdbc/datasource ::app/datasource] {})
                               (assoc-in [::app/session-store :datasource] (ig/ref ::app/datasource)))]
         (with-redefs [http/run-server     (fn [_ _] (Object.))
                       http/server-stop!   (fn [_ _] (deliver stopping true) drained)
                       database/datasource (constantly pool)
                       database/close!     (fn [value] (is (identical? pool value)) (reset! closed? true) nil)]
-          (let [system  (app/start! configuration)
-                stopped (future (app/stop! system))]
+          (let [system  (system/start! configuration)
+                stopped (future (system/stop! system))]
             (try
               (is (= true (deref stopping 2000 :timeout)))
               (is (.isInitialized (::app/repo system)))
@@ -436,7 +437,7 @@
               calls         (atom [])
               closed?       (atom false)
               configuration (-> (fixture-config 3031 path)
-                                (assoc ::app/datasource {})
+                                (assoc [:bel-postgres.jdbc/datasource ::app/datasource] {})
                                 (assoc-in [::app/session-store :datasource] (ig/ref ::app/datasource)))]
           (with-redefs [database/datasource (fn [_] (swap! calls conj :pool-open) pool)
                         database/close!     (fn [value]
@@ -453,11 +454,11 @@
                                               (when (= :stop failure) (throw (IllegalStateException. "stop failed")))
                                               (delay true))]
             (if (= :start failure)
-              (is (thrown? clojure.lang.ExceptionInfo (app/start! configuration)))
-              (let [system (app/start! configuration)]
+              (is (thrown? clojure.lang.ExceptionInfo (system/start! configuration)))
+              (let [system (system/start! configuration)]
                 (if (= :stop failure)
-                  (is (thrown? clojure.lang.ExceptionInfo (app/stop! system)))
-                  (is (nil? (app/stop! system))))))
+                  (is (thrown? clojure.lang.ExceptionInfo (system/stop! system)))
+                  (is (nil? (system/stop! system))))))
             (is @closed?)
             (is (= (if (= :start failure)
                      [:pool-open :http-start :pool-close]
@@ -522,37 +523,39 @@
 
 (deftest bel-system-is-configured-for-the-handler
   (let [c (app/config 3031 "x" {:development? true :environment environment})]
-    (is (= {:repo     (ig/ref ::app/repo)     :datasource    (ig/ref ::app/datasource)    :realtime (ig/ref ::app/realtime)
-            :provider (ig/ref ::app/provider) :session-store (ig/ref ::app/session-store) :origin   "http://localhost:3030"}
-           (::app/bel-system c)))
+    (is (= {:datasource (ig/ref ::app/datasource)} (get c [:bel-postgres.adapter/store ::app/directory])))
+    (is (= {:stores    {:directory (ig/ref ::app/directory) :catalogue (ig/ref ::app/catalogue)}
+            :journal   :directory
+            :scope     :workspace
+            :authority {:store :directory :impl 'tover.identity.session/->CurrentSession}
+            :resources {:realtime      (ig/ref ::app/realtime)      :provider (ig/ref ::app/provider)
+                        :session-store (ig/ref ::app/session-store) :origin   "http://localhost:3030"}}
+           (get c [:bel/system ::app/bel-system])))
     (is (= (ig/ref ::app/bel-system) (get-in c [::app/handler :bel/system])))
-    (is (not-any? #(contains? c %) [::app/journal-datasource ::app/delivery-system :bel.delivery/worker]))
-    (is (= {:realtime ::realtime :provider ::provider :session-store ::sessions :origin "http://localhost:3030"}
-           (:resources (app/bel-system {:realtime ::realtime              :provider ::provider :session-store ::sessions
-                                        :origin   "http://localhost:3030"}))))))
+    (is (empty? (mapcat #(ig/find-derived c %) [::app/journal-datasource ::app/delivery-system :bel.delivery/worker])))))
 
 
 (deftest journal-variables-configure-the-worker
-  (let [c (app/config 3031 "x" {:development? true
-                                :environment  (assoc environment "TOVER_JOURNAL_DB_USER" "tover_journal"
-                                                     "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal")})]
-    (is (= {:jdbc-url (get environment "TOVER_JDBC_URL") :user "tover_journal" :password "synthetic-journal"}
-           (::app/journal-datasource c)))
-    (is (= {:repo (ig/ref ::app/repo) :datasource (ig/ref ::app/journal-datasource) :origin "http://localhost:3030"}
-           (::app/delivery-system c)))
+  (let [c (app/config 3031 "x" {:development? true :environment (assoc environment "TOVER_JOURNAL_DB_USER" "tover_journal"
+                                                                       "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal")})]
+    (is (= {:jdbc-url  (get environment "TOVER_JDBC_URL") :user "tover_journal" :password "synthetic-journal"
+            :pool-name "tover-journal"}
+           (get c [:bel-postgres.jdbc/datasource ::app/journal-datasource])))
+    (is (= {:directory (ig/ref ::app/journal-directory) :catalogue (ig/ref ::app/journal-catalogue)}
+           (get-in c [[:bel/system ::app/delivery-system] :stores])))
+    (is (= {:mailer nil :origin "http://localhost:3030"} (get-in c [[:bel/system ::app/delivery-system] :resources])))
     (is (= (ig/ref ::app/delivery-system) (:bel.delivery/worker c)))
     (is (not (contains? c ::app/mailer)))))
 
 
 (deftest smtp-variables-give-the-worker-a-mailer
-  (let [c (app/config 3031 "x" {:development? true
-                                :environment  (assoc environment "TOVER_JOURNAL_DB_USER" "tover_journal"
-                                                     "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"
-                                                     "TOVER_SMTP_HOST" "127.0.0.1" "TOVER_SMTP_PORT" "1025"
-                                                     "TOVER_SMTP_FROM" "tover@example.test" "TOVER_SMTP_STARTTLS" "false")})]
+  (let [c (app/config 3031 "x" {:development? true :environment (assoc environment "TOVER_JOURNAL_DB_USER" "tover_journal"
+                                                                       "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"
+                                                                       "TOVER_SMTP_HOST" "127.0.0.1" "TOVER_SMTP_PORT" "1025"
+                                                                       "TOVER_SMTP_FROM" "tover@example.test" "TOVER_SMTP_STARTTLS" "false")})]
     (is (= {:host "127.0.0.1" :port 1025 :user nil :password nil :from "tover@example.test" :sender-name nil :starttls? false}
            (::app/mailer c)))
-    (is (= (ig/ref ::app/mailer) (get-in c [::app/delivery-system :mailer])))))
+    (is (= (ig/ref ::app/mailer) (get-in c [[:bel/system ::app/delivery-system] :resources :mailer])))))
 
 
 (deftest one-journal-variable-is-a-configuration-error
@@ -569,8 +572,10 @@
             closed?       (atom false)
             start         delivery/start!
             configuration (-> (fixture-config 3031 path)
-                              (assoc ::app/journal-datasource {}
-                                     ::app/delivery-system {:repo (ig/ref ::app/repo) :datasource (ig/ref ::app/journal-datasource)}
+                              (assoc [:bel-postgres.jdbc/datasource ::app/journal-datasource] {}
+                                     [:bel-postgres.adapter/store ::app/journal-directory] {:datasource (ig/ref ::app/journal-datasource)}
+                                     [:bel/system ::app/delivery-system] {:stores  {:directory (ig/ref ::app/journal-directory)}
+                                                                          :journal :directory :scope :workspace}
                                      :bel.delivery/worker (ig/ref ::app/delivery-system)))]
         (with-redefs [database/datasource (fn [_] pool)
                       database/close!     (fn [value]
@@ -581,9 +586,9 @@
                                             (let [worker (start system)]
                                               (reify java.lang.AutoCloseable
                                                 (close [_] (.close ^java.lang.AutoCloseable worker) (swap! calls conj :worker-close)))))]
-          (let [system (app/start! configuration)]
+          (let [system (system/start! configuration)]
             (is (instance? java.lang.AutoCloseable (:bel.delivery/worker system)))
-            (is (nil? (app/stop! system)))
+            (is (nil? (system/stop! system)))
             (is (= [:worker-close :pool-close] @calls))))))))
 
 

@@ -19,8 +19,8 @@
     [tover.catalogues.rename.web :as web]
     [tover.catalogues.store :as catalogue]
     [tover.inventory.store-test :as fixture]
-    [tover.shared.bel :as wiring]
-    [tover.shared.rdf :as rdf])
+    [tover.shared.rdf :as rdf]
+    [tover.support :as support])
   (:import
     [java.util.concurrent CountDownLatch TimeUnit]))
 
@@ -40,7 +40,7 @@
 (defn context
   {:malli/schema [:=> [:cat rdf/Repository] :map]}
   [repo]
-  (runtime/prepare-context {:bel/system  (wiring/system {:repo repo}) :repo repo :workspace-id (:workspace-id fixture/scope)
+  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo}) :repo repo :workspace-id (:workspace-id fixture/scope)
                             :user-id     #uuid "00000000-0000-0000-0000-000000000011"
                             :memberships [{:workspace-id (:workspace-id fixture/scope) :role :member}]}))
 

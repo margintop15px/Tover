@@ -135,10 +135,11 @@
                                                            :api-key   (get environment "TOVER_API_KEY")
                                                            :admin-key (get environment "TOVER_AUTH_ADMIN_KEY")}
                                                           (:tover.app/provider development))
-                           :jdbc-sessions?             (and (= {:jdbc-url (get environment "TOVER_JDBC_URL")
-                                                                :user     (get environment "TOVER_DB_USER")
-                                                                :password (get environment "TOVER_DB_PASSWORD")}
-                                                               (:tover.app/datasource development))
+                           :jdbc-sessions?             (and (= {:jdbc-url  (get environment "TOVER_JDBC_URL")
+                                                                :user      (get environment "TOVER_DB_USER")
+                                                                :password  (get environment "TOVER_DB_PASSWORD")
+                                                                :pool-name "tover-identity"}
+                                                               (get development [:bel-postgres.jdbc/datasource :tover.app/datasource]))
                                                             (= {:datasource     (ig/ref :tover.app/datasource)
                                                                 :encryption-key (get environment "TOVER_SESSION_KEY")}
                                                                (:tover.app/session-store development))

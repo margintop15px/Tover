@@ -7,6 +7,7 @@
     [bel.validation :as validation]
     [clojure.string :as str]
     [com.yetanalytics.flint :as flint]
+    [integrant.core :as ig]
     [taoensso.nippy :as nippy])
   (:import
     [java.net URLDecoder URLEncoder]
@@ -283,3 +284,8 @@
                                     [(keyword (.getName ^Binding binding))
                                      (rdf/value (.getValue ^Binding binding))]) row)))
                   (iterator-seq rows))))))))
+
+
+(defmethod ig/init-key ::store [_ {:keys [graphs guard] :as options}]
+  (let [resolve-fn #(if (symbol? %) @(requiring-resolve %) %)]
+    (store (cond-> (assoc options :graphs (resolve-fn graphs)) guard (assoc :guard (resolve-fn guard))))))

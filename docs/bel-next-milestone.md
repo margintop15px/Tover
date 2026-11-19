@@ -17,7 +17,7 @@ The Goods action, pure command, event, model mapping, read model and view are un
 | Optional PostgreSQL integration: `PgStore` record (create inserts, set upserts, journal, JDBC values) | `src/bel_postgres/adapter.clj`, `src/bel_postgres/journal.clj`, `src/bel_postgres/jdbc.clj` |
 | Current Tover session/membership checks (`CurrentSession` authority) | `src/tover/auth/bel.clj` |
 | Existing table bindings, graph names and legacy cutover guard | `src/tover/workspaces/persistence.clj`, `src/tover/catalogues/persistence.clj` |
-| System map: named stores, journal, default scope, authority | `src/tover/shared/bel.clj` |
+| System map: named stores, journal, default scope, authority | `src/bel/system.clj`, declared in `src/tover/app.clj` |
 | Scope-aware journal permissions and private worker role | `supabase/migrations/036_bel_shared_journal.sql` |
 | Cross-store failure, race and restart tests | `test/goods_journal_integration.clj` |
 

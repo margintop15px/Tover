@@ -194,15 +194,15 @@ Coeffects, effects and policies are the only multimethods, keyed by qualified ID
   (membership/allowed? context input))
 ```
 
-Integrant owns resource lifecycles. Every `defmodel` names its `:store`. Tover supplies one system map through `tover.shared.bel/system`:
+Integrant owns resource lifecycles. Every `defmodel` names its `:store`. Bel ships the Integrant keys (`:bel/system`, `:bel-postgres.jdbc/datasource`, `:bel-postgres.adapter/store`, `:bel-rdf.adapter/store`, `:bel.delivery/worker`) and `bel.system/start!`/`stop!`; `tover.app/config` only declares them as composite keys:
 
 ```clojure
-{:bel/system (wiring/system {:repo repo :datasource datasource :realtime realtime})}
-;; => {:stores    {:directory (postgres/store …) :catalogue (rdf/store …)}
-;;     :journal   :directory
-;;     :scope     :workspace
-;;     :authority {:store :directory :impl (auth/->CurrentSession)}
-;;     :resources {:realtime realtime}}
+{[:bel-postgres.adapter/store ::directory] {:datasource (ig/ref ::datasource)}
+ [:bel/system ::bel-system] {:stores    {:directory (ig/ref ::directory) :catalogue (ig/ref ::catalogue)}
+                             :journal   :directory
+                             :scope     :workspace
+                             :authority {:store :directory :impl 'tover.identity.session/->CurrentSession}
+                             :resources {:realtime (ig/ref ::realtime) …}}}
 ```
 
 Bel opens each store at most once per operation and shares the transaction by store key. Domain and journal are atomic only when the owning store key equals `:journal`; otherwise the store must implement `Outbox` and the delivery worker forwards its pending records. A command writes to one store; a definition's optional `:scope` overrides the system default.
@@ -266,7 +266,7 @@ For inventory Review/Submit, retain a fixed ticket containing command identity, 
 
 The source transaction records the normalized request, accepted event batch, result and repeatable publication requests. These are delivery data, not another business model. A failed source mapping or pending-record write rolls back both domain changes and delivery state. No PostgreSQL journal write runs inside the RDF transaction.
 
-The Integrant component `:bel.delivery/worker` receives a system map from `tover.shared.bel/delivery-system`: the RDF outbox store and a journal-role PostgreSQL store. It polls after startup and every second, retries failed batches, and closes before its resources. It is wired only in the isolated test/bootstrap path. The worker calls the storage protocols; it contains no RDF or PostgreSQL implementation code.
+The Integrant component `:bel.delivery/worker` receives the `[:bel/system ::delivery-system]` map: the RDF outbox store and a journal-role PostgreSQL store. It polls after startup and every second, retries failed batches, and closes before its resources. It is wired only in the isolated test/bootstrap path. The worker calls the storage protocols; it contains no RDF or PostgreSQL implementation code.
 
 1. Insert the receipt using its scoped unique key in PostgreSQL.
 2. Insert the batch's events with runtime-owned indices in the same transaction.

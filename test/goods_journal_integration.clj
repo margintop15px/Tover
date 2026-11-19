@@ -19,7 +19,7 @@
     [tover.catalogues.rename.model :as goods]
     [tover.inventory.store-test :as rdf-fixture]
     [tover.shared.rdf :as rdf]
-    [tover.shared.bel :as wiring]
+    [tover.support :as support]
     [workspace-creation-integration :as workspace])
   (:import
     [java.nio.file Files]
@@ -36,7 +36,7 @@
 
 
 (defn system [repo]
-  (wiring/system {:repo repo :datasource (workspace/db "tover_app")}))
+  (support/bel-system {:repo repo :datasource (workspace/db "tover_app")}))
 
 
 (defn context
@@ -66,7 +66,7 @@
 
 
 (defn delivery-system [repo]
-  (wiring/delivery-system {:repo repo :datasource (writer)}))
+  (support/delivery-system {:repo repo :datasource (writer)}))
 
 
 (defn counts [ctx]

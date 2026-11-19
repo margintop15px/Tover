@@ -29,9 +29,9 @@ const env = {
   TOVER_SMTP_HOST: '127.0.0.1', TOVER_SMTP_PORT: local.IDENTITY_SMTP_PORT || '51025',
   TOVER_SMTP_FROM: 'invitations@tover.test', TOVER_SMTP_STARTTLS: 'false',
 };
-const program = `(require '[tover.app :as app])
-  (let [system (app/start! (app/config ${port} ${JSON.stringify(join(project, 'inventory'))} {:development? true}))]
-    (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable #(app/stop! system)))
+const program = `(require '[tover.app :as app] '[bel.system :as system])
+  (let [system (system/start! (app/config ${port} ${JSON.stringify(join(project, 'inventory'))} {:development? true}))]
+    (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable #(system/stop! system)))
     @(promise))`;
 const child = spawn('clojure', ['-M', '-e', program], { cwd: project, env, stdio: 'inherit' });
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
