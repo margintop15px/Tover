@@ -558,6 +558,13 @@
     (is (= (ig/ref ::app/mailer) (get-in c [[:bel/system ::app/delivery-system] :resources :mailer])))))
 
 
+(deftest smtp-starttls-accepts-only-true-or-false
+  (let [smtp (assoc environment "TOVER_SMTP_HOST" "127.0.0.1" "TOVER_SMTP_FROM" "tover@example.test")]
+    (is (true? (:starttls? (::app/mailer (app/config {:profile :dev :environment smtp})))))
+    (is (= :configuration
+           (:type (error-data #(app/config {:profile :dev :environment (assoc smtp "TOVER_SMTP_STARTTLS" "no")})))))))
+
+
 (deftest one-journal-variable-is-a-configuration-error
   (doseq [extra [{"TOVER_JOURNAL_DB_USER" "tover_journal"} {"TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"}]]
     (is (= :configuration

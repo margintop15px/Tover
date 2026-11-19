@@ -199,7 +199,11 @@
 (defmethod aero/reader 'tover/required [opts _ name] (or (env opts name) {::missing name}))
 (defmethod aero/reader 'tover/when [_ _ [condition value]] (when condition value))
 (defmethod aero/reader 'tover/flag [opts _ [name default]]
-  (if-let [value (env opts name)] (not= "false" value) default))
+  (case (env opts name)
+    nil default
+    "true" true
+    "false" false
+    (throw (ex-info (str "Invalid " name ": expected true or false") {:type :configuration}))))
 (defmethod aero/reader 'tover/int [opts _ [name default]]
   (if-let [value (env opts name)]
     (try (Integer/parseInt value)
@@ -216,7 +220,7 @@
   ([] (config {:profile :prod}))
   ([{:keys [profile] :as options}]
    (let [configuration (into {} (remove (comp nil? val))
-                             (aero/read-config (io/resource "tover/config.edn") options))
+                             (dissoc (aero/read-config (io/resource "tover/config.edn") options) :tover/journal?))
          missing       (->> (tree-seq coll? seq configuration) (keep #(when (map? %) (::missing %))) distinct sort vec)
          origin        (get-in configuration [::handler :origin])]
      (when (seq missing)
