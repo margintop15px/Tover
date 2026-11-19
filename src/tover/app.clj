@@ -1,5 +1,6 @@
 (ns tover.app
   (:require
+    [aero.core :as aero]
     [bel.core :as bel]
     [bel.handler :as handler]
     [bel.log :as log]
@@ -7,6 +8,8 @@
     [bel.session :as session]
     [bel.system :as system]
     [bel.validation :as validation]
+    [clojure.java.io :as io]
+    [clojure.string :as str]
     [integrant.core :as ig]
     [next.jdbc :as jdbc]
     [org.httpkit.server :as http]
@@ -186,84 +189,43 @@
                     :port          port}})
 
 
+(defn- env
+  {:malli/schema [:=> [:cat :map :string] [:maybe :string]]}
+  [{:keys [environment]} name]
+  (not-empty (get (or environment (System/getenv)) name)))
+
+
+(defmethod aero/reader 'ig/ref [_ _ key] (ig/ref key))
+(defmethod aero/reader 'tover/env [opts _ name] (env opts name))
+(defmethod aero/reader 'tover/required [opts _ name] (or (env opts name) {::missing name}))
+(defmethod aero/reader 'tover/when [_ _ [condition value]] (when condition value))
+(defmethod aero/reader 'tover/flag [opts _ [name default]]
+  (if-let [value (env opts name)] (not= "false" value) default))
+(defmethod aero/reader 'tover/int [opts _ [name default]]
+  (if-let [value (env opts name)]
+    (try (Integer/parseInt value)
+         (catch NumberFormatException _ (throw (ex-info (str "Invalid " name) {:type :configuration}))))
+    default))
+
+
 (defn config
-  {:malli/schema
-   [:function
-    [:=> [:cat] Config]
-    [:=> [:cat Port schema/Text] Config]
-    [:=> [:cat Port schema/Text
-          [:map
-           [:development? :boolean]
-           [:environment {:optional true} [:map-of :string [:maybe :string]]]]] Config]]}
-  ([]
-   (let [port (try (Integer/parseInt (or (System/getenv "TOVER_PORT") "3030"))
-                   (catch NumberFormatException _
-                     (throw (ex-info "Invalid TOVER_PORT" {:type :configuration}))))]
-     (config port (or (System/getenv "TOVER_INVENTORY_PATH") ".data/inventory-v1"))))
-
-  ([port path]
-   (config port path {:development? false}))
-
-  ([port path {:keys [development? environment]}]
-   (let [environment   (or environment (System/getenv))
-         required      (fn [name]
-                         (or (not-empty (get environment name))
-                             (throw (ex-info (str "Missing configuration: " name) {:type :configuration}))))
-         provider      {:auth-url (required "TOVER_AUTH_URL")
-                        :api-key  (required "TOVER_API_KEY")  :admin-key (required "TOVER_AUTH_ADMIN_KEY")}
-         smtp-host     (not-empty (get environment "TOVER_SMTP_HOST"))
-         origin        (required "TOVER_ORIGIN")
-         configuration (system-config port path {:origin origin :development? development?})]
+  "Read resources/tover/config.edn for `profile` (:prod or :dev). `environment` replaces the process environment."
+  {:malli/schema [:function
+                  [:=> [:cat] Config]
+                  [:=> [:cat [:map [:profile [:enum :prod :dev]]
+                              [:environment {:optional true} [:map-of :string [:maybe :string]]]]] Config]]}
+  ([] (config {:profile :prod}))
+  ([{:keys [profile] :as options}]
+   (let [configuration (into {} (remove (comp nil? val))
+                             (aero/read-config (io/resource "tover/config.edn") options))
+         missing       (->> (tree-seq coll? seq configuration) (keep #(when (map? %) (::missing %))) distinct sort vec)
+         origin        (get-in configuration [::handler :origin])]
+     (when (seq missing)
+       (throw (ex-info (str "Missing configuration: " (str/join ", " missing)) {:type :configuration :missing missing})))
      (when-not (or (re-matches #"https://[^/]+" origin)
-                   (and development? (re-matches #"http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?" origin)))
+                   (and (= :dev profile) (re-matches #"http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?" origin)))
        (throw (ex-info "Production origin must be an HTTPS origin" {:type :configuration})))
-     (-> configuration
-         (assoc ::provider provider
-                ::logging {:env (if development? :dev :prod)})
-         (assoc-in [::handler :logging] (ig/ref ::logging))
-         (assoc-in [::realtime :logging] (ig/ref ::logging))
-         (assoc-in [::handler :identity-health]
-                   (merge (select-keys provider [:auth-url :api-key])
-                          {:datasource (ig/ref ::datasource)}))
-         (assoc [:bel-postgres.jdbc/datasource ::datasource]
-                {:jdbc-url  (required "TOVER_JDBC_URL") :user (required "TOVER_DB_USER") :password (required "TOVER_DB_PASSWORD")
-                 :pool-name "tover-identity"})
-         (assoc ::session-store {:datasource     (ig/ref ::datasource)
-                                 :encryption-key (required "TOVER_SESSION_KEY")})
-         (assoc [:bel-postgres.adapter/store ::directory] {:datasource (ig/ref ::datasource)}
-                [:bel-rdf.adapter/store ::catalogue] {:repo  (ig/ref ::repo) :graphs 'tover.catalogues.persistence/graphs
-                                                      :guard 'tover.catalogues.persistence/legacy-guard}
-                [:bel/system ::bel-system] {:stores    {:directory (ig/ref ::directory) :catalogue (ig/ref ::catalogue)}
-                                            :journal   :directory
-                                            :scope     :workspace
-                                            :authority {:store :directory :impl 'tover.identity.session/->CurrentSession}
-                                            :resources {:realtime      (ig/ref ::realtime)      :provider (ig/ref ::provider)
-                                                        :session-store (ig/ref ::session-store) :origin   origin}})
-         (assoc-in [::handler :bel/system] (ig/ref ::bel-system))
-         ;; The worker's private login: journal delivery and processors act as a service, not a user session.
-         (cond-> (some #(not-empty (get environment %)) ["TOVER_JOURNAL_DB_USER" "TOVER_JOURNAL_DB_PASSWORD"])
-           (assoc [:bel-postgres.jdbc/datasource ::journal-datasource]
-                  {:jdbc-url (required "TOVER_JDBC_URL")            :user      (required "TOVER_JOURNAL_DB_USER")
-                   :password (required "TOVER_JOURNAL_DB_PASSWORD") :pool-name "tover-journal"}
-                  [:bel-postgres.adapter/store ::journal-directory] {:datasource (ig/ref ::journal-datasource)}
-                  [:bel-rdf.adapter/store ::journal-catalogue] {:repo (ig/ref ::repo) :graphs 'tover.catalogues.persistence/graphs}
-                  [:bel/system ::delivery-system] {:stores    {:directory (ig/ref ::journal-directory)
-                                                               :catalogue (ig/ref ::journal-catalogue)}
-                                                   :journal   :directory
-                                                   :scope     :workspace
-                                                   :resources {:mailer (when smtp-host (ig/ref ::mailer)) :origin origin}}
-                  :bel.delivery/worker (ig/ref ::delivery-system)))
-           ;; Without TOVER_SMTP_HOST the worker runs without a mailer; invitation sends then fail as recorded attempts.
-         (cond-> smtp-host
-           (assoc ::mailer {:host        smtp-host
-                            :port        (try (Integer/parseInt (or (get environment "TOVER_SMTP_PORT") "587"))
-                                              (catch NumberFormatException _
-                                                (throw (ex-info "Invalid TOVER_SMTP_PORT" {:type :configuration}))))
-                            :user        (not-empty (get environment "TOVER_SMTP_USER"))
-                            :password    (not-empty (get environment "TOVER_SMTP_PASSWORD"))
-                            :from        (required "TOVER_SMTP_FROM")
-                            :sender-name (not-empty (get environment "TOVER_SMTP_SENDER_NAME"))
-                            :starttls?   (not= "false" (get environment "TOVER_SMTP_STARTTLS"))}))))))
+     configuration)))
 
 
 (defn repo

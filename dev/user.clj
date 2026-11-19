@@ -90,10 +90,10 @@
   {:malli/schema [:=> [:cat] app/Config]}
   []
   (let [mode            (or (System/getenv "TOVER_IDENTITY_MODE") "local")
-        path            (or (System/getenv "TOVER_INVENTORY_PATH") ".data/tester-inventory-v1")
         configuration   (case mode
-                          "local" (app/config 3030 path {:development? true :environment (local-environment)})
-                          "supabase" (app/config 3030 path {:development? true})
+                          "local" (app/config {:profile     :dev
+                                               :environment (merge (into {} (System/getenv)) (local-environment))})
+                          "supabase" (app/config {:profile :dev})
                           (throw (ex-info "Unknown development identity mode" {:type :configuration})))
         handler-options (assoc (::app/handler configuration) :browser-reload (ig/ref ::browser-reload))]
     (doto (-> configuration

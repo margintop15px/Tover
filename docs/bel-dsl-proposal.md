@@ -194,7 +194,7 @@ Coeffects, effects and policies are the only multimethods, keyed by qualified ID
   (membership/allowed? context input))
 ```
 
-Integrant owns resource lifecycles. Every `defmodel` names its `:store`. Bel ships the Integrant keys (`:bel/system`, `:bel-postgres.jdbc/datasource`, `:bel-postgres.adapter/store`, `:bel-rdf.adapter/store`, `:bel.delivery/worker`) and `bel.system/start!`/`stop!`; `tover.app/config` only declares them as composite keys:
+Integrant owns resource lifecycles. Every `defmodel` names its `:store`. Bel ships the Integrant keys (`:bel/system`, `:bel-postgres.jdbc/datasource`, `:bel-postgres.adapter/store`, `:bel-rdf.adapter/store`, `:bel.delivery/worker`) and `bel.system/start!`/`stop!`; `resources/tover/config.edn` (read with aero by `tover.app/config`) only declares them as composite keys:
 
 ```clojure
 {[:bel-postgres.adapter/store ::directory] {:datasource (ig/ref ::datasource)}

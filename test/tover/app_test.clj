@@ -522,7 +522,7 @@
 
 
 (deftest bel-system-is-configured-for-the-handler
-  (let [c (app/config 3031 "x" {:development? true :environment environment})]
+  (let [c (app/config {:profile :dev :environment environment})]
     (is (= {:datasource (ig/ref ::app/datasource)} (get c [:bel-postgres.adapter/store ::app/directory])))
     (is (= {:stores    {:directory (ig/ref ::app/directory) :catalogue (ig/ref ::app/catalogue)}
             :journal   :directory
@@ -536,8 +536,8 @@
 
 
 (deftest journal-variables-configure-the-worker
-  (let [c (app/config 3031 "x" {:development? true :environment (assoc environment "TOVER_JOURNAL_DB_USER" "tover_journal"
-                                                                       "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal")})]
+  (let [c (app/config {:profile :dev :environment (assoc environment "TOVER_JOURNAL_DB_USER" "tover_journal"
+                                                         "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal")})]
     (is (= {:jdbc-url  (get environment "TOVER_JDBC_URL") :user "tover_journal" :password "synthetic-journal"
             :pool-name "tover-journal"}
            (get c [:bel-postgres.jdbc/datasource ::app/journal-datasource])))
@@ -549,10 +549,10 @@
 
 
 (deftest smtp-variables-give-the-worker-a-mailer
-  (let [c (app/config 3031 "x" {:development? true :environment (assoc environment "TOVER_JOURNAL_DB_USER" "tover_journal"
-                                                                       "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"
-                                                                       "TOVER_SMTP_HOST" "127.0.0.1" "TOVER_SMTP_PORT" "1025"
-                                                                       "TOVER_SMTP_FROM" "tover@example.test" "TOVER_SMTP_STARTTLS" "false")})]
+  (let [c (app/config {:profile :dev :environment (assoc environment "TOVER_JOURNAL_DB_USER" "tover_journal"
+                                                         "TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"
+                                                         "TOVER_SMTP_HOST" "127.0.0.1" "TOVER_SMTP_PORT" "1025"
+                                                         "TOVER_SMTP_FROM" "tover@example.test" "TOVER_SMTP_STARTTLS" "false")})]
     (is (= {:host "127.0.0.1" :port 1025 :user nil :password nil :from "tover@example.test" :sender-name nil :starttls? false}
            (::app/mailer c)))
     (is (= (ig/ref ::app/mailer) (get-in c [[:bel/system ::app/delivery-system] :resources :mailer])))))
@@ -561,7 +561,7 @@
 (deftest one-journal-variable-is-a-configuration-error
   (doseq [extra [{"TOVER_JOURNAL_DB_USER" "tover_journal"} {"TOVER_JOURNAL_DB_PASSWORD" "synthetic-journal"}]]
     (is (= :configuration
-           (:type (error-data #(app/config 3031 "x" {:development? true :environment (merge environment extra)})))))))
+           (:type (error-data #(app/config {:profile :dev :environment (merge environment extra)})))))))
 
 
 (deftest worker-runs-with-the-system-and-halts-before-its-resources

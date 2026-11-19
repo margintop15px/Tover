@@ -96,7 +96,8 @@ class ReleaseTest(unittest.TestCase):
             target = self.source / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("public-build-input\n")
-        for name in ("src/core.clj", "resources/public/app.js", "resources/inventory/ontology.ttl"):
+        for name in ("src/core.clj", "resources/public/app.js", "resources/inventory/ontology.ttl",
+                     "resources/tover/config.edn"):
             target = self.source / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("public-source\n")
@@ -134,6 +135,7 @@ class ReleaseTest(unittest.TestCase):
                 self.assertNotIn(b"SENSITIVE_TOKEN_NEVER_COPY", path.read_bytes())
         self.assertTrue(self.docker.context)
         self.assertIn("resources/i18n/messages.json", self.docker.context)
+        self.assertIn("resources/tover/config.edn", self.docker.context)
         self.assertFalse(any(".env" in name or name.startswith(".git/") for name in self.docker.context))
         self.assertFalse(any(b"SENSITIVE_TOKEN_NEVER_COPY" in value for value in self.docker.context.values()))
         self.assertEqual(set(manifest["images"]), RELEASE.SERVICES)

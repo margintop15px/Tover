@@ -27,7 +27,7 @@ PUBLIC_FILES = tuple(str(PROFILE / name) for name in RUNTIME_FILES) + (
     "docs/selectel-deployment.md", "docs/production-deployment.md")
 BUILD_FILES = ("Dockerfile", ".dockerignore", "deps.edn",
                "deployment/production/build-classpath.sh", "deployment/production/Healthcheck.java")
-BUILD_TREES = ("src", "resources/public", "resources/inventory", "resources/i18n")
+BUILD_TREES = ("src", "resources/public", "resources/inventory", "resources/i18n", "resources/tover")
 BUNDLE_FILES = set(PUBLIC_FILES) | {str(PROFILE / "compose.yaml"), "source-revision", "release.json",
                                   "images.tar", "READY"}
 

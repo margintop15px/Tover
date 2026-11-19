@@ -20,6 +20,7 @@
   io.github.squint-cljs/squint               {:git/url "https://github.com/squint-cljs/squint.git"
                                               :git/sha "d9ce10899d531377ed17222f05472d1a451d96bd"}
   integrant/integrant                        {:mvn/version "1.0.1"}
+  aero/aero                                  {:mvn/version "1.1.6"}
   metosin/malli                              {:mvn/version "0.20.3"}
   com.yetanalytics/flint                     {:mvn/version "0.3.1"
                                               :exclusions  [org.clojure/clojure org.clojure/clojurescript]}

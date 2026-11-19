@@ -230,7 +230,8 @@
     (is (= :configuration
            (try (user/local-environment) nil
                 (catch clojure.lang.ExceptionInfo error (:type (ex-data error)))))))
-  (with-redefs [io/reader (fn [_] (StringReader. ""))]
+  ;; Only the profile read is stubbed: config.edn itself is read through io/reader too.
+  (let [environment (with-redefs [io/reader (fn [_] (StringReader. ""))] (user/local-environment))]
     (is (= :configuration
-           (try (app/config 3030 ".data/inventory" {:development? true :environment (user/local-environment)}) nil
+           (try (app/config {:profile :dev :environment environment}) nil
                 (catch clojure.lang.ExceptionInfo error (:type (ex-data error))))))))
