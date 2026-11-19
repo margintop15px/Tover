@@ -33,10 +33,15 @@
   :user      #tover/required "TOVER_DB_USER"
   :password  #tover/required "TOVER_DB_PASSWORD"
   :pool-name "tover-identity"}
- [:bel-postgres.adapter/store :tover.app/directory] {:datasource #ig/ref :tover.app/datasource}
- [:bel-rdf.adapter/store :tover.app/catalogue] {:repo   #ig/ref :tover.app/repo
-                                                :graphs tover.catalogues.persistence/graphs
-                                                :guard  tover.catalogues.persistence/legacy-guard}
+
+ [:bel-postgres.adapter/store :tover.app/directory]
+ {:datasource #ig/ref :tover.app/datasource}
+
+ [:bel-rdf.adapter/store :tover.app/catalogue]
+ {:repo   #ig/ref :tover.app/repo
+  :graphs tover.catalogues.persistence/graphs
+  :guard  tover.catalogues.persistence/legacy-guard}
+
  [:bel/system :tover.app/bel-system]
  {:stores    {:directory #ig/ref :tover.app/directory :catalogue #ig/ref :tover.app/catalogue}
   :journal   :directory
@@ -49,19 +54,22 @@
 
  ;; The worker's private login: journal delivery and processors act as a service, not a user session.
  ;; Setting only one of the two journal variables is a configuration error. Not an Integrant key; config drops it.
- :tover/journal? #or [#tover/env "TOVER_JOURNAL_DB_USER" #tover/env "TOVER_JOURNAL_DB_PASSWORD"]
+ :tover/journal?          #or [#tover/env "TOVER_JOURNAL_DB_USER" #tover/env "TOVER_JOURNAL_DB_PASSWORD"]
  [:bel-postgres.jdbc/datasource :tover.app/journal-datasource]
  #tover/when [#ref [:tover/journal?]
               {:jdbc-url  #tover/required "TOVER_JDBC_URL"
                :user      #tover/required "TOVER_JOURNAL_DB_USER"
                :password  #tover/required "TOVER_JOURNAL_DB_PASSWORD"
                :pool-name "tover-journal"}]
+
  [:bel-postgres.adapter/store :tover.app/journal-directory]
  #tover/when [#ref [:tover/journal?]
               {:datasource #ig/ref :tover.app/journal-datasource}]
+
  [:bel-rdf.adapter/store :tover.app/journal-catalogue]
  #tover/when [#ref [:tover/journal?]
               {:repo #ig/ref :tover.app/repo :graphs tover.catalogues.persistence/graphs}]
+
  [:bel/system :tover.app/delivery-system]
  #tover/when [#ref [:tover/journal?]
               {:stores    {:directory #ig/ref :tover.app/journal-directory
@@ -71,6 +79,7 @@
                ;; Without TOVER_SMTP_HOST invitation sends fail as recorded attempts.
                :resources {:mailer #tover/when [#tover/env "TOVER_SMTP_HOST" #ig/ref :tover.app/mailer]
                            :origin #tover/required "TOVER_ORIGIN"}}]
+
  :bel.delivery/worker
  #tover/when [#ref [:tover/journal?]
               #ig/ref :tover.app/delivery-system]
