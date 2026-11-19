@@ -49,8 +49,8 @@
    [:boundary [:maybe [:map [:valid-after inst?] [:kept-session-id {:optional true} [:maybe :uuid]]]]]])
 
 
-;; Models. Slices that change a session declare their own defmodel over `session-table` with the fields
-;; they write; these two are the shared read side.
+;; Models. Slices that change a session declare their own `sessions` model with the fields they write;
+;; these two are the shared read side.
 
 
 (defmethod runtime/policy ::current-session
@@ -86,24 +86,6 @@
    :store  :directory
    :schema [:map [:user-id :uuid] [:valid-after validation/Instant] [:kept-session-id {:optional true} :uuid]]
    :policy ::own-boundary})
-
-
-(def columns
-  {:session-id :session_id :user-id    :user_id    :workspace-id :workspace_id :version :version
-   :created-at :created_at :expires-at :expires_at :ended-at     :ended_at})
-
-
-(defn session-table
-  "A native table binding on app_private.sessions for `fields` (default: every field of Session)."
-  {:malli/schema [:function [:=> [:cat] :map] [:=> [:cat [:sequential :keyword]] :map]]}
-  ([] (session-table (keys columns)))
-  ([fields] {:table :app_private.sessions :columns (select-keys columns (cons :session-id fields))}))
-
-
-(def tables
-  {::sessions           (session-table)
-   ::session-boundaries {:table   :app_private.session_boundaries
-                         :columns {:user-id :user_id :valid-after :valid_after :kept-session-id :kept_session_id}}})
 
 
 ;; Rows
@@ -249,9 +231,9 @@
 
 (def ^:private directory-query
   "select p.display_name, p.language, b.valid_after, b.kept_session_id, r.requested_at, r.session_id,
-     coalesce((select jsonb_agg(jsonb_build_object('workspace-id', o.id, 'name', o.name, 'role', m.role_id,
-                                                   'created-at', m.created_at) order by m.created_at, o.id)
-               from public.organization_memberships m join public.organizations o on o.id = m.organization_id
+     coalesce((select jsonb_agg(jsonb_build_object('workspace-id', w.workspace_id, 'name', w.name, 'role', m.role,
+                                                   'created-at', m.created_at) order by m.created_at, w.workspace_id)
+               from public.memberships m join public.workspaces w on w.workspace_id = m.workspace_id
                where m.user_id = u.id and m.status = 'active'), '[]'::jsonb)::text as memberships
    from (select ?::uuid as id) u
    left join public.profiles p on p.user_id = u.id
@@ -378,11 +360,11 @@
                      :password-required? (boolean (get-in row [:data :identity/password-required?]))
                      :memberships        []}]
       (if-let [workspace-id (:workspace-id scope)]
-        (let [membership (db/execute-one! tx {:select [:role_id :status]
+        (let [membership (db/execute-one! tx {:select [:role :status]
                                               :from   [[[:app_private.bel_workspace_membership workspace-id] :membership]]})]
           (when-not (and (:confirmed? principal) (not (:password-required? principal)) (= "active" (:status membership)))
             (throw (ex-info "Current workspace access is required" {:type :forbidden :status 403})))
-          (assoc principal :memberships [{:workspace-id workspace-id :role (keyword (:role_id membership))}]))
+          (assoc principal :memberships [{:workspace-id workspace-id :role (keyword (:role membership))}]))
         principal))))
 
 

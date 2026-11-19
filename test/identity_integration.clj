@@ -149,7 +149,7 @@
               invitation (str "/invitations/" (random-uuid))]
           (testing "signup metadata names the profile and creates no workspace"
             (is (= [{:display_name "Live tester"}] (query-as settings user-id "select display_name from public.profiles where user_id=?" user-id)))
-            (is (= [] (query-as settings user-id "select organization_id from public.organization_memberships where user_id=?" user-id))))
+            (is (= [] (query-as settings user-id "select workspace_id from public.memberships where user_id=?" user-id))))
           (testing "a signed-out invitation link survives sign-in without being accepted"
             (is (= "/auth/login" (get-in (request! :get invitation) [:headers "location"])))
             (request! :get "/auth/login")
@@ -168,8 +168,8 @@
                                              "_tover-context" (:context @(:state browser))})]
                     (is (= 200 (:status response)))
                     (is (str/includes? (:body response) "Workspace created"))
-                    (is (= [{:role_id "owner" :status "active"}]
-                           (query-as settings user-id "select role_id, status from public.organization_memberships where organization_id=? and user_id=?" north user-id)))))
+                    (is (= [{:role "owner" :status "active"}]
+                           (query-as settings user-id "select role, status from public.memberships where workspace_id=? and user_id=?" north user-id)))))
                 (let [body  (:body (request! :get "/workspace" {"workspace-id" (str north)}))
                       offer (second (re-find #"(?s)data-target-workspace-id=\"[^\"]*\">(.*?)</section>" body))]
                   (is (= 303 (:status (request! :post (bel/action-url :tover.workspaces.select.web/select)

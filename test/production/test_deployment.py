@@ -19,6 +19,10 @@ CONFIG = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONFIG)
 
 
+# supabase/migrate.sh on an empty ledger: setup, read, then one call per migration.
+MIGRATE_PSQL_CALLS = 2 + len(list((ROOT / "supabase" / "migrations").glob("[0-9][0-9][0-9]_*.sql")))
+
+
 class ProductionConfigurationTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -104,10 +108,9 @@ if 'start' in args and os.environ.get('FAILING_START'): sys.exit(1)
             shutil.copy2(PROFILE / name, profile / name)
         migrations = root / "supabase" / "migrations"
         migrations.mkdir(parents=True)
-        for name in ("033_identity_and_sessions.sql", "034_workspace_actor_labels.sql",
-                     "035_bel_workspace_creation.sql", "036_bel_shared_journal.sql",
-                     "037_profile_preferences.sql"):
-            shutil.copy2(ROOT / "supabase" / "migrations" / name, migrations / name)
+        shutil.copy2(ROOT / "supabase" / "migrate.sh", root / "supabase" / "migrate.sh")
+        for path in (ROOT / "supabase" / "migrations").glob("[0-9][0-9][0-9]_*.sql"):
+            shutil.copy2(path, migrations / path.name)
         (root / "release.json").write_text(json.dumps({"format": 1, "images": {"app": {
             "reference": CONFIG.read_env(self.environment)["TOVER_APP_IMAGE"], "id": "sha256:" + "a" * 64}}}) + "\n")
         (root / "source-revision").write_text("a" * 40 + "\n")
@@ -146,7 +149,7 @@ if sys.argv[1] == 'check' and os.environ.get('MISSING_BUNDLE_IMAGE'):
         self.assertEqual(len(starts), 4)
         for command in starts:
             self.assertEqual(command[1:4], ["--no-build", "--pull", "never"])
-        self.assertEqual(len([command for command in commands if "psql" in command]), 6)
+        self.assertEqual(len([command for command in commands if "psql" in command]), MIGRATE_PSQL_CALLS)
         release_calls = [json.loads(line) for line in (self.directory / "release-calls").read_text().splitlines()]
         expected = ["check", str(root), "--env-file", str(self.environment)]
         self.assertEqual(release_calls, [expected, expected])
@@ -339,16 +342,16 @@ if sys.argv[1] == 'check' and os.environ.get('MISSING_BUNDLE_IMAGE'):
         call = json.loads((self.directory / "calls").read_text().splitlines()[-1])
         self.assertEqual(call[call.index("--project-name") + 1], "tover-production")
 
-    def test_migrate_applies_reviewed_identity_chain_before_runtime_role_password(self):
+    def test_migrate_applies_ledger_migrations_before_runtime_role_password(self):
         result = subprocess.run([str(PROFILE / "production.sh"), "migrate"],
                                 env=self.docker_stub(), capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [json.loads(line) for line in (self.directory / "calls").read_text().splitlines()]
-        migrations = [call for call in calls if "psql" in call]
-        self.assertEqual(len(migrations), 6)  # 033 guard query, 033, then 034-037
-        script = (PROFILE / "production.sh").read_text()
-        self.assertLess(script.index("033_identity_and_sessions.sql"), script.index("034_workspace_actor_labels"))
-        self.assertLess(script.index("036_bel_shared_journal"), script.index("037_profile_preferences"))
+        psql = [call for call in calls if "psql" in call]
+        migrations = sorted((ROOT / "supabase" / "migrations").glob("[0-9][0-9][0-9]_*.sql"))
+        # Ledger setup, ledger read, then each unapplied migration (the password runs inside `sh -c`).
+        self.assertEqual(len(psql), 2 + len(migrations))
+        self.assertIn("--single-transaction", psql[2])
 
     def test_fresh_install_preserves_existing_project_containers_and_volumes(self):
         cases = [{"existing_container": True}] + [
@@ -392,7 +395,7 @@ if sys.argv[1] == 'check' and os.environ.get('MISSING_BUNDLE_IMAGE'):
         fresh_commands = [call[call.index("-f") + 2:] for call in calls if "-f" in call]
         self.assertEqual(fresh_commands[:2], [["config", "--quiet"], ["ps", "--all", "--quiet"]])
         self.assertIn(["volume", "ls", "--format", "{{.Name}}"], calls)
-        self.assertEqual(len([command for command in fresh_commands if "psql" in command]), 6)
+        self.assertEqual(len([command for command in fresh_commands if "psql" in command]), MIGRATE_PSQL_CALLS)
         calls_file.write_text("")
         result = subprocess.run([str(PROFILE / "production.sh"), "install"],
                                 env=environment, capture_output=True)

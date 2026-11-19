@@ -94,7 +94,7 @@
 
 
 (def ^:private delivery-cofx
-  [[:delivery ::invitations/deliveries (fn [_ input] (select-keys input [:delivery-id]))]])
+  [[:delivery ::invitations/invitation-deliveries (fn [_ input] (select-keys input [:delivery-id]))]])
 
 
 (defn- current?
@@ -107,7 +107,7 @@
 (defcommand send-invitation-email
   {:scope :workspace :policy ::delivery-service
    :input [:map [:delivery-id :uuid] [:attempt Attempt]]
-   :cofx  [[:delivery ::invitations/deliveries (fn [_ input] (select-keys input [:delivery-id]))]
+   :cofx  [[:delivery ::invitations/invitation-deliveries (fn [_ input] (select-keys input [:delivery-id]))]
            [:invitation ::invitations/invitations
             (fn [{:keys [delivery]} _] {:invitation-id (:invitation-id delivery)})]
            [:workspace-name ::persistence/workspace-name (fn [_ _] {})]

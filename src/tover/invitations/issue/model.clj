@@ -152,7 +152,7 @@
             :tover.invitations.accept.model/workspace-invitation-accepted  {:set [:status]}}})
 
 
-(defmodel deliveries
+(defmodel invitation-deliveries
   {:id     :delivery-id
    :store  :directory
    :schema Delivery

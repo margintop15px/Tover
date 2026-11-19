@@ -549,6 +549,14 @@
   (definition :pages id))
 
 
+(defn get-model
+  "A model's declared options (`:model-id`, `:fields`, `:schema`…), as stores receive them."
+  {:malli/schema [:=> [:cat :qualified-keyword] :map]}
+  [id]
+  (or (:bel/options (definition :models id))
+      (throw (ex-info "Unknown model" {:type :configuration :model id}))))
+
+
 (defn page-chain
   "Read and validate the current page hierarchy, ordered from root to leaf."
   {:malli/schema [:=> [:cat :qualified-keyword] [:vector :map]]}

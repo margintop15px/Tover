@@ -51,7 +51,7 @@
 (deftest registration-creates-only-an-unconfirmed-account-and-a-neutral-check-your-email
   (support/with-application
     (fn [{:keys [browser state]}]
-      (let [memberships (count (get-in @state [:db :public.organization_memberships]))
+      (let [memberships (count (get-in @state [:db :memberships]))
             response    (register! browser alice "a-good-password")
             user        (user-row state alice)
             body        (:body response)]
@@ -63,23 +63,23 @@
         (is (str/includes? body (bel/action-url ::resend/resend)))
         (is (nil? (:email_confirmed_at user)))
         (testing "the new account starts with the signup language; nothing else is created"
-          (is (= "en" (get-in @state [:db :public.profiles (:id user) :language])))
-          (is (= memberships (count (get-in @state [:db :public.organization_memberships]))))
+          (is (= "en" (get-in @state [:db :profiles (:id user) :language])))
+          (is (= memberships (count (get-in @state [:db :memberships]))))
           (is (empty? (:journal @state)))
-          (is (not-any? :tokens (vals (get-in @state [:db :app_private.sessions])))))))))
+          (is (not-any? :tokens (vals (get-in @state [:db :sessions])))))))))
 
 
 (deftest an-existing-account-gets-the-same-neutral-answer-and-keeps-its-preferences
   (support/with-application
     (fn [{:keys [browser state]}]
-      (let [before   (get-in @state [:db :public.profiles fixtures/owner-id])
+      (let [before   (get-in @state [:db :profiles fixtures/owner-id])
             users    (count (get-in @state [:db :auth.users]))
             response (register! browser "owner@example.test" "another-password")]
         (is (= 200 (:status response)))
         (is (str/includes? (:body response) "Email entered: owner@example.test"))
         (is (nil? (alert (:body response))))
         (is (= users (count (get-in @state [:db :auth.users]))))
-        (is (= before (get-in @state [:db :public.profiles fixtures/owner-id])))))))
+        (is (= before (get-in @state [:db :profiles fixtures/owner-id])))))))
 
 
 (deftest invalid-input-shows-a-field-error-retains-the-email-and-clears-the-password
@@ -131,7 +131,7 @@
         (is (some? (:email_confirmed_at user)))
         (is (= [(:id user)] (map :user-id (signed-in-events state))))
         (testing "confirmation creates no workspace or membership"
-          (is (not-any? #(= (:id user) (:user_id %)) (vals (get-in @state [:db :public.organization_memberships])))))
+          (is (not-any? #(= (:id user) (:user_id %)) (vals (get-in @state [:db :memberships])))))
         (is (= 200 (:status ((:request! phone) :get "/account/profile"))))))))
 
 

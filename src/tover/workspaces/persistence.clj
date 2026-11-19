@@ -1,20 +1,11 @@
 (ns tover.workspaces.persistence
-  "Bindings to Tover's existing directory tables."
+  "Directory reads beyond model loads."
   (:require
+    [bel-postgres.adapter :as postgres]
     [bel-postgres.jdbc :as db]
+    [bel.core :as bel]
     [bel.runtime :as runtime]
-    [tover.identity.session :as session]
-    [tover.workspaces.create.model :as model]
-    [tover.workspaces.select.model :as select]))
-
-
-(def tables
-  {::model/workspaces  {:table   :public.organizations
-                        :columns {:workspace-id :id :name :name :created-by :created_by :created-at :created_at}}
-   ::model/memberships {:table   :public.organization_memberships
-                        :columns {:membership-id :id      :workspace-id :organization_id
-                                  :user-id       :user_id :role         :role_id         :status :status}}
-   ::select/selections (session/session-table [:workspace-id :version])})
+    [tover.workspaces.create.model :as model]))
 
 
 (defprotocol Memberships
@@ -25,9 +16,9 @@
 (extend-protocol Memberships
   java.sql.Connection
   (-membership [tx user-id workspace-id]
-    (let [{:keys [table columns]} (::model/memberships tables)]
+    (let [{:keys [table columns]} (postgres/table-binding (bel/get-model ::model/memberships))]
       (db/execute-one! tx {:select (db/selection columns) :from [table]
-                           :where  [:and [:= :organization_id workspace-id] [:= :user_id user-id]]}))))
+                           :where  [:and [:= :workspace_id workspace-id] [:= :user_id user-id]]}))))
 
 
 (defmethod runtime/coeffect ::membership

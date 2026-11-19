@@ -48,7 +48,7 @@ flowchart TB
   subgraph Tover[Tover: business + implementation details]
     Decl[Declarations]
     Hooks[defmethod policy / coeffect / effect!]
-    Impl[Store options: tables, graphs, legacy guard; Authority record]
+    Impl[Store options: graphs, legacy guard; Authority record]
   end
   subgraph Bel[Bel: flow + contracts]
     Web[Web: routes, actions, views, SSE]
@@ -86,7 +86,7 @@ Tover → Bel ← Integrations. Tover constructs integrations. Integrations neve
 | `read-receipt`, `write-batch!`, `read-history` | `Journal` | |
 | `runtime/authority` | `Authority` | One Tover record in the system map. |
 | `runtime/check-source!`, `bel-rdf.adapter/graphs` | RDF store options `:guard`, `:graphs` | One implementation each. |
-| `bel-postgres.adapter/model-binding` | Postgres store option `:tables` | Data. |
+| `bel-postgres.adapter/model-binding` | `bel-postgres.adapter/table-binding` | Inferred: snake_case model and field names (since 2026-11-19). |
 
 Result: 4 `defmulti` (from 22), 4 protocols, 0 `defmethod` on adapter concerns in Tover.
 
@@ -150,7 +150,7 @@ Built once by Integrant, passed to the handler and the delivery worker.
 
 ```clojure
 (bel/system
-  {:stores    {:directory (pg/store  {:datasource ds :tables workspaces.persistence/tables})
+  {:stores    {:directory (pg/store  {:datasource ds})
                :catalogue (rdf/store {:repo repo
                                       :graphs catalogues.persistence/graphs
                                       :guard  catalogues.persistence/legacy-guard})}

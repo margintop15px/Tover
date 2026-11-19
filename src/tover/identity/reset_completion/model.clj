@@ -14,7 +14,7 @@
             [:kept-session-id {:optional true} :uuid]]})
 
 
-(defmodel boundaries
+(defmodel session-boundaries
   {:id     :user-id
    :store  :directory
    :schema [:map [:user-id :uuid] [:valid-after validation/Instant] [:kept-session-id {:optional true} :uuid]]
@@ -31,7 +31,7 @@
 (defcommand complete-password-reset
   {:scope :user :input [:map [:attempt-id :uuid] [:valid-after validation/Instant]] :policy ::recovery/own-account
    :cofx  [[:attempt ::recovery/password-resets recovery/attempt]
-           [:boundary ::boundaries own-boundary]]
+           [:boundary ::session-boundaries own-boundary]]
    :emits #{::password-reset-completed}}
   [{:keys [actor attempt boundary]} {:keys [attempt-id valid-after]}]
   (when-not (and attempt (= actor (:user-id attempt)))

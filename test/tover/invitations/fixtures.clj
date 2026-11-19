@@ -45,15 +45,15 @@
 (defn- invitation
   {:malli/schema [:=> [:cat :map] :map]}
   [row]
-  (present {:invitation-id (:id row)         :workspace-id (:organization_id row) :email      (:email row)      :role       (:role_id row)
-            :invited-by    (:invited_by row) :status       (:status row)          :expires-at (:expires_at row) :created-at (:created_at row)}))
+  (present {:invitation-id (:invitation_id row) :workspace-id (:workspace_id row) :email      (:email row)      :role       (:role row)
+            :invited-by    (:invited_by row)    :status       (:status row)       :expires-at (:expires_at row) :created-at (:created_at row)}))
 
 
 (defn- delivery
   {:malli/schema [:=> [:cat :map] :map]}
   [row]
-  (present {:delivery-id  (:id row)           :invitation-id   (:invitation_id row)   :workspace-id    (:organization_id row)
-            :requested-by (:requested_by row) :requested-at    (:requested_at row)    :delivery-status (:status row)
+  (present {:delivery-id  (:delivery_id row)  :invitation-id   (:invitation_id row)   :workspace-id    (:workspace_id row)
+            :requested-by (:requested_by row) :requested-at    (:requested_at row)    :delivery-status (:delivery_status row)
             :attempts     (:attempts row)     :next-attempt-at (:next_attempt_at row) :last-problem    (:last_problem row)
             :attempted-at (:attempted_at row) :submitted-at    (:submitted_at row)}))
 
@@ -68,27 +68,27 @@
 (defn- manager?
   {:malli/schema [:=> [:cat :map :uuid [:maybe :uuid]] :boolean]}
   [db workspace-id user-id]
-  (boolean (some #(and (= workspace-id (:organization_id %)) (= user-id (:user_id %)) (= "active" (:status %))
-                       (contains? #{"owner" "admin"} (:role_id %)))
-                 (vals (:public.organization_memberships db)))))
+  (boolean (some #(and (= workspace-id (:workspace_id %)) (= user-id (:user_id %)) (= "active" (:status %))
+                       (contains? #{"owner" "admin"} (:role %)))
+                 (vals (:memberships db)))))
 
 
 (defn- recipient-access
   {:malli/schema [:=> [:cat :map :uuid :string] [:maybe :map]]}
   [db workspace-id email]
   (some (fn [membership]
-          (when (and (= workspace-id (:organization_id membership))
+          (when (and (= workspace-id (:workspace_id membership))
                      (= (issue/normalize email) (email-of db (:user_id membership))))
             (present {:status (:status membership) :removed-at (:removed_at membership)})))
-        (vals (:public.organization_memberships db))))
+        (vals (:memberships db))))
 
 
 (def coeffects
   "Memory versions keyed by the persistence coeffect they replace."
   {:tover.invitations.persistence/open-invitation
    (fn [{:keys [scope] :as context} {:keys [email]}]
-     (->> (vals (:public.organization_invites (db context)))
-          (filter #(and (= (:workspace-id scope) (:organization_id %)) (= "pending" (:status %))
+     (->> (vals (:invitations (db context)))
+          (filter #(and (= (:workspace-id scope) (:workspace_id %)) (= "pending" (:status %))
                         (= email (issue/normalize (:email %)))))
           (sort-by :created_at #(compare %2 %1))
           first
@@ -101,15 +101,15 @@
 
    :tover.invitations.persistence/latest-invitation
    (fn [{:keys [scope] :as context} {:keys [email]}]
-     (->> (vals (:public.organization_invites (db context)))
-          (filter #(and (= (:workspace-id scope) (:organization_id %)) (= email (issue/normalize (:email %)))))
+     (->> (vals (:invitations (db context)))
+          (filter #(and (= (:workspace-id scope) (:workspace_id %)) (= email (issue/normalize (:email %)))))
           (sort-by :created_at #(compare %2 %1))
           first
           (#(some-> % invitation))))
 
    :tover.invitations.persistence/latest-delivery
    (fn [context {:keys [invitation-id]}]
-     (->> (vals (:public.invitation_deliveries (db context)))
+     (->> (vals (:invitation_deliveries (db context)))
           (filter #(= invitation-id (:invitation_id %)))
           (sort-by :requested_at #(compare %2 %1))
           first
@@ -118,35 +118,35 @@
    :tover.invitations.persistence/received-invitation
    (fn [{:keys [actor] :as context} {:keys [invitation-id]}]
      (let [db  (db context)
-           row (get-in db [:public.organization_invites invitation-id])]
+           row (get-in db [:invitations invitation-id])]
        (when (and row (= (issue/normalize (:email row)) (email-of db actor)))
          (assoc (invitation row)
                 :email (issue/normalize (:email row))
-                :workspace-name (get-in db [:public.organizations (:organization_id row) :name])
-                :inviter (get-in db [:public.profiles (:invited_by row) :display_name])))))
+                :workspace-name (get-in db [:workspaces (:workspace_id row) :name])
+                :inviter (get-in db [:profiles (:invited_by row) :display_name])))))
 
    :tover.invitations.persistence/own-membership
    (fn [{:keys [actor] :as context} {:keys [workspace-id]}]
      (some (fn [m]
-             (when (and (= workspace-id (:organization_id m)) (= actor (:user_id m)))
-               (present {:membership-id (:id m) :role (:role_id m) :status (:status m) :removed-at (:removed_at m)})))
-           (vals (:public.organization_memberships (db context)))))
+             (when (and (= workspace-id (:workspace_id m)) (= actor (:user_id m)))
+               (present {:membership-id (:membership_id m) :role (:role m) :status (:status m) :removed-at (:removed_at m)})))
+           (vals (:memberships (db context)))))
 
    :tover.invitations.persistence/team
    (fn [{:keys [scope actor] :as context} _]
      (let [db        (db context)
            workspace (:workspace-id scope)]
        (when-not (manager? db workspace actor) (throw (ex-info "Forbidden" {:type :forbidden :status 403})))
-       {:members     (vec (for [m     (vals (:public.organization_memberships db))
-                                :when (and (= workspace (:organization_id m)) (contains? #{"active" "suspended" "removed"} (:status m)))]
-                            (present {:user-id    (:user_id m)               :name (get-in db [:public.profiles (:user_id m) :display_name])
-                                      :email      (email-of db (:user_id m)) :role (:role_id m) :status (:status m)
+       {:members     (vec (for [m     (vals (:memberships db))
+                                :when (and (= workspace (:workspace_id m)) (contains? #{"active" "suspended" "removed"} (:status m)))]
+                            (present {:user-id    (:user_id m)               :name (get-in db [:profiles (:user_id m) :display_name])
+                                      :email      (email-of db (:user_id m)) :role (:role m) :status (:status m)
                                       :removed-at (:removed_at m)})))
-        :invitations (vec (for [row   (vals (:public.organization_invites db))
-                                :when (= workspace (:organization_id row))]
+        :invitations (vec (for [row   (vals (:invitations db))
+                                :when (= workspace (:workspace_id row))]
                             (invitation row)))
-        :deliveries  (vec (for [row   (vals (:public.invitation_deliveries db))
-                                :when (= workspace (:organization_id row))]
+        :deliveries  (vec (for [row   (vals (:invitation_deliveries db))
+                                :when (= workspace (:workspace_id row))]
                             (delivery row)))}))})
 
 

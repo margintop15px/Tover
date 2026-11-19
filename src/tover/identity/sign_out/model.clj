@@ -16,7 +16,7 @@
   {:schema [:map [:session-id :uuid] [:user-id :uuid] [:ended-at validation/Instant]]})
 
 
-(defmodel ended-sessions
+(defmodel sessions
   ;; app_private.sessions.ended_at: an ended row is never revived (session/live?).
   {:id     :session-id
    :store  :directory

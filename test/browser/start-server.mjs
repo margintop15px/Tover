@@ -48,7 +48,7 @@ const program = `
                      ["00000000-0000-4000-8000-000000000014" "member" "suspended"]
                      ["00000000-0000-4000-8000-000000000015" "member" "invited"]]
         invitation (fn [invite-id email role status expires-at]
-                     [(id invite-id) {:id (id invite-id) :organization_id workspace-id :email email :role_id role
+                     [(id invite-id) {:invitation_id (id invite-id) :workspace_id workspace-id :email email :role role
                                       :status "pending" :created_at at :expires_at expires-at
                                       :invited_by (id "00000000-0000-4000-8000-000000000012")}])]
     (swap! (:state services) update :db
@@ -56,17 +56,17 @@ const program = `
              (-> db
                  (update :auth.users into (for [[user email] users]
                                             [(id user) {:id (id user) :email email :email_confirmed_at at :password fixtures/password}]))
-                 (update :public.profiles into (for [[user _ name] users]
+                 (update :profiles into (for [[user _ name] users]
                                                  [(id user) (cond-> {:user_id (id user) :name_revision (if name 1 0) :language_revision 0}
                                                               name (assoc :display_name name))]))
-                 (assoc-in [:public.organizations workspace-id]
-                           {:id workspace-id :name "Management workspace" :created_by (id "00000000-0000-4000-8000-000000000012") :created_at at})
-                 (update :public.organization_memberships (fnil into {})
+                 (assoc-in [:workspaces workspace-id]
+                           {:workspace_id workspace-id :name "Management workspace" :created_by (id "00000000-0000-4000-8000-000000000012") :created_at at})
+                 (update :memberships (fnil into {})
                          (for [[user role status] memberships
                                :let [membership (java.util.UUID/nameUUIDFromBytes (.getBytes (str workspace-id user)))]]
-                           [membership {:id membership :organization_id workspace-id :user_id (id user) :role_id role
+                           [membership {:membership_id membership :workspace_id workspace-id :user_id (id user) :role role
                                         :status status :created_at at}]))
-                 (update :public.organization_invites (fnil into {})
+                 (update :invitations (fnil into {})
                          [(invitation "00000000-0000-4000-8000-000000000201" "pending@example.test" "member" "pending"
                                       (.plusSeconds (java.time.Instant/now) 604800))
                           (invitation "00000000-0000-4000-8000-000000000202" "expired@example.test" "admin" "pending"

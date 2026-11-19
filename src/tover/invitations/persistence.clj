@@ -1,25 +1,18 @@
 (ns tover.invitations.persistence
-  "Bindings to the invitation tables and private recipient lookups. Coeffects return field maps; the team,
-  recipient and membership reads go through the SECURITY DEFINER functions of migration 042."
+  "Invitation reads beyond model loads. Coeffects return field maps; the team, recipient and membership reads
+  go through the SECURITY DEFINER functions of the baseline migration."
   (:require
+    [bel-postgres.adapter :as postgres]
     [bel-postgres.jdbc :as db]
+    [bel.core :as bel]
     [bel.runtime :as runtime]
     [tover.invitations.issue.model :as model]))
 
 
-(def tables
-  {::model/invitations {:table   :public.organization_invites
-                        :columns {:invitation-id :id         :workspace-id :organization_id :email  :email
-                                  :role          :role_id    :invited-by   :invited_by      :status :status
-                                  :expires-at    :expires_at :created-at   :created_at}}
-   ::model/deliveries  {:table   :public.invitation_deliveries
-                        :columns {:delivery-id  :id           :invitation-id   :invitation_id   :workspace-id    :organization_id
-                                  :requested-by :requested_by :requested-at    :requested_at    :delivery-status :status
-                                  :attempts     :attempts     :next-attempt-at :next_attempt_at
-                                  :last-problem :last_problem :attempted-at    :attempted_at    :submitted-at    :submitted_at}}
-   :tover.invitations.accept.model/memberships
-   {:table   :public.organization_memberships
-    :columns {:membership-id :id :workspace-id :organization_id :user-id :user_id :role :role_id :status :status}}})
+(defn- binding-of
+  {:malli/schema [:=> [:cat :qualified-keyword] :map]}
+  [model-id]
+  (postgres/table-binding (bel/get-model model-id)))
 
 
 (defn- fields
@@ -33,9 +26,9 @@
   [_ {:keys [scope] :as context} {:keys [email]}]
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx]}]
-      (let [{:keys [table columns]} (::model/invitations tables)]
+      (let [{:keys [table columns]} (binding-of ::model/invitations)]
         (db/execute-one! tx {:select   (db/selection columns) :from [table]
-                             :where    [:and [:= :organization_id (:workspace-id scope)] [:= :status "pending"]
+                             :where    [:and [:= :workspace_id (:workspace-id scope)] [:= :status "pending"]
                                         [:= [:lower [:btrim :email]] email]]
                              :order-by [[:created_at :desc]] :limit 1})))))
 
@@ -54,10 +47,10 @@
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx]}]
       ;; Unconfirmed requests are due when their 60-second reconciliation deadline passes.
-      (db/execute! tx {:select   [[:id :delivery-id] [:organization_id :workspace-id] [:requested_by :requested-by] :attempts
-                                  [:status :delivery-status]]
-                       :from     [:public.invitation_deliveries]
-                       :where    [:and [:in :status ["queued" "retrying" "unconfirmed"]]
+      (db/execute! tx {:select   [[:delivery_id :delivery-id] [:workspace_id :workspace-id] [:requested_by :requested-by] :attempts
+                                  [:delivery_status :delivery-status]]
+                       :from     [:invitation_deliveries]
+                       :where    [:and [:in :delivery_status ["queued" "retrying" "unconfirmed"]]
                                   [:<= :next_attempt_at (runtime/coeffect :bel/now context {})]]
                        :order-by [:next_attempt_at]
                        :limit    100}))))
@@ -74,16 +67,16 @@
   [_ {:keys [scope] :as context} _]
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx]}]
-      (:name (db/execute-one! tx {:select [:name] :from [:public.organizations] :where [:= :id (:workspace-id scope)]})))))
+      (:name (db/execute-one! tx {:select [:name] :from [:workspaces] :where [:= :workspace_id (:workspace-id scope)]})))))
 
 
 (defmethod runtime/coeffect ::latest-invitation
   [_ {:keys [scope] :as context} {:keys [email]}]
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx]}]
-      (let [{:keys [table columns]} (::model/invitations tables)]
+      (let [{:keys [table columns]} (binding-of ::model/invitations)]
         (db/execute-one! tx {:select   (db/selection columns) :from [table]
-                             :where    [:and [:= :organization_id (:workspace-id scope)] [:= [:lower [:btrim :email]] email]]
+                             :where    [:and [:= :workspace_id (:workspace-id scope)] [:= [:lower [:btrim :email]] email]]
                              :order-by [[:created_at :desc]] :limit 1})))))
 
 
@@ -92,7 +85,7 @@
   (when invitation-id
     (runtime/with-store context :directory :repeatable-read
       (fn [{:keys [tx]}]
-        (let [{:keys [table columns]} (::model/deliveries tables)]
+        (let [{:keys [table columns]} (binding-of ::model/invitation-deliveries)]
           (db/execute-one! tx {:select   (db/selection columns)  :from  [table] :where [:= :invitation_id invitation-id]
                                :order-by [[:requested_at :desc]] :limit 1}))))))
 
@@ -101,8 +94,8 @@
   [_ context {:keys [invitation-id]}]
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx]}]
-      (fields (db/execute-one! tx {:select [[:id :invitation-id] [:organization_id :workspace-id] [:workspace_name :workspace-name]
-                                            :email [:role_id :role] [:inviter_name :inviter] :status
+      (fields (db/execute-one! tx {:select [[:invitation_id :invitation-id] [:workspace_id :workspace-id] [:workspace_name :workspace-name]
+                                            :email :role :inviter :status
                                             [:expires_at :expires-at] [:created_at :created-at]]
                                    :from   [[[:app_private.bel_received_invitation invitation-id] :invitation]]})))))
 
@@ -111,9 +104,9 @@
   [_ context {:keys [workspace-id]}]
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx actor]}]
-      (fields (db/execute-one! tx {:select [[:id :membership-id] [:role_id :role] :status [:removed_at :removed-at]]
-                                   :from   [:public.organization_memberships]
-                                   :where  [:and [:= :organization_id workspace-id] [:= :user_id actor]]})))))
+      (fields (db/execute-one! tx {:select [[:membership_id :membership-id] :role :status [:removed_at :removed-at]]
+                                   :from   [:memberships]
+                                   :where  [:and [:= :workspace_id workspace-id] [:= :user_id actor]]})))))
 
 
 (defmethod runtime/coeffect ::team
@@ -121,14 +114,14 @@
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx]}]
       (let [workspace-id (:workspace-id scope)
-            invitations  (::model/invitations tables)
-            deliveries   (::model/deliveries tables)]
-        {:members     (mapv fields (db/execute! tx {:select [[:user_id :user-id] [:display_name :name] :email [:role_id :role] :status
+            invitations  (binding-of ::model/invitations)
+            deliveries   (binding-of ::model/invitation-deliveries)]
+        {:members     (mapv fields (db/execute! tx {:select [[:user_id :user-id] :name :email :role :status
                                                              [:removed_at :removed-at]]
                                                     :from   [[[:app_private.bel_workspace_team workspace-id] :team]]}))
          :invitations (mapv fields (db/execute! tx {:select   (db/selection (:columns invitations)) :from  [(:table invitations)]
-                                                    :where    [:= :organization_id workspace-id]
+                                                    :where    [:= :workspace_id workspace-id]
                                                     :order-by [[:created_at :desc]]                 :limit 200}))
          :deliveries  (mapv fields (db/execute! tx {:select   (db/selection (:columns deliveries)) :from  [(:table deliveries)]
-                                                    :where    [:= :organization_id workspace-id]
+                                                    :where    [:= :workspace_id workspace-id]
                                                     :order-by [[:requested_at :desc]]              :limit 400}))}))))

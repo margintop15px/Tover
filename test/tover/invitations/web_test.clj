@@ -48,13 +48,13 @@
 (defn- offers
   {:malli/schema [:=> [:cat :any] [:vector :map]]}
   [state]
-  (vec (vals (get-in @state [:db :public.organization_invites]))))
+  (vec (vals (get-in @state [:db :invitations]))))
 
 
 (defn- deliveries
   {:malli/schema [:=> [:cat :any] [:vector :map]]}
   [state]
-  (vec (vals (get-in @state [:db :public.invitation_deliveries]))))
+  (vec (vals (get-in @state [:db :invitation_deliveries]))))
 
 
 (defn- offer-for
@@ -102,8 +102,8 @@
     (fn [{:keys [browser state] :as services}]
       (as-owner services)
       (invite! (:request! browser) {})
-      (let [{:keys [id]} (offer-for state "otto@example.test")]
-        (swap! state assoc-in [:db :public.organization_invites id :status] "accepted")
+      (let [{id :invitation_id} (offer-for state "otto@example.test")]
+        (swap! state assoc-in [:db :invitations id :status] "accepted")
         (is (not (str/includes? (page ((:request! browser) :get "/team")) (str "data-invitation-id=\"" id "\""))))))))
 
 
@@ -121,11 +121,11 @@
       (let [response (invite! (:request! browser) {"email" " Otto@Example.test "})
             offer    (offer-for state "otto@example.test")]
         (is (= 303 (:status response)))
-        (is (= (str "/team?invitation=" (:id offer)) (get-in response [:headers "location"])))
+        (is (= (str "/team?invitation=" (:invitation_id offer)) (get-in response [:headers "location"])))
         (is (not (str/includes? (get-in response [:headers "location"]) "otto")) "no email in the URL")
-        (is (= {:status "pending" :role_id "member" :invited_by fixtures/owner-id} (select-keys offer [:status :role_id :invited_by])))
+        (is (= {:status "pending" :role "member" :invited_by fixtures/owner-id} (select-keys offer [:status :role :invited_by])))
         (is (= (Duration/ofDays 7) (Duration/between (:created_at offer) (:expires_at offer))))
-        (is (= ["queued"] (mapv :status (deliveries state))))
+        (is (= ["queued"] (mapv :delivery_status (deliveries state))))
         (let [body (page (follow browser response))]
           (is (str/includes? body "management-status\">Pending<"))
           (is (str/includes? body "Delivery: Queued"))
@@ -158,8 +158,8 @@
   (support/with-application
     (fn [{:keys [browser state] :as services}]
       (as-owner services)
-      (swap! state update-in [:db :public.organization_memberships]
-             update-vals #(cond-> % (= fixtures/owner-id (:user_id %)) (assoc :role_id "member")))
+      (swap! state update-in [:db :memberships]
+             update-vals #(cond-> % (= fixtures/owner-id (:user_id %)) (assoc :role "member")))
       (is (= 403 (:status (invite! (:request! browser) {}))))
       (is (empty? (offers state))))))
 
@@ -178,8 +178,8 @@
   "Move every delivery request `seconds` into the past and finish it as `status`."
   {:malli/schema [:=> [:cat :any :int :string] :any]}
   [state seconds status]
-  (swap! state update-in [:db :public.invitation_deliveries]
-         update-vals #(assoc % :status status :attempts 1 :requested_at (.minusSeconds ^Instant (:requested_at %) seconds))))
+  (swap! state update-in [:db :invitation_deliveries]
+         update-vals #(assoc % :delivery_status status :attempts 1 :requested_at (.minusSeconds ^Instant (:requested_at %) seconds))))
 
 
 (deftest resend-and-see-the-request-status
@@ -187,9 +187,9 @@
     (fn [{:keys [browser state] :as services}]
       (as-owner services)
       (invite! (:request! browser) {})
-      (let [{:keys [id]} (offer-for state "otto@example.test")
-            resend!      #((:request! browser) :post (bel/action-url :tover.invitations.resend.web/resend)
-                                               {"invitation-id" (str id) "command-id" (str (random-uuid)) "workspace-id" workspace})]
+      (let [{id :invitation_id} (offer-for state "otto@example.test")
+            resend!             #((:request! browser) :post (bel/action-url :tover.invitations.resend.web/resend)
+                                                      {"invitation-id" (str id) "command-id" (str (random-uuid)) "workspace-id" workspace})]
         (testing "queued work answers with its status instead of a parallel request"
           (is (= 303 (:status (resend!))))
           (is (= 1 (count (deliveries state)))))
@@ -211,17 +211,17 @@
     (fn [{:keys [browser state] :as services}]
       (as-owner services)
       (invite! (:request! browser) {})
-      (let [{:keys [id]} (offer-for state "otto@example.test")
-            cancel!      #((:request! browser) :post (bel/action-url :tover.invitations.cancel.web/cancel)
-                                               {"invitation-id" (str id) "command-id" (str (random-uuid)) "workspace-id" workspace})
-            response     (cancel!)]
+      (let [{id :invitation_id} (offer-for state "otto@example.test")
+            cancel!             #((:request! browser) :post (bel/action-url :tover.invitations.cancel.web/cancel)
+                                                      {"invitation-id" (str id) "command-id" (str (random-uuid)) "workspace-id" workspace})
+            response            (cancel!)]
         (is (= 303 (:status response)))
         (is (= "revoked" (:status (offer-for state "otto@example.test"))))
         (is (= 303 (:status (cancel!))) "a repeated cancel shows the current state")
         (let [body (page (follow browser response))]
           (is (str/includes? body "management-status\">Cancelled<"))
           (is (not (str/includes? body ">Resend<"))))
-        (is (= (:public.organization_memberships (fixtures/seed)) (get-in @state [:db :public.organization_memberships]))
+        (is (= (:memberships (fixtures/seed)) (get-in @state [:db :memberships]))
             "no membership changes")))))
 
 
@@ -236,7 +236,7 @@
    (let [owner (support/browser (:handler services))]
      (support/sign-in! services owner "owner@example.test" {:workspace-id fixtures/workspace-id :uri "/team"})
      (invite! (:request! owner) {"email" "other@example.test" "role" role})
-     (:id (offer-for state "other@example.test")))))
+     (:invitation_id (offer-for state "other@example.test")))))
 
 
 (defn- accept!
@@ -250,8 +250,8 @@
 (defn- membership
   {:malli/schema [:=> [:cat :any :uuid] [:maybe :map]]}
   [state user-id]
-  (some #(when (and (= user-id (:user_id %)) (= fixtures/workspace-id (:organization_id %))) %)
-        (vals (get-in @state [:db :public.organization_memberships]))))
+  (some #(when (and (= user-id (:user_id %)) (= fixtures/workspace-id (:workspace_id %))) %)
+        (vals (get-in @state [:db :memberships]))))
 
 
 (deftest review-the-received-invitation-and-accept-it
@@ -268,7 +268,7 @@
         (let [response (accept! (:request! browser) id)]
           (is (= 303 (:status response)))
           (is (= (str (accept/review-path id) "/joined") (get-in response [:headers "location"])))
-          (is (= {:status "active" :role_id "member"} (select-keys (membership state fixtures/other-id) [:status :role_id])))
+          (is (= {:status "active" :role "member"} (select-keys (membership state fixtures/other-id) [:status :role])))
           (is (= "accepted" (:status (offer-for state "other@example.test"))))
           (is (nil? (:workspace-id (session/session session-store (support/session-key browser))))
               "joining never selects a workspace")
@@ -303,7 +303,7 @@
       (let [id (invited services)]
         (support/sign-in! services browser "other@example.test" {:uri "/workspace"})
         ((:request! browser) :get (accept/review-path id))
-        (swap! state assoc-in [:db :public.organization_invites id :status] "revoked")
+        (swap! state assoc-in [:db :invitations id :status] "revoked")
         (let [response (accept! (:request! browser) id)]
           (is (= (str (accept/review-path id) "?problem=invitation-not-pending") (get-in response [:headers "location"])))
           (is (nil? (membership state fixtures/other-id)))
@@ -319,8 +319,8 @@
       (let [id (invited services)]
         (support/sign-in! services browser "other@example.test" {:uri "/workspace"})
         (accept! (:request! browser) id)
-        (let [{membership-id :id} (membership state fixtures/other-id)]
-          (swap! state update-in [:db :public.organization_memberships membership-id]
+        (let [{membership-id :membership_id} (membership state fixtures/other-id)]
+          (swap! state update-in [:db :memberships membership-id]
                  assoc :status "removed" :removed_at (Instant/now)))
         (is (str/includes? (page ((:request! browser) :get (str (accept/review-path id) "/joined")))
                            "you no longer have access"))))))

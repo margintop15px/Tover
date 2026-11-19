@@ -1,25 +1,35 @@
 (ns bel-postgres.adapter
-  "Native PostgreSQL store and journal. Applications supply table bindings as data."
+  "Native PostgreSQL store and journal. Tables and columns are the snake_case names of models and fields."
   (:require
     [bel-postgres.jdbc :as db]
     [bel-postgres.journal :as journal]
     [bel.store :as store]
     [bel.validation :as validation]
+    [clojure.string :as str]
     [next.jdbc :as jdbc])
   (:import [java.sql SQLException]))
 
 
-(defn binding!
-  {:malli/schema [:=> [:cat :map :map] :map]}
-  [tables model]
-  (or (get tables (:model-id model))
-      (throw (ex-info "Missing native model binding" {:type :configuration :model (:model-id model)}))))
+(defn- snake
+  {:malli/schema [:=> [:cat :keyword] :keyword]}
+  [k]
+  (keyword (str/replace (name k) "-" "_")))
+
+
+(defn table-binding
+  "The model's table and {field column}: snake_case of the model's local name and of each field.
+  Unqualified, so the connection's search_path picks the schema."
+  {:malli/schema [:=> [:cat [:map [:model-id :qualified-keyword] [:fields :map]]]
+                  [:map [:table :keyword] [:columns [:map-of :keyword :keyword]]]]}
+  [{:keys [model-id fields]}]
+  {:table   (snake model-id)
+   :columns (into {} (map (fn [field] [field (snake field)])) (keys fields))})
 
 
 (defn load-model
   {:malli/schema [:=> [:cat :map :map :any] [:maybe :map]]}
-  [{:keys [tx tables]} model id]
-  (let [{:keys [table columns]} (binding! tables model)]
+  [{:keys [tx]} model id]
+  (let [{:keys [table columns]} (table-binding model)]
     (some->> (db/execute-one! tx {:select (db/selection columns)            :from [table]
                                   :where  [:= (get columns (:id model)) id]})
              (into {} (remove (comp nil? val))))))
@@ -27,9 +37,9 @@
 
 (defn insert-model!
   {:malli/schema [:=> [:cat :map :map :map] :nil]}
-  [{:keys [tx tables]} model row]
+  [{:keys [tx]} model row]
   (validation/check! (:schema model) row)
-  (let [{:keys [table columns]} (binding! tables model)
+  (let [{:keys [table columns]} (table-binding model)
         values                  (into {} (map (fn [[field column]] [column (get row field)])) columns)]
     ;; Read permission may depend on other rows inserted later in this transaction.
     (db/execute-one! tx {:insert-into table :values [values]}))
@@ -40,8 +50,8 @@
   "Replace the mapped columns of an existing row; a missing row is inserted only when the entity is complete.
   Updating an existing row needs only UPDATE privilege on the mapped columns."
   {:malli/schema [:=> [:cat :map :map [:vector :keyword] :map] :nil]}
-  [{:keys [tx tables]} {:keys [id fields schema] :as model} mapped row]
-  (let [{:keys [table columns]} (binding! tables model)
+  [{:keys [tx]} {:keys [id fields schema] :as model} mapped row]
+  (let [{:keys [table columns]} (table-binding model)
         values                  (into {} (map (fn [field] [(get columns field) (get row field)])) (cons id mapped))]
     (validation/check! (into [:map] (map (fn [field] [field {:optional (boolean (get-in fields [field :optional]))}
                                                       (get-in fields [field :schema])]))
@@ -72,14 +82,14 @@
         (throw error)))))
 
 
-(defrecord PgStore [datasource tables]
+(defrecord PgStore [datasource]
   store/Transactional
   (-transact [_ isolation f] (transact datasource isolation f))
 
   store/Store
-  (-load [_ tx _ model id] (load-model {:tx tx :tables tables} model id))
-  (-create! [_ tx _ model row] (insert-model! {:tx tx :tables tables} model row))
-  (-write! [_ tx _ model fields row] (write-model! {:tx tx :tables tables} model fields row))
+  (-load [_ tx _ model id] (load-model {:tx tx} model id))
+  (-create! [_ tx _ model row] (insert-model! {:tx tx} model row))
+  (-write! [_ tx _ model fields row] (write-model! {:tx tx} model fields row))
 
   store/Journal
   (-receipt [_ tx scope command-id] (journal/receipt {:tx tx :scope scope} command-id))
@@ -87,12 +97,12 @@
   (-history [_ tx scope] (journal/read-history {:tx tx :scope scope})))
 
 
-(alter-meta! #'->PgStore assoc :malli/schema [:=> [:cat :any :map] :map])
+(alter-meta! #'->PgStore assoc :malli/schema [:=> [:cat :any] :map])
 (alter-meta! #'map->PgStore assoc :malli/schema [:=> [:cat :map] :map])
 
 
 (defn store
-  "A PostgreSQL store; `tables` maps model IDs to {:table … :columns {field column}}."
-  {:malli/schema [:=> [:cat [:map [:datasource :any] [:tables {:optional true} :map]]] [:fn #(instance? PgStore %)]]}
-  [{:keys [datasource tables]}]
-  (->PgStore datasource (or tables {})))
+  "A PostgreSQL store over `datasource`; every binding is inferred from the model."
+  {:malli/schema [:=> [:cat [:map [:datasource :any]]] [:fn #(instance? PgStore %)]]}
+  [{:keys [datasource]}]
+  (->PgStore datasource))

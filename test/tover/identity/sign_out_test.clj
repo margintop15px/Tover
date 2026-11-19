@@ -44,7 +44,7 @@
         (is (nil? (support/session-key browser)))
         (is (= {:session-id (:session-id laptop) :user-id fixtures/owner-id} (select-keys event [:session-id :user-id])))
         (testing "the ended row is kept but grants nothing, also for an old copy of the cookie"
-          (is (some? (get-in @state [:db :app_private.sessions (:key laptop) :ended_at])))
+          (is (some? (get-in @state [:db :sessions (:key laptop) :ended_at])))
           (is (nil? (session/session session-store (:key laptop))))
           (is (nil? (access/current-identity services (:key laptop)))))
         (testing "the other device is unaffected"

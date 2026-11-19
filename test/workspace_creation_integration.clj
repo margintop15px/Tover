@@ -19,13 +19,11 @@
     [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
     [starfederation.datastar.clojure.api :as datastar]
     [taoensso.nippy :as nippy]
-    [tover.accounts.persistence :as accounts]
     [tover.accounts.profile.model :as profile-model]
     [tover.identity.session :as session]
     [tover.shared.bel :as wiring]
     [tover.workspaces.create.model :as model]
-    [tover.workspaces.create.web :as web]
-    [tover.workspaces.persistence :as persistence])
+    [tover.workspaces.create.web :as web])
   (:import
     [java.nio.file Files]
     [java.time Instant]
@@ -87,8 +85,8 @@
 (defn counts [ctx req]
   (let [id (get-in req [:input :workspace-id])]
     (mapv (fn [statement] (:n (admin! statement)))
-          [["select count(*) as n from public.organizations where id=?" id]
-           ["select count(*) as n from public.organization_memberships where organization_id=?" id]
+          [["select count(*) as n from public.workspaces where workspace_id=?" id]
+           ["select count(*) as n from public.memberships where workspace_id=?" id]
            ["select count(*) as n from app_private.bel_events where scope_id=? and command_id=?" (:user-id ctx) (:command-id req)]
            ["select count(*) as n from app_private.bel_receipts where scope_id=? and command_id=?" (:user-id ctx) (:command-id req)]])))
 
@@ -247,7 +245,7 @@
 (deftest retries-do-not-restore-access-and-user-scope-ignores-selection
   (let [ctx          (context) req (request) receipt (execute ctx req)
         workspace-id (get-in req [:input :workspace-id])]
-    (admin! ["update public.organization_memberships set status='suspended' where organization_id=?" workspace-id])
+    (admin! ["update public.memberships set status='suspended' where workspace_id=?" workspace-id])
     (admin! ["update public.profiles set display_name=null where user_id=?" (:user-id ctx)])
     (is (= receipt (execute (assoc ctx :workspace-id (random-uuid)) req)))
     (is (false? (:can-open? (current ctx req))))
@@ -360,7 +358,7 @@
   (doseq [table ["app_private.bel_events" "app_private.bel_receipts"]]
     (is (false? (:allowed (admin! ["select has_table_privilege('authenticated',?,'SELECT') as allowed" table]))))
     (is (false? (:allowed (admin! ["select has_table_privilege('tover_app',?,'UPDATE') as allowed" table])))))
-  (doseq [table ["public.organizations" "public.organization_memberships"]]
+  (doseq [table ["public.workspaces" "public.memberships"]]
     (is (false? (:allowed (admin! ["select has_table_privilege('tover_app',?,'UPDATE') as allowed" table]))))
     (is (false? (:allowed (admin! ["select has_table_privilege('tover_app',?,'DELETE') as allowed" table])))))
   (is (false? (:allowed (admin! ["select has_table_privilege('tover_app','auth.users','SELECT') as allowed"])))))
@@ -369,7 +367,7 @@
 (defn write!
   "Adapter semantics only: the runtime role deliberately has no UPDATE grant on directory tables."
   [model fields row]
-  (let [directory (pg/store {:datasource (db "postgres") :tables (merge persistence/tables accounts/tables)})]
+  (let [directory (pg/store {:datasource (db "postgres")})]
     (store/-transact directory :serializable
                      #(store/-write! directory % {:kind :user :id nil} (get-in (bel/operations) [:models model]) fields row))))
 
@@ -391,7 +389,7 @@
     (execute alice req)
     (write! ::model/workspaces [:name] {:workspace-id id :name "Renamed"})
     (is (= {:name "Renamed" :created_by (:user-id alice)}
-           (admin! ["select name, created_by from public.organizations where id=?" id])))))
+           (admin! ["select name, created_by from public.workspaces where workspace_id=?" id])))))
 
 
 (deftest set-on-an-existing-row-needs-only-update-privilege
@@ -404,7 +402,7 @@
                          "create policy bel_p2_probe_all on public.profiles to bel_p2_probe using (true)"
                          "set local role bel_p2_probe"]]
         (jdbc/execute! tx [statement]))
-      (pg/write-model! {:tx tx :tables accounts/tables} (get-in (bel/operations) [:models ::profile-model/profiles])
+      (pg/write-model! {:tx tx} (get-in (bel/operations) [:models ::profile-model/profiles])
                        [:display-name] {:user-id alice :display-name "Alicia"})
       (is (= "Alicia" (:display_name (jdbc/execute-one! tx ["select display_name from public.profiles where user_id=?" alice]
                                                         {:builder-fn rs/as-unqualified-lower-maps})))))))
@@ -414,7 +412,7 @@
   (let [alice (:user-id (context)) id (random-uuid)]
     (write! ::model/workspaces [:name :created-by :created-at]
             {:workspace-id id :name "New" :created-by alice :created-at (Instant/now)})
-    (is (= {:name "New" :created_by alice} (admin! ["select name, created_by from public.organizations where id=?" id])))))
+    (is (= {:name "New" :created_by alice} (admin! ["select name, created_by from public.workspaces where workspace_id=?" id])))))
 
 
 (deftest set-without-an-optional-mapped-field-clears-it
@@ -426,7 +424,7 @@
 (deftest set-on-a-missing-incomplete-entity-is-a-validation-error
   (let [id (random-uuid)]
     (is (= :validation (:type (error-data #(write! ::model/workspaces [:name] {:workspace-id id :name "X"})))))
-    (is (= 0 (:n (admin! ["select count(*) as n from public.organizations where id=?" id]))))))
+    (is (= 0 (:n (admin! ["select count(*) as n from public.workspaces where workspace_id=?" id]))))))
 
 
 (deftest principal-is-the-current-session
@@ -518,35 +516,6 @@
         de (profile-user! "De" "de")]
     (is (= "ru" (:language (admin! ["select language from public.profiles where user_id=?" ru]))))
     (is (nil? (:language (admin! ["select language from public.profiles where user_id=?" de]))))))
-
-
-(deftest migration-037-backfill-survives-legacy-profile-rows
-  ;; Re-applies the real 037 file after recreating the pre-037 state: no display_name check, language NULL.
-  (let [migration (slurp "supabase/migrations/037_profile_preferences.sql")
-        legacy    (fn [name locale]
-                    (let [id (profile-user! "Seed" locale)]
-                      (admin! ["alter table public.profiles drop constraint if exists profiles_display_name_check"])
-                      (admin! ["update public.profiles set display_name=?, language=null where user_id=?" name id])
-                      id))
-        blank     (legacy "   " "ru")
-        long-name (legacy (apply str (repeat 101 "a")) "ru")
-        fine      (legacy "Carol" "en")
-        ;; An account created before any signup trigger has no profile row; the gate would lock it out.
-        orphan    (let [id (profile-user! "Seed" "ru")]
-                    (admin! ["delete from public.profiles where user_id=?" id])
-                    id)]
-    (admin! ["alter table public.profiles drop constraint if exists profiles_display_name_check"])
-    (with-open [connection (jdbc/get-connection (db "postgres"))
-                statement  (.createStatement connection)]
-      (.execute statement migration))
-    (is (nil? (:display_name (profile blank))))
-    (is (= "ru" (:language (admin! ["select language from public.profiles where user_id=?" blank]))))
-    (is (= 101 (count (:display_name (profile long-name)))))
-    (is (nil? (:language (admin! ["select language from public.profiles where user_id=?" long-name]))))
-    (is (= "en" (:language (admin! ["select language from public.profiles where user_id=?" fine]))))
-    (is (= {:display_name nil :language "ru" :name_revision 0 :language_revision 0}
-           (admin! ["select display_name, language, name_revision, language_revision from public.profiles where user_id=?" orphan])))
-    (is (= 1 (:n (admin! ["select count(*) as n from pg_constraint where conname='profiles_display_name_check'"]))))))
 
 
 (deftest restart-receipt

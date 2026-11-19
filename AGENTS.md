@@ -102,7 +102,7 @@ The development alias is required for tests because Kaocha hooks and instrumenta
 - `src/tover/inventory`: semantic ledger, replay, shared drafts, acceptance and workbench. Whole quantities aggregate by stable item ID and location; no per-unit identities or automatic receipt allocation.
 - `dev`: isolated fixtures (`tover.fixtures`: in-memory directory, sessions and fake GoTrue), instrumentation and REPL lifecycle. Keep development fixtures out of the production classpath.
 - `test`: Clojure tests; `test/browser` has independent Playwright tooling.
-- `supabase/migrations`: immutable SQL history; 033 supports fresh identity installation and upgrade from 032; every chain applies each file from 034 on in name order. See `docs/identity-deployment.md` for the local Auth/Postgres profile.
+- `supabase/migrations`: `001_baseline.sql` plus later forward migrations; `supabase/migrate.sh` applies each file once and records it in `app_private.schema_migrations`. Table and column names are snake_case Bel model and field names, so the PostgreSQL adapter needs no bindings. See `docs/identity-deployment.md` for the local Auth/Postgres profile.
 - `docs/legacy-contracts`: historical behavior and sanitized fixtures for later ports. Do not treat legacy inventory semantics as new requirements.
 - `docs/bel-experiment-findings.md`: historical findings from retired experiments; use `docs/bel-dsl-proposal.md` and `docs/bel-next-milestone.md` for the proposed direction and next bounded step.
 
@@ -123,6 +123,6 @@ Keep business constraints in the semantic package where practical. Accepted hist
 
 Never perform destructive database operations, including DELETE, TRUNCATE, DROP, resets or destructive overwrites, without explicit user approval identifying the exact target and impact. Repository cleanup does not authorize database changes.
 
-Preserve historical migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `043_description.sql`. Do not use timestamp-only names, skip numbers or reuse a number.
+Preserve applied migrations. New migration filenames use the next consecutive zero-padded three-digit prefix, currently `002_description.sql`, and contain no `BEGIN`/`COMMIT` (the runner wraps each file). Do not use timestamp-only names, skip numbers or reuse a number.
 
 Keep credentials, `.data`, backups, private experiment captures and generated dependencies out of Git. Never expose privileged credentials in browser assets.

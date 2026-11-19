@@ -45,8 +45,8 @@
   (let [user (random-uuid) workspace-id (random-uuid)]
     (workspace/admin! ["insert into auth.users(id,email,email_confirmed_at,raw_user_meta_data) values(?,?,now(),?::jsonb)"
                        user email (json/write-json-str {:name "Ann"})])
-    (workspace/admin! ["insert into public.organizations(id,name,created_by) values(?,?,?)" workspace-id "Shop" user])
-    (workspace/admin! ["insert into public.organization_memberships(organization_id,user_id,role_id,status) values(?,?,'owner','active')"
+    (workspace/admin! ["insert into public.workspaces(workspace_id,name,created_by) values(?,?,?)" workspace-id "Shop" user])
+    (workspace/admin! ["insert into public.memberships(workspace_id,user_id,role,status) values(?,?,'owner','active')"
                        workspace-id user])
     {:user user :workspace workspace-id}))
 
@@ -70,11 +70,6 @@
                                      (str as) (session! as)]))
     (:status (jdbc/execute-one! connection ["select status from app_private.bel_recipient_access(?, ?)" workspace-id email]
                                 {:builder-fn next.jdbc.result-set/as-unqualified-lower-maps}))))
-
-
-(deftest migration-038-applies-twice
-  (is (= 1 (:n (workspace/admin! ["select count(*) as n from pg_class where relname='invitation_deliveries'"]))))
-  (is (= 1 (:n (workspace/admin! ["select count(*) as n from pg_policies where policyname='bel_deliveries_delivery_update'"])))))
 
 
 (deftest journal-role-cannot-read-auth-users
@@ -103,15 +98,15 @@
                  (with-open [connection (jdbc/get-connection (workspace/db "tover_app"))]
                    (jdbc/execute-one! connection ["select set_config('request.jwt.claim.sub', ?, false), set_config('tover.session_key', ?, false)"
                                                   (str (:user a)) (session! (:user a))])
-                   (try (jdbc/execute-one! connection ["insert into public.invitation_deliveries(id,invitation_id,organization_id,requested_by,requested_at,status) values(gen_random_uuid(),?,?,?,now(),'queued')"
+                   (try (jdbc/execute-one! connection ["insert into public.invitation_deliveries(delivery_id,invitation_id,workspace_id,requested_by,requested_at,delivery_status) values(gen_random_uuid(),?,?,?,now(),'queued')"
                                                        invitation-id organization-id (:user a)])
                         :inserted
                         (catch java.sql.SQLException error (.getSQLState error)))))]
-    (workspace/admin! ["insert into public.organization_invites(id,organization_id,email,role_id,invited_by) values(?,?,'x@example.test','member',?)"
+    (workspace/admin! ["insert into public.invitations(invitation_id,workspace_id,email,role,invited_by) values(?,?,'x@example.test','member',?)"
                        invite (:workspace b) (:user b)])
     (is (= "42501" (insert (:workspace a) invite)))
     (let [own (random-uuid)]
-      (workspace/admin! ["insert into public.organization_invites(id,organization_id,email,role_id,invited_by) values(?,?,'y@example.test','member',?)"
+      (workspace/admin! ["insert into public.invitations(invitation_id,workspace_id,email,role,invited_by) values(?,?,'y@example.test','member',?)"
                          own (:workspace a) (:user a)])
       (is (= :inserted (insert (:workspace a) own))))))
 
@@ -123,7 +118,7 @@
 
 
 (deftest app-role-cannot-update-delivery-status
-  (is (= "42501" (sql-state "tover_app" "update public.invitation_deliveries set status='stopped'"))))
+  (is (= "42501" (sql-state "tover_app" "update public.invitation_deliveries set delivery_status='stopped'"))))
 
 
 (defn owner-context
@@ -138,23 +133,23 @@
 (defn invite-counts
   {:malli/schema [:=> [:cat :uuid] [:vector :int]]}
   [workspace-id]
-  (mapv (fn [table] (:n (workspace/admin! [(str "select count(*) as n from public." table " where organization_id=?") workspace-id])))
-        ["organization_invites" "invitation_deliveries"]))
+  (mapv (fn [table] (:n (workspace/admin! [(str "select count(*) as n from public." table " where workspace_id=?") workspace-id])))
+        ["invitations" "invitation_deliveries"]))
 
 
 (deftest invite-teammate-commits-offer-and-delivery
   (let [ctx     (owner-context)
         request {:command-id "invite-1" :input {:email " Ann@Example.test "}}
         receipt (runtime/execute! ctx ::issue/invite-teammate request)
-        invite  (workspace/admin! ["select email, role_id, status, invited_by, expires_at - created_at as lifetime from public.organization_invites where organization_id=?"
+        invite  (workspace/admin! ["select email, role, status, invited_by, expires_at - created_at as lifetime from public.invitations where workspace_id=?"
                                    (:workspace-id ctx)])
-        pending (workspace/admin! ["select status, attempts, requested_by from public.invitation_deliveries where organization_id=?"
+        pending (workspace/admin! ["select delivery_status as status, attempts, requested_by from public.invitation_deliveries where workspace_id=?"
                                    (:workspace-id ctx)])]
     (is (= :accepted (:status receipt)))
     (is (= 1 (count (:event-ids receipt))) "one event feeds both tables")
     (is (= [1 1] (invite-counts (:workspace-id ctx))))
-    (is (= {:email "ann@example.test" :role_id "member" :status "pending" :invited_by (:user-id ctx)}
-           (select-keys invite [:email :role_id :status :invited_by])))
+    (is (= {:email "ann@example.test" :role "member" :status "pending" :invited_by (:user-id ctx)}
+           (select-keys invite [:email :role :status :invited_by])))
     (is (= "queued" (:status pending)))
     (is (= 0 (:attempts pending)))
     (is (= (:user-id ctx) (:requested_by pending)))
@@ -167,7 +162,7 @@
 (deftest member-cannot-issue-invitations
   (let [owner  (owner-context)
         member (workspace/context)]
-    (workspace/admin! ["insert into public.organization_memberships(organization_id,user_id,role_id,status) values(?,?,'member','active')"
+    (workspace/admin! ["insert into public.memberships(workspace_id,user_id,role,status) values(?,?,'member','active')"
                        (:workspace-id owner) (:user-id member)])
     (is (= :forbidden (:type (workspace/error-data
                                #(runtime/execute! (assoc member :workspace-id (:workspace-id owner) :bel/system (:bel/system owner))
@@ -205,9 +200,9 @@
 (defn delivery-row
   {:malli/schema [:=> [:cat :uuid] [:maybe :map]]}
   [workspace-id]
-  (workspace/admin! ["select status, attempts, last_problem, next_attempt_at, submitted_at,
+  (workspace/admin! ["select delivery_status as status, attempts, last_problem, next_attempt_at, submitted_at,
                              extract(epoch from next_attempt_at - attempted_at) as wait
-                      from public.invitation_deliveries where organization_id=?" workspace-id]))
+                      from public.invitation_deliveries where workspace_id=?" workspace-id]))
 
 
 (defn await-row
@@ -304,18 +299,12 @@
                                        {:builder-fn next.jdbc.result-set/as-unqualified-lower-maps})))))
 
 
-;; Lifecycle (migration 042)
-
-
-(deftest migration-042-applies-twice
-  (is (= 1 (:n (workspace/admin! ["select count(*) as n from pg_indexes where indexname='organization_invites_one_pending_idx'"]))))
-  (is (= 4 (:n (workspace/admin! ["select count(*) as n from pg_policies where policyname in
-                                   ('bel_invites_recipient_read','bel_invites_recipient_accept','bel_invited_member_insert','bel_invited_member_rejoin')"])))))
+;; Lifecycle
 
 
 (deftest one-pending-offer-per-workspace-and-recipient
   (let [{:keys [user workspace]} (member! (str "owner-" (random-uuid) "@example.test"))
-        insert                   #(try (workspace/admin! ["insert into public.organization_invites(organization_id,email,role_id,invited_by) values(?,?,'member',?)"
+        insert                   #(try (workspace/admin! ["insert into public.invitations(workspace_id,email,role,invited_by) values(?,?,'member',?)"
                                                           workspace % user])
                                        :inserted
                                        (catch java.sql.SQLException error (.getSQLState error)))]
@@ -334,8 +323,8 @@
 (defn offer-id
   {:malli/schema [:=> [:cat :uuid :string] [:maybe :uuid]]}
   [workspace-id email]
-  (:id (workspace/admin! ["select id from public.organization_invites where organization_id=? and email=? order by created_at desc limit 1"
-                          workspace-id email])))
+  (:invitation_id (workspace/admin! ["select invitation_id from public.invitations where workspace_id=? and email=? order by created_at desc limit 1"
+                                     workspace-id email])))
 
 
 (defn accept!
@@ -355,10 +344,10 @@
     (is (= {:available? true :state "pending" :workspace-name "Shop" :role "admin"}
            (select-keys review [:available? :state :workspace-name :role])))
     (is (= :accepted (:status (accept! recipient (:workspace-id owner) id "admin"))))
-    (is (= {:status "active" :role_id "admin"}
-           (workspace/admin! ["select status, role_id from public.organization_memberships where organization_id=? and user_id=?"
+    (is (= {:status "active" :role "admin"}
+           (workspace/admin! ["select status, role from public.memberships where workspace_id=? and user_id=?"
                               (:workspace-id owner) (:user-id recipient)])))
-    (is (= "accepted" (:status (workspace/admin! ["select status from public.organization_invites where id=?" id]))))
+    (is (= "accepted" (:status (workspace/admin! ["select status from public.invitations where invitation_id=?" id]))))
     (testing "a second accept finds an active member and records nothing"
       (let [receipt (accept! recipient (:workspace-id owner) id "admin")]
         (is (= [] (:event-ids receipt)))))))
@@ -372,7 +361,7 @@
         id       (offer-id (:workspace-id owner) (:email intended))]
     (is (= {:available? false :invitation-id id} (runtime/read-model other ::accept/my-invitation {:invitation-id id})))
     (is (= :invitation-unavailable (:type (workspace/error-data #(accept! other (:workspace-id owner) id)))))
-    (is (= "42501" (sql-state "tover_app" (str "insert into public.organization_memberships(organization_id,user_id,role_id,status)
+    (is (= "42501" (sql-state "tover_app" (str "insert into public.memberships(workspace_id,user_id,role,status)
                                                  values('" (:workspace-id owner) "','" (:user-id other) "','member','active')"))))))
 
 
@@ -382,9 +371,9 @@
         _         (runtime/execute! owner ::issue/invite-teammate {:command-id "i" :input {:email (:email recipient)}})
         id        (offer-id (:workspace-id owner) (:email recipient))]
     (runtime/execute! owner ::cancel/cancel-invitation {:command-id "c" :input {:invitation-id id}})
-    (is (= "revoked" (:status (workspace/admin! ["select status from public.organization_invites where id=?" id]))))
+    (is (= "revoked" (:status (workspace/admin! ["select status from public.invitations where invitation_id=?" id]))))
     (is (= :invitation-not-pending (:type (workspace/error-data #(accept! recipient (:workspace-id owner) id)))))
-    (is (nil? (workspace/admin! ["select 1 from public.organization_memberships where organization_id=? and user_id=?"
+    (is (nil? (workspace/admin! ["select 1 from public.memberships where workspace_id=? and user_id=?"
                                  (:workspace-id owner) (:user-id recipient)])))))
 
 
@@ -394,10 +383,10 @@
         _         (runtime/execute! owner ::issue/invite-teammate {:command-id "i" :input {:email (:email recipient) :role "admin"}})
         old       (offer-id (:workspace-id owner) (:email recipient))]
     (accept! recipient (:workspace-id owner) old "admin")
-    (workspace/admin! ["update public.organization_memberships set status='removed', removed_at=now() where organization_id=? and user_id=?"
+    (workspace/admin! ["update public.memberships set status='removed', removed_at=now() where workspace_id=? and user_id=?"
                        (:workspace-id owner) (:user-id recipient)])
     (is (= :invitation-not-pending (:type (workspace/error-data #(accept! recipient (:workspace-id owner) old "admin")))))
-    (let [removed-at (:removed_at (workspace/admin! ["select removed_at from public.organization_memberships where organization_id=? and user_id=?"
+    (let [removed-at (:removed_at (workspace/admin! ["select removed_at from public.memberships where workspace_id=? and user_id=?"
                                                      (:workspace-id owner) (:user-id recipient)]))]
       (is (= :removal-review-required
              (:type (workspace/error-data #(runtime/execute! owner ::issue/invite-teammate {:command-id "j" :input {:email (:email recipient)}})))))
@@ -405,8 +394,8 @@
     (let [fresh (offer-id (:workspace-id owner) (:email recipient))]
       (is (not= old fresh))
       (is (= :accepted (:status (accept! recipient (:workspace-id owner) fresh))))
-      (is (= {:status "active" :role_id "member"}
-             (workspace/admin! ["select status, role_id from public.organization_memberships where organization_id=? and user_id=?"
+      (is (= {:status "active" :role "member"}
+             (workspace/admin! ["select status, role from public.memberships where workspace_id=? and user_id=?"
                                 (:workspace-id owner) (:user-id recipient)]))))))
 
 
@@ -419,6 +408,6 @@
     (is (= 1 (count (:members team))))
     (is (= [] (:event-ids (runtime/execute! ctx ::resend/resend-invitation {:command-id "r1" :input {:invitation-id id}})))
         "queued work answers without a parallel request")
-    (workspace/admin! ["update public.invitation_deliveries set status='submitted', requested_at=now() - interval '61 seconds' where invitation_id=?" id])
+    (workspace/admin! ["update public.invitation_deliveries set delivery_status='submitted', requested_at=now() - interval '61 seconds' where invitation_id=?" id])
     (runtime/execute! ctx ::resend/resend-invitation {:command-id "r2" :input {:invitation-id id}})
     (is (= 2 (:n (workspace/admin! ["select count(*) as n from public.invitation_deliveries where invitation_id=?" id]))))))

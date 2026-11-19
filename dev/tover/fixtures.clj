@@ -2,10 +2,10 @@
   "Offline Bel fixtures for onboarding tests. Absent from the production classpath.
 
   One `state` atom holds an in-memory directory in PostgreSQL column terms, keyed by table:
-    {:db      {:auth.users {id row} :public.profiles {user-id row} :public.organizations {id row}
-               :public.organization_memberships {id row} :public.organization_invites {id row}
-               :public.invitation_deliveries {id row} :app_private.sessions {secret-key row}
-               :app_private.session_boundaries {user-id row}}
+    {:db      {:auth.users {id row} :profiles {user-id row} :workspaces {id row}
+               :memberships {id row} :invitations {id row}
+               :invitation_deliveries {id row} :sessions {secret-key row}
+               :session_boundaries {user-id row}}
      :journal [delivery …]      accepted command batches
      :emails  [{:type :signup|:recovery :email :token-hash :redirect-to} …]   provider outbox
      :tokens  {access-token {:user-id :refresh-token}}}
@@ -29,6 +29,7 @@
     (context services session)                 the trusted Bel context (`:bel/context` + :bel/system) of that
                                                session, for runtime/execute! and runtime/read-model in tests"
   (:require
+    [bel-postgres.adapter :as postgres]
     [bel.runtime :as runtime]
     [bel.store :as store]
     [bel.validation :as validation]
@@ -37,7 +38,6 @@
     [tover.identity.access :as access]
     [tover.identity.provider :as provider]
     [tover.identity.session :as session]
-    [tover.shared.bel :as wiring]
     [tover.workspaces.persistence :as workspaces])
   (:import
     [java.io ByteArrayInputStream]
@@ -69,19 +69,19 @@
                      [other-id "other@example.test" "Otto Other"] [unnamed-id "unnamed@example.test" nil]]
         memberships [[workspace-id owner-id "owner"] [workspace-id member-id "member"]
                      [other-workspace-id owner-id "member"] [other-workspace-id other-id "owner"]]]
-    {:auth.users (into {} (for [[id email] users]
-                            [id {:id id :email email :email_confirmed_at seeded-at :password password}]))
-     :public.profiles                 (into {} (for [[id _ name] users]
-                                                 [id (cond-> {:user_id id :name_revision (if name 1 0) :language_revision 0}
-                                                       name (assoc :display_name name))]))
-     :public.organizations            {workspace-id       {:id workspace-id :name "Development workspace" :created_by owner-id :created_at seeded-at}
-                                       other-workspace-id {:id other-workspace-id :name "Other workspace" :created_by other-id :created_at seeded-at}}
-     :public.organization_memberships (into {} (for [[workspace user role] memberships
-                                                     :let                  [id (UUID/nameUUIDFromBytes (.getBytes (str workspace user)))]]
-                                                 [id {:id         id        :organization_id workspace :user_id user :role_id role :status "active"
-                                                      :created_at seeded-at}]))
-     :app_private.sessions            {}
-     :app_private.session_boundaries  {}}))
+    {:auth.users         (into {} (for [[id email] users]
+                                    [id {:id id :email email :email_confirmed_at seeded-at :password password}]))
+     :profiles           (into {} (for [[id _ name] users]
+                                    [id (cond-> {:user_id id :name_revision (if name 1 0) :language_revision 0}
+                                          name (assoc :display_name name))]))
+     :workspaces         {workspace-id       {:workspace_id workspace-id :name "Development workspace" :created_by owner-id :created_at seeded-at}
+                          other-workspace-id {:workspace_id other-workspace-id :name "Other workspace" :created_by other-id :created_at seeded-at}}
+     :memberships        (into {} (for [[workspace user role] memberships
+                                        :let                  [id (UUID/nameUUIDFromBytes (.getBytes (str workspace user)))]]
+                                    [id {:membership_id id        :workspace_id workspace :user_id user :role role :status "active"
+                                         :created_at    seeded-at}]))
+     :sessions           {}
+     :session_boundaries {}}))
 
 
 ;; Directory store
@@ -94,24 +94,24 @@
   (some (fn [[key row]] (when (= id (get row column)) [key row])) (get db table)))
 
 
-(defrecord MemoryDirectory [state tables]
+(defrecord MemoryDirectory [state]
   store/Transactional
   (-transact [_ _ f] (locking state (f state)))
 
   store/Store
   (-load [_ _ _ model id]
-    (let [{:keys [table columns]} (get tables (:model-id model))]
+    (let [{:keys [table columns]} (postgres/table-binding model)]
       (when-let [[_ row] (entry (:db @state) table (get columns (:id model)) id)]
         (into {} (keep (fn [[field column]] (when (some? (get row column)) [field (get row column)]))) columns))))
   (-create! [_ _ _ model row]
     (validation/check! (:schema model) row)
-    (let [{:keys [table columns]} (get tables (:model-id model))
+    (let [{:keys [table columns]} (postgres/table-binding model)
           id (get row (:id model))]
       (when (entry (:db @state) table (get columns (:id model)) id)
         (throw (ex-info "This identity is already in use." {:type :identity-conflict})))
       (swap! state assoc-in [:db table id] (into {} (map (fn [[field column]] [column (get row field)])) columns))))
   (-write! [_ _ _ model fields row]
-    (let [{:keys [table columns]} (get tables (:model-id model))
+    (let [{:keys [table columns]} (postgres/table-binding model)
           id (get row (:id model))
           values                  (into {} (map (fn [field] [(get columns field) (get row field)])) (cons (:id model) fields))]
       (if-let [[key _] (entry (:db @state) table (get columns (:id model)) id)]
@@ -151,22 +151,22 @@
   "The access check's directory facts for `user-id`, as the SQL query returns them."
   {:malli/schema [:=> [:cat :map :uuid] session/Directory]}
   [db user-id]
-  (let [profile  (get-in db [:public.profiles user-id])
-        boundary (get-in db [:app_private.session_boundaries user-id])]
+  (let [profile  (get-in db [:profiles user-id])
+        boundary (get-in db [:session_boundaries user-id])]
     {:profile     (when profile {:display-name (:display_name profile) :language (:language profile)})
      :boundary    (session/effective-boundary
                     (when boundary {:valid-after (:valid_after boundary) :kept-session-id (:kept_session_id boundary)})
-                    (some->> (vals (:app_private.password_resets db))
+                    (some->> (vals (:password_resets db))
                              (filter #(and (= user-id (:user_id %)) (= "requested" (:status %))))
                              seq (apply max-key #(.toEpochMilli ^java.time.Instant (:requested_at %)))
                              ((fn [r] {:requested-at (:requested_at r) :session-id (:session_id r)}))))
-     :memberships (->> (vals (:public.organization_memberships db))
+     :memberships (->> (vals (:memberships db))
                        (filter #(and (= user-id (:user_id %)) (= "active" (:status %))))
-                       (sort-by (juxt :created_at :organization_id))
-                       (mapv (fn [{:keys [organization_id role_id created_at]}]
-                               {:workspace-id organization_id
-                                :name         (get-in db [:public.organizations organization_id :name])
-                                :role         (keyword role_id)
+                       (sort-by (juxt :created_at :workspace_id))
+                       (mapv (fn [{:keys [workspace_id role created_at]}]
+                               {:workspace-id workspace_id
+                                :name         (get-in db [:workspaces workspace_id :name])
+                                :role         (keyword role)
                                 :created-at   created_at})))}))
 
 
@@ -177,14 +177,14 @@
   (session/->Store
     (fn [key f]
       (locking state
-        (let [row             (session-row key (get-in @state [:db :app_private.sessions key]))
+        (let [row             (session-row key (get-in @state [:db :sessions key]))
               [updated value] (f row #(directory (:db @state) %))]
           (cond
-            updated (swap! state assoc-in [:db :app_private.sessions key] (session-columns updated))
-            row (swap! state update-in [:db :app_private.sessions] dissoc key))
+            updated (swap! state assoc-in [:db :sessions key] (session-columns updated))
+            row (swap! state update-in [:db :sessions] dissoc key))
           value)))
     (fn [session-id]
-      (first (entry (:db @state) :app_private.sessions :session_id session-id)))))
+      (first (entry (:db @state) :sessions :session_id session-id)))))
 
 
 (defrecord FixtureSession [state]
@@ -192,7 +192,7 @@
   (-principal [_ _ {:keys [user-id scope auth-session-id session-id] :as context}]
     (session/check-context! context)
     (let [db        (:db @state)
-          row       (session-row auth-session-id (get-in db [:app_private.sessions auth-session-id]))
+          row       (session-row auth-session-id (get-in db [:sessions auth-session-id]))
           _         (when-not (and (= user-id (:user-id row)) (= session-id (:session-id row))
                                    (session/valid? row (:boundary (directory db user-id))))
                       (session/ended!))
@@ -201,11 +201,11 @@
                      :password-required? (boolean (get-in row [:data :identity/password-required?]))
                      :memberships        []}]
       (if-let [workspace (:workspace-id scope)]
-        (let [membership (second (some #(when (and (= workspace (:organization_id (val %))) (= user-id (:user_id (val %)))) %)
-                                       (:public.organization_memberships db)))]
+        (let [membership (second (some #(when (and (= workspace (:workspace_id (val %))) (= user-id (:user_id (val %)))) %)
+                                       (:memberships db)))]
           (when-not (and (:confirmed? principal) (not (:password-required? principal)) (= "active" (:status membership)))
             (throw (ex-info "Current workspace access is required" {:type :forbidden :status 403})))
-          (assoc principal :memberships [{:workspace-id workspace :role (keyword (:role_id membership))}]))
+          (assoc principal :memberships [{:workspace-id workspace :role (keyword (:role membership))}]))
         principal))))
 
 
@@ -213,13 +213,13 @@
 (extend-protocol workspaces/Memberships
   clojure.lang.Atom
   (-membership [state user-id workspace-id]
-    (some (fn [{:keys [id organization_id user_id role_id status]}]
-            (when (and (= workspace-id organization_id) (= user-id user_id))
-              {:membership-id id :workspace-id organization_id :user-id user_id :role role_id :status status}))
-          (vals (get-in @state [:db :public.organization_memberships])))))
+    (some (fn [{:keys [membership_id workspace_id user_id role status]}]
+            (when (and (= workspace-id workspace_id) (= user-id user_id))
+              {:membership-id membership_id :workspace-id workspace_id :user-id user_id :role role :status status}))
+          (vals (get-in @state [:db :memberships])))))
 
 
-(alter-meta! #'->MemoryDirectory assoc :malli/schema [:=> [:cat :any :map] :map])
+(alter-meta! #'->MemoryDirectory assoc :malli/schema [:=> [:cat :any] :map])
 (alter-meta! #'map->MemoryDirectory assoc :malli/schema [:=> [:cat :map] :map])
 (alter-meta! #'->FixtureSession assoc :malli/schema [:=> [:cat :any] :map])
 (alter-meta! #'map->FixtureSession assoc :malli/schema [:=> [:cat :map] :map])
@@ -284,7 +284,7 @@
                  ;; The database triggers create the profile, starting from the signup language.
                  (swap! state #(-> %
                                    (assoc-in [:db :auth.users id] user)
-                                   (assoc-in [:db :public.profiles id]
+                                   (assoc-in [:db :profiles id]
                                              (cond-> {:user_id id :name_revision 0 :language_revision 0}
                                                (:locale user) (assoc :language (:locale user))))))
                  (queue! state :signup email query)
@@ -342,7 +342,7 @@
 (defn bel-system
   {:malli/schema [:=> [:cat :map] :map]}
   [{:keys [state provider session-store origin realtime]}]
-  {:stores    {:directory (->MemoryDirectory state wiring/directory-tables)}
+  {:stores    {:directory (->MemoryDirectory state)}
    :journal   :directory
    :scope     :workspace
    :authority {:store :directory :impl (->FixtureSession state)}
@@ -422,8 +422,8 @@
   [state]
   (fn [{:keys [workspace-id]} _records]
     (let [db @state]
-      (into {} (for [{:keys [organization_id user_id status]} (vals (get-in db [:db :public.organization_memberships]))
-                     :when (and (= workspace-id organization_id) (= "active" status))
-                     :let [name (get-in db [:db :public.profiles user_id :display_name])]
+      (into {} (for [{:keys [workspace_id user_id status]} (vals (get-in db [:db :memberships]))
+                     :when (and (= workspace-id workspace_id) (= "active" status))
+                     :let [name (get-in db [:db :profiles user_id :display_name])]
                      :when name]
                  [(str user_id) name])))))

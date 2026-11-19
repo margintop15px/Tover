@@ -34,16 +34,8 @@ check() {
 }
 
 migrate() {
-  # 033 verifies the exact original profiles shape, so it runs only on a fresh database.
-  if [[ -z "$("${compose[@]}" exec -T db psql -X -At -U postgres -d postgres -c "select to_regclass('app_private.sessions')")" ]]; then
-    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
-      < "$repo_dir/supabase/migrations/033_identity_and_sessions.sql"
-  fi
-  # Every later migration is additive and idempotent; apply 034 onward in order on every run.
-  for migration in "$repo_dir"/supabase/migrations/0[3-9][0-9]_*.sql; do
-    [[ "$(basename "$migration")" < 034 ]] && continue
-    "${compose[@]}" exec -T db psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 < "$migration"
-  done
+  # Each migration runs once; the ledger in app_private.schema_migrations records it.
+  "$repo_dir/supabase/migrate.sh" "${compose[@]}" exec -T db psql -U postgres -d postgres
   "${compose[@]}" exec -T db sh -c \
     'psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 --set=app_password="$TOVER_DB_PASSWORD"' <<'SQL'
 ALTER ROLE tover_app WITH PASSWORD :'app_password';

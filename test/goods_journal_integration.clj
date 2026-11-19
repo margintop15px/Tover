@@ -18,8 +18,8 @@
     [tover.catalogues.rename-test :as rename]
     [tover.catalogues.rename.model :as goods]
     [tover.inventory.store-test :as rdf-fixture]
-    [tover.shared.bel :as wiring]
     [tover.shared.rdf :as rdf]
+    [tover.shared.bel :as wiring]
     [workspace-creation-integration :as workspace])
   (:import
     [java.nio.file Files]
@@ -324,7 +324,7 @@
   (with-feature
     (fn [ctx]
       (execute ctx)
-      (workspace/admin! ["update public.organization_memberships set status='suspended' where organization_id=?" (:workspace-id ctx)])
+      (workspace/admin! ["update public.memberships set status='suspended' where workspace_id=?" (:workspace-id ctx)])
       (is (= :forbidden (:type (workspace/error-data #(execute ctx)))))
       (is (= :forbidden (:type (workspace/error-data #(row ctx)))))
       (is (= :forbidden (:type (workspace/error-data #(runtime/history ctx)))))
@@ -349,7 +349,7 @@
               (is (= {:delivered 0 :failed 0} (delivery/deliver-pending! (delivery-system (:repo ctx)))))
               (let [started (promise)
                     revoke  (future (deliver started true)
-                                    (workspace/admin! ["update public.organization_memberships set status='suspended' where organization_id=?" (:workspace-id ctx)]))]
+                                    (workspace/admin! ["update public.memberships set status='suspended' where workspace_id=?" (:workspace-id ctx)]))]
                 (try
                   (is (= true (deref started 10000 ::timeout)))
                   (is (= ::waiting (deref revoke 200 ::waiting)))
@@ -388,11 +388,11 @@
 
 
 (deftest worker-role-is-private-and-legacy-rdf-history-is-not-migrated-implicitly
-  (doseq [table ["auth.users" "app_private.sessions" "public.organization_memberships"]]
+  (doseq [table ["auth.users" "app_private.sessions" "public.memberships"]]
     (is (false? (:allowed (workspace/admin! ["select has_table_privilege('tover_journal',?,'SELECT') as allowed" table])))))
   ;; 038 narrows the worker: it reads organizations (for the invitation email) but nothing else of the directory.
-  (is (true? (:allowed (workspace/admin! ["select has_table_privilege('tover_journal','public.organizations','SELECT') as allowed"]))))
-  (is (false? (:allowed (workspace/admin! ["select has_table_privilege('tover_journal','public.organizations','INSERT,UPDATE,DELETE') as allowed"]))))
+  (is (true? (:allowed (workspace/admin! ["select has_table_privilege('tover_journal','public.workspaces','SELECT') as allowed"]))))
+  (is (false? (:allowed (workspace/admin! ["select has_table_privilege('tover_journal','public.workspaces','INSERT,UPDATE,DELETE') as allowed"]))))
   (doseq [table ["app_private.bel_events" "app_private.bel_receipts"]]
     (is (false? (:allowed (workspace/admin! ["select has_table_privilege('tover_journal',?,'UPDATE,DELETE') as allowed" table])))))
   (with-feature

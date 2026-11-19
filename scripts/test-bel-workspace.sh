@@ -27,16 +27,9 @@ wait_ready() {
 wait_ready
 test_port=$(docker port "$test_container" 5432/tcp)
 test_port=${test_port##*:}
-# 033 runs once on the fresh cluster; 034 onward are additive and run twice to check idempotence.
-later=()
-for migration in supabase/migrations/0[3-9][0-9]_*.sql; do
-  [[ "$(basename "$migration")" < 034 ]] || later+=("$migration")
-done
-for migration in supabase/tests/auth-stub.sql supabase/migrations/033_identity_and_sessions.sql \
-  "${later[@]}" "${later[@]}"; do
-  docker exec "$test_container" psql -X -q -U postgres -d postgres \
-    -v ON_ERROR_STOP=1 -c 'SET client_min_messages=warning' -f "/work/$migration"
-done
+docker exec "$test_container" psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'SET client_min_messages=warning' -f /work/supabase/tests/auth-stub.sql
+"$repo_dir/supabase/migrate.sh" docker exec -i "$test_container" psql -U postgres -d postgres
 # Only the freshly created disposable cluster gets a direct worker login.
 docker exec "$test_container" psql -X -q -U postgres -d postgres \
   -v ON_ERROR_STOP=1 -c 'ALTER ROLE tover_journal LOGIN'

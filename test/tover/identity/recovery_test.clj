@@ -85,7 +85,7 @@
         (is (str/includes? (:body response) (bel/action-url ::web/reset-password)))
         (is (str/includes? (:body response) "Resetting your password ends your other sign-ins."))
         (is (some? (recovery-token state "owner@example.test")))
-        (is (not-any? :tokens (vals (get-in @state [:db :app_private.sessions]))))))))
+        (is (not-any? :tokens (vals (get-in @state [:db :sessions]))))))))
 
 
 (deftest a-reset-in-a-fresh-browser-ends-other-sign-ins-and-continues
@@ -107,7 +107,7 @@
             (is (false? (:password-required? (access/current-identity services key))))
             (is (= 200 (:status ((:request! phone) :get "/workspace")))))
           (testing "the reset preserves the profile and records the new ordinary sign-in once"
-            (is (= "Olga Owner" (get-in @state [:db :public.profiles fixtures/owner-id :display_name])))
+            (is (= "Olga Owner" (get-in @state [:db :profiles fixtures/owner-id :display_name])))
             (is (= [(:kept-session-id event)] (map :session-id (signed-in-events state))))))))))
 
 

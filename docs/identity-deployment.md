@@ -16,7 +16,7 @@ deployment/local-identity/identity.sh up
 scripts/test-identity-integration.sh
 ```
 
-`init` generates private random credentials in an ignored `.env` with mode 0600 and refuses to overwrite it. `up` starts Postgres, configures local database role passwords, starts Auth/PostgREST/Mailpit/gateway, applies migration 033 only when `app_private.sessions` does not exist yet (033 checks the original profile shape), then every migration from 034 on in name order (currently 034–042), configures the restricted `tover_app` session role and gives the private `tover_journal` worker role a local login. A profile created before the journal worker gets `TO_DEV_JOURNAL_PASSWORD` appended to its `.env` on the next `up`; other keys stay unchanged. Running `up` again preserves accounts and data. `stop` stops this profile without removing its volume.
+`init` generates private random credentials in an ignored `.env` with mode 0600 and refuses to overwrite it. `up` starts Postgres, configures local database role passwords, starts Auth/PostgREST/Mailpit/gateway, applies unapplied migrations with `supabase/migrate.sh`, configures the restricted `tover_app` session role and gives the private `tover_journal` worker role a local login. A profile created before the journal worker gets `TO_DEV_JOURNAL_PASSWORD` appended to its `.env` on the next `up`; other keys stay unchanged. Running `up` again preserves accounts and data. `stop` stops this profile without removing its volume.
 
 | Service | Local address |
 | --- | --- |
@@ -54,23 +54,11 @@ The pinned Auth/PostgREST/Postgres versions follow the [official Supabase Docker
 
 ## SQL contract
 
-`033_identity_and_sessions.sql` accepts either an initialized Supabase Auth database with no Tover identity tables or the complete identity contract through migration 032. It rejects partial/incompatible identity schemas. Fresh installations begin with 033; existing installations apply it after their retained migration history. Do not replay legacy inventory migrations into a fresh identity deployment.
+`supabase/migrations/001_baseline.sql` installs the whole Tover schema into an initialized Supabase Auth database: profiles, workspaces, memberships, invitations, invitation deliveries, sessions, reset boundaries, password resets and the Bel journal, their row policies and the restricted `tover_app` (requests) and `tover_journal` (delivery worker) roles. Table and column names match Bel model and field names in snake_case, so the PostgreSQL adapter infers every binding from `defmodel`. Both roles resolve unqualified names through `search_path = public, app_private`. The Supabase API roles (`anon`, `authenticated`, `service_role`) get no table access. Signup metadata only names the profile and never creates or joins a workspace. Identity is read from Postgres on every request, so a removed membership or suspended account loses access on its next request. Assign role passwords through the deployment's secret-management process; migrations contain no passwords.
 
-Migration 033 preserves account UUIDs, credentials, profiles, workspaces, memberships, invitations and legacy inventory. It removes the signup trigger's warehouse insert. As forward permission hardening, it removes `PUBLIC` execution of public `SECURITY DEFINER` functions while preserving explicit authenticated/service grants, so the session role cannot inherit legacy privileged RPC access. It restricted membership/invitation writes to authorized RPCs and added `my_workspaces()` plus reservation-specific invitation revocation; 039 drops those RPCs again. The private `app_private.sessions` table and its non-inheriting, non-superuser, non-BYPASSRLS login role have no Data API exposure. Assign the session role's password separately through the deployment's secret-management process; the migration contains no passwords.
+`supabase/migrate.sh <psql command…>` applies each `NNN_*.sql` file once, in name order, in one transaction together with its row in `app_private.schema_migrations`. Migration files therefore contain no `BEGIN`/`COMMIT`. Every chain (`identity.sh up`, `production.sh migrate`, the Docker test scripts) uses it, so a new migration only adds a file.
 
-Migration 037 adds the profile `language`, `name_revision` and `language_revision` columns and a display-name CHECK (nonblank, at most 100 characters; existing longer names stay until edited). It also created `public.custom_access_token_hook`, which 039 drops: Auth must not enable `GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_*` (neither compose file sets it). Because identity is read from Postgres on every request, a removed membership or suspended account loses access on its next request.
-
-The onboarding cutover adds:
-
-- 038: invitation deliveries and manager row policies on invitations.
-- 039: drops the legacy identity RPCs and the access-token hook; signup metadata only names the profile and never creates or joins a workspace; `app_private.sessions` gains `session_id`, `created_at` and `ended_at`; `app_private.session_boundaries` holds password-reset boundaries; session-scoped journal entries; `app_private.bel_actor_labels`.
-- 040: `app_private.password_resets` for interrupted reset completion.
-- 041: invitation lifecycle helpers (`bel_received_invitation`, `bel_recipient_access`, `bel_workspace_team`, `bel_invitation_grant`) and recipient acceptance policies.
-- 042: drops the unused `bel_recipient_membership` and makes the membership lookup behind every manager policy ignore ended sign-ins.
-
-All are additive and idempotent and preserve accounts, profiles, workspaces, memberships, invitations and sessions. Every chain (`identity.sh up`, `production.sh`, the Docker test scripts) applies every file from 034 on in name order, so a new migration only adds a file.
-
-Migration 034 adds `workspace_actor_labels(workspace_id, actor_ids)` for history attribution. Any active member can resolve up to 200 requested workspace actor IDs per call to trimmed display names or email addresses, including retained inactive membership records. Unknown or deleted users return no label. The caller's access token authorizes each lookup; the team-administration RPC and profile policies stay unchanged. Apply 034 after 033 before running this application version. No inventory records or identity data are rewritten.
+The baseline replaced migrations 001–042 on 2026-11-19 and refuses a database that already has Tover tables: databases created by the old chain are swapped for a fresh one, not upgraded.
 
 Existing user/password migration between deployments is separate work. Do not copy or reinterpret Auth internals without a rehearsed version-compatible migration. Every deployment selects one identity target at startup; switching endpoints does not transfer users or sessions.
 

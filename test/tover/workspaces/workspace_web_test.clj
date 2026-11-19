@@ -33,13 +33,13 @@
 (defn- selected
   {:malli/schema [:=> [:cat :map :map] [:maybe :uuid]]}
   [{:keys [state]} session]
-  (get-in @state [:db :app_private.sessions (:key session) :workspace_id]))
+  (get-in @state [:db :sessions (:key session) :workspace_id]))
 
 
 (defn- version
   {:malli/schema [:=> [:cat :map :map] [:maybe :uuid]]}
   [{:keys [state]} session]
-  (get-in @state [:db :app_private.sessions (:key session) :version]))
+  (get-in @state [:db :sessions (:key session) :version]))
 
 
 (deftest chooser-lists-current-memberships-and-the-selection
@@ -70,7 +70,7 @@
 (deftest repeated-names-show-a-distinguishing-reference
   (support/with-application
     (fn [{:keys [browser state] :as services}]
-      (swap! state assoc-in [:db :public.organizations fixtures/other-workspace-id :name] "Development workspace")
+      (swap! state assoc-in [:db :workspaces fixtures/other-workspace-id :name] "Development workspace")
       (support/sign-in! services browser "owner@example.test")
       (let [body (:body ((:request! browser) :get "/workspace"))]
         (is (str/includes? body (select/reference fixtures/workspace-id)))
@@ -80,7 +80,7 @@
 (deftest no-memberships-offers-creation-only
   (support/with-application
     (fn [{:keys [browser state] :as services}]
-      (swap! state assoc-in [:db :public.profiles fixtures/unnamed-id :display_name] "Una")
+      (swap! state assoc-in [:db :profiles fixtures/unnamed-id :display_name] "Una")
       (support/sign-in! services browser "unnamed@example.test")
       (let [body (:body ((:request! browser) :get "/workspace"))]
         (is (str/includes? body "No workspaces yet."))
@@ -174,10 +174,10 @@
   (support/with-application
     (fn [{:keys [browser state] :as services}]
       (let [session (support/sign-in! services browser "owner@example.test" {:workspace-id fixtures/other-workspace-id})]
-        (swap! state update-in [:db :public.organization_memberships]
+        (swap! state update-in [:db :memberships]
                (fn [rows] (into {} (map (fn [[id row]] [id (cond-> row
                                                              (and (= fixtures/owner-id (:user_id row))
-                                                                  (= fixtures/other-workspace-id (:organization_id row)))
+                                                                  (= fixtures/other-workspace-id (:workspace_id row)))
                                                              (assoc :status "suspended"))])) rows)))
         (let [response ((:request! browser) :get "/")]
           (is (= 303 (:status response)))
@@ -236,7 +236,7 @@
         (is (str/includes? html "Invite teammates"))
         (is (str/includes? html (str "name=\"workspace-id\" value=\"" north "\"")))
         (is (str/includes? html "name=\"return-to\" value=\"/team\""))
-        (is (= "North Workshop" (get-in @state [:db :public.organizations north :name])))
+        (is (= "North Workshop" (get-in @state [:db :workspaces north :name])))
         (is (= fixtures/workspace-id (selected services session)))
         (is (= (:version session) (version services session)))))))
 
@@ -251,7 +251,7 @@
         (is (str/includes? html "Enter a workspace name of 1 to 100 characters."))
         (is (str/includes? html (str "value=\"" long "\"")))
         (is (str/includes? html "value=\"attempt-b\""))
-        (is (nil? (get-in @state [:db :public.organizations north])))
+        (is (nil? (get-in @state [:db :workspaces north])))
         (let [html (create! services session {"command-id" "attempt-b" "workspace-id" (str north) "name" "North"})]
           (is (str/includes? html "Your role: Owner")))))))
 
@@ -267,7 +267,7 @@
           (is (str/includes? html "North"))
           (is (str/includes? html "Your role: Owner"))
           (is (not (str/includes? html "Renamed"))))
-        (is (= 1 (count (filter #(= "North" (:name %)) (vals (get-in @state [:db :public.organizations]))))))))))
+        (is (= 1 (count (filter #(= "North" (:name %)) (vals (get-in @state [:db :workspaces]))))))))))
 
 
 (deftest outcome-after-the-owner-membership-was-removed
@@ -277,12 +277,12 @@
             north   (random-uuid)
             input   {"command-id" "attempt-d" "workspace-id" (str north) "name" "North"}]
         (create! services session input)
-        (swap! state update-in [:db :public.organization_memberships]
-               (fn [rows] (into {} (remove #(= north (:organization_id (val %)))) rows)))
+        (swap! state update-in [:db :memberships]
+               (fn [rows] (into {} (remove #(= north (:workspace_id (val %)))) rows)))
         (let [html (create! services session input)]
           (is (str/includes? html "You no longer have access to this workspace."))
           (is (not (str/includes? html "Open workspace"))))
-        (is (empty? (filter #(= north (:organization_id %)) (vals (get-in @state [:db :public.organization_memberships])))))))))
+        (is (empty? (filter #(= north (:workspace_id %)) (vals (get-in @state [:db :memberships])))))))))
 
 
 (deftest open-workspace-from-the-outcome-selects-the-new-workspace

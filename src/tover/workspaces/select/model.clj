@@ -31,7 +31,7 @@
   {:schema [:map [:session-id :uuid] [:workspace-id :uuid] [:version :uuid]]})
 
 
-(defmodel selections
+(defmodel sessions
   {:id     :session-id
    :store  :directory
    :schema Selection
@@ -51,7 +51,7 @@
   {:scope  :session
    :input  SelectWorkspace
    :policy ::own-sign-in
-   :cofx   [[:selection ::selections (fn [{:keys [scope]} _] (select-keys scope [:session-id]))]
+   :cofx   [[:selection ::sessions (fn [{:keys [scope]} _] (select-keys scope [:session-id]))]
             [:membership :tover.workspaces.persistence/membership (fn [_ input] (select-keys input [:workspace-id]))]
             [:version :bel/uuid]]
    :emits  #{::workspace-selected}}

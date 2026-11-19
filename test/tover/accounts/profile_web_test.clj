@@ -44,7 +44,7 @@
           (is (= "/workspace" (get form "return-to")))
           (is (= 303 (:status response)))
           (is (= "/workspace" (get-in response [:headers "location"])))
-          (is (= "Алиса" (get-in @state [:db :public.profiles (:user-id user) :display_name])))
+          (is (= "Алиса" (get-in @state [:db :profiles (:user-id user) :display_name])))
           (is (= 200 (:status (request! :get "/workspace")))))))))
 
 
@@ -63,7 +63,7 @@
           (is (= 303 (:status response)))
           (is (= "/workspace" (get-in response [:headers "location"])))
           (is (= metadata (get-in @state [:db :auth.users (:user-id user) :locale])))
-          (is (= "ru" (get-in @state [:db :public.profiles (:user-id user) :language])))
+          (is (= "ru" (get-in @state [:db :profiles (:user-id user) :language])))
           (is (= "ru" (get-in (access/current-identity services (support/session-key browser)) [:user :locale])))
           (is (some? (session/session session-store (support/session-key browser)))))))))
 
@@ -79,7 +79,7 @@
           (is (= 422 (:status invalid)))
           (is (nil? (get-in invalid [:headers "location"])))
           (is (nil? (get-in invalid [:cookies "tover-language"]))))
-        (is (not= "de" (get-in @state [:db :public.profiles (:user-id user) :language])))))))
+        (is (not= "de" (get-in @state [:db :profiles (:user-id user) :language])))))))
 
 
 (deftest recovery-session-cannot-open-profile
@@ -99,7 +99,7 @@
     (fn [{:keys [browser users session-store state] :as services}]
       (let [{:keys [request!]} browser
             user               (first users)]
-        (swap! state assoc-in [:db :public.profiles (:user-id user) :language] "ru")
+        (swap! state assoc-in [:db :profiles (:user-id user) :language] "ru")
         (support/sign-in! services browser (:email user) {:workspace-id fixtures/workspace-id})
         (session/update-session! session-store (support/session-key browser)
                                  #(vector (assoc-in % [:data :identity/password-required?] true) nil))
@@ -107,7 +107,7 @@
                                  {"locale" "en" "return-to" "/auth/password" "account" (str (:user-id user)) "language-revision" "0"})]
           (is (= 303 (:status response)))
           (is (= "/auth/password" (get-in response [:headers "location"])))
-          (is (= "ru" (get-in @state [:db :public.profiles (:user-id user) :language]))))
+          (is (= "ru" (get-in @state [:db :profiles (:user-id user) :language]))))
         (is (str/includes? (:body (request! :get "/auth/password")) "lang=\"en\""))))))
 
 
@@ -136,7 +136,7 @@
         (support/sign-in! services browser (:email user) {:workspace-id fixtures/workspace-id})
         (let [form (profile-form request! {"return-to" "/workspace"})]
           ;; Another tab saved first.
-          (swap! state update-in [:db :public.profiles (:user-id user)] assoc :display_name "Bob" :name_revision 1)
+          (swap! state update-in [:db :profiles (:user-id user)] assoc :display_name "Bob" :name_revision 1)
           (let [stale (save! (assoc form "display-name" "Rob"))]
             (is (= 409 (:status stale)))
             (is (str/includes? (:body stale) "value=\"Rob\""))
@@ -145,7 +145,7 @@
           (let [blank (save! (assoc form "display-name" "   " "name-revision" "1"))]
             (is (= 422 (:status blank)))
             (is (str/includes? (:body blank) "Enter a name of 1 to 100 characters.")))
-          (is (= "Bob" (get-in @state [:db :public.profiles (:user-id user) :display_name]))))))))
+          (is (= "Bob" (get-in @state [:db :profiles (:user-id user) :display_name]))))))))
 
 
 (deftest shell-pages-do-not-read-the-profile
@@ -175,7 +175,7 @@
           (is (= 303 (:status response)))
           (is (= "/auth/sign-out" (get-in response [:headers "location"])))
           (is (= {:language "ru" :language_revision 1}
-                 (select-keys (get-in @state [:db :public.profiles (:user-id user)]) [:language :language_revision]))))))))
+                 (select-keys (get-in @state [:db :profiles (:user-id user)]) [:language :language_revision]))))))))
 
 
 (defn- name-changes
@@ -218,7 +218,7 @@
         ;; The response was lost; the browser repeats the same request.
         (is (= 303 (:status (save!))))
         (is (= 1 (name-changes state)))
-        (is (= "Una" (get-in @state [:db :public.profiles fixtures/unnamed-id :display_name])))))))
+        (is (= "Una" (get-in @state [:db :profiles fixtures/unnamed-id :display_name])))))))
 
 
 (deftest an-old-save-retried-after-a-newer-name-is-not-reapplied
@@ -231,7 +231,7 @@
         (save! old)
         (save! (assoc (profile-form request! {"return-to" "/workspace"}) "display-name" "Uma" "command-id" "new"))
         (is (= 303 (:status (save! old))))
-        (is (= "Uma" (get-in @state [:db :public.profiles fixtures/unnamed-id :display_name])))
+        (is (= "Uma" (get-in @state [:db :profiles fixtures/unnamed-id :display_name])))
         (is (= 2 (name-changes state)))))))
 
 
@@ -246,8 +246,8 @@
         (let [response (request! :post (bel/action-url :tover.accounts.profile.web/save-name)
                                  (assoc form "display-name" "Una" "name-revision" "1"))]
           (is (= 403 (:status response))))
-        (is (= "Max Member" (get-in @state [:db :public.profiles fixtures/member-id :display_name])))
-        (is (nil? (get-in @state [:db :public.profiles fixtures/unnamed-id :display_name])))))))
+        (is (= "Max Member" (get-in @state [:db :profiles fixtures/member-id :display_name])))
+        (is (nil? (get-in @state [:db :profiles fixtures/unnamed-id :display_name])))))))
 
 
 (deftest an-overlong-name-is-rejected-and-kept-in-full
@@ -260,7 +260,7 @@
                                          (assoc (profile-form request! {"return-to" "/workspace"}) "display-name" long))]
         (is (= 422 (:status response)))
         (is (str/includes? (:body response) (str "value=\"" long "\"")))
-        (is (nil? (get-in @state [:db :public.profiles fixtures/unnamed-id :display_name])))))))
+        (is (nil? (get-in @state [:db :profiles fixtures/unnamed-id :display_name])))))))
 
 
 (deftest a-failed-profile-read-offers-retry

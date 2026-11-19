@@ -122,7 +122,7 @@
         (is (= 403 (:status (request! :post guest {"locale" "ru"} {:csrf? false}))))
         (support/sign-in! services browser "owner@example.test" {:workspace-id fixtures/workspace-id :uri "/workspace"})
         (is (= 303 (:status (request! :post action {"locale" "ru" "return-to" "/workspace"}))))
-        (is (= "ru" (get-in @state [:db :public.profiles fixtures/owner-id :language])))
+        (is (= "ru" (get-in @state [:db :profiles fixtures/owner-id :language])))
         ;; A separate browser/session reads the account language from the profile on its next request.
         (let [other (support/browser handler)]
           (support/sign-in! services other "owner@example.test" {:workspace-id fixtures/workspace-id})

@@ -3,16 +3,11 @@
   (:require
     [bel-postgres.adapter :as postgres]
     [bel-rdf.adapter :as rdf]
-    [tover.accounts.persistence :as accounts]
     [tover.catalogues.persistence :as catalogues]
-    [tover.identity.persistence :as identity]
     [tover.identity.session :as session]
-    [tover.invitations.persistence :as invitations]
-    [tover.workspaces.persistence :as workspaces]))
-
-
-(def directory-tables
-  (merge session/tables identity/tables workspaces/tables accounts/tables invitations/tables))
+    ;; Directory coeffects that commands name by keyword.
+    [tover.invitations.persistence]
+    [tover.workspaces.persistence]))
 
 
 (defn system
@@ -23,7 +18,7 @@
                              [:session-store {:optional true} :any] [:origin {:optional true} :string]]] :map]}
   [{:keys [repo datasource realtime provider session-store origin]}]
   {:stores    (cond-> {}
-                datasource (assoc :directory (postgres/store {:datasource datasource :tables directory-tables}))
+                datasource (assoc :directory (postgres/store {:datasource datasource}))
                 repo (assoc :catalogue (rdf/store {:repo repo :graphs catalogues/graphs :guard catalogues/legacy-guard})))
    :journal   :directory
    :scope     :workspace
@@ -37,7 +32,7 @@
   {:malli/schema [:=> [:cat [:map [:repo {:optional true} :any] [:datasource :any] [:mailer {:optional true} :any]
                              [:origin {:optional true} :string]]] :map]}
   [{:keys [repo datasource mailer origin]}]
-  {:stores    (cond-> {:directory (postgres/store {:datasource datasource :tables directory-tables})}
+  {:stores    (cond-> {:directory (postgres/store {:datasource datasource})}
                 repo (assoc :catalogue (rdf/store {:repo repo :graphs catalogues/graphs})))
    :journal   :directory
    :scope     :workspace

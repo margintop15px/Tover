@@ -22,11 +22,8 @@ RUNTIME_FILES = (
     "systemd/tover-backup.timer", "templates/confirmation.html", "templates/invite.html",
     "templates/recovery.html", "templates/magic-link.html")
 PUBLIC_FILES = tuple(str(PROFILE / name) for name in RUNTIME_FILES) + (
-    "supabase/migrations/033_identity_and_sessions.sql",
-    "supabase/migrations/034_workspace_actor_labels.sql",
-    "supabase/migrations/035_bel_workspace_creation.sql",
-    "supabase/migrations/036_bel_shared_journal.sql",
-    "supabase/migrations/037_profile_preferences.sql",
+    "supabase/migrate.sh",
+    *sorted(str(path.relative_to(ROOT)) for path in (ROOT / "supabase" / "migrations").glob("[0-9][0-9][0-9]_*.sql")),
     "docs/selectel-deployment.md", "docs/production-deployment.md")
 BUILD_FILES = ("Dockerfile", ".dockerignore", "deps.edn",
                "deployment/production/build-classpath.sh", "deployment/production/Healthcheck.java")
