@@ -26,7 +26,6 @@
     [tover.inventory.smart-web]
     [tover.shared.email :as email]
     [tover.shared.i18n :as i18n]
-    [tover.shared.jdbc :as database]
     [tover.shared.rdf :as rdf]
     [tover.shared.schema :as schema]
     [tover.shared.web.errors :as errors]))
@@ -93,7 +92,7 @@
     (.size ^org.eclipse.rdf4j.repository.RepositoryConnection connection
            (make-array org.eclipse.rdf4j.model.Resource 0)))
   (when-let [{:keys [datasource auth-url api-key]} identity-health]
-    (with-open [connection (database/connection datasource)]
+    (with-open [connection (jdbc/get-connection datasource)]
       (jdbc/execute-one! connection ["select 1 from app_private.sessions limit 1"] {:timeout 2}))
     (provider/health! {:auth-url auth-url :api-key api-key}))
   true)

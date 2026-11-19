@@ -23,8 +23,7 @@
     [next.jdbc.date-time :as date-time]
     [next.jdbc.result-set :as result-set]
     [ring.middleware.session.store :as ring]
-    [tover.accounts.profile.model :as profile]
-    [tover.shared.jdbc :as database])
+    [tover.accounts.profile.model :as profile])
   (:import
     [java.time Instant]
     [java.util UUID]))
@@ -267,7 +266,7 @@
     (->Store
       (fn [id f]
         (mu/trace ::transaction {:pairs []}
-          (with-open [connection (database/connection datasource)]
+          (with-open [connection (jdbc/get-connection datasource)]
             (jdbc/with-transaction [tx connection]
               (let [stored          (jdbc/execute-one!
                                       tx ["select session_id,data,tokens,user_id,workspace_id,version,created_at,expires_at,ended_at
@@ -300,7 +299,7 @@
                     (jdbc/execute-one! tx ["delete from app_private.sessions where id=?" id])))
                 value)))))
       (fn [session-id]
-        (with-open [connection (database/connection datasource)]
+        (with-open [connection (jdbc/get-connection datasource)]
           (:id (jdbc/execute-one! connection ["select id from app_private.sessions where session_id=?" session-id]
                                   {:builder-fn result-set/as-unqualified-lower-maps})))))))
 

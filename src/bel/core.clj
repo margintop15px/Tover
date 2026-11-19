@@ -551,7 +551,7 @@
 
 (defn get-model
   "A model's declared options (`:model-id`, `:fields`, `:schema`…), as stores receive them."
-  {:malli/schema [:=> [:cat :qualified-keyword] :map]}
+  {:malli/schema [:=> [:cat :qualified-keyword] [:map [:model-id :qualified-keyword] [:fields :map]]]}
   [id]
   (or (:bel/options (definition :models id))
       (throw (ex-info "Unknown model" {:type :configuration :model id}))))

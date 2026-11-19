@@ -23,7 +23,7 @@
 
 (defn offer!
   "The exact offer in this workspace, or a rejection the manager can act on."
-  {:malli/schema [:=> [:cat [:maybe :map] :map] :map]}
+  {:malli/schema [:=> [:cat [:maybe :map] :map] [:map [:created-at validation/Instant]]]}
   [invitation scope]
   (when-not (= (:workspace-id scope) (:workspace-id invitation))
     (throw (ex-info "This invitation changed. Reload the page." {:type :invitation-changed})))

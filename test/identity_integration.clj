@@ -17,7 +17,6 @@
     [tover.identity.access :as access]
     [tover.identity.provider :as provider]
     [tover.identity.session :as session]
-    [tover.shared.jdbc :as database]
     [tover.shared.rdf :as rdf]
     [tover.support :as support])
   (:import
@@ -233,10 +232,10 @@
           (let [renewed (ring/write-session store key {:draft "after"})]
             (is (not= key renewed))
             (ring/delete-session store renewed)))
-        (let [borrowed (mapv (fn [_] (database/connection (:datasource settings))) (range 8))
+        (let [borrowed (mapv (fn [_] (jdbc/get-connection (:datasource settings))) (range 8))
               started  (System/nanoTime)]
           (try
-            (is (thrown? java.sql.SQLException (database/connection (:datasource settings))))
+            (is (thrown? java.sql.SQLException (jdbc/get-connection (:datasource settings))))
             (is (< 1500 (/ (- (System/nanoTime) started) 1e6) 5000))
             (finally (run! #(.close ^java.sql.Connection %) borrowed))))
         (is (= [{:one 1}] (query settings "select 1 as one")) "Pool recovers after exhaustion")
