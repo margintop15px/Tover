@@ -2,17 +2,17 @@
   "Profile setup: the display name, saved through the profile commands. The account language is set from the
   header switch."
   (:require
-    [bel.core :as bel :refer [defaction defpage]]
-    [bel.runtime :as runtime]
-    [clojure.string :as str]
-    [com.brunobonacci.mulog :as mu]
-    [tover.accounts.profile.model :as model]
-    [tover.identity.access :as access]
-    [tover.shared.i18n :as i18n]
-    [tover.shared.schema :as schema]
-    [tover.shared.ui.forms :refer [csrf-field]])
+   [bel.core :as bel :refer [defaction defpage]]
+   [bel.runtime :as runtime]
+   [clojure.string :as str]
+   [com.brunobonacci.mulog :as mu]
+   [tover.accounts.profile.model :as model]
+   [tover.identity.access :as access]
+   [tover.shared.i18n :as i18n]
+   [tover.shared.schema :as schema]
+   [tover.shared.ui.forms :refer [csrf-field]])
   (:import
-    [clojure.lang ExceptionInfo]))
+   [clojure.lang ExceptionInfo]))
 
 
 (def FormProps
@@ -55,12 +55,18 @@
     [:label (i18n/t "Email") [:input {:type "email" :value (or email "") :readonly true}]]
     [:label (i18n/t "Display name")
      ;; No maxlength: an overlong name is rejected with the full attempt kept, never truncated.
-     [:input {:name  "display-name" :type "text" :required true :autocomplete "name"
-              :value (or draft (:display-name profile) "")}]
+     [:input {:name         "display-name"
+              :type         "text"
+              :required     true
+              :autocomplete "name"
+              :value        (or draft (:display-name profile) "")}]
      [:span.management-secondary (i18n/t "1 to 100 characters.")]]
     (when-let [saved (:display-name latest)]
       [:p.profile-latest {:role "status"} (i18n/t "Saved name: {name}" {:name saved})])
-    [:button {:type "submit"} (if (model/valid-name? (:display-name profile)) (i18n/t "Save") (i18n/t "Continue"))]]])
+    [:button {:type "submit"}
+     (if (model/valid-name? (:display-name profile))
+       (i18n/t "Save")
+       (i18n/t "Continue"))]]])
 
 
 (defn query-profile
@@ -108,8 +114,10 @@
   {:malli/schema [:=> [:cat :string] :map]}
   [invalid]
   (let [changed [409 "This profile changed. Review the latest value."]]
-    {:stale-profile changed :idempotency-conflict changed :validation [422 invalid]
-     :forbidden     [403 "You do not have permission to do this."]}))
+    {:stale-profile        changed
+     :idempotency-conflict changed
+     :validation           [422 invalid]
+     :forbidden            [403 "You do not have permission to do this."]}))
 
 
 (defaction save-name
@@ -118,16 +126,24 @@
    :route-data {:tover/access   :profile :bel/error-page ::profile :bel/retain ["display-name" "return-to"]
                 :tover/problems (problems "Enter a name of 1 to 100 characters.")}}
   [_ {:keys [command-id] :as input}]
-  {:type  :command :id ::model/set-display-name :command-id (or command-id (str (random-uuid)))
-   :input (select-keys input [:account :display-name :name-revision])
-   :then  {:status 303 :headers {"location" (destination (:return-to input))} :body ""}})
+  {:type       :command
+   :id         ::model/set-display-name
+   :command-id (or command-id (str (random-uuid)))
+   :input      (select-keys input [:account :display-name :name-revision])
+   :then       {:status  303
+                :headers {"location" (destination (:return-to input))}
+                :body    ""}})
 
 
 (defn- language-cookie
   {:malli/schema [:=> [:cat :map :string] :map]}
   [request locale]
-  {"tover-language" {:value  locale :path "/" :max-age 31536000 :http-only true :same-site :lax
-                     :secure (= :https (:scheme request))}})
+  {"tover-language" {:value     locale
+                     :path      "/"
+                     :max-age   31536000
+                     :http-only true
+                     :same-site :lax
+                     :secure    (= :https (:scheme request))}})
 
 
 (defaction set-language
@@ -136,8 +152,13 @@
    :route-data {:tover/access   :profile :bel/error-page ::profile :bel/retain ["return-to"]
                 :tover/problems (problems "Could not save language. Please try again.")}}
   [{:keys [request] :as context} {:keys [locale return-to]}]
-  {:type  :command :id ::model/change-account-language :command-id (str (random-uuid))
-   :input {:account           (get-in request [:tover/identity :user-id])
-           :language          locale
-           :language-revision (:language-revision (runtime/read-model context ::model/my-profile {}))}
-   :then  {:status 303 :headers {"location" (access/local-path return-to)} :cookies (language-cookie request locale) :body ""}})
+  {:type       :command
+   :id         ::model/change-account-language
+   :command-id (str (random-uuid))
+   :input      {:account           (get-in request [:tover/identity :user-id])
+                :language          locale
+                :language-revision (:language-revision (runtime/read-model context ::model/my-profile {}))}
+   :then       {:status  303
+                :headers {"location" (access/local-path return-to)}
+                :cookies (language-cookie request locale)
+                :body    ""}})

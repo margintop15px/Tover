@@ -80,7 +80,8 @@
   {:input  StatusQuery
    :output Status
    :policy ::issue/invitation-manager
-   :cofx   [[:invitation :tover.invitations.persistence/latest-invitation (fn [_ input] (select-keys input [:email]))]
+   :cofx   [[:invitation :tover.invitations.persistence/latest-invitation
+             (fn [_ input] (select-keys input [:email]))]
             [:delivery :tover.invitations.persistence/latest-delivery
              (fn [{:keys [invitation]} _] {:invitation-id (:invitation-id invitation)})]
             [:clock :bel/now]]}

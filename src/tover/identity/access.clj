@@ -13,14 +13,15 @@
   - :workspace      :authenticated plus a selected workspace that is a current active membership
   - :manager        :workspace with role owner or admin"
   (:require
-    [bel.validation :as validation]
-    [com.brunobonacci.mulog :as mu]
-    [ring.util.codec :as codec]
-    [tover.identity.provider :as provider]
-    [tover.identity.session :as session]
-    [tover.shared.i18n :as i18n])
+   [bel.validation :as validation]
+   [com.brunobonacci.mulog :as mu]
+   [ring.util.codec :as codec]
+   [tover.identity.provider :as provider]
+   [tover.identity.session :as session]
+   [tover.shared.i18n :as i18n])
   (:import
-    [java.time Instant]))
+   [clojure.lang ExceptionInfo]
+   [java.time Instant]))
 
 
 (def Policy
@@ -90,7 +91,7 @@
   (if (> (long (or (:expires-at tokens) 0)) (+ 30 (.getEpochSecond (Instant/now))))
     {:tokens tokens}
     (try {:tokens (provider/refresh! provider (:refresh-token tokens))}
-         (catch clojure.lang.ExceptionInfo error
+         (catch ExceptionInfo error
            (if (contains? #{:invalid-refresh-token :unauthenticated} (:code (ex-data error)))
              {:error (ex-info "Please sign in again." {:type :identity :status 401 :code :unauthenticated})}
              (do (mu/log ::refresh-deferred :code (:code (ex-data error)))
@@ -103,17 +104,19 @@
   {:malli/schema [:=> [:cat [:map [:session-store :any] [:provider {:optional true} :any]] [:maybe :string]] [:maybe Identity]]}
   [{:keys [session-store provider]} key]
   (let [result (session/transact!
-                 session-store key
-                 (fn [row directory]
-                   (if-not (and (session/live? row) (:tokens row) (:user-id row))
-                     [row nil]
-                     (let [{:keys [tokens error]} (if provider (refreshed provider (:tokens row)) {:tokens (:tokens row)})]
-                       (if error
-                         [nil {:error error}]
-                         (let [row   (assoc row :tokens tokens)
-                               facts (directory (:user-id row))]
-                           [row (when (session/valid? row (:boundary facts)) (identity-of key row facts))]))))))]
-    (if-let [error (:error result)] (throw error) result)))
+                session-store key
+                (fn [row directory]
+                  (if-not (and (session/live? row) (:tokens row) (:user-id row))
+                    [row nil]
+                    (let [{:keys [tokens error]} (if provider (refreshed provider (:tokens row)) {:tokens (:tokens row)})]
+                      (if error
+                        [nil {:error error}]
+                        (let [row   (assoc row :tokens tokens)
+                              facts (directory (:user-id row))]
+                          [row (when (session/valid? row (:boundary facts)) (identity-of key row facts))]))))))]
+    (if-let [error (:error result)]
+      (throw error)
+      result)))
 
 
 (defn- session-identity
@@ -123,7 +126,10 @@
   (let [key (:session/key request)
         row (session/session session-store key)]
     (when (:tokens row)
-      {:user-id (:user-id row) :session-id (:session-id row) :auth-version (:version row) :auth-session-id key})))
+      {:user-id         (:user-id row)
+       :session-id      (:session-id row)
+       :auth-version    (:version row)
+       :auth-session-id key})))
 
 
 (defn- requested-path
@@ -216,7 +222,7 @@
                                              :auth-session-id (:auth-session-id identity)
                                              :auth-version    (:auth-version identity)
                                              :locale          locale}))))))
-      (catch clojure.lang.ExceptionInfo error
+      (catch ExceptionInfo error
         (let [{:keys [status code]} (ex-data error)]
           (if status
             (if (and (= status 401) (= policy :optional))
@@ -246,5 +252,7 @@
                (or (and supplied (not= supplied origin))
                    (= "cross-site" (get-in request [:headers "sec-fetch-site"]))
                    (and unsafe? (nil? supplied))))
-        {:status 403 :headers {"content-type" "text/plain"} :body (i18n/t "Invalid request origin.")}
+        {:status  403
+         :headers {"content-type" "text/plain"}
+         :body    (i18n/t "Invalid request origin.")}
         (handler request)))))

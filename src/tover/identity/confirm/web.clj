@@ -4,17 +4,17 @@
   effect and Email Confirmed the provider's fact; confirmation creates no workspace, grants no membership and
   accepts no invitation."
   (:require
-    [bel.core :as bel :refer [defaction defpage]]
-    [clojure.string :as str]
-    [tover.identity.provider :as provider]
-    [tover.identity.recovery.web :as recovery]
-    [tover.identity.shell :as shell]
-    [tover.identity.sign-in.web :as sign-in]
-    [tover.shared.i18n :as i18n]
-    [tover.shared.ui.forms :refer [form]]
-    [tover.shared.web.core :as web])
+   [bel.core :as bel :refer [defaction defpage]]
+   [clojure.string :as str]
+   [tover.identity.provider :as provider]
+   [tover.identity.recovery.web :as recovery]
+   [tover.identity.shell :as shell]
+   [tover.identity.sign-in.web :as sign-in]
+   [tover.shared.i18n :as i18n]
+   [tover.shared.ui.forms :refer [form]]
+   [tover.shared.web.core :as web])
   (:import
-    [clojure.lang ExceptionInfo]))
+   [clojure.lang ExceptionInfo]))
 
 
 (def confirmation-types
@@ -44,8 +44,8 @@
 
       (= "recovery" type)
       [:div
-       (recovery/new-password-form {:action  (bel/action-url ::recovery/reset-password) :csrf (force (:anti-forgery-token request))
-                                    :context "" :fields {"token-hash" token-hash}})
+       (recovery/new-password-form {:action  (bel/action-url ::recovery/reset-password) :csrf   (force (:anti-forgery-token request))
+                                    :context ""                                         :fields {"token-hash" token-hash}})
        [:p [:a {:href "/auth/recover"} (i18n/t "Request a new recovery email")]]]
 
       (contains? confirmation-types type)
@@ -69,7 +69,10 @@
    :query      web/query-request}
   [request]
   {:type :elements
-   :html (shell/page-content request (i18n/t (if (= "recovery" (get-in request [:params :type])) "Set your password" "Confirm email link"))
+   :html (shell/page-content request
+                             (i18n/t (if (= "recovery" (get-in request [:params :type]))
+                                       "Set your password"
+                                       "Confirm email link"))
                              (link-content request))})
 
 

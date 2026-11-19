@@ -3,9 +3,9 @@
   retains a non-secret reset attempt before requesting the change. Completion is in
   tover.identity.reset-completion.model (02c), the same single Password Reset Completed fact."
   (:require
-    [bel.core :refer [defcommand defevent defmodel]]
-    [bel.runtime :as runtime]
-    [bel.validation :as validation]))
+   [bel.core :refer [defcommand defevent defmodel]]
+   [bel.runtime :as runtime]
+   [bel.validation :as validation]))
 
 
 (defmethod runtime/policy ::recovering
@@ -26,7 +26,11 @@
 
 
 (defevent password-reset-attempted
-  {:schema [:map [:attempt-id :uuid] [:user-id :uuid] [:session-id :uuid] [:status Status]
+  {:schema [:map
+            [:attempt-id :uuid]
+            [:user-id :uuid]
+            [:session-id :uuid]
+            [:status Status]
             [:requested-at validation/Instant]]})
 
 
@@ -38,11 +42,16 @@
   ;; Password Resets Awaiting Completion (02c). Never holds a password or recovery secret.
   {:id     :attempt-id
    :store  :directory
-   :schema [:map [:attempt-id :uuid] [:user-id :uuid] [:session-id :uuid] [:status Status]
-            [:requested-at validation/Instant] [:valid-after {:optional true} validation/Instant]]
+   :schema [:map
+            [:attempt-id :uuid]
+            [:user-id :uuid]
+            [:session-id :uuid]
+            [:status Status]
+            [:requested-at validation/Instant]
+            [:valid-after {:optional true} validation/Instant]]
    :policy ::own-account
-   :events {::password-reset-attempted {:create [:user-id :session-id :status :requested-at]}
-            ::password-reset-rejected {:set [:status]}
+   :events {::password-reset-attempted                                      {:create [:user-id :session-id :status :requested-at]}
+            ::password-reset-rejected                                       {:set [:status]}
             :tover.identity.reset-completion.model/password-reset-completed {:set [:status :valid-after]}}})
 
 
@@ -57,7 +66,11 @@
    :emits #{::password-reset-attempted}}
   [{:keys [actor now]} {:keys [attempt-id session-id]}]
   {:events [{:type ::password-reset-attempted
-             :data {:attempt-id attempt-id :user-id actor :session-id session-id :status "requested" :requested-at now}}]})
+             :data {:attempt-id   attempt-id
+                    :user-id      actor
+                    :session-id   session-id
+                    :status       "requested"
+                    :requested-at now}}]})
 
 
 (defcommand reject-password-reset
@@ -67,5 +80,7 @@
    :emits #{::password-reset-rejected}}
   [{:keys [actor attempt]} {:keys [attempt-id]}]
   (if (and (= actor (:user-id attempt)) (= "requested" (:status attempt)))
-    {:events [{:type ::password-reset-rejected :data {:attempt-id attempt-id :status "rejected"}}]}
+    {:events [{:type ::password-reset-rejected
+               :data {:attempt-id attempt-id
+                      :status     "rejected"}}]}
     {}))
