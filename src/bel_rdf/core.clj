@@ -39,7 +39,7 @@
 (def TransactionOptions [:map [:repo Repository] [:level Isolation]])
 
 
-(def LiteralInput [:or :string :boolean [:fn integer?] [:fn decimal?] [:fn float?]])
+(def LiteralInput [:or :string :boolean [:fn integer?] [:fn decimal?] [:fn float?] [:fn #(instance? java.time.Instant %)]])
 
 
 (def Scalar [:or LiteralInput Value])
@@ -84,6 +84,7 @@
                       (.createLiteral value-factory ^BigInteger (biginteger data)))
     (decimal? data) (.createLiteral value-factory ^BigDecimal data)
     (instance? Float data) (.createLiteral value-factory (float data))
+    (instance? java.time.Instant data) (.createLiteral value-factory (str data) XSD/DATETIME)
     :else (.createLiteral value-factory (double data))))
 
 
@@ -103,6 +104,7 @@
         (= XSD/DECIMAL datatype) (.decimalValue term)
         (= XSD/DOUBLE datatype) (.doubleValue term)
         (= XSD/FLOAT datatype) (.floatValue term)
+        (= XSD/DATETIME datatype) (.toInstant (java.time.OffsetDateTime/parse (.getLabel term)))
         :else term))
     term))
 

@@ -8,6 +8,7 @@
     [clojure.string :as str]
     [com.yetanalytics.flint :as flint]
     [integrant.core :as ig]
+    [malli.core :as m]
     [taoensso.nippy :as nippy])
   (:import
     [java.net URLDecoder URLEncoder]
@@ -72,7 +73,9 @@
       (when-not (and (instance? IRI value) (str/starts-with? (str value) prefix))
         (throw (ex-info "Reference is outside its workspace or model" {:type :validation})))
       (URLDecoder/decode (subs (str value) (count prefix)) StandardCharsets/UTF_8))
-    (rdf/value value)))
+    (let [decoded (rdf/value value)]
+      ;; UUIDs are stored as plain strings; the field's schema restores the type.
+      (if (and (string? decoded) (= :uuid (m/type (:schema field)))) (parse-uuid decoded) decoded))))
 
 
 (defn load-model
@@ -108,9 +111,11 @@
         (rdf/remove! tx graph entity predicate nil)
         (when (contains? row key)
           (rdf/add! tx graph entity predicate
-                    (if-let [target (:bel/ref field)]
-                      (subject context target (get row key))
-                      (get row key)))))))
+                    (let [value (get row key)]
+                      (cond
+                        (:bel/ref field) (subject context (:bel/ref field) value)
+                        (uuid? value) (str value)
+                        :else value)))))))
   nil)
 
 
