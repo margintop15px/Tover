@@ -19,11 +19,16 @@
 
 (deftest cell-edits-return-command-descriptors
   (with-redefs [runtime/execute! (fn [& _] (throw (Exception. "Action must be pure")))]
-    (testing "the new row registers by its name"
-      (is (= {:type  :command :id ::products/register-product :command-id "c1" :input {:product-id "r1" :name "Mug"}
+    (testing "a new row registers with every filled field at once"
+      (is (= {:type  :command :id ::products/register-product :command-id "c1"
+              :input {:product-id "r1" :name "Mug" :category-id "kitchen"}
               :then  {:type :view :id ::grid/saved :input {:kind "products" :id "r1" :commandId "c1"}}
               :catch {:type :view :id ::grid/failed :input {:kind "products" :commandId "c1"}}}
-             (edit "products" "name" "Mug" 0)))
+             (grid/save {} {:kind   "products" :id "r1" :revision 0 :path "name" :value "Mug" :commandId "c1"
+                            :values {:name "Mug" :category-id "kitchen" :default-warehouse-id " "}})))
+      (is (= {:warehouse-id "r1" :name "Main" :purpose "sales" :description "Back"}
+             (:input (grid/save {} {:kind   "warehouses" :id "r1" :revision 0 :path "name" :value "Main" :commandId "c1"
+                                    :values {"name" "Main" "purpose" "sales" "description" "Back"}}))))
       (is (= [::warehouses/register-warehouse ::suppliers/register-supplier ::categories/register-category ::stores/register-store]
              (map #(:id (edit % "name" "X" 0)) ["warehouses" "suppliers" "categories" "stores"]))))
     (testing "one field updates; blank clears it"
@@ -63,6 +68,8 @@
     (is (= ["active" "archived"] (map :value (get-in (nth cells 3) [:editor :options]))) "warehouses never delete"))
   (is (= ["name" "address" "contact" "status"] (map :key (:columns (grid/grid "suppliers" [] {})))))
   (is (= ["name" "status"] (map :key (:columns (grid/grid "categories" [] {})))))
+  (is (= ["name" "description" "purpose"] (map (comp :path :target) (:draftCells (grid/grid "warehouses" [] {}))))
+      "a new row starts from empty cells for every field but status")
   (is (= "warehouses" (get-in (grid/grid-row "stores" {:id "s" :name "Shop" :status "active" :revision 1})
                               [:cells 1 :target :lookupKind]))))
 

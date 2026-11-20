@@ -748,7 +748,11 @@
     "Suppliers · Tover": "Suppliers · Tover",
     "Categories · Tover": "Categories · Tover",
     "Stores · Tover": "Stores · Tover",
-    "This cell cannot be changed.": "This cell cannot be changed."
+    "This cell cannot be changed.": "This cell cannot be changed.",
+    "New": "New",
+    "Discard row": "Discard row",
+    "New row": "New row",
+    "Discard": "Discard"
   },
   "ru": {
     "Stock": "Остатки",
@@ -1503,6 +1507,10 @@
     "Suppliers · Tover": "Поставщики · Tover",
     "Categories · Tover": "Категории · Tover",
     "Stores · Tover": "Магазины · Tover",
-    "This cell cannot be changed.": "Эту ячейку нельзя изменить."
+    "This cell cannot be changed.": "Эту ячейку нельзя изменить.",
+    "New": "Новая",
+    "Discard row": "Удалить строку",
+    "New row": "Новая строка",
+    "Discard": "Отменить"
   }
 }

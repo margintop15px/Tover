@@ -165,3 +165,7 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .catalogue-kinds a{padding:4px 8px;border-radius:6px;color:var(--iw-muted);text-decoration:none;font-size:13px}
 .catalogue-kinds a:hover{background:var(--iw-soft)}
 .catalogue-kinds a[aria-current]{color:var(--iw-blue);background:var(--iw-blue-fill);font-weight:600}
+.catalogue-workbench .sheet-actions button:is(.catalogue-save-new,.catalogue-discard-new){height:28px;margin-right:6px;padding:0 10px;border:1px solid var(--iw-line);border-radius:5px;background:var(--iw-bg);color:var(--iw-ink);font-size:12px;white-space:nowrap}
+.catalogue-workbench .sheet-actions button.catalogue-save-new{border-color:color-mix(in srgb,var(--iw-green) 25%,var(--iw-line));background:var(--iw-green-fill);color:var(--iw-green);font-weight:500}
+.catalogue-workbench .sheet-actions button:is(.catalogue-save-new,.catalogue-discard-new)[hidden]{display:none}
+.catalogue-workbench tr.catalogue-draft-row td{background:var(--iw-blue-fill)}

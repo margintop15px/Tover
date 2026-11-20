@@ -142,6 +142,8 @@
     {:id         (str "catalogue-" kind) :editable true :rowHeaders true :merges []
      :columns    (mapv (fn [{:keys [key label width]}] {:key (name key) :label (i18n/t label) :width width :sortKey (name key)})
                        (conj columns {:key :status :label "Status" :width 140}))
+     ;; Empty cells a new row starts from; the browser keeps it as a draft until Save.
+     :draftCells (pop (:cells (grid-row kind {:id "" :revision 0 :status "active"})))
      :rows       (vec (map-indexed (fn [index row] (assoc (grid-row kind row) :rowIndex index :groupIndex index)) rows))
      :editStates []}))
 
@@ -207,18 +209,21 @@
 (def Save
   [:map
    [:kind Kind] [:id [:string {:min 1 :max 500}]] [:revision [:int {:min 0}]] [:path [:string {:max 100}]]
-   [:value [:string {:max 1000}]] [:referenceName {:optional true} [:string {:min 1 :max 500}]] [:commandId [:string {:min 1 :max 100}]]])
+   [:value [:string {:max 1000}]] [:values {:optional true} [:map-of :any [:string {:max 1000}]]] [:referenceName {:optional true} [:string {:min 1 :max 500}]] [:commandId [:string {:min 1 :max 100}]]])
 
 
 (defn command
-  "The command for one edited cell, or nil when the kind has no such field or transition. Revision 0 is the
-  new row, which registers by its name."
+  "The command for one edited cell, or nil when the kind has no such field or transition. Revision 0 is a
+  new row saved explicitly: it registers with every filled field in `values`."
   {:malli/schema [:=> [:cat :map] [:maybe [:tuple :qualified-keyword :map]]]}
-  [{:keys [kind id revision path value]}]
+  [{:keys [kind id revision path value values]}]
   (let [{:keys [id-key columns] [register update archive restore delete] :commands} (get kinds kind)
         field (some #(when (= path (name (:key %))) (:key %)) columns)]
     (cond
-      (zero? revision) (when (= :name field) [register {id-key id :name value}])
+      (zero? revision) [register (into {id-key id :name (get (update-keys values name) "name" "")}
+                                       (keep (fn [{:keys [key]}]
+                                               (when-let [value (some-> (get (update-keys values name) (name key)) str/trim not-empty)] [key value])))
+                                       columns)]
       (= "status" path) (when-let [command (get {"archived" archive "active" restore "deleted" delete} value)]
                           [command {id-key id :revision revision}])
       field [update {id-key id :revision revision field (when-not (str/blank? value) value)}])))
@@ -272,16 +277,17 @@
      [:nav.catalogue-kinds {:aria-label (i18n/t "Catalogues")}
       (for [[other {:keys [title]}] kinds]
         [:a {:href (href other false) :aria-current (when (= kind other) "page")} (i18n/t title)])]
-     [:span.catalogue-save-status.quiet {:role "status"} (i18n/t "Saved")]]
+     [:span.catalogue-save-status.quiet {:role "status"}]]
     [:div.sheet-actions
      [:button.sheet-add-row.catalogue-add {:type "button" :hidden archived?} (sheet/sheet-icon :added) (i18n/t "Add row")]
+     [:button.catalogue-save-new {:type "button" :hidden true} (i18n/t "Save")]
+     [:button.catalogue-discard-new {:type "button" :hidden true} (i18n/t "Discard")]
      [:nav.sheet-actions {:aria-label (i18n/t "Record status")}
       (for [[archived-tab? icon label] [[false :active "Active records"] [true :archived "Archived records"]]]
         [:a.sheet-icon-button {:href         (href kind archived-tab?)                 :title (i18n/t label) :aria-label (i18n/t label)
                                :aria-current (when (= archived? archived-tab?) "page")}
          (sheet/sheet-icon icon)])]]]
    [:div.catalogue-notice {:role "status"}]
-   [:inventory-grid.catalogue-new-row {:id (str "catalogue-new-row-" kind) :hidden true :data-ignore-morph "" :aria-label (i18n/t "New record")}]
    [:inventory-grid.catalogue-grid {:id (str "catalogue-grid-" kind) :data-ignore-morph "" :aria-label (i18n/t (get-in kinds [kind :title]))}]])
 
 

@@ -20,11 +20,13 @@ inventory-grid .inventory-cell-resolution button { padding:2px 5px; color:var(--
 inventory-grid .jss_worksheet > tbody > tr > td.inventory-cell-editing { padding:0; overflow:visible; position:relative; z-index:3; }
 inventory-grid .inventory-cell-editor { display:flex; min-width:100%; min-height:32px; height:100%; background:var(--iw-bg); }
 inventory-grid .inventory-cell-editor > :is(input,select) { box-sizing:border-box; width:100%; min-width:0; min-height:32px; padding:4px 8px; color:var(--iw-ink); background:var(--iw-bg); border:0; border-radius:0; font:inherit; outline:2px solid var(--iw-blue,#82a5cc); outline-offset:-2px; }
+inventory-grid .inventory-cell-editor > select { appearance:none; padding-right:36px; background:var(--iw-bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2399a0a8' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center / 16px; }
 inventory-grid .inventory-goods-picker { position:relative; display:flex; align-items:center; justify-content:center; width:28px; flex:0 0 28px; color:var(--iw-muted); }
 inventory-grid .inventory-goods-picker:hover { color:var(--iw-ink); background:var(--iw-soft); }
 inventory-grid .inventory-goods-picker:focus-within { outline:2px solid var(--iw-blue,#82a5cc); outline-offset:-2px; }
 inventory-grid .inventory-goods-choice { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; }
 inventory-grid .inventory-cell-action { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; margin:0 2px; padding:0; color:var(--iw-muted); background:transparent; border:0; border-radius:3px; font:18px/1 system-ui,sans-serif; vertical-align:middle; cursor:pointer; }
+inventory-grid .inventory-cell-value + .inventory-cell-action { align-items:baseline; width:20px; height:20px; margin-block:-2px; }
 inventory-grid .inventory-cell-action:hover { background:var(--iw-soft); color:var(--iw-ink); }
 inventory-grid .inventory-cell-with-action { display:flex; align-items:center; min-width:0; }
 inventory-grid .inventory-cell-with-action > .inventory-cell-action { flex:none; }
