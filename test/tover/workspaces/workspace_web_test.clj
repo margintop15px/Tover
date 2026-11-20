@@ -190,7 +190,7 @@
     (fn [{:keys [handler browser] :as services}]
       (support/sign-in! services browser "owner@example.test")
       (let [body (:body ((:request! browser) :get "/workspace"))]
-        (is (not (str/includes? body "href=\"/operations\"")))
+        (is (not (str/includes? body "href=\"/catalogues\"")))
         (is (not (str/includes? body "href=\"/team\"")))
         (is (str/includes? body "href=\"/account/profile\""))
         (is (str/includes? body "/action/tover.accounts.profile.web/set-language")))
@@ -199,7 +199,7 @@
         (support/sign-in! services owner "owner@example.test" {:workspace-id fixtures/workspace-id :uri "/workspace"})
         (support/sign-in! services member "member@example.test" {:workspace-id fixtures/workspace-id :uri "/workspace"})
         (let [body (:body ((:request! owner) :get "/workspace"))]
-          (is (str/includes? body "href=\"/operations\""))
+          (is (str/includes? body "href=\"/catalogues\""))
           (is (str/includes? body "href=\"/team\""))
           (is (str/includes? body "Development workspace")))
         (is (not (str/includes? (:body ((:request! member) :get "/workspace")) "href=\"/team\"")))))))

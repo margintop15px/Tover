@@ -37,16 +37,12 @@
     [:script {:type "module" :src "/dates.js"}]
     [:script {:type "module" :src "/inventory-grid.js"}]
     [:script {:type "module" :src "/catalogues.js"}]
-    [:script {:type "module" :src "/stock-grids.js?v=workflow-2"}]
-    [:script {:type "module" :src "/stock-entry.js?v=workflow-2"}]
-    [:script {:type "module" :src "/stock-operations.js?v=workflow-2"}]]
+    [:script {:type "module" :src "/stock.js"}]]
    (into [:body
           ;; Profile setup comes first: until then the workspace stream would only answer profile-required.
           (when (and (get-in request [:tover/identity :workspace-id]) (get-in request [:tover/identity :profile-complete?]))
             {:data-init (->expr (@realtime {:tabId  ~(str (random-uuid))
-                                            :topics ["tover.stock.web/changed"
-                                                     "tover.stock.web/draft-changed"
-                                                     "tover.operations.web/changed"]}))})]
+                                            :topics ["tover.inventory.web/changed"]}))})]
          children)])
 
 

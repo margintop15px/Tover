@@ -29,8 +29,13 @@ for (const path of ['src', 'resources']) {
 const origin = `http://127.0.0.1:${port}`;
 const program = `
   (require '[tover.app :as app] '[bel.system :as system] '[tover.fixtures :as fixtures])
+  ;; Bel catalogue and inventory records live in their own RDF store, as tover.app composes it.
+  (require '[bel-rdf.adapter :as bel-rdf] '[tover.catalogues.persistence :as catalogues])
+  (def catalogue-repo (app/repo {:path ${JSON.stringify(join(project, 'catalogue'))}}))
   (def services (let [services (assoc (fixtures/system) :origin ${JSON.stringify(origin)})]
-                  (assoc services :bel/system (fixtures/bel-system services))))
+                  (assoc services :bel/system (assoc-in (fixtures/bel-system services) [:stores :catalogue]
+                                                        (bel-rdf/store {:repo catalogue-repo :graphs catalogues/graphs
+                                                                        :guard catalogues/legacy-guard})))))
   ${process.env.TOVER_BROWSER_MANAGEMENT_FIXTURES === 'true' ? `
   (let [at (java.time.Instant/parse "2026-01-01T00:00:00Z")
         id #(java.util.UUID/fromString %)

@@ -200,7 +200,8 @@
         (testing "the stock table reads accepted records"
           (let [table (runtime/read-model ctx ::stock/stock-table {})]
             (is (= "EUR" (:currency table)))
-            (is (= 5 (get-in (item table "item:a-0") [:cells "main" :quantity])))))
+            (is (= 5 (get-in (item table "item:a-0") [:cells "main" :quantity])))
+            (is (= "M" (:variant-label (item table "item:a-0"))) "the registered item keeps its variant")))
         (testing "item history"
           (is (= [["a" 5 5]] (map (juxt :record-id :quantity-change :balance-after)
                                   (:rows (runtime/read-model ctx ::stock/item-history {:stock-item-id "item:a-0"}))))))

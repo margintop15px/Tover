@@ -3,9 +3,9 @@
   retains a non-secret reset attempt before requesting the change. Completion is in
   tover.identity.reset-completion.model (02c), the same single Password Reset Completed fact."
   (:require
-   [bel.core :refer [defcommand defevent defmodel]]
-   [bel.runtime :as runtime]
-   [bel.validation :as validation]))
+    [bel.core :refer [defcommand defevent defmodel]]
+    [bel.runtime :as runtime]
+    [bel.validation :as validation]))
 
 
 (defmethod runtime/policy ::recovering
@@ -50,8 +50,8 @@
             [:requested-at validation/Instant]
             [:valid-after {:optional true} validation/Instant]]
    :policy ::own-account
-   :events {::password-reset-attempted                                      {:create [:user-id :session-id :status :requested-at]}
-            ::password-reset-rejected                                       {:set [:status]}
+   :events {::password-reset-attempted {:create [:user-id :session-id :status :requested-at]}
+            ::password-reset-rejected {:set [:status]}
             :tover.identity.reset-completion.model/password-reset-completed {:set [:status :valid-after]}}})
 
 

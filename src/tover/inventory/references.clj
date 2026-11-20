@@ -3,6 +3,7 @@
   A typing aid only; nothing here persists. Active records only."
   (:refer-clojure :exclude [resolve])
   (:require
+    [bel.core :refer [defreadmodel]]
     [clojure.string :as str]
     [tover.catalogues.records :as records]))
 
@@ -86,3 +87,12 @@
                     :fill (cond-> {:product-id (:product-id product) :product-name (:name product)}
                             (warehouse-prefill facts product) (assoc :warehouse-id (warehouse-prefill facts product)))})]
     (vec (take 20 (concat items named)))))
+
+
+;; Every product, stock item, barcode and warehouse of the workspace, archived included, for resolving typed names
+;; and labelling ids on the stock page.
+(defreadmodel draft-catalogue
+  {:input [:map] :output :map :policy ::records/workspace-member
+   :cofx  [[:catalogue :tover.inventory.entries.model/catalogue (constantly {})]]}
+  [{:keys [catalogue]} _]
+  catalogue)

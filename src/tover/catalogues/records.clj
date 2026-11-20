@@ -89,7 +89,7 @@
 (defn publish
   {:malli/schema [:=> [:cat :map] [:vector :any]]}
   [scope]
-  [[:bel/publish {:topic :tover.stock.web/changed :scope-id (:workspace-id scope) :data {}}]])
+  [[:bel/publish {:topic :tover.inventory.web/changed :scope-id (:workspace-id scope) :data {}}]])
 
 
 (defn all-records

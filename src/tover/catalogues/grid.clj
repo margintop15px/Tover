@@ -261,9 +261,6 @@
     :data-on:catalogue-choices
     (->expr (.catch (@view ::choices evt.detail {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0}) (fn [_] (.requestFailed el "choices"))))
     :data-on:catalogue-save  (->expr (.catch (@action ::save evt.detail {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0}) (fn [_] (.requestFailed el "save"))))
-    :data-on:inventory-layout
-    (->expr (set! $_layoutStatus "Saving")
-      (.catch (@action :tover.stock.web/save-layout evt.detail {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0}) (fn [_] (set! $_layoutStatus "Failed"))))
     :data-signals__ifmissing (charred/write-json-str {:_catalogueResponseJson "null" :_catalogueWindowJson "null" :_catalogueChoicesJson "null"
                                                       :_catalogueSaveJson     "null" :_columnLayoutsJson   "{}"   :_layoutStatus         "Saved"
                                                       :inventoryChanged       ""})

@@ -349,7 +349,7 @@
    [:selection [:vector [:map [:entry-id Id] [:revision [:int {:min 1}]]]]] [:order [:vector Id]]])
 
 
-(def ^:private rejection
+(def rejection
   "Review problem code to the `Accept Reviewed Inventory Changes` rejection it raises."
   {:entry-changed       [:review-outdated "The selection changed since the review. Review it again."]
    :entry-incomplete    [:review-outdated "A selected entry is incomplete. Review it again."]

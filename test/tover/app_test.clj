@@ -72,7 +72,7 @@
             (let [response (handler {:request-method :get :uri "/" :headers {}})]
               (is (= 303 (:status response)))
               (is (= "/auth/login" (get-in response [:headers "location"]))))
-            (let [response (handler {:request-method :get :uri "/operations" :headers {}})]
+            (let [response (handler {:request-method :get :uri "/catalogues" :headers {}})]
               (is (contains? #{303 401} (:status response))))
             (is (= 405 (:status (handler {:request-method :options :uri "/" :headers {}})))))
           (finally
@@ -142,7 +142,7 @@
               (is (empty? @calls) "Static requests never touch the session store")
               (is (= 200 (:status (handler (assoc-in request [:headers "if-modified-since"]
                                                      "Thu, 01 Jan 1970 00:00:00 GMT")))))
-              (let [protected (handler (assoc request :uri "/operations"))
+              (let [protected (handler (assoc request :uri "/catalogues"))
                     missing   (handler (assoc request :uri "/missing-asset.js"))
                     post      (handler (assoc request :request-method :post))]
                 (is (= 303 (:status protected)))
@@ -482,8 +482,7 @@
             :tover.identity.sign-out.web/confirm-sign-out "/auth/sign-out"
             :tover.workspaces.select.web/page             "/workspace"
             :tover.accounts.profile.web/profile           "/account/profile"
-            :tover.stock.web/page "/"
-            :tover.operations.web/page                    "/operations"
+            :tover.inventory.web/page "/"
             :tover.catalogues.grid/catalogue              "/catalogues"
             :tover.catalogues.grid/warehouse-catalogue    "/catalogues/warehouses"
             :tover.catalogues.grid/store-catalogue        "/catalogues/stores"}
@@ -492,11 +491,11 @@
                                 :tover.identity.recovery.web/recover :tover.identity.recovery.web/password
                                 :tover.identity.sign-out.web/confirm-sign-out
                                 :tover.workspaces.select.web/page :tover.accounts.profile.web/profile
-                                :tover.stock.web/page :tover.operations.web/page
+                                :tover.inventory.web/page
                                 :tover.catalogues.grid/catalogue :tover.catalogues.grid/warehouse-catalogue
                                 :tover.catalogues.grid/store-catalogue])))
     (is (not-any? #(re-find #"^tover\.(auth|teams)\b|^tover\.workspaces\.web$" (namespace %)) (keys routes)))
-    (doseq [id [:tover.stock.web/page :tover.operations.web/page
+    (doseq [id [:tover.inventory.web/page
                 :tover.catalogues.grid/catalogue :tover.catalogues.grid/supplier-catalogue
                 :tover.catalogues.grid/category-catalogue]]
       (is (= :tover.shared.web.core/shell (:bel/parent (bel/get-page id)))))

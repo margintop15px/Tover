@@ -11,22 +11,22 @@
   - Plain effects are safe in :fx with :then/:catch: ::resend ::recover ::sign-out. When run from :fx a
     provider failure is rethrown with :type :temporary, :permanent or :uncertain (the runtime's problem types)."
   (:require
-   [bel.runtime :as runtime]
-   [bel.validation :as validation]
-   [charred.api :as json]
-   [clojure.string :as str]
-   [org.httpkit.client :as http]
-   [tover.identity.session :as session]
-   [tover.shared.i18n :as i18n])
+    [bel.runtime :as runtime]
+    [bel.validation :as validation]
+    [charred.api :as json]
+    [clojure.string :as str]
+    [org.httpkit.client :as http]
+    [tover.identity.session :as session]
+    [tover.shared.i18n :as i18n])
   (:import
-   [clojure.lang ExceptionInfo]
-   [java.net URI URLEncoder]
-   [java.nio.charset StandardCharsets]
-   [java.time Instant]
-   [java.util Map UUID]
-   [java.util.concurrent ExecutionException]
-   [org.httpkit DynamicBytes]
-   [org.httpkit.client IFilter]))
+    [clojure.lang ExceptionInfo]
+    [java.net URI URLEncoder]
+    [java.nio.charset StandardCharsets]
+    [java.time Instant]
+    [java.util Map UUID]
+    [java.util.concurrent ExecutionException]
+    [org.httpkit DynamicBytes]
+    [org.httpkit.client IFilter]))
 
 
 (def Text
@@ -147,20 +147,20 @@
         write?     (not= :get method)
         pending    (future
                      @(http/request
-                       {:client           client
-                        :url              url
-                        :method           method
-                        :headers          (cond-> {"Accept" "application/json" "Content-Type" "application/json" "apikey" api-key}
-                                            token (assoc "Authorization" (str "Bearer " token)))
-                        :body             (when (some? body) (json/write-json-str body))
-                        :as               :text
-                        :timeout          timeout-ms
-                        :follow-redirects false
-                        :keepalive        -1
+                        {:client           client
+                         :url              url
+                         :method           method
+                         :headers          (cond-> {"Accept" "application/json" "Content-Type" "application/json" "apikey" api-key}
+                                             token (assoc "Authorization" (str "Bearer " token)))
+                         :body             (when (some? body) (json/write-json-str body))
+                         :as               :text
+                         :timeout          timeout-ms
+                         :follow-redirects false
+                         :keepalive        -1
                         ;; Abort active responses after the caller's deadline too.
-                        :filter           (reify IFilter
-                                            (^boolean accept [_ ^Map _headers] (< (System/nanoTime) deadline))
-                                            (^boolean accept [_ ^DynamicBytes _body] (< (System/nanoTime) deadline)))}))
+                         :filter           (reify IFilter
+                                             (^boolean accept [_ ^Map _headers] (< (System/nanoTime) deadline))
+                                             (^boolean accept [_ ^DynamicBytes _body] (< (System/nanoTime) deadline)))}))
         {:keys [status headers body error]}
         (try
           ;; Include synchronous DNS and body reads in the caller's deadline.
