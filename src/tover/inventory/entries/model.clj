@@ -6,7 +6,9 @@
     [bel.runtime :as runtime]
     [bel.validation :as validation]
     [clojure.string :as str]
-    [tover.catalogues.records :as records :refer [Id]])
+    [tover.catalogues.records :as records :refer [Id]]
+    [tover.inventory.findings :as findings]
+    [tover.inventory.valuation :as valuation])
   (:import
     [java.time OffsetDateTime]
     [java.time.format DateTimeParseException]
@@ -355,13 +357,29 @@
           entries)))
 
 
+(defmethod runtime/coeffect ::catalogue
+  [_ context _]
+  {:products    (records/all-records context :tover.catalogues.products.model/products :product-id)
+   :warehouses  (records/all-records context :tover.catalogues.warehouses.model/warehouses :warehouse-id)
+   :stock-items (records/all-records context :tover.inventory.stock-items.model/stock-items :stock-item-id)
+   :barcodes    (records/all-records context :tover.inventory.stock-items.model/stock-item-barcodes :barcode-id)})
+
+
+;; Pending entries with blockers, and draft findings over all of them (nil when the rules are unavailable).
 (defreadmodel pending-entries
   {:input  [:map]
-   :output [:map [:entries [:vector :map]]]
+   :output [:map [:entries [:vector :map]] [:findings [:maybe [:vector findings/Finding]]]]
    :policy ::records/workspace-member
-   :cofx   [[:pending ::pending (constantly {})] [:references ::references (constantly {})]]}
-  [{:keys [pending references]} _]
-  (let [status (update-vals references #(into {} (map (juxt :id :status)) %))]
-    {:entries (->> pending
-                   (sort-by (juxt (comp nil? :occurred-at) :occurred-at :entry-id))
-                   (mapv #(assoc % :blockers (blockers % (:lines %) status))))}))
+   :cofx   [[:pending ::pending (constantly {})] [:catalogue ::catalogue (constantly {})]
+            [:history :tover.inventory.acceptance.model/history (constantly {})]]}
+  [{:keys [pending catalogue history]} _]
+  (let [status  {:warehouses  (into {} (map (juxt :warehouse-id :status)) (:warehouses catalogue))
+                 :products    (into {} (map (juxt :product-id :status)) (:products catalogue))
+                 :stock-items (into {} (map (juxt :stock-item-id :status)) (:stock-items catalogue))}
+        entries (->> pending
+                     (sort-by (juxt (comp nil? :occurred-at) :occurred-at :entry-id))
+                     (mapv #(assoc % :blockers (blockers % (:lines %) status))))]
+    {:entries  entries
+     :findings (findings/derive-within-limit
+                 (assoc catalogue :entries entries
+                        :balances (:balances (valuation/replay (:records history) (:lines history)))))}))

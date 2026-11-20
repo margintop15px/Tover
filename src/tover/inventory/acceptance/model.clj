@@ -2,6 +2,7 @@
   "Board chapters 17, 14 and 32a · Accepted inventory history: one acceptance, its record revisions and their lines."
   (:require
     [bel.core :refer [defevent defmodel]]
+    [bel.runtime :as runtime]
     [bel.validation :as validation]
     [tover.catalogues.records :as records :refer [Id]]))
 
@@ -78,3 +79,12 @@
   {:malli/schema [:=> [:cat :string [:int {:min 0}]] :string]}
   [record-revision-id position]
   (str record-revision-id "/" position))
+
+
+(defmethod runtime/coeffect ::history
+  [_ context _]
+  ;; Every accepted record revision with its acceptance time, and every accepted line, for `valuation/replay`.
+  ;; ponytail: full scan per read; add a per-pair index when history grows large.
+  (let [recorded (into {} (map (juxt :acceptance-id :recorded-at)) (records/all-records context ::acceptances :acceptance-id))]
+    {:records (mapv #(assoc % :recorded-at (get recorded (:acceptance-id %))) (records/all-records context ::records :record-revision-id))
+     :lines   (records/all-records context ::record-lines :record-line-id)}))

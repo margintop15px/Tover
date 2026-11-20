@@ -218,6 +218,9 @@
                      :unit-cost "100.00"}]
                    (:lines e1)))
             (is (= [] (:blockers e1))))
+          (testing "findings cover every pending entry"
+            (is (contains? (set (map (juxt :line-id :code) (:findings (runtime/read-model ctx ::entries/pending-entries {}))))
+                           ["a" :new-reference])))
           (testing "incomplete entry and archived reference show blockers"
             (is (= #{[nil :occurred-at :occurred-at-missing] ["a" :quantity :quantity-missing]
                      ["a" :warehouse-id :archived-reference]}
@@ -225,5 +228,5 @@
         (testing "stale save through the store keeps the attempt out"
           (is (= :stale-draft (:type (rejection #(save "s3" (assoc opening :expected-revision 7)))))))
         (testing "another workspace never sees these entries"
-          (is (= [] (:entries (runtime/read-model (context repo #uuid "00000000-0000-0000-0000-000000000002")
-                                                  ::entries/pending-entries {})))))))))
+          (is (= {:entries [] :findings []}
+                 (runtime/read-model (context repo #uuid "00000000-0000-0000-0000-000000000002") ::entries/pending-entries {}))))))))
