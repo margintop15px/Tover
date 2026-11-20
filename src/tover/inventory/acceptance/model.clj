@@ -1,13 +1,16 @@
 (ns tover.inventory.acceptance.model
   "Board chapters 17, 14 and 32a · Accepted inventory history: one acceptance, its record revisions and their lines."
   (:require
-    [bel.core :refer [defevent defmodel defreadmodel]]
+    [bel.core :refer [defcommand defevent defmodel defreadmodel]]
     [bel.runtime :as runtime]
     [bel.validation :as validation]
     [clojure.string :as str]
+    [clojure.walk :as walk]
     [tover.catalogues.records :as records :refer [Id]]
     [tover.inventory.entries.model :as entries]
-    [tover.inventory.valuation :as valuation])
+    [tover.inventory.stock-items.model :as stock-items]
+    [tover.inventory.valuation :as valuation]
+    [tover.workspaces.currency.model :as currency])
   (:import
     [java.security MessageDigest]))
 
@@ -256,14 +259,16 @@
         articles (set (keep (comp text-key :article) lines))
         pairs    (set (map (juxt :stock-item-id :warehouse-id) lines))
         picked   (set (map :entry-id (:selection selection)))]
-    (sha256 (pr-str [(:selection selection) (:order selection)
-                     (sort-by :entry-id (filter (comp picked :entry-id) entries))
-                     (sort-by :product-id (filter #(or ((ids :product-id) (:product-id %)) (names (text-key (:name %)))) products))
-                     (sort-by :warehouse-id (filter #(or ((ids :warehouse-id) (:warehouse-id %)) (stores (text-key (:name %)))) warehouses))
-                     (sort-by :stock-item-id (filter #(or ((ids :stock-item-id) (:stock-item-id %)) (articles (text-key (:article %)))) stock-items))
-                     (sort-by :barcode-id (filter (comp codes :barcode) barcodes))
-                     (sort (keep #(when (pairs [(:stock-item-id %) (:warehouse-id %)]) (:record-line-id %)) (:lines history)))
-                     currency]))))
+    ;; Canonical text: `pr-str` of equal maps differs with key order, and of an Instant with its identity hash.
+    (sha256 (pr-str (walk/postwalk #(cond (map? %) (into (sorted-map) %) (inst? %) (str %) :else %)
+                                   [(:selection selection) (:order selection)
+                                    (sort-by :entry-id (filter (comp picked :entry-id) entries))
+                                    (sort-by :product-id (filter #(or ((ids :product-id) (:product-id %)) (names (text-key (:name %)))) products))
+                                    (sort-by :warehouse-id (filter #(or ((ids :warehouse-id) (:warehouse-id %)) (stores (text-key (:name %)))) warehouses))
+                                    (sort-by :stock-item-id (filter #(or ((ids :stock-item-id) (:stock-item-id %)) (articles (text-key (:article %)))) stock-items))
+                                    (sort-by :barcode-id (filter (comp codes :barcode) barcodes))
+                                    (sort (keep #(when (pairs [(:stock-item-id %) (:warehouse-id %)]) (:record-line-id %)) (:lines history)))
+                                    currency])))))
 
 
 (defn review
@@ -316,13 +321,14 @@
   [[:entries :tover.inventory.entries.model/pending (constantly {})]
    [:catalogue :tover.inventory.entries.model/catalogue (constantly {})]
    [:history ::history (constantly {})]
-   [:currency-row :tover.workspaces.currency.model/workspace-currencies (fn [_ _] {:currency-key "currency"})]])
+   currency/row-fact])
 
 
-(defn- review-input
+(defn review-input
+  "Facts as `review` takes them, from the coeffects in `review-facts`."
   {:malli/schema [:=> [:cat :map] :map]}
   [{:keys [entries catalogue history currency-row]}]
-  (merge catalogue {:entries entries :history history :currency (or (:currency currency-row) "EUR")}))
+  (merge catalogue {:entries entries :history history :currency (currency/current currency-row)}))
 
 
 (defreadmodel inventory-review
@@ -332,3 +338,102 @@
    :cofx   (conj review-facts [:clock ::now (constantly {})])}
   [{:keys [clock] :as facts} input]
   (dissoc (review (assoc (review-input facts) :now clock) input) :lines :records))
+
+
+;; Accept
+
+
+(def Accept
+  [:map [:workspace-id :uuid] [:acceptance-id Id] [:fingerprint [:string {:min 1}]]
+   [:selection [:vector [:map [:entry-id Id] [:revision [:int {:min 1}]]]]] [:order [:vector Id]]])
+
+
+(def ^:private rejection
+  "Review problem code to the `Accept Reviewed Inventory Changes` rejection it raises."
+  {:entry-changed       [:review-outdated "The selection changed since the review. Review it again."]
+   :entry-incomplete    [:review-outdated "A selected entry is incomplete. Review it again."]
+   :future-occurrence   [:future-occurrence "An occurrence time is later than now."]
+   :negative-balance    [:negative-balance "Stock would go below zero."]
+   :second-opening      [:second-opening "This stock item already has an opening in this warehouse."]
+   :opening-not-first   [:second-opening "An opening must come first in its stock timeline."]
+   :uniqueness-conflict [:uniqueness-conflict "A barcode or article belongs to another product."]
+   :duplicate-variant   [:uniqueness-conflict "This product already has a stock item with this variant."]
+   :archived-reference  [:archived-reference "Restore the archived product or warehouse first."]})
+
+
+(defn- present
+  {:malli/schema [:=> [:cat :map] :map]}
+  [m]
+  (into {} (remove (comp nil? val)) m))
+
+
+(defn- registration-events
+  {:malli/schema [:=> [:cat [:sequential :map]] [:vector :map]]}
+  [lines]
+  (let [trim  #(some-> % str/trim not-empty)
+        first (fn [k pred] (vals (reduce #(if (and (pred %2) (not (contains? %1 (k %2)))) (assoc %1 (k %2) %2) %1) {} lines)))]
+    (vec (concat
+           (for [l (sort-by :line-id (first :warehouse-id :new-warehouse?))]
+             {:type :tover.catalogues.warehouses.model/warehouse-registered
+              :data {:warehouse-id (:warehouse-id l) :name (trim (:warehouse-name l)) :status "active" :revision 1}})
+           (for [l (sort-by :line-id (first :product-id :new-product?))]
+             {:type :tover.catalogues.products.model/product-registered
+              :data {:product-id (:product-id l) :name (trim (:product-name l)) :status "active" :revision 1}})
+           (for [l lines :when (:new-item? l)]
+             {:type ::stock-items/stock-item-registered
+              :data (present {:stock-item-id (:stock-item-id l)  :product-id (:product-id l)  :variant-label (trim (:variant-label l))
+                              :article       (trim (:article l)) :unit       (trim (:unit l)) :condition     "regular"                 :status "active"
+                              :revision      1})})
+           (for [l lines :when (:new-item? l) code (:barcodes l)]
+             {:type ::stock-items/stock-item-barcode-assigned
+              :data {:barcode-id (stock-items/barcode-id (:stock-item-id l) code) :stock-item-id (:stock-item-id l) :barcode code}})))))
+
+
+(defcommand accept-reviewed-inventory-changes
+  {:input  Accept
+   :policy ::records/workspace-member
+   :cofx   review-facts
+   :emits  #{::inventory-changes-accepted ::inventory-record-accepted ::inventory-record-line-accepted
+             ::stock-items/stock-item-registered ::stock-items/stock-item-barcode-assigned
+             :tover.catalogues.products.model/product-registered :tover.catalogues.warehouses.model/warehouse-registered
+             :tover.inventory.entries.model/shared-inventory-entry-accepted}}
+  [{:keys [scope actor now] :as facts} {:keys [acceptance-id fingerprint selection order] :as input}]
+  (entries/check-workspace! scope input)
+  (let [{:keys [problems lines records] :as result} (review (assoc (review-input facts) :now now) (select-keys input [:selection :order]))
+        reasons (into {} (map (juxt :entry-id :reason)) (:entries facts))]
+    (when (not= fingerprint (:fingerprint result))
+      (records/fail! :review-outdated "Something the review saw changed. Review it again." {}))
+    (when-let [{:keys [code] :as problem} (first problems)]
+      (let [[type message] (rejection code [:review-outdated "Review it again."])]
+        (records/fail! type message {:problem problem :problems problems})))
+    (when-not (:valid? result)
+      (records/fail! :review-outdated "The selection and order must match. Review it again." {}))
+    {:events (vec (concat
+                    [{:type ::inventory-changes-accepted
+                      :data {:acceptance-id acceptance-id :actor actor :recorded-at now :record-count (count (:records records))}}]
+                    (registration-events lines)
+                    (for [r (sort-by :sequence (:records records))]
+                      {:type ::inventory-record-accepted
+                       :data (present (-> r (dissoc :recorded-at) (assoc :acceptance-id acceptance-id :reason (reasons (:record-id r)))))})
+                    (for [l (:lines records)] {:type ::inventory-record-line-accepted :data l})
+                    (for [entry-id order
+                          :let     [revision (some #(when (= entry-id (:entry-id %)) (:revision %)) selection)]]
+                      {:type :tover.inventory.entries.model/shared-inventory-entry-accepted
+                       :data {:entry-id entry-id :status "accepted" :revision (inc revision)}})))
+     :fx     (records/publish scope)}))
+
+
+(defreadmodel acceptance-result
+  {:input  [:map [:acceptance-id Id]]
+   :output :map
+   :policy ::records/workspace-member
+   :cofx   [[:history ::history (constantly {})] [:pending :tover.inventory.entries.model/pending (constantly {})]]}
+  [{:keys [history pending]} {:keys [acceptance-id]}]
+  (let [records (sort-by :sequence (filter #(= acceptance-id (:acceptance-id %)) (:records history)))
+        mine    (set (map :record-revision-id records))
+        pairs   (distinct (keep #(when (mine (:record-revision-id %)) [(:stock-item-id %) (:warehouse-id %)]) (:lines history)))
+        after   (:balances (valuation/replay (:records history) (:lines history)))]
+    {:records       (vec records)
+     :balances      (vec (for [[item warehouse :as pair] pairs :let [b (after pair)]]
+                           {:stock-item-id item :warehouse-id warehouse :quantity (:quantity b 0) :value (if b (valuation/value b) 0M)}))
+     :pending-count (count pending)}))

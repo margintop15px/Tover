@@ -246,7 +246,8 @@
         (throw (ex-info (ex-message error) (assoc (ex-data error) :line-id line-id)))))))
 
 
-(defn- check-workspace!
+(defn check-workspace!
+  "Reject input whose workspace differs from the request scope; never retarget."
   {:malli/schema [:=> [:cat :map :map] :nil]}
   [scope input]
   (when-not (= (:workspace-id input) (:workspace-id scope))
