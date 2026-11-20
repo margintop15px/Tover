@@ -39,7 +39,7 @@
             :readable-domains     connector/domains}
            (verify {}))))
   (testing "a refused probe makes only that domain unreadable"
-    (is (= (remove #{"stock"} connector/domains)
+    (is (= (remove #{"stock-analytics"} connector/domains)
            (:readable-domains (verify {"/v1/analytics/stocks" 403})))))
   (testing "refused credentials"
     (is (= {:verification-outcome "rejected"} (verify {"/v1/seller/info" 401}))))

@@ -25,8 +25,9 @@
 
 
 (def domains
-  "Source domains in board order; each has one read-only probe."
-  ["warehouses" "products" "identifiers" "attributes" "stock" "fbs-postings" "fbo-postings" "returns" "supplies" "removals"])
+  "Sync domains in board order (chapter 41, Fetch the next source batch); each has one read-only probe."
+  ["warehouses" "products" "sku-aliases" "attributes" "attribute-definitions" "stock-totals" "stock-analytics"
+   "fbs-postings" "fbo-postings" "returns" "rfbs-returns" "supplies" "removals"])
 
 
 (def Verification
@@ -136,16 +137,19 @@
 
 (def probes
   "One read-only request per domain, the smallest each endpoint accepts."
-  {"warehouses"   ["/v2/warehouse/list" {:limit 1}]
-   "products"     ["/v3/product/list" {:filter {} :limit 1}]
-   "identifiers"  ["/v1/product/related-sku/get" {:sku []}]
-   "attributes"   ["/v4/product/info/attributes" {:filter {} :limit 1}]
-   "stock"        ["/v1/analytics/stocks" {:skus []}]
-   "fbs-postings" ["/v4/posting/fbs/list" {:limit 1}]
-   "fbo-postings" ["/v3/posting/fbo/list" {:limit 1}]
-   "returns"      ["/v1/returns/list" {:limit 1}]
-   "supplies"     ["/v3/supply-order/list" {:limit 1}]
-   "removals"     ["/v1/removal/from-stock/list" {:limit 1}]})
+  {"warehouses"            ["/v2/warehouse/list" {:limit 1}]
+   "products"              ["/v3/product/list" {:filter {} :limit 1}]
+   "sku-aliases"           ["/v1/product/related-sku/get" {:sku []}]
+   "attributes"            ["/v4/product/info/attributes" {:filter {} :limit 1}]
+   "attribute-definitions" ["/v1/description-category/attribute" {}]
+   "stock-totals"          ["/v4/product/info/stocks" {:filter {} :limit 1}]
+   "stock-analytics"       ["/v1/analytics/stocks" {:skus []}]
+   "fbs-postings"          ["/v4/posting/fbs/list" {:limit 1}]
+   "fbo-postings"          ["/v3/posting/fbo/list" {:limit 1}]
+   "returns"               ["/v1/returns/list" {:limit 1}]
+   "rfbs-returns"          ["/v2/returns/rfbs/list" {:limit 1}]
+   "supplies"              ["/v3/supply-order/list" {:limit 1}]
+   "removals"              ["/v1/removal/from-stock/list" {:limit 1}]})
 
 
 (defn http-post

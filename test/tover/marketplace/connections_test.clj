@@ -134,16 +134,16 @@
 
 
 (deftest key-without-analytics-access
-  (let [domains (vec (remove #{"stock"} all-domains))
+  (let [domains (vec (remove #{"stock-analytics"} all-domains))
         plan    (connect {} {:readable-domains domains})
         rows    (:domains (model/status (after {} plan) active-store true))]
     (is (= (model/encode-domains domains) (get-in (data plan) [0 :data :readable-domains])))
-    (is (= [{:domain "stock" :readable? false}] (filterv #(= "stock" (:domain %)) rows)))
-    (is (every? :readable? (remove #(= "stock" (:domain %)) rows)))))
+    (is (= [{:domain "stock-analytics" :readable? false}] (filterv #(= "stock-analytics" (:domain %)) rows)))
+    (is (every? :readable? (remove #(= "stock-analytics" (:domain %)) rows)))))
 
 
 (deftest key-that-cannot-read-products
-  (is (= :products-not-readable (rejection #(connect {} {:readable-domains ["warehouses" "stock"]})))))
+  (is (= :products-not-readable (rejection #(connect {} {:readable-domains ["warehouses" "stock-analytics"]})))))
 
 
 (deftest wrong-api-key
@@ -305,7 +305,7 @@
   (doseq [[outcome type] {"rejected" :credentials-rejected "unreachable" :could-not-verify}]
     (is (= type (rejection #(decide ::model/replace-connection-credentials {:connection connection}
                                     {:connection-id c :client-id "123" :verification-outcome outcome})))))
-  (is (= :products-not-readable (rejection #(replace-credentials connection {:readable-domains ["stock"]}))))
+  (is (= :products-not-readable (rejection #(replace-credentials connection {:readable-domains ["stock-analytics"]}))))
   (is (= :unknown-connection (rejection #(decide ::model/replace-connection-credentials {:connection nil}
                                                  (merge {:connection-id c :client-id "123"} verified))))))
 

@@ -42,7 +42,7 @@
   [{:keys [client-id api-key]}]
   (case api-key
     "good" {:verification-outcome "verified" :provider-account-id client-id :readable-domains connector/domains}
-    "blind" {:verification-outcome "verified" :provider-account-id client-id :readable-domains ["stock"]}
+    "blind" {:verification-outcome "verified" :provider-account-id client-id :readable-domains ["stock-analytics"]}
     "slow" {:verification-outcome "unreachable"}
     {:verification-outcome "rejected"}))
 

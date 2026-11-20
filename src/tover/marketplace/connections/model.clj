@@ -35,7 +35,7 @@
 
 (def Domains
   "Readable domains as space-separated text in board order."
-  [:re (re-pattern (str "(?:" (str/join "|" connector/domains) ")(?: (?:" (str/join "|" connector/domains) "))*"))])
+  [:re (re-pattern (str "^(?:" (str/join "|" connector/domains) ")(?: (?:" (str/join "|" connector/domains) "))*$"))])
 
 
 (defn encode-domains
