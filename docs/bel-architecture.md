@@ -280,6 +280,7 @@ The board was reworked for the stock-item model and the marketplace chapters (08
 | Account Preferences | `:directory` | Per-account settings; chapter 47 keys them by `(account, workspace, table)`. |
 | Marketplace Connections | `:directory` | Connection state, encrypted-secret reference and sync runs; no inventory facts. |
 | Catalogues, Inventory | `:catalogue` | Acceptance registers catalogue records and writes ledger records in one commit. |
+| Workspace Currency (04a) | `:catalogue` | Review and acceptance read it in the same serializable transaction as the records they value. |
 | Marketplace Source, Marketplace Mappings, Marketplace Cutover | `:catalogue` | Mapping, baseline and "source operation accepted" are rechecked and written inside the acceptance commit. |
 | Email Delivery (chapter 05) | effect `:email/send` | External system: owns no facts. Attempt outcomes are `:directory` facts written by the delivery processor. |
 

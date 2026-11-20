@@ -752,7 +752,14 @@
     "New": "New",
     "Discard row": "Discard row",
     "New row": "New row",
-    "Discard": "Discard"
+    "Discard": "Discard",
+    "Settings": "Settings",
+    "Workspace settings": "Workspace settings",
+    "All money amounts are in this currency. Changing it relabels them; nothing is converted.": "All money amounts are in this currency. Changing it relabels them; nothing is converted.",
+    "Could not load the workspace currency.": "Could not load the workspace currency.",
+    "Only an owner can change the currency.": "Only an owner can change the currency.",
+    "Choose a currency from the list.": "Choose a currency from the list.",
+    "This workspace is no longer selected.": "This workspace is no longer selected."
   },
   "ru": {
     "Stock": "Остатки",
@@ -1511,6 +1518,13 @@
     "New": "Новая",
     "Discard row": "Удалить строку",
     "New row": "Новая строка",
-    "Discard": "Отменить"
+    "Discard": "Отменить",
+    "Settings": "Настройки",
+    "Workspace settings": "Настройки рабочего пространства",
+    "All money amounts are in this currency. Changing it relabels them; nothing is converted.": "Все денежные суммы указаны в этой валюте. При смене меняется только обозначение; суммы не пересчитываются.",
+    "Could not load the workspace currency.": "Не удалось загрузить валюту рабочего пространства.",
+    "Only an owner can change the currency.": "Сменить валюту может только владелец.",
+    "Choose a currency from the list.": "Выберите валюту из списка.",
+    "This workspace is no longer selected.": "Это рабочее пространство больше не выбрано."
   }
 }
