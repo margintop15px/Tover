@@ -1,0 +1,275 @@
+(ns tover.marketplace.connections.web
+  "Board chapter 40 screens: Marketplace Connections (the list and the connect form) and Connection Details
+  (status, coverage, Pause, Resume and the write-only reconnect form). Every member reads; Owner and Admin act.
+
+  Connect and Replace verify the credentials with the provider and seal the API key before returning the
+  command descriptor (a read that builds the input). The key is sealed only when the command can accept it,
+  so a rejected attempt stores nothing; the API key field is never rendered with a value."
+  (:require
+    [bel.core :refer [defaction defpage]]
+    [bel.runtime :as runtime]
+    [clojure.string :as str]
+    [tover.identity.access :as access]
+    [tover.invitations.team.web :as team]
+    [tover.marketplace.connections.model :as model]
+    [tover.marketplace.connector :as connector]
+    [tover.shared.i18n :as i18n]
+    [tover.shared.schema :as schema]
+    [tover.shared.ui.forms :refer [form]]))
+
+
+(def problems
+  "Board rejections, shown on the page the form came from."
+  (let [changed [409 "This connection changed. Reload the page."]]
+    {:store-not-available      409 :credentials-rejected 422     :could-not-verify  503     :products-not-readable 422
+     :already-connected        409 :unknown-connection   404     :needs-credentials 409     :store-archived        409
+     :different-seller-account 422 :conflict             changed :identity-conflict changed}))
+
+
+(def Command
+  team/Command)
+
+
+;; Commands
+
+
+(defn- descriptor
+  "A manager command for the selected workspace; success opens the connection's page."
+  {:malli/schema [:=> [:cat :map :qualified-keyword :map] :map]}
+  [{:keys [request]} id {:keys [command-id workspace-id connection-id] :as input}]
+  (when-not (= workspace-id (get-in request [:tover/identity :workspace-id]))
+    (access/failure 409 :workspace-changed "Workspace changed. Reload this page before continuing."))
+  {:type  :command :id id :command-id command-id
+   :input (dissoc input :command-id :workspace-id)
+   :then  {:type :page :id ::connection :path-params {:connection-id connection-id}}})
+
+
+(defn credentials
+  "Replace `:api-key` with the provider's verification and, when `acceptable?` holds for it, the secret
+  reference of the sealed key."
+  {:malli/schema [:=> [:cat :map :map [:fn fn?]] :map]}
+  [context {:keys [workspace-id client-id api-key] :as input} acceptable?]
+  (let [marketplace  (get-in context [:bel/system :resources :marketplace])
+        _            (when-not marketplace
+                       (throw (ex-info "Marketplace connections are not configured" {:type :configuration})))
+        client-id    (str/trim client-id)
+        verification ((:verify marketplace) {:client-id client-id :api-key api-key})]
+    (cond-> (merge (dissoc input :api-key) {:client-id client-id} verification)
+      (and (= "verified" (:verification-outcome verification))
+           (= client-id (:provider-account-id verification))
+           (some #{"products"} (:readable-domains verification))
+           (acceptable? verification))
+      (assoc :secret-ref (connector/store-secret! marketplace workspace-id api-key)))))
+
+
+(def Credentials
+  [:map [:client-id [:string {:min 1 :max 100}]] [:api-key [:string {:min 1 :max 500}]]])
+
+
+(defaction connect
+  {:schema     (into Command (concat [[:connection-id model/Ref] [:store-id :string] [:provider model/Provider]]
+                                     (rest Credentials)))
+   :route-data {:tover/access :manager :bel/error-page ::connections :tover/problems problems}}
+  [context input]
+  (let [{:keys [connections selectable-stores]}
+        (runtime/read-model context ::model/marketplace-connections-and-requirements {})
+        ;; ponytail: a store archived or an account connected between this read and the commit leaves one
+        ;; unreferenced sealed key; add a sweep of unreferenced secrets if that race shows up.
+        acceptable? (fn [{:keys [provider-account-id]}]
+                      (and (some #(= (:store-id input) (:store-id %)) selectable-stores)
+                           (not-any? #(= provider-account-id (:provider-account-id %)) connections)))]
+    (descriptor context ::model/connect-marketplace-account (credentials context input acceptable?))))
+
+
+(defaction replace-credentials
+  {:schema     (into Command (concat [[:connection-id model/Ref]] (rest Credentials)))
+   :route-data {:tover/access :manager :bel/error-page ::connection :tover/problems problems}}
+  [context input]
+  (let [account (:provider-account-id (runtime/read-model context ::model/connection-status-and-sync-coverage
+                                                          (select-keys input [:connection-id])))]
+    (descriptor context ::model/replace-connection-credentials
+                (credentials context input #(= account (:provider-account-id %))))))
+
+
+(defaction pause
+  {:schema     (conj Command [:connection-id model/Ref])
+   :route-data {:tover/access :manager :bel/error-page ::connection :tover/problems problems}}
+  [context input]
+  (descriptor context ::model/pause-marketplace-connection input))
+
+
+(defaction resume
+  {:schema     (conj Command [:connection-id model/Ref])
+   :route-data {:tover/access :manager :bel/error-page ::connection :tover/problems problems}}
+  [context input]
+  (descriptor context ::model/resume-marketplace-connection input))
+
+
+;; Presentation
+
+
+(defn- state-label
+  {:malli/schema [:=> [:cat :map] :string]}
+  [{:keys [sync-state credentials-state]}]
+  (cond
+    (= "rejected" credentials-state) (i18n/t "Needs credentials")
+    (= "paused" sync-state) (i18n/t "Paused")
+    :else (i18n/t "Active")))
+
+
+(defn- hidden
+  {:malli/schema [:=> [:cat :string :any] schema/Hiccup]}
+  [name value]
+  [:input {:type "hidden" :name name :value (str value)}])
+
+
+(defn- credential-fields
+  "Write-only: the API key is never rendered with a value."
+  {:malli/schema [:=> [:cat [:maybe :string]] [:vector :any]]}
+  [client-id]
+  [[:label (i18n/t "Client ID")
+    [:input {:name "client-id" :type "text" :required true :inputmode "numeric" :autocomplete "off" :value (or client-id "")}]]
+   [:label (i18n/t "API key")
+    [:input {:name "api-key" :type "password" :required true :autocomplete "new-password"}]]])
+
+
+(defn- connection-link
+  {:malli/schema [:=> [:cat :string] :string]}
+  [connection-id]
+  (str "/marketplace/" connection-id))
+
+
+(defn- connect-form
+  {:malli/schema [:=> [:cat :map [:vector :map]] schema/Hiccup]}
+  [request stores]
+  (let [params (:params request)]
+    [:div.management-form
+     (apply form request ::connect (i18n/t "Connect")
+            (concat (team/command-fields request)
+                    [(hidden "connection-id" (random-uuid))
+                     (hidden "provider" "ozon")
+                     [:label (i18n/t "Store")
+                      (into [:select {:name "store-id" :required true}]
+                            (for [{:keys [store-id name]} stores]
+                              [:option {:value store-id :selected (= store-id (:store-id params))} name]))]]
+                    (credential-fields (:client-id params))))
+     [:p.management-secondary (i18n/t "Ozon is read only: Tover never changes anything in your seller account.")]]))
+
+
+(defn query-connections
+  {:malli/schema [:=> [:cat :map :map] :map]}
+  [{:keys [request] :as context} _]
+  {:request request
+   :model   (runtime/read-model context ::model/marketplace-connections-and-requirements {})})
+
+
+(defpage connections
+  {:route      "/marketplace"
+   :title      "Marketplace · Tover"
+   :parent     :tover.shared.web.core/shell
+   :route-data {:tover/access :workspace}
+   :query      query-connections}
+  [{:keys [request model]}]
+  (let [existing (get-in request [:tover/rejection :connection-id])]
+    {:type :elements
+     :html [:section.management-page {:aria-labelledby "marketplace-title"}
+            [:header.management-header [:h1#marketplace-title {:tabindex -1} (i18n/t "Marketplace connections")]]
+            [:div.management-content
+             (when existing
+               [:p [:a {:href (connection-link existing)} (i18n/t "Open the existing connection")]])
+             (if (seq (:connections model))
+               [:div.management-table-wrap
+                [:table.management-table {:aria-labelledby "marketplace-title"}
+                 [:thead [:tr [:th {:scope "col"} (i18n/t "Seller account")] [:th {:scope "col"} (i18n/t "Store")]
+                          [:th {:scope "col"} (i18n/t "Status")] [:th {:scope "col"} (i18n/t "Last sync")]]]
+                 (into [:tbody]
+                       (for [{:keys [connection-id account-label store last-completed-sync-at] :as row} (:connections model)]
+                         [:tr {:data-connection-id connection-id}
+                          [:td.management-primary [:a {:href (connection-link connection-id)} "Ozon · " account-label]]
+                          [:td (:name store) (when (:archived? store) (list " · " (i18n/t "Archived")))]
+                          [:td (state-label row)]
+                          [:td (if last-completed-sync-at (team/moment last-completed-sync-at) (i18n/t "Not yet"))]]))]]
+               [:p.management-empty (i18n/t "No marketplace connections yet.")])
+             (when (:can-manage? model)
+               [:details.management-disclosure {:open (or (empty? (:connections model)) (contains? (:params request) :client-id))}
+                [:summary (i18n/t "Connect a seller account")]
+                (if (seq (:selectable-stores model))
+                  (connect-form request (:selectable-stores model))
+                  [:p.management-empty (i18n/t "Add an active store in Catalogues first.")])])]]}))
+
+
+(defn query-connection
+  {:malli/schema [:=> [:cat :map :map] :map]}
+  [{:keys [request] :as context} {:keys [connection-id]}]
+  (let [input  {:connection-id connection-id}
+        status (runtime/read-model context ::model/connection-status-and-sync-coverage input)]
+    {:request   request
+     :status    status
+     :paused    (when (= "paused" (:sync-state status)) (runtime/read-model context ::model/paused-connection input))
+     :attention (when (= "rejected" (:credentials-state status))
+                  (runtime/read-model context ::model/connection-needing-attention input))}))
+
+
+(def ^:private reason-labels
+  {"paused"             "Paused"             "needs credentials"    "Needs credentials"    "no baseline" "No cutover baseline"
+   "unmatched listings" "Unmatched listings" "unmatched warehouses" "Unmatched warehouses"})
+
+
+(defn- action-form
+  {:malli/schema [:=> [:cat :map :qualified-keyword :string :string] schema/Hiccup]}
+  [request action label connection-id]
+  (apply form request action label (conj (team/command-fields request) (hidden "connection-id" connection-id))))
+
+
+(defpage connection
+  {:route      "/marketplace/:connection-id"
+   :title      "Marketplace connection · Tover"
+   :parent     :tover.shared.web.core/shell
+   :schema     [:map [:connection-id model/Ref]]
+   :route-data {:tover/access :workspace}
+   :query      query-connection}
+  [{:keys [request status paused attention]}]
+  (let [{:keys [connection-id account-label store can-manage?]} status]
+    {:type :elements
+     :html [:section.management-page {:aria-labelledby "connection-title" :data-connection-id connection-id}
+            [:header.management-header
+             [:h1#connection-title {:tabindex -1} "Ozon · " account-label]
+             [:p.management-subtitle (:name store) " · " (state-label status)]]
+            [:div.management-content
+             [:p [:a {:href "/marketplace"} (i18n/t "All connections")]]
+             (when attention
+               [:section.management-section {:role "status"}
+                [:p (i18n/t "Ozon rejected the credentials.") " " (team/moment (:rejected-at attention))]
+                [:p.management-secondary (i18n/t "Nothing syncs or is accepted automatically until the credentials are replaced.")]])
+             (when paused
+               [:section.management-section
+                [:p (i18n/t "Paused by {name}" {:name (or (get-in paused [:paused-by :display-name]) (i18n/t "Unavailable user"))})
+                 " " (team/moment (:paused-at paused))]
+                (when (:can-resume? paused) (action-form request ::resume (i18n/t "Resume") connection-id))])
+             [:dl
+              [:dt (i18n/t "Last sync")]
+              [:dd (if-let [at (:last-completed-sync-at status)] (team/moment at) (i18n/t "Not yet"))]
+              [:dt (i18n/t "Next sync")]
+              [:dd (if-let [at (:next-sync-at status)] (team/moment at) (i18n/t "Not scheduled"))]
+              [:dt (i18n/t "Automatic acceptance")]
+              [:dd (if (:automatic-acceptance-possible? status)
+                     (i18n/t "On")
+                     (str/join ", " (map #(i18n/t (reason-labels %)) (:blocking-reasons status))))]]
+             [:div.management-table-wrap
+              [:table.management-table
+               [:thead [:tr [:th {:scope "col"} (i18n/t "Data")] [:th {:scope "col"} (i18n/t "Covered until")]]]
+               (into [:tbody]
+                     (for [{:keys [domain readable? covered-until]} (:domains status)]
+                       [:tr [:td domain]
+                        [:td (cond (not readable?) (i18n/t "Unavailable for this API key")
+                                   covered-until (team/moment covered-until)
+                                   :else (i18n/t "Not yet"))]]))]]
+             (when can-manage?
+               (list
+                 (when (= "active" (:sync-state status)) (action-form request ::pause (i18n/t "Pause") connection-id))
+                 [:details.management-disclosure {:open (some? attention)}
+                  [:summary (i18n/t "Replace credentials")]
+                  [:div.management-form
+                   (apply form request ::replace-credentials (i18n/t "Replace credentials")
+                          (concat (team/command-fields request) [(hidden "connection-id" connection-id)]
+                                  (credential-fields (:provider-account-id status))))]]))]]}))

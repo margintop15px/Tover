@@ -532,9 +532,12 @@
             :journal   :directory
             :scope     :workspace
             :authority {:store :directory :impl 'tover.identity.session/->CurrentSession}
-            :resources {:realtime      (ig/ref ::app/realtime)      :provider (ig/ref ::app/provider)
-                        :session-store (ig/ref ::app/session-store) :origin   "http://localhost:3030"}}
+            :resources {:realtime      (ig/ref ::app/realtime) :provider (ig/ref ::app/provider)
+                        :session-store (ig/ref ::app/session-store)                    :origin "http://localhost:3030"
+                        :marketplace   (ig/ref :tover.marketplace.connector/connector)}}
            (get c [:bel/system ::app/bel-system])))
+    (is (= {:repo (ig/ref ::app/repo) :connector-key nil} (get c :tover.marketplace.connector/connector))
+        "without TOVER_CONNECTOR_KEY the connector cannot store credentials")
     (is (= (ig/ref ::app/bel-system) (get-in c [::app/handler :bel/system])))
     (is (empty? (mapcat #(ig/find-derived c %) [::app/journal-datasource ::app/delivery-system :bel.delivery/worker])))))
 

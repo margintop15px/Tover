@@ -50,7 +50,13 @@
   :resources {:realtime      #ig/ref :tover.app/realtime
               :provider      #ig/ref :tover.app/provider
               :session-store #ig/ref :tover.app/session-store
-              :origin        #tover/required "TOVER_ORIGIN"}}
+              :origin        #tover/required "TOVER_ORIGIN"
+              :marketplace   #ig/ref :tover.marketplace.connector/connector}}
+
+ ;; Ozon credentials are sealed with their own key; without TOVER_CONNECTOR_KEY connecting reports a configuration error.
+ :tover.marketplace.connector/connector
+ {:repo          #ig/ref :tover.app/repo
+  :connector-key #tover/env "TOVER_CONNECTOR_KEY"}
 
  ;; The worker's private login: journal delivery and processors act as a service, not a user session.
  ;; Setting only one of the two journal variables is a configuration error. Not an Integrant key; config drops it.
