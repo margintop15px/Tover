@@ -365,6 +365,15 @@
    :barcodes    (records/all-records context :tover.inventory.stock-items.model/stock-item-barcodes :barcode-id)})
 
 
+(defn status-index
+  "Catalogue status by kind and id, as `blockers` takes it."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [{:keys [warehouses products stock-items]}]
+  {:warehouses  (into {} (map (juxt :warehouse-id :status)) warehouses)
+   :products    (into {} (map (juxt :product-id :status)) products)
+   :stock-items (into {} (map (juxt :stock-item-id :status)) stock-items)})
+
+
 ;; Pending entries with blockers, and draft findings over all of them (nil when the rules are unavailable).
 (defreadmodel pending-entries
   {:input  [:map]
@@ -373,9 +382,7 @@
    :cofx   [[:pending ::pending (constantly {})] [:catalogue ::catalogue (constantly {})]
             [:history :tover.inventory.acceptance.model/history (constantly {})]]}
   [{:keys [pending catalogue history]} _]
-  (let [status  {:warehouses  (into {} (map (juxt :warehouse-id :status)) (:warehouses catalogue))
-                 :products    (into {} (map (juxt :product-id :status)) (:products catalogue))
-                 :stock-items (into {} (map (juxt :stock-item-id :status)) (:stock-items catalogue))}
+  (let [status  (status-index catalogue)
         entries (->> pending
                      (sort-by (juxt (comp nil? :occurred-at) :occurred-at :entry-id))
                      (mapv #(assoc % :blockers (blockers % (:lines %) status))))]
