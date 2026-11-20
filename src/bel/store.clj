@@ -13,7 +13,9 @@
   (^{:malli/schema [:=> [:cat :any :any :map :map :map] :any]}
     -create! [store tx scope model row] "Insert a complete entity; an existing identity is :identity-conflict.")
   (^{:malli/schema [:=> [:cat :any :any :map :map [:vector :keyword] :map] :any]}
-    -write! [store tx scope model fields row] "Replace the mapped fields; insert when the entity is new and complete."))
+    -write! [store tx scope model fields row] "Replace the mapped fields; insert when the entity is new and complete.")
+  (^{:malli/schema [:=> [:cat :any :any :map :map :any] :any]}
+    -delete! [store tx scope model id] "Remove the entity's mapped fields and identity; a missing entity is a no-op."))
 
 
 (defprotocol Outbox

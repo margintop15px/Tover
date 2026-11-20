@@ -287,12 +287,13 @@
         (throw (ex-info "Model fields must be scalar; references must be string or UUID identities" {:type :validation :field key}))))
 
     (validation/check! [:map-of :qualified-keyword [:or [:map [:set [:vector {:min 1} :keyword]]]
-                                                    [:map [:create [:vector {:min 1} :keyword]]]]]
+                                                    [:map [:create [:vector {:min 1} :keyword]]]
+                                                    [:map [:delete [:= true]]]]]
                        (or events {}))
 
     (doseq [[event mapping] events]
-      (let [keys (or (:set mapping) (:create mapping))]
-        (when-not (and (contains? #{#{:set} #{:create}} (set (clojure.core/keys mapping)))
+      (let [keys (or (:set mapping) (:create mapping) [])]
+        (when-not (and (contains? #{#{:set} #{:create} #{:delete}} (set (clojure.core/keys mapping)))
                        (= (count keys) (count (distinct keys)))
                        (not-any? #{id-key} keys) (every? fields keys))
           (throw (ex-info "Mappings replace declared fields and preserve identity" {:type :validation :event event})))))

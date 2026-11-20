@@ -91,6 +91,8 @@
   (-load [_ tx _ model id] (load-model {:tx tx} model id))
   (-create! [_ tx _ model row] (insert-model! {:tx tx} model row))
   (-write! [_ tx _ model fields row] (write-model! {:tx tx} model fields row))
+  ;; ponytail: no directory model deletes yet; add DELETE (and the app role's privilege migration) when one does.
+  (-delete! [_ _ _ model _] (throw (ex-info "Delete mappings are not supported in Postgres" {:type :unsupported-mapping :model (:model-id model)})))
 
   store/Journal
   (-receipt [_ tx scope command-id] (journal/receipt {:tx tx :scope scope} command-id))

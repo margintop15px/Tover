@@ -185,15 +185,16 @@
   {:malli/schema [:=> [:cat :map :map] :nil]}
   [context event]
   (doseq [[_ model] (get-in context [:bel/definitions :models])
-          :let      [{:keys [set create]} (get-in model [:events (:type event)])
+          :let      [{:keys [set create delete]} (get-in model [:events (:type event)])
                      fields (or set create)]
-          :when     fields]
+          :when     (or fields delete)]
     (adapter-call context (:store model) :serializable
                   (fn [store tx scope]
-                    (let [row (select-keys (:data event) (conj fields (:id model)))]
-                      (if create
-                        (store/-create! store tx scope model row)
-                        (store/-write! store tx scope model fields row))))))
+                    (let [row (select-keys (:data event) (conj (or fields []) (:id model)))]
+                      (cond
+                        delete (store/-delete! store tx scope model (get row (:id model)))
+                        create (store/-create! store tx scope model row)
+                        :else (store/-write! store tx scope model fields row))))))
   nil)
 
 

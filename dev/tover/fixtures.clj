@@ -118,6 +118,8 @@
         (swap! state update-in [:db table key] merge values)
         (do (validation/check! (:schema model) row)
             (swap! state assoc-in [:db table id] values)))))
+  (-delete! [_ _ _ model _]
+    (throw (ex-info "Delete mappings are not supported in Postgres" {:type :unsupported-mapping :model (:model-id model)})))
 
   store/Journal
   (-receipt [_ _ scope command-id]

@@ -25,6 +25,7 @@
       (when (contains? @rows id) (throw (ex-info "Exists" {:type :identity-conflict})))
       (swap! rows assoc id row)))
   (-write! [_ _ _ model fields row] (swap! rows update (get row (:id model)) #(merge (apply dissoc % fields) row)))
+  (-delete! [_ _ _ _ id] (swap! rows dissoc id))
 
   store/Journal
   (-receipt [_ _ _ command-id] (some #(when (= command-id (:command-id %)) %) @journal))
@@ -322,6 +323,15 @@
       (is (= {:id "1" :value 1} (get @(:rows fresh) "1"))))))
 
 
+(deftest delete-mapping-removes-the-entity
+  (core/build-registry! ['bel.runtime-test])
+  (let [store (memory {"1" {:id "1" :value 0} "2" {:id "2" :value 2}})]
+    (execute-mapped store {:delete true})
+    (is (= {"2" {:id "2" :value 2}} @(:rows store)))
+    (execute-mapped store {:delete true})
+    (is (= {"2" {:id "2" :value 2}} @(:rows store)) "deleting a missing entity is a no-op")))
+
+
 (deftest unknown-model-store-key-is-a-configuration-error
   (core/build-registry! ['bel.runtime-test])
   (let [original (core/operations)]
@@ -367,11 +377,14 @@
                    {:events {::changed {:create [:value] :set [:value]}}}
                    {:events {::changed {:create []}}}
                    {:events {::changed {:create [:id]}}}
+                   {:events {::changed {:delete false}}}
+                   {:events {::changed {:delete true :set [:value]}}}
                    {:store "memory"}
                    {:vocabulary {}}]]
         (is (= :validation (error-type #(core/attach-model! #'entity ::entity (merge declaration bad))))))
       (is (= :validation (error-type #(core/attach-model! #'entity ::entity (dissoc declaration :store)))))
       (is (nil? (error-type #(core/attach-model! #'entity ::entity (assoc declaration :events {::changed {:create [:value]}})))))
+      (is (nil? (error-type #(core/attach-model! #'entity ::entity (assoc declaration :events {::changed {:delete true}})))))
       (is (nil? (error-type #(core/attach-model! #'entity ::entity
                                                  (assoc declaration :schema [:map [:id :string] [:value :int]
                                                                              [:mode {:optional true} [:enum "en" "ru"]]])))))

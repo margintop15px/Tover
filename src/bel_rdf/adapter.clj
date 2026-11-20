@@ -114,6 +114,19 @@
   nil)
 
 
+(defn delete-model!
+  "Remove the entity's type and model-owned fields; retain unrelated RDF predicates."
+  {:malli/schema [:=> [:cat :map :map :any] :nil]}
+  [{:keys [tx] :as context} {:keys [model-id fields] :as model} id]
+  (let [graph  (graph context :domain)
+        entity (subject context model-id id)
+        vocab  (vocabulary model)]
+    (rdf/remove! tx graph entity RDF/TYPE (:type vocab))
+    (doseq [key (keys fields)]
+      (rdf/remove! tx graph entity (get-in vocab [:fields key]) nil)))
+  nil)
+
+
 (defn create-model!
   "Insert a complete entity; a subject already typed as this model is :identity-conflict."
   {:malli/schema [:=> [:cat :map :map :map] :nil]}
@@ -236,6 +249,7 @@
   (-load [_ tx scope model id] (load-model {:tx tx :graphs graphs :scope scope} model id))
   (-create! [_ tx scope model row] (create-model! {:tx tx :graphs graphs :scope scope} model row))
   (-write! [_ tx scope model fields row] (apply-model! {:tx tx :graphs graphs :scope scope} model fields row))
+  (-delete! [_ tx scope model id] (delete-model! {:tx tx :graphs graphs :scope scope} model id))
 
   store/Outbox
   (-record! [_ tx scope delivery] (save-pending! {:tx tx :graphs graphs :scope scope} delivery))
