@@ -13,6 +13,7 @@
     [tover.invitations.team.web :as team]
     [tover.marketplace.connections.model :as model]
     [tover.marketplace.connector :as connector]
+    [tover.marketplace.sync.model :as sync]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.forms :refer [form]]))
@@ -23,7 +24,8 @@
   (let [changed [409 "This connection changed. Reload the page."]]
     {:store-not-available      409 :credentials-rejected 422     :could-not-verify  503     :products-not-readable 422
      :already-connected        409 :unknown-connection   404     :needs-credentials 409     :store-archived        409
-     :different-seller-account 422 :conflict             changed :identity-conflict changed}))
+     :different-seller-account 422 :conflict             changed :identity-conflict changed
+     :connection-paused        409 :throttled            409}))
 
 
 (def Command
@@ -96,6 +98,15 @@
    :route-data {:tover/access :manager :bel/error-page ::connection :tover/problems problems}}
   [context input]
   (descriptor context ::model/pause-marketplace-connection input))
+
+
+(defaction sync-now
+  "Any active member. During a run nothing new starts and the page shows that run."
+  {:schema     (conj Command [:connection-id model/Ref])
+   :route-data {:tover/access :workspace :bel/error-page ::connection :tover/problems problems}}
+  [context {:keys [command-id] :as input}]
+  (descriptor context ::sync/start-marketplace-sync
+              (assoc input :attempt-id command-id :run-id (str (random-uuid)) :trigger "member")))
 
 
 (defaction resume
@@ -207,7 +218,8 @@
      :status    status
      :paused    (when (= "paused" (:sync-state status)) (runtime/read-model context ::model/paused-connection input))
      :attention (when (= "rejected" (:credentials-state status))
-                  (runtime/read-model context ::model/connection-needing-attention input))}))
+                  (runtime/read-model context ::model/connection-needing-attention input))
+     :sync      (runtime/read-model context ::sync/sync-status-and-coverage input)}))
 
 
 (def ^:private reason-labels
@@ -221,6 +233,33 @@
   (apply form request action label (conj (team/command-fields request) (hidden "connection-id" connection-id))))
 
 
+(defn- sync-panel
+  "Marketplace Sync Status: refreshes every few seconds while a run is open. Plain categories only."
+  {:malli/schema [:=> [:cat :map :map :string] schema/Hiccup]}
+  [request {:keys [current-run last-outcome last-failure found-counts scheduling-stopped? can-sync-now]} connection-id]
+  [:section.management-section
+   (cond-> {:aria-labelledby "sync-title" :role "status"}
+     current-run (assoc :data-on-interval__duration.5s (str "@get('" (connection-link connection-id) "')")))
+   [:h2#sync-title (i18n/t "Sync")]
+   (cond
+     current-run
+     [:p (i18n/t "Sync running since {time}" {:time (team/moment (:started-at current-run))}) " · "
+      (i18n/t "{done} of {total} data kinds read" {:done  (count (:finished-domains current-run))
+                                                   :total (+ (count (:finished-domains current-run))
+                                                             (count (:unfinished-domains current-run)))})]
+     (= "failed" last-outcome)
+     [:p (i18n/t "Last sync failed on {domain}: {reason}" {:domain (:failed-domain last-failure)
+                                                           :reason (i18n/t (:reason last-failure))})
+      " " (team/moment (:failed-at last-failure))]
+     (= "completed" last-outcome)
+     [:p (i18n/t "Last sync found {listings} new listings, {warehouses} new warehouses and {operations} new operations."
+                 {:listings (:listings found-counts) :warehouses (:warehouses found-counts) :operations (:operations found-counts)})])
+   (when scheduling-stopped?
+     [:p.management-secondary (i18n/t "Scheduling stopped after 5 failed syncs. Use Sync now to try again.")])
+   (when (and can-sync-now (not current-run))
+     (action-form request ::sync-now (i18n/t "Sync now") connection-id))])
+
+
 (defpage connection
   {:route      "/marketplace/:connection-id"
    :title      "Marketplace connection · Tover"
@@ -228,7 +267,7 @@
    :schema     [:map [:connection-id model/Ref]]
    :route-data {:tover/access :workspace}
    :query      query-connection}
-  [{:keys [request status paused attention]}]
+  [{:keys [request status paused attention sync]}]
   (let [{:keys [connection-id account-label store can-manage?]} status]
     {:type :elements
      :html [:section.management-page {:aria-labelledby "connection-title" :data-connection-id connection-id}
@@ -246,6 +285,7 @@
                 [:p (i18n/t "Paused by {name}" {:name (or (get-in paused [:paused-by :display-name]) (i18n/t "Unavailable user"))})
                  " " (team/moment (:paused-at paused))]
                 (when (:can-resume? paused) (action-form request ::resume (i18n/t "Resume") connection-id))])
+             (sync-panel request sync connection-id)
              [:dl
               [:dt (i18n/t "Last sync")]
               [:dd (if-let [at (:last-completed-sync-at status)] (team/moment at) (i18n/t "Not yet"))]

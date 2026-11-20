@@ -25,7 +25,8 @@
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
   (bel/build-registry! ['tover.catalogues.warehouses.model 'tover.catalogues.stores.model
-                        'tover.marketplace.connections.model 'tover.shared.web.core 'tover.marketplace.connections.web])
+                        'tover.marketplace.connections.model 'tover.marketplace.sync.model 'tover.shared.web.core
+                        'tover.marketplace.connections.web])
   (f))
 
 

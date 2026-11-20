@@ -92,8 +92,9 @@
 
 
 (def Connection
-  "One connection; optional fields are absent until their event happens. `last-completed-sync-at` belongs
-  to chapter 41's `Marketplace Sync Completed`."
+  "One connection; optional fields are absent until their event happens. Chapter 41 keeps the latest run here
+  (`run-id`, `run-state`, `started-at`), with the failure count, its wait and provider throttling, so the
+  scheduler reads one row per connection."
   [:map
    [:connection-id Ref]
    [:workspace-id Ref]
@@ -116,7 +117,12 @@
    [:rejected-at {:optional true} At]
    [:replaced-by {:optional true} Ref]
    [:replaced-at {:optional true} At]
-   [:last-completed-sync-at {:optional true} At]])
+   [:last-completed-sync-at {:optional true} At]
+   [:run-state {:optional true} [:enum "open" "completed" "failed"]]
+   [:started-at {:optional true} At]
+   [:consecutive-failures {:optional true} [:int {:min 0 :max 5}]]
+   [:next-attempt-at {:optional true} At]
+   [:resume-not-before {:optional true} At]])
 
 
 (def MarketplaceAccountConnected
@@ -142,8 +148,10 @@
 
 
 (def ConnectionCredentialsReplaced
+  "Replacing credentials also resets the consecutive-failure count (chapter 41)."
   [:map [:connection-id Ref] [:secret-ref Ref] [:readable-domains Domains] [:credentials-state [:= "valid"]]
-   [:replaced-by Ref] [:replaced-at At]])
+   [:replaced-by Ref] [:replaced-at At] [:consecutive-failures {:optional true} [:= 0]]
+   [:next-attempt-at {:optional true} At]])
 
 
 (defevent marketplace-account-connected {:schema MarketplaceAccountConnected})
@@ -158,13 +166,21 @@
    :store  :catalogue
    :schema Connection
    :policy ::records/workspace-member
-   :events {::marketplace-account-connected   {:create [:workspace-id :store-id :provider :provider-account-id :account-label
-                                                        :secret-ref :readable-domains :sync-state :credentials-state
-                                                        :connected-by :connected-at]}
-            ::marketplace-connection-paused   {:set [:sync-state :reason :paused-by :paused-at]}
-            ::marketplace-connection-resumed  {:set [:sync-state :resumed-by :resumed-at]}
+   :events {::marketplace-account-connected {:create [:workspace-id :store-id :provider :provider-account-id :account-label
+                                                      :secret-ref :readable-domains :sync-state :credentials-state
+                                                      :connected-by :connected-at]}
+            ::marketplace-connection-paused {:set [:sync-state :reason :paused-by :paused-at]}
+            ::marketplace-connection-resumed {:set [:sync-state :resumed-by :resumed-at]}
             ::connection-credentials-rejected {:set [:credentials-state :run-id :rejected-at]}
-            ::connection-credentials-replaced {:set [:secret-ref :readable-domains :credentials-state :replaced-by :replaced-at]}}})
+            ::connection-credentials-replaced {:set [:secret-ref :readable-domains :credentials-state :replaced-by :replaced-at
+                                                     :consecutive-failures :next-attempt-at]}
+            ;; Chapter 41 sync events (declared in tover.marketplace.sync.model).
+            :tover.marketplace.sync.model/marketplace-sync-started   {:set [:run-id :run-state :started-at]}
+            :tover.marketplace.sync.model/marketplace-sync-completed {:set [:run-state :last-completed-sync-at :readable-domains
+                                                                            :consecutive-failures :next-attempt-at]}
+            :tover.marketplace.sync.model/marketplace-sync-failed    {:set [:run-state :readable-domains :consecutive-failures
+                                                                            :next-attempt-at]}
+            :tover.marketplace.sync.model/provider-throttled         {:set [:resume-not-before]}}})
 
 
 ;; Access and facts
@@ -224,6 +240,10 @@
 
 (def ^:private viewer
   [:viewer ::viewer (constantly {})])
+
+
+(def ^:private covered
+  [:covered ::covered-until by-connection])
 
 
 ;; Decisions
@@ -352,9 +372,10 @@
       (fail! :different-seller-account "Different seller account"))
     (sealed! secret-ref)
     {:events [{:type ::connection-credentials-replaced
-               :data {:connection-id     connection-id :secret-ref secret-ref
-                      :readable-domains  (encode-domains readable-domains)
-                      :credentials-state "valid" :replaced-by      (str actor) :replaced-at (str now)}}]
+               :data {:connection-id        connection-id :secret-ref secret-ref
+                      :readable-domains     (encode-domains readable-domains)
+                      :credentials-state    "valid" :replaced-by      (str actor) :replaced-at (str now)
+                      :consecutive-failures 0}}]
      ;; The superseded key is destroyed right after commit; Bel writes only mapped event fields in the commit.
      :fx     [[::destroy-secret {:secret-ref previous}]]}))
 
@@ -366,19 +387,45 @@
   (Duration/ofHours 24))
 
 
+(def max-failures
+  "Consecutive failed runs after which the schedule stops until Sync now or a credential replacement."
+  5)
+
+
+(def failure-waits
+  "Wait after the 1st to 4th consecutive failed run."
+  [(Duration/ofMinutes 1) (Duration/ofMinutes 5) (Duration/ofMinutes 15) (Duration/ofHours 1)])
+
+
 (defn next-sync-at
-  "When the connection becomes due: 24 hours after the last completed run, or at once (its connection time)
-  before the first. Paused or rejected connections are never due."
+  "When the connection is due on schedule, or nil: never while paused, rejected or stopped after 5 failures.
+  An open run is due from its start; after a failure the wait applies; otherwise 24 hours after the last
+  completed run, or at once (its connection time) before the first. Provider throttling defers all of these."
   {:malli/schema [:=> [:cat :map] [:maybe validation/Instant]]}
-  [{:keys [sync-state credentials-state last-completed-sync-at connected-at]}]
+  [{:keys [sync-state credentials-state last-completed-sync-at connected-at run-state started-at
+           consecutive-failures next-attempt-at resume-not-before]}]
   (when (and (= "active" sync-state) (= "valid" credentials-state))
-    (if last-completed-sync-at (.plus ^Instant (at last-completed-sync-at) sync-interval) (at connected-at))))
+    (let [due (cond
+                (= "open" run-state) (at started-at)
+                (<= max-failures (or consecutive-failures 0)) nil
+                (pos? (or consecutive-failures 0)) (at next-attempt-at)
+                last-completed-sync-at (.plus ^Instant (at last-completed-sync-at) sync-interval)
+                :else (at connected-at))]
+      (when due
+        (let [resume (at resume-not-before)]
+          (if (and resume (.isAfter ^Instant resume due)) resume due))))))
 
 
 (defn due?
   {:malli/schema [:=> [:cat :map validation/Instant] :boolean]}
   [connection now]
   (boolean (some-> (next-sync-at connection) (#(not (.isAfter ^Instant % now))))))
+
+
+(defn scheduling-stopped?
+  {:malli/schema [:=> [:cat :map] :boolean]}
+  [{:keys [consecutive-failures run-state]}]
+  (and (not= "open" run-state) (<= max-failures (or consecutive-failures 0))))
 
 
 (defn- store-ref
@@ -446,39 +493,53 @@
 
 
 (defn domain-rows
-  "One row per included domain; covered-until arrives with chapter 41's first full traversal."
-  {:malli/schema [:=> [:cat :map] [:vector :map]]}
-  [connection]
-  (let [readable (decode-domains (:readable-domains connection))]
-    (mapv (fn [domain] {:domain domain :readable? (contains? readable domain)}) connector/domains)))
+  "One row per domain; covered-until (domain -> ISO text, from chapter 41's sync positions) for readable ones."
+  {:malli/schema [:function [:=> [:cat :map] [:vector :map]] [:=> [:cat :map [:maybe [:map-of :string :string]]] [:vector :map]]]}
+  ([connection] (domain-rows connection {}))
+  ([connection covered]
+   (let [readable (decode-domains (:readable-domains connection))]
+     (mapv (fn [domain]
+             (let [until (when (contains? readable domain) (at (get covered domain)))]
+               (cond-> {:domain domain :readable? (contains? readable domain)} until (assoc :covered-until until))))
+           connector/domains))))
+
+
+(defmethod runtime/coeffect ::covered-until
+  [_ context input]
+  ;; Sync positions are chapter 41's model; its namespace answers through this multimethod.
+  (if (contains? (methods runtime/coeffect) :tover.marketplace.sync.model/covered-until)
+    (runtime/coeffect :tover.marketplace.sync.model/covered-until context input)
+    {}))
 
 
 (defn status
   "Connection Status and Sync Coverage. Mappings (42, 43) and the cutover baseline (44) do not exist yet,
   so counts are zero and `no baseline` always blocks automatic acceptance."
-  {:malli/schema [:=> [:cat :map [:maybe :map] :boolean] ConnectionStatusAndSyncCoverage]}
-  [connection store manager?]
+  {:malli/schema [:function [:=> [:cat :map [:maybe :map] :boolean] ConnectionStatusAndSyncCoverage]
+                  [:=> [:cat :map [:maybe :map] :boolean [:maybe :map]] ConnectionStatusAndSyncCoverage]]}
+  ([connection store manager?] (status connection store manager? {}))
+  ([connection store manager? covered]
   ;; ponytail: unmatched counts and baseline are constants until chapters 42–44 add their models.
-  (let [baseline? false
-        reasons   (cond-> []
-                    (= "paused" (:sync-state connection)) (conj "paused")
-                    (= "rejected" (:credentials-state connection)) (conj "needs credentials")
-                    (not baseline?) (conj "no baseline"))
-        next-at   (next-sync-at connection)]
-    (cond-> (assoc (row connection store)
-                   :domains (domain-rows connection)
-                   :unmatched-listings 0 :unmatched-warehouses 0 :baseline-covered? baseline?
-                   :automatic-acceptance-possible? (empty? reasons)
-                   :blocking-reasons reasons
-                   :can-manage? manager?)
-      next-at (assoc :next-sync-at next-at))))
+   (let [baseline? false
+         reasons   (cond-> []
+                     (= "paused" (:sync-state connection)) (conj "paused")
+                     (= "rejected" (:credentials-state connection)) (conj "needs credentials")
+                     (not baseline?) (conj "no baseline"))
+         next-at   (next-sync-at connection)]
+     (cond-> (assoc (row connection store)
+                    :domains (domain-rows connection covered)
+                    :unmatched-listings 0 :unmatched-warehouses 0 :baseline-covered? baseline?
+                    :automatic-acceptance-possible? (empty? reasons)
+                    :blocking-reasons reasons
+                    :can-manage? manager?)
+       next-at (assoc :next-sync-at next-at)))))
 
 
 (defreadmodel connection-status-and-sync-coverage
   {:input ConnectionAttempt :output ConnectionStatusAndSyncCoverage :policy ::records/workspace-member
-   :cofx  [connection [:store ::stores/stores connection-store] viewer]}
-  [{:keys [connection store viewer]} _]
-  (status (known! connection) store (:manager? viewer)))
+   :cofx  [connection [:store ::stores/stores connection-store] viewer covered]}
+  [{:keys [connection store viewer covered]} _]
+  (status (known! connection) store (:manager? viewer) covered))
 
 
 (def PausedConnection
@@ -494,9 +555,9 @@
 
 (defreadmodel paused-connection
   {:input ConnectionAttempt :output PausedConnection :policy ::records/workspace-member
-   :cofx  [connection [:store ::stores/stores connection-store] viewer
+   :cofx  [connection [:store ::stores/stores connection-store] viewer covered
            [:label ::account-label (fn [facts _] {:account-id (get-in facts [:connection :paused-by])})]]}
-  [{:keys [connection store viewer label]} _]
+  [{:keys [connection store viewer label covered]} _]
   (let [{:keys [paused-by] :as connection} (known! connection)]
     (when-not (= "paused" (:sync-state connection))
       (fail! :not-paused "This connection is not paused"))
@@ -505,7 +566,7 @@
      :paused-by                  (cond-> {:account-id paused-by} label (assoc :display-name label))
      :paused-at                  (at (:paused-at connection))
      :reason (:reason connection)
-     :resume-positions           (mapv #(select-keys % [:domain :covered-until]) (filter :readable? (domain-rows connection)))
+     :resume-positions           (mapv #(select-keys % [:domain :covered-until]) (filter :readable? (domain-rows connection covered)))
      :pending-imported-proposals 0
      :can-resume?                (and (:manager? viewer) (= "valid" (:credentials-state connection)) (= "active" (:status store)))}))
 

@@ -8,7 +8,8 @@
   per-workspace RDF graph that no Bel model maps.
 
   The connector is the `:marketplace` Bel resource: `{:verify (fn [{:keys [client-id api-key]}] verification)
-  :repo repository :key bytes}`. Tests pass their own `:verify`; nothing here runs at namespace load."
+  :repo repository :key bytes :post (fn [path body headers] response) :pacer atom}`. Tests pass their own
+  `:verify` and `:post`; nothing here runs at namespace load."
   (:require
     [buddy.core.codecs :as codecs]
     [buddy.core.crypto :as crypto]
@@ -39,7 +40,8 @@
 
 
 (def Connector
-  [:map [:verify [:fn fn?]] [:repo {:optional true} :any] [:key {:optional true} bytes?]])
+  [:map [:verify [:fn fn?]] [:repo {:optional true} :any] [:key {:optional true} bytes?]
+   [:post {:optional true} [:fn fn?]] [:pacer {:optional true} :any] [:last-look {:optional true} :any]])
 
 
 ;; Sealing
@@ -153,18 +155,24 @@
 
 
 (defn http-post
-  "POST JSON to Ozon; returns {:status :body}. Network failures and timeouts throw."
-  {:malli/schema [:=> [:cat :string :map :map] [:map [:status :int] [:body :string]]]}
-  [path body headers]
-  (let [client   (HttpClient/newHttpClient)
-        request  (-> (HttpRequest/newBuilder (URI/create (str origin path)))
-                     (.timeout (Duration/ofSeconds 15))
-                     (.header "Content-Type" "application/json")
-                     (as-> builder (reduce-kv (fn [b k v] (.header ^java.net.http.HttpRequest$Builder b k v)) builder headers))
-                     (.POST (HttpRequest$BodyPublishers/ofString (json/write-json-str body)))
-                     (.build))
-        response (.send client request (HttpResponse$BodyHandlers/ofString))]
-    {:status (.statusCode response) :body (str (.body response))}))
+  "POST JSON to Ozon; returns {:status :body :headers} with lower-case header names. Network failures and
+  timeouts throw. Verification waits 15 s per request; the sync fetcher passes 30."
+  {:malli/schema [:function
+                  [:=> [:cat :string :map :map] [:map [:status :int] [:body :string]]]
+                  [:=> [:cat :string :map :map :int] [:map [:status :int] [:body :string]]]]}
+  ([path body headers] (http-post path body headers 15))
+  ([path body headers timeout-seconds]
+   (let [client   (HttpClient/newHttpClient)
+         request  (-> (HttpRequest/newBuilder (URI/create (str origin path)))
+                      (.timeout (Duration/ofSeconds timeout-seconds))
+                      (.header "Content-Type" "application/json")
+                      (as-> builder (reduce-kv (fn [b k v] (.header ^java.net.http.HttpRequest$Builder b k v)) builder headers))
+                      (.POST (HttpRequest$BodyPublishers/ofString (json/write-json-str body)))
+                      (.build))
+         response (.send client request (HttpResponse$BodyHandlers/ofString))]
+     {:status  (.statusCode response) :body (str (.body response))
+      :headers (into {} (keep (fn [[k vs]] (when (seq vs) [(str/lower-case k) (first vs)])))
+                     (.map (.headers response)))})))
 
 
 (defn- classify
@@ -210,5 +218,7 @@
   "Integrant: the `:marketplace` resource. Without a connector key connecting reports a configuration error."
   {:malli/schema [:=> [:cat [:map [:repo :any] [:connector-key {:optional true} [:maybe :string]]]] Connector]}
   [{:keys [repo connector-key]}]
-  (cond-> {:verify (partial ozon-verify http-post) :repo repo}
+  (cond-> {:verify (partial ozon-verify http-post) :repo  repo
+           ;; The sync fetcher's transport (30 s per try) and its per-Client-Id request pacing.
+           :post   #(http-post %1 %2 %3 30)        :pacer (atom {}) :last-look (atom nil)}
     connector-key (assoc :key (tover.marketplace.connector/connector-key connector-key))))

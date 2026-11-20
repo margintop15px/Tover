@@ -21,7 +21,7 @@
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
   (bel/build-registry! ['tover.catalogues.warehouses.model 'tover.catalogues.stores.model
-                        'tover.marketplace.connections.model])
+                        'tover.marketplace.connections.model 'tover.marketplace.sync.model])
   (f))
 
 
@@ -275,9 +275,11 @@
         plan     (replace-credentials rejected {})
         fixed    (after rejected plan)]
     (is (= [{:type ::model/connection-credentials-replaced
-             :data {:connection-id     c       :secret-ref  new-secret :readable-domains (model/encode-domains all-domains)
-                    :credentials-state "valid" :replaced-by admin-id   :replaced-at      at}}]
-           (data plan)))
+             :data {:connection-id        c       :secret-ref  new-secret :readable-domains (model/encode-domains all-domains)
+                    :credentials-state    "valid" :replaced-by admin-id   :replaced-at      at
+                    :consecutive-failures 0}}]
+           (data plan))
+        "replacing credentials also resets chapter 41's failure count")
     (is (= [[::model/destroy-secret {:secret-ref secret}]] (:fx plan)) "the old secret is destroyed")
     (is (not (model/due? rejected now)))
     (is (model/due? fixed now) "C is due")
@@ -297,7 +299,8 @@
 
 (deftest key-rotation
   (let [rotated (after connection (replace-credentials connection {}))]
-    (is (= (assoc (dissoc connection :secret-ref) :secret-ref new-secret :replaced-by admin-id :replaced-at at)
+    (is (= (assoc (dissoc connection :secret-ref) :secret-ref new-secret :replaced-by admin-id :replaced-at at
+                  :consecutive-failures 0)
            rotated))))
 
 

@@ -796,7 +796,20 @@
     "Unknown connection": "Unknown connection",
     "Store archived": "Store archived",
     "Different seller account": "Different seller account",
-    "Marketplace connections are not configured": "Marketplace connections are not configured"
+    "Marketplace connections are not configured": "Marketplace connections are not configured",
+    "Sync": "Sync",
+    "Sync now": "Sync now",
+    "Sync running since {time}": "Sync running since {time}",
+    "{done} of {total} data kinds read": "{done} of {total} data kinds read",
+    "Last sync failed on {domain}: {reason}": "Last sync failed on {domain}: {reason}",
+    "Last sync found {listings} new listings, {warehouses} new warehouses and {operations} new operations.": "Last sync found {listings} new listings, {warehouses} new warehouses and {operations} new operations.",
+    "Scheduling stopped after 5 failed syncs. Use Sync now to try again.": "Scheduling stopped after 5 failed syncs. Use Sync now to try again.",
+    "credentials rejected": "credentials rejected",
+    "retries exhausted": "retries exhausted",
+    "repeated cursor": "repeated cursor",
+    "incomplete page": "incomplete page",
+    "Connection paused": "Connection paused",
+    "Throttled": "Throttled"
   },
   "ru": {
     "Stock": "Остатки",
@@ -1599,6 +1612,19 @@
     "Unknown connection": "Подключение не найдено",
     "Store archived": "Магазин в архиве",
     "Different seller account": "Другой кабинет продавца",
-    "Marketplace connections are not configured": "Подключения маркетплейсов не настроены"
+    "Marketplace connections are not configured": "Подключения маркетплейсов не настроены",
+    "Sync": "Синхронизация",
+    "Sync now": "Синхронизировать сейчас",
+    "Sync running since {time}": "Синхронизация идёт с {time}",
+    "{done} of {total} data kinds read": "прочитано {done} из {total} видов данных",
+    "Last sync failed on {domain}: {reason}": "Последняя синхронизация не удалась на {domain}: {reason}",
+    "Last sync found {listings} new listings, {warehouses} new warehouses and {operations} new operations.": "Последняя синхронизация нашла новых карточек: {listings}, складов: {warehouses}, операций: {operations}.",
+    "Scheduling stopped after 5 failed syncs. Use Sync now to try again.": "Расписание остановлено после 5 неудачных синхронизаций. Нажмите «Синхронизировать сейчас», чтобы попробовать снова.",
+    "credentials rejected": "ключи отклонены",
+    "retries exhausted": "повторы исчерпаны",
+    "repeated cursor": "повторный курсор",
+    "incomplete page": "неполная страница",
+    "Connection paused": "Подключение приостановлено",
+    "Throttled": "Ozon просит подождать"
   }
 }

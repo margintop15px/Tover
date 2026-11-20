@@ -74,8 +74,7 @@
           [[:provider Id]
            [:account-id Id]
            [:store-id Id]
-           [:enabled? :boolean]
-           [:policy-id Id]]))
+           [:enabled? :boolean]]))
 
 (def Product
   (record :product

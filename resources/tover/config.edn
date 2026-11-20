@@ -84,8 +84,10 @@
                :journal   :directory
                :scope     :workspace
                ;; Without TOVER_SMTP_HOST invitation sends fail as recorded attempts.
-               :resources {:mailer #tover/when [#tover/env "TOVER_SMTP_HOST" #ig/ref :tover.app/mailer]
-                           :origin #tover/required "TOVER_ORIGIN"}}]
+               :resources {:mailer      #tover/when [#tover/env "TOVER_SMTP_HOST" #ig/ref :tover.app/mailer]
+                           :origin      #tover/required "TOVER_ORIGIN"
+                           ;; The marketplace sync scheduler and fetcher run as processors here.
+                           :marketplace #ig/ref :tover.marketplace.connector/connector}}]
 
  :bel.delivery/worker
  #tover/when [#ref [:tover/journal?]

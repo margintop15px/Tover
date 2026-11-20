@@ -550,7 +550,8 @@
            (get c [:bel-postgres.jdbc/datasource ::app/journal-datasource])))
     (is (= {:directory (ig/ref ::app/journal-directory) :catalogue (ig/ref ::app/journal-catalogue)}
            (get-in c [[:bel/system ::app/delivery-system] :stores])))
-    (is (= {:mailer nil :origin "http://localhost:3030"} (get-in c [[:bel/system ::app/delivery-system] :resources])))
+    (is (= {:mailer nil :origin "http://localhost:3030" :marketplace (ig/ref :tover.marketplace.connector/connector)}
+           (get-in c [[:bel/system ::app/delivery-system] :resources])))
     (is (= (ig/ref ::app/delivery-system) (:bel.delivery/worker c)))
     (is (not (contains? c ::app/mailer)))))
 
