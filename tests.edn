@@ -2,9 +2,4 @@
 {:plugins              [:hooks]
  :kaocha.hooks/pre-run  [kaocha-hooks/start-instrumentation]
  :kaocha.hooks/post-run [kaocha-hooks/stop-instrumentation]
- ;; Skipped namespaces and vars still load, so every test namespace must compile.
- :tests                [{:id   :unit
-                         :skip [;; Actor labels read app_private.bel_actor_labels in PostgreSQL since the onboarding cutover.
-                                tover.inventory.history-access-test/history-detail-requires-the-item-operation-and-revision-together
-                                ;; Actor labels read app_private.bel_actor_labels in PostgreSQL since the onboarding cutover.
-                                tover.inventory.history-access-test/history-and-lineage-actions-never-load-the-workspace-history]}]}
+ :tests                [{:id :unit}]}

@@ -15,7 +15,6 @@
             [tover.fixtures :as fixtures]
             [tover.identity.access :as access]
             [tover.shared.rdf :as rdf]
-            [tover.stock.store :as store]
             [tover.support :as support])
   (:import [java.nio.file Files]))
 
@@ -207,7 +206,6 @@
                                             realtime))
                       http/run-server   (fn [handler options]
                                           (is (.isInitialized @opened))
-                                          (is (= {:rows [] :history []} (store/snapshot @opened scope)))
                                           (is (fn? handler))
                                           (is (= {:port 3031
                                                   :legacy-return-value?       false
@@ -229,8 +227,7 @@
               (is (not (contains? (::app/realtime first-system) :repo)))
               (let [response ((::app/handler first-system) {:request-method :get :uri "/" :headers {}})]
                 (is (= 303 (:status response)))
-                (is (= "/auth/login" (get-in response [:headers "location"])))
-                (is (= {:rows [] :history []} (store/snapshot first-repo scope))))
+                (is (= "/auth/login" (get-in response [:headers "location"]))))
               (finally (is (nil? (system/stop! first-system)))))
             (is (not (.isInitialized first-repo)))
             (is (= 1 @stops))
@@ -504,9 +501,9 @@
                                     "tover.streams" "tover.identity-http"}
                                   (namespace id))))
                 (mapcat keys (vals registry))))
-    (is (some? (bel/get-action :tover.stock.web/open-history)))
-    (is (= "/view/tover.stock.web/stock" (bel/view-url :tover.stock.web/stock)))
-    (is (some? (bel/get-stream :tover.stock.web/changed)))))
+    (is (some? (bel/get-action :tover.inventory.web/accept)))
+    (is (= "/view/tover.inventory.web/table" (bel/view-url :tover.inventory.web/table)))
+    (is (some? (bel/get-stream :tover.inventory.web/changed)))))
 
 
 (def ^:private environment

@@ -5,14 +5,6 @@
     [clojure.string :as str]
     [clojure.test :refer [deftest is testing]]
     [tover.fixtures :as fixtures]
-    [tover.inventory.completion :as completion]
-    [tover.inventory.filters :as filters]
-    [tover.inventory.grid :as grid]
-    [tover.inventory.smart :as smart]
-    [tover.inventory.tables :as tables]
-    [tover.inventory.timeline :as timeline]
-    [tover.inventory.windows :as windows]
-    [tover.operations.ui :as operations]
     [tover.shared.i18n :as i18n]
     [tover.support :as support]))
 
@@ -57,61 +49,6 @@
     (is (= "en" (get-in changed [:cookies "tover-language" :value])))))
 
 
-(deftest all-operation-and-column-labels-translate-without-changing-data
-  (let [entry   {:id      "entry" :kind :operation :type :production :occurred-at "2026-10-20T09:00:00Z"
-                 :inputs  [{:item-id "a" :name "Purchase" :quantity 4 :unit "pcs" :location "Stock"}]
-                 :outputs [{:item-id "b" :name "Return" :quantity 2 :unit "pack" :location "Operations"}]}
-        record  {:entity-id "entry" :revision 1 :entry entry :actor "user" :actor-label "Admin"}
-        project #(first (operations/rows [entry] [record]))
-        english (binding [i18n/*locale* "en"] (project))
-        russian (binding [i18n/*locale* "ru"] (project))]
-    (is (= "Production" (:operation english)))
-    (is (= "Производство" (:operation russian)))
-    (is (= (:inputs english) (:inputs russian)))
-    (is (= (:outputs english) (:outputs russian)))
-    (is (= "Purchase" (get-in russian [:detail :sections 0 :rows 0 0])))
-    (is (= "Admin" (:value (first (filter #(= "Submitted by" (:key %)) (get-in russian [:detail :metadata]))))))
-    (is (str/includes? (binding [i18n/*locale* "ru"]
-                         (html/render-html (timeline/operation-details (:detail russian)))) "Производство")))
-  (binding [i18n/*locale* "ru"]
-    (doseq [type [:purchase :return :transfer :production :defect :sale :write-off :payment]]
-      (is (re-find #"[А-Яа-я]" (grid/label type))))
-    (doseq [column (concat (filters/columns :stock) (filters/columns :operations)
-                           (:columns (tables/stock [])) (:columns (tables/history {}))
-                           (:columns (tables/operations [] {:column-keys (mapv :key grid/columns)})))]
-      (is (or (= "" (:label column)) (re-find #"[А-Яа-я]" (:label column))) (str column)))
-    (let [model (smart/model {} {:mode "types"} "" {} 1)]
-      (is (= 8 (count (:options model)))))
-    (let [model (smart/model {} {:mode "types"} "Закупка" {} 1)]
-      (is (= ["purchase"] (mapv :type (:options model)))))
-    (let [errors (:errors (completion/check {:kind :operation :type :payment}))]
-      (is (seq errors))
-      (is (every? #(re-find #"[А-Яа-я]" (:message %)) errors)))))
-
-
-(deftest timeline-translates-every-operation-type-without-translating-goods
-  (binding [i18n/*locale* "ru"]
-    (doseq [[type expected] {:purchase "Закупка" :return "Возврат" :transfer  "Перемещение" :production "Производство"
-                             :defect   "Брак"    :sale   "Продажа" :write-off "Списание"    :payment    "Платёж"}]
-      (let [chart  (timeline/chart {:item        {:id "goods" :name "Purchase"}
-                                    :items       {"goods" {:name "Purchase" :unit "pcs"}}
-                                    :snapshot-at "2026-10-21T12:00:00Z"
-                                    :records     [{:item-id     "goods"                :location "Stock"    :operation-id "operation" :operation-revision 1
-                                                   :occurred-at "2026-10-20T12:00:00Z" :kind     :operation :type         type        :before             1 :after 2 :delta 1}]})
-            markup (html/render-html chart)]
-        (is (str/includes? markup expected) (name type))
-        (is (str/includes? markup "Purchase"))))))
-
-
-(deftest cached-windows-do-not-reuse-another-language
-  (binding [windows/*cache* (atom {:queries {} :reads {}})]
-    (let [context {:repo {} :user-id (random-uuid) :workspace-id (random-uuid)}
-          build   (fn [] {:id "stock" :columns [] :rows [] :merges []})
-          english (windows/initial! (assoc context :locale "en") {:queryKey "same" :generation 0 :build build})
-          russian (windows/initial! (assoc context :locale "ru") {:queryKey "same" :generation 0 :build build})]
-      (is (not= (get-in english [:viewport :queryId]) (get-in russian [:viewport :queryId]))))))
-
-
 (deftest guest-and-account-preferences-survive-requests
   (support/with-application
     (fn [{:keys [handler browser state] :as services}]
@@ -149,18 +86,3 @@
         (is (= (i18n/t key) (i18n/error-message (ex-info "Identity request failed." {:code code}))) (name code))))))
 
 
-(deftest smart-unit-labels-translate-without-changing-the-unit-value
-  (doseq [locale ["en" "ru"]]
-    (binding [i18n/*locale* locale]
-      (let [entry  {:kind :operation :type :purchase :lines [{:unit "pcs"}]}
-            model  (smart/model {:compositions [{:id "composition" :entry entry}]} {:mode "add" :id "composition"} "" {} 1)
-            chip   (first (filter #(= "lines/0/unit" (:key %)) (:chips model)))
-            typed  (smart/model {:compositions [{:id "composition" :entry entry}]}
-                                {:mode "add" :id "composition" :field "lines/0/unit"} "pcs" {} 2)
-            option (first (smart/field-values {:rows [{:unit "pcs"}]} {:key "lines/0/unit"}))]
-        (is (= (i18n/t "pcs") (:value chip)))
-        (is (= (i18n/t "pcs") (:label option)))
-        (is (= "pcs" (:value option)))
-        (is (= (i18n/t "pcs") (:label (first (:options typed)))))
-        (is (= "pcs" (:value (first (:options typed)))))
-        (is (= "pcs" (get-in entry [:lines 0 :unit])))))))

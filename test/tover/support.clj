@@ -192,3 +192,23 @@
   (try (f) {}
        (catch clojure.lang.ExceptionInfo error
          (assoc (ex-data error) :message (.getMessage error)))))
+
+
+(def scope
+  {:workspace-id #uuid "00000000-0000-0000-0000-000000000001"})
+
+
+(def other-scope
+  {:workspace-id #uuid "00000000-0000-0000-0000-000000000002"})
+
+
+(defn with-store
+  "Calls `(f repo path)` with a native RDF store in a temporary directory, removed afterwards."
+  {:malli/schema [:=> [:cat [:=> [:cat rdf/Repository :any] :any]] :any]}
+  [f]
+  (let [path (.toFile (Files/createTempDirectory "tover-inventory-test-" (make-array java.nio.file.attribute.FileAttribute 0)))
+        repo (rdf/native-store path)]
+    (try (f repo path)
+         (finally
+           (rdf/close! repo)
+           (doseq [file (reverse (file-seq path))] (io/delete-file file))))))

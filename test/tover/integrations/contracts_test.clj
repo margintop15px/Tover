@@ -6,8 +6,6 @@
     [tover.integrations.fixture :as f]
     [tover.integrations.schema :as schema]
     [tover.integrations.semantics :as semantics]
-    [tover.inventory.fixture :as inventory-fixture]
-    [tover.inventory.store :as inventory]
     [tover.shared.rdf :as rdf])
   (:import
     [java.nio.file Files]
@@ -239,28 +237,3 @@
     (is (= #{"source-response" "physical-event"} (codes (f/check records :acceptance ["parent"]))))))
 
 
-(deftest external-validation-never-rewrites-installed-inventory-or-history
-  (let [path  (.toFile (Files/createTempDirectory "tover-external-contract-" (make-array java.nio.file.attribute.FileAttribute 0)))
-        scope {:workspace-id #uuid "00000000-0000-0000-0000-000000000051"}
-        repo  (rdf/native-store path)]
-    (try
-      (inventory-fixture/accept-history! repo scope
-                                         [{:kind  :opening :occurred-at "2026-11-01"
-                                           :lines [{:item-id "goods" :quantity 7 :location "Main"}]}])
-      (let [before     (inventory/snapshot repo scope)
-            statements (with-open [conn   (.getConnection ^Repository repo)
-                                   result (.getStatements ^RepositoryConnection conn nil nil nil false (make-array Resource 0))]
-                         (set (iterator-seq result)))]
-        (is (:valid? (f/check (f/baseline) :acceptance ["m"])))
-        (is (false? (:valid? (f/check (collision "goods2") :acceptance ["m"]))))
-        (is (= before (inventory/snapshot repo scope)))
-        (with-open [conn   (.getConnection ^Repository repo)
-                    result (.getStatements ^RepositoryConnection conn nil nil nil false (make-array Resource 0))]
-          (is (= statements (set (iterator-seq result)))))
-        (rdf/close! repo)
-        (let [reopened (rdf/native-store path)]
-          (try (is (= before (inventory/snapshot reopened scope)))
-               (finally (rdf/close! reopened)))))
-      (finally
-        (rdf/close! repo)
-        (doseq [file (reverse (file-seq path))] (io/delete-file file))))))

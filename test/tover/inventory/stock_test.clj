@@ -11,7 +11,6 @@
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
     [tover.inventory.stock.model :as stock]
-    [tover.inventory.store-test :as fixture]
     [tover.support :as support])
   (:import
     [java.time Instant]))
@@ -158,7 +157,7 @@
 ;; Through the store: read models and catalogue usage
 
 
-(def workspace (:workspace-id fixture/scope))
+(def workspace (:workspace-id support/scope))
 
 
 (defn- context
@@ -182,7 +181,7 @@
 
 
 (deftest stock-reads-and-shared-references-block-archiving
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (let [ctx  (context repo)
             save #(execute! ctx ::entries/save-shared-inventory-entry %1 (merge {:workspace-id workspace              :kind "opening"

@@ -6,7 +6,6 @@
     [bel.runtime :as runtime]
     [clojure.test :refer [deftest is testing use-fixtures]]
     [tover.inventory.entries.model :as entries]
-    [tover.inventory.store-test :as fixture]
     [tover.support :as support])
   (:import
     [java.time Instant]))
@@ -25,7 +24,7 @@
       (f))))
 
 
-(def workspace (:workspace-id fixture/scope))
+(def workspace (:workspace-id support/scope))
 (def member #uuid "00000000-0000-0000-0000-000000000011")
 (def at (Instant/parse "2026-11-20T10:00:00Z"))
 
@@ -197,7 +196,7 @@
 
 
 (deftest pending-work-through-the-store
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (let [ctx  (context repo workspace)
             save #(execute! ctx ::entries/save-shared-inventory-entry %1 (merge {:workspace-id workspace} %2))]

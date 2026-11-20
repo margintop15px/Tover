@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
 import { signIn } from './auth.fixture.mjs';
-import { acceptDrafts, addStockRow, revertPending, stockRow } from './grid.fixture.mjs';
 
 test.beforeEach(async ({ page }) => {
   await page.clock.install();
@@ -11,50 +10,6 @@ test.beforeEach(async ({ page }) => {
     });
   });
 });
-
-for (const failure of ['network', 'http']) {
-  test(`realtime recovers missed and future updates after more than ten failures (${failure})`, async ({ page, browser }) => {
-    test.setTimeout(90_000);
-    let unavailable = true, requests = 0;
-    let releaseFailures;
-    const failuresReady = new Promise(resolve => { releaseFailures = resolve; });
-    const errors = [];
-    page.on('pageerror', error => errors.push(error.message));
-    await signIn(page);
-    await revertPending(page);
-    await page.route('**/_bel/realtime/stream*', async route => {
-      requests++;
-      if (unavailable) await failuresReady;
-      return unavailable ? (failure === 'network' ? route.abort('connectionrefused')
-        : route.fulfill({ status: 503, body: 'Temporarily unavailable' })) : route.continue();
-    });
-    await page.reload();
-    releaseFailures();
-    for (let attempt = 0; attempt < 12; attempt++) {
-      await expect.poll(() => page.evaluate(() => realtimeEvents.filter(event => event.type === 'retrying').length))
-        .toBe(attempt + 1);
-      await page.clock.fastForward(Math.min(1000 * 2 ** attempt, 30_000) + 1);
-      await expect.poll(() => requests).toBe(attempt + 2);
-    }
-    const memberContext = await browser.newContext({ baseURL: new URL(page.url()).origin });
-    try {
-      const member = await memberContext.newPage();
-      await signIn(member, 'member@example.test');
-      const missed = `Missed during outage ${failure} ${Date.now()}`;
-      await acceptDrafts(member, [await addStockRow(member, missed)]);
-      await expect(stockRow(page, missed)).toHaveCount(0);
-      unavailable = false;
-      await page.clock.fastForward(30_001);
-      await expect(stockRow(page, missed)).toBeVisible();
-      const connectedRequests = requests;
-      const next = `After recovery ${failure} ${Date.now()}`;
-      await acceptDrafts(member, [await addStockRow(member, next)]);
-      await expect(stockRow(page, next)).toBeVisible();
-      expect(requests).toBe(connectedRequests);
-      expect(errors).toEqual([]);
-    } finally { await memberContext.close(); }
-  });
-}
 
 for (const wake of ['online', 'focus', 'visibilitychange', 'pageshow', 'watchdog', 'missing heartbeats']) {
   test(`realtime replaces a silent connection after ${wake}`, async ({ page }) => {

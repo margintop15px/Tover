@@ -9,7 +9,6 @@
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
     [tover.inventory.stock-items.model :as items]
-    [tover.inventory.store-test :as fixture]
     [tover.support :as support])
   (:import
     [java.time Instant]))
@@ -51,9 +50,9 @@
 (defn context
   {:malli/schema [:=> [:cat :any] :map]}
   [repo]
-  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo}) :repo repo :workspace-id (:workspace-id fixture/scope)
+  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo}) :repo repo :workspace-id (:workspace-id support/scope)
                             :user-id     user
-                            :memberships [{:workspace-id (:workspace-id fixture/scope) :role :member}]}))
+                            :memberships [{:workspace-id (:workspace-id support/scope) :role :member}]}))
 
 
 (def counter (atom 0))
@@ -86,7 +85,7 @@
 
 
 (deftest models-round-trip-through-the-store
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (let [ctx (context repo)]
         (emit! ctx [{:type ::items/stock-item-registered :data item}

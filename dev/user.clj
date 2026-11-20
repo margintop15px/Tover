@@ -19,7 +19,7 @@
 (defn malli
   {:malli/schema [:=> [:cat :map] :int]}
   [_options]
-  (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename 'tover.catalogues.web]})
+  (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename]})
   (instrumentation/start!))
 
 
@@ -46,7 +46,7 @@
   [{:keys [browser-reload] :as options}]
   (let [base-handler (app/create-handler options)]
     (-> (fn [request]
-          (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename 'tover.catalogues.web]})
+          (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename]})
           ;; Jspreadsheet and Datastar need a fresh page after source changes.
           (inject/inject-into-response
             (base-handler request)

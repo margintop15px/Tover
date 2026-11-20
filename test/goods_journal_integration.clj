@@ -17,7 +17,6 @@
     [tover.catalogues.persistence :as persistence]
     [tover.catalogues.rename-test :as rename]
     [tover.catalogues.rename.model :as goods]
-    [tover.inventory.store-test :as rdf-fixture]
     [tover.shared.rdf :as rdf]
     [tover.support :as support]
     [workspace-creation-integration :as workspace])
@@ -51,7 +50,7 @@
 
 
 (defn with-feature [f]
-  (rdf-fixture/with-store (fn [repo _] (f (context repo)))))
+  (support/with-store (fn [repo _] (f (context repo)))))
 
 
 (defn execute [ctx]
@@ -264,7 +263,7 @@
 
 (deftest an-unreadable-or-misplaced-record-does-not-block-other-workspaces
   (doseq [problem [:unreadable :wrong-scope]]
-    (rdf-fixture/with-store
+    (support/with-store
       (fn [repo _]
         (let [broken (context repo) healthy (context repo)]
           (execute broken)
@@ -289,7 +288,7 @@
 
 
 (deftest workspace-and-scope-kind-isolation-cover-domain-journal-and-receipts
-  (rdf-fixture/with-store
+  (support/with-store
     (fn [repo _]
       (let [alice          (context repo true) bob (context repo)
             first-receipt  (execute alice)

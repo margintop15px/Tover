@@ -11,7 +11,6 @@
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
     [tover.inventory.stock-items.model :as stock-items]
-    [tover.inventory.store-test :as fixture]
     [tover.support :as support])
   (:import
     [java.time Instant]))
@@ -31,7 +30,7 @@
       (f))))
 
 
-(def workspace (:workspace-id fixture/scope))
+(def workspace (:workspace-id support/scope))
 (def member #uuid "00000000-0000-0000-0000-000000000011")
 
 
@@ -209,7 +208,7 @@
 
 
 (deftest acceptance-retry-returns-the-same-result
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (let [ctx  (context repo [{:workspace-id workspace :role :member}])
             save #(execute! ctx ::entries/save-shared-inventory-entry %1 (merge {:workspace-id workspace              :kind "opening"

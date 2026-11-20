@@ -16,9 +16,9 @@
     [tover.catalogues.stores.model :as stores]
     [tover.catalogues.suppliers.model :as suppliers]
     [tover.catalogues.warehouses.model :as warehouses]
-    [tover.inventory.workbench :as sheet]
     [tover.shared.i18n :as i18n]
-    [tover.shared.schema :as schema])
+    [tover.shared.schema :as schema]
+    [tover.shared.ui.core :as ui])
   (:import
     [clojure.lang ExceptionInfo]))
 
@@ -276,14 +276,14 @@
         [:a {:href (href other false) :aria-current (when (= kind other) "page")} (i18n/t title)])]
      [:span.catalogue-save-status.quiet {:role "status"}]]
     [:div.sheet-actions
-     [:button.sheet-add-row.catalogue-add {:type "button" :hidden archived?} (sheet/sheet-icon :added) (i18n/t "Add row")]
+     [:button.sheet-add-row.catalogue-add {:type "button" :hidden archived?} (ui/sheet-icon :added) (i18n/t "Add row")]
      [:button.catalogue-save-new {:type "button" :hidden true} (i18n/t "Save")]
      [:button.catalogue-discard-new {:type "button" :hidden true} (i18n/t "Discard")]
      [:nav.sheet-actions {:aria-label (i18n/t "Record status")}
       (for [[archived-tab? icon label] [[false :active "Active records"] [true :archived "Archived records"]]]
         [:a.sheet-icon-button {:href         (href kind archived-tab?)                 :title (i18n/t label) :aria-label (i18n/t label)
                                :aria-current (when (= archived? archived-tab?) "page")}
-         (sheet/sheet-icon icon)])]]]
+         (ui/sheet-icon icon)])]]]
    [:div.catalogue-notice {:role "status"}]
    [:inventory-grid.catalogue-grid {:id (str "catalogue-grid-" kind) :data-ignore-morph "" :aria-label (i18n/t (get-in kinds [kind :title]))}]])
 

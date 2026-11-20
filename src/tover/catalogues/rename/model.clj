@@ -85,7 +85,7 @@
                     ;; Preserve this isolated slice's existing RDF text contract until cutover.
                     :actor      (str actor)
                     :updated-at (str now)}}]
-   :fx     [[:bel/publish {:topic    :tover.stock.web/changed
+   :fx     [[:bel/publish {:topic    :tover.inventory.web/changed
                            :scope-id (:workspace-id scope)
                            :data     {}}]]})
 

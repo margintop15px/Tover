@@ -5,7 +5,6 @@
     [bel.core-test :as bel-test]
     [bel.runtime :as runtime]
     [clojure.test :refer [deftest is testing use-fixtures]]
-    [tover.inventory.store-test :as fixture]
     [tover.support :as support]
     [tover.workspaces.currency.model :as model]
     [tover.workspaces.currency.web :as web])
@@ -24,7 +23,7 @@
       (f))))
 
 
-(def workspace (:workspace-id fixture/scope))
+(def workspace (:workspace-id support/scope))
 (def owner #uuid "00000000-0000-0000-0000-000000000011")
 (def at (Instant/parse "2026-11-20T10:00:00Z"))
 
@@ -51,7 +50,7 @@
 
 
 (deftest new-workspace-shows-eur
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (is (= {:currency "EUR" :can-change? true}
              (runtime/read-model (context repo :owner) ::model/workspace-currency {}))))))
@@ -64,7 +63,7 @@
 
 
 (deftest changed-currency-is-shown-and-relabels
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (runtime/execute! (context repo :owner) ::model/change-workspace-currency
                         {:command-id "c1" :input {:workspace-id workspace :currency "RUB"}})
@@ -74,7 +73,7 @@
 
 
 (deftest non-owner-sees-it-read-only
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (is (false? (:can-change? (runtime/read-model (context repo :member) ::model/workspace-currency {})))))))
 
@@ -84,7 +83,7 @@
 
 
 (deftest non-owner-rejects
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (is (= :forbidden
              (:type (rejection #(runtime/execute! (context repo :admin) ::model/change-workspace-currency

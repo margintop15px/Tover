@@ -10,7 +10,7 @@
 (deftest every-application-function-has-an-active-schema
   (is (some #(= 'bel.core (-> % meta :ns ns-name)) (instrumentation/function-vars)))
   (is (some #(= 'bel.handler (-> % meta :ns ns-name)) (instrumentation/function-vars)))
-  (is (some #(= 'tover.stock.web (-> % meta :ns ns-name)) (instrumentation/function-vars)))
+  (is (some #(= 'tover.inventory.web (-> % meta :ns ns-name)) (instrumentation/function-vars)))
   (is (not (contains? (set (instrumentation/function-vars)) #'fixture/row)))
   (doseq [var (instrumentation/function-vars)]
     (let [{:keys [ns name]} (meta var)]

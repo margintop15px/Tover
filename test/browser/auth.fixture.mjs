@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import { stockGrid } from './grid.fixture.mjs';
+const stockGrid = page => page.locator('#stock-grid');
 
 export const signInAction = '/action/tover.identity.sign-in.web/sign-in';
 

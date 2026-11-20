@@ -8,7 +8,6 @@
     [bel.runtime :as runtime]
     [clojure.test :refer [deftest is testing use-fixtures]]
     [tover.catalogues.products.model :as model]
-    [tover.inventory.store-test :as fixture]
     [tover.support :as support]))
 
 
@@ -33,7 +32,7 @@
 (use-fixtures :each bel-test/isolated-registry register unit-authority)
 
 
-(def scope {:workspace-id (:workspace-id fixture/scope)})
+(def scope {:workspace-id (:workspace-id support/scope)})
 
 
 (defn product
@@ -201,9 +200,9 @@
 (defn context
   {:malli/schema [:=> [:cat :any] :map]}
   [repo]
-  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo}) :repo repo :workspace-id (:workspace-id fixture/scope)
+  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo}) :repo repo :workspace-id (:workspace-id support/scope)
                             :user-id     #uuid "00000000-0000-0000-0000-000000000011"
-                            :memberships [{:workspace-id (:workspace-id fixture/scope) :role :member}]}))
+                            :memberships [{:workspace-id (:workspace-id support/scope) :role :member}]}))
 
 
 (defn execute!
@@ -219,7 +218,7 @@
 
 
 (deftest catalogue-lifecycle-through-the-store
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (let [ctx (context repo)]
         (execute! ctx :tover.catalogues.warehouses.model/register-warehouse "w1" {:warehouse-id "main" :name "Main"})
@@ -252,7 +251,7 @@
 
 
 (deftest one-row-by-product-id
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (let [ctx (context repo)]
         (execute! ctx ::model/register-product "r1" {:product-id "mug" :name "Mug"})

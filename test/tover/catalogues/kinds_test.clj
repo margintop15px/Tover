@@ -12,7 +12,6 @@
     [tover.catalogues.stores.model :as stores]
     [tover.catalogues.suppliers.model :as suppliers]
     [tover.catalogues.warehouses.model :as warehouses]
-    [tover.inventory.store-test :as fixture]
     [tover.support :as support]))
 
 
@@ -36,7 +35,7 @@
 (use-fixtures :each bel-test/isolated-registry register unit-authority)
 
 
-(def scope {:workspace-id (:workspace-id fixture/scope)})
+(def scope {:workspace-id (:workspace-id support/scope)})
 
 
 (def kinds
@@ -121,9 +120,9 @@
 (defn context
   {:malli/schema [:=> [:cat :any] :map]}
   [repo]
-  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo}) :repo repo :workspace-id (:workspace-id fixture/scope)
+  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo}) :repo repo :workspace-id (:workspace-id support/scope)
                             :user-id     #uuid "00000000-0000-0000-0000-000000000011"
-                            :memberships [{:workspace-id (:workspace-id fixture/scope) :role :member}]}))
+                            :memberships [{:workspace-id (:workspace-id support/scope) :role :member}]}))
 
 
 (defn execute!
@@ -133,7 +132,7 @@
 
 
 (deftest catalogues-through-the-store
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (let [ctx (context repo)]
         (execute! ctx ::warehouses/register-warehouse "w1" {:warehouse-id "main" :name "Main" :purpose "storage"})

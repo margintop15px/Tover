@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { signIn } from './auth.fixture.mjs';
-import { addStockRow, draftCell, gridHeader, openReview, operationGrid, stockGrid } from './grid.fixture.mjs';
+const stockGrid = page => page.locator('#stock-grid');
 
 test.beforeEach(async ({ page }) => signIn(page));
 
@@ -12,40 +12,6 @@ async function markDocument(page) {
 async function unchangedDocument(page) {
   expect(await page.evaluate(() => window.navigationDocument)).toBe('original');
 }
-
-test('internal navigation preserves durable workspace drafts', async ({ page }) => {
-  const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
-  await markDocument(page);
-  const name = `Navigation draft ${Date.now()}`;
-  const id = await addStockRow(page, name);
-  for (const destination of ['Operations', 'Workspaces', 'Stock']) {
-    await page.getByRole('link', { name: destination, exact: true }).click();
-    await unchangedDocument(page);
-  }
-  await openReview(page);
-  await expect(draftCell(page, id, 'lines/0/name')).toHaveText(name);
-  expect(errors).toEqual([]);
-});
-
-test('direct internal links render their content and share one realtime connection', async ({ page }) => {
-  const streams = [];
-  page.on('request', request => {
-    if (new URL(request.url()).pathname === '/_bel/realtime/stream') streams.push(request);
-  });
-  await page.goto('/team');
-  await expect(page.getByRole('heading', { name: 'Team', exact: true })).toBeVisible();
-  await expect.poll(() => streams.length).toBe(1);
-  await markDocument(page);
-  for (const [name, url] of [['Workspaces', '/workspace'], ['Stock', '/'], ['Operations', '/operations'], ['Team', '/team']]) {
-    await page.getByRole('link', { name, exact: true }).click();
-    await expect(page).toHaveURL(new RegExp(`${url === '/' ? '\\/' : url}$`));
-    await unchangedDocument(page);
-  }
-  expect(streams).toHaveLength(1);
-  await page.reload();
-  await expect(page.getByRole('heading', { name: 'Team', exact: true })).toBeVisible();
-});
 
 for (const failure of ['http', 'network']) {
   test(`failed navigation retains content and URL and supports retry (${failure})`, async ({ page }) => {
@@ -240,7 +206,7 @@ test('action page effects commit a different destination and support Back naviga
   await markDocument(page);
   await page.route('**/action/tover.invitations.issue.web/invite', route => route.fulfill({
     status: 200, contentType: 'text/html',
-    body: '<div id="bel-page" data-bel-navigation="true" data-bel-url="/workspace?from=effect" data-bel-title="Workspaces · Tover" data-bel-page="tover.stock.web/workspaces"><main id="page-content"><h1>Effect destination</h1></main></div>',
+    body: '<div id="bel-page" data-bel-navigation="true" data-bel-url="/workspace?from=effect" data-bel-title="Workspaces · Tover" data-bel-page="tover.inventory.web/workspaces"><main id="page-content"><h1>Effect destination</h1></main></div>',
   }));
   const historyLength = await page.evaluate(() => history.length);
   const form = page.locator('form[action="/action/tover.invitations.issue.web/invite"]');
@@ -272,7 +238,7 @@ for (const order of ['action-first', 'navigation-first']) {
       actionStarted();
       await actionBlocked;
       await route.fulfill({ status: 200, contentType: 'text/html',
-        body: '<div id="bel-page" data-bel-navigation="true" data-bel-url="/operations" data-bel-title="Stale effect" data-bel-page="tover.operations-web/page"><h1>Stale effect</h1></div>' });
+        body: '<div id="bel-page" data-bel-navigation="true" data-bel-url="/catalogues" data-bel-title="Stale effect" data-bel-page="tover.catalogues.grid/catalogue"><h1>Stale effect</h1></div>' });
     });
     let releaseNavigation;
     let navigationStarted;
@@ -306,87 +272,3 @@ for (const order of ['action-first', 'navigation-first']) {
   });
 }
 
-test('shared pages retain consistent appearance and navigation at desktop and narrow widths', async ({ page }) => {
-  const directory = '/tmp/tover-navigation-icons';
-  mkdirSync(directory, { recursive: true });
-  const appearance = () => page.evaluate(() => {
-    const style = getComputedStyle(document.body);
-    return { background: style.backgroundColor, color: style.color, font: style.fontFamily };
-  });
-  const checkInternalLayout = async () => {
-    await expect(page.locator('body > header, .account-nav, .demo-label')).toHaveCount(0);
-    const toggle = await page.locator('#theme-toggle').boundingBox();
-    for (const name of ['Workspaces', 'Team']) {
-      const link = page.getByRole('link', { name, exact: true });
-      await expect(link).toHaveAttribute('aria-label', name);
-      await expect(link).toHaveAttribute('title', name);
-      const bounds = await link.boundingBox();
-      const icon = await link.locator('svg').boundingBox();
-      expect(Math.abs(bounds.y + bounds.height / 2 - toggle.y - toggle.height / 2)).toBeLessThan(1);
-      expect(icon.width).toBe(16);
-      expect(icon.height).toBe(16);
-    }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  };
-  const checkAuthTheme = async () => {
-    const toggle = await page.locator('#theme-toggle').boundingBox();
-    const icon = await page.locator('#theme-toggle svg:visible').boundingBox();
-    const right = await page.locator('main.identity').evaluate(element =>
-      element.getBoundingClientRect().right - parseFloat(getComputedStyle(element).paddingRight));
-    expect(toggle.width).toBe(28);
-    expect(toggle.height).toBe(28);
-    expect(icon.width).toBe(16);
-    expect(icon.height).toBe(16);
-    expect(Math.abs(toggle.x + toggle.width - right)).toBeLessThan(2);
-  };
-
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.evaluate(() => { localStorage.setItem('tover-v2-theme', 'dark'); });
-  await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  const dark = await appearance();
-  await checkInternalLayout();
-  await expect(gridHeader(stockGrid(page), 'name')).toContainText('Goods');
-  await page.screenshot({ path: `${directory}/desktop-stock-dark.png`, fullPage: true });
-  await page.locator('.app-nav').screenshot({ path: `${directory}/navigation.png` });
-  await page.getByRole('link', { name: 'Operations', exact: true }).click();
-  await expect(page).toHaveURL(/\/operations$/);
-  expect(await appearance()).toEqual(dark);
-  await checkInternalLayout();
-  await expect(gridHeader(operationGrid(page), 'occurred-at')).toContainText('Date');
-  await page.screenshot({ path: `${directory}/desktop-operations-dark.png`, fullPage: true });
-  await page.getByRole('link', { name: 'Team', exact: true }).click();
-  await expect(page).toHaveURL(/\/team$/);
-  expect(await appearance()).toEqual(dark);
-  await checkInternalLayout();
-  await expect(page.locator('#theme-toggle')).toHaveAttribute('aria-label', 'Switch to light mode');
-  await page.screenshot({ path: `${directory}/desktop-team-dark.png`, fullPage: true });
-  await page.getByRole('link', { name: 'Workspaces', exact: true }).click();
-  await expect(page).toHaveURL(/\/workspace$/);
-  expect(await appearance()).toEqual(dark);
-  await checkInternalLayout();
-  await page.goto('/auth/recover');
-  await expect(page.getByRole('heading', { name: 'Recover your account', exact: true })).toBeVisible();
-  expect(await appearance()).toEqual(dark);
-  await checkAuthTheme();
-
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.evaluate(() => { localStorage.setItem('tover-v2-theme', 'light'); });
-  await page.goto('/workspace');
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  const light = await appearance();
-  await checkInternalLayout();
-  await page.screenshot({ path: `${directory}/narrow-workspaces-light.png`, fullPage: true });
-  for (const name of ['Stock', 'Team']) {
-    await page.getByRole('link', { name, exact: true }).click();
-    await expect(page.locator('#bel-page')).toHaveAttribute('data-bel-url', name === 'Stock' ? '/' : '/team');
-    expect(await appearance()).toEqual(light);
-    await checkInternalLayout();
-  }
-  await page.goto('/auth/recover');
-  await expect(page.getByRole('heading', { name: 'Recover your account', exact: true })).toBeVisible();
-  expect(await appearance()).toEqual(light);
-  await checkAuthTheme();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: `${directory}/narrow-auth-light.png`, fullPage: true });
-});

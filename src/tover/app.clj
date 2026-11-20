@@ -23,7 +23,6 @@
     [tover.identity.access :as access]
     [tover.identity.provider :as provider]
     [tover.identity.session :as session-store]
-    [tover.inventory.smart-web]
     [tover.shared.email :as email]
     [tover.shared.i18n :as i18n]
     [tover.shared.rdf :as rdf]
@@ -128,7 +127,7 @@
    [:=> [:cat HandlerOptions] schema/Handler]}
   [options]
   ;; Isolated milestones enter live discovery only with their complete cutover.
-  (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename 'tover.catalogues.web 'tover.stock 'tover.operations]})
+  (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename]})
 
   (let [{:keys [realtime session-store origin development?]} (validation/check! HandlerOptions options)
         context (select-keys options [:repo :realtime :provider :session-store :origin :bel/system])

@@ -80,3 +80,22 @@
      (theme-toggle)]]
    (when error [:p.app-notice.error {:role "alert"} error])
    (into [:main#page-content {:tabindex -1}] children)])
+
+
+(defn sheet-icon
+  {:malli/schema [:=> [:cat :keyword] :any]}
+  [name]
+  [:svg {:viewBox        "0 0 24 24" :fill            "none"  :stroke      "currentColor" :stroke-width 1.6
+         :stroke-linecap "round"     :stroke-linejoin "round" :aria-hidden true}
+   (case name
+     :modified [:path {:d "m16 3 5 5-12 12-6 1 1-6L16 3Z m-2 2 5 5"}]
+     :deleted [:path {:d "M5 12h14"}]
+     :added [:path {:d "M5 12h14 M12 5v14"}]
+     :revert [:path {:d "m9 4-5 5 5 5 M4 9h10a5.5 5.5 0 0 1 0 11h-3"}]
+     :preview [:g [:path {:d "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"}]
+               [:circle {:cx 12 :cy 12 :r 3}]]
+     :submit [:path {:d "M12 21V3 m-7 7 7-7 7 7"}]
+     :refresh [:path {:d "M20 10a8 8 0 1 0-2 8 M20 4v6h-6"}]
+     :close [:path {:d "m6 6 12 12 M6 18 18 6"}]
+     :active [:g [:rect {:x 3 :y 4 :width 18 :height 16 :rx 2}] [:path {:d "M3 10h18 M9 4v16"}]]
+     :archived [:path {:d "M3 4h18v4H3z M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8 M10 12h4"}])])

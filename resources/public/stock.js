@@ -4,8 +4,8 @@ import './inventory-grid.js';
 
 // ponytail: per-browser preferences; per-member preferences move to chapter 30.
 const prefs = {
-  get(key, fallback) { try { return localStorage.getItem(`tover.stock.${key}`) ?? fallback; } catch { return fallback; } },
-  set(key, value) { try { localStorage.setItem(`tover.stock.${key}`, value); } catch { /* storage unavailable */ } },
+  get(key, fallback) { try { return localStorage.getItem(`tover.inventory.${key}`) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem(`tover.inventory.${key}`, value); } catch { /* storage unavailable */ } },
 };
 
 const element = (tag, props = {}, ...children) => {

@@ -18,7 +18,6 @@
     [tover.catalogues.rename.model :as model]
     [tover.catalogues.rename.web :as web]
     [tover.catalogues.store :as catalogue]
-    [tover.inventory.store-test :as fixture]
     [tover.shared.rdf :as rdf]
     [tover.support :as support])
   (:import
@@ -40,9 +39,9 @@
 (defn context
   {:malli/schema [:=> [:cat rdf/Repository] :map]}
   [repo]
-  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo}) :repo repo :workspace-id (:workspace-id fixture/scope)
+  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo}) :repo repo :workspace-id (:workspace-id support/scope)
                             :user-id     #uuid "00000000-0000-0000-0000-000000000011"
-                            :memberships [{:workspace-id (:workspace-id fixture/scope) :role :member}]}))
+                            :memberships [{:workspace-id (:workspace-id support/scope) :role :member}]}))
 
 
 (defn scoped
@@ -78,9 +77,9 @@
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
   (bel/build-registry! ['tover.catalogues.rename.model 'tover.catalogues.rename.web])
-  (fixture/with-store
+  (support/with-store
     (fn [repo path]
-      (baseline! repo fixture/scope)
+      (baseline! repo support/scope)
       (f (context repo) path))))
 
 
@@ -106,10 +105,10 @@
         (is (= ["G" "Nut" 5] ((juxt :id :name :revision) (:row (current ctx)))))
         (is (= receipt (runtime/execute! ctx ::model/rename-good request)))
         (is (= :idempotency-conflict
-               (:type (fixture/error-data #(runtime/execute! ctx ::model/rename-good
+               (:type (support/error-data #(runtime/execute! ctx ::model/rename-good
                                                              (assoc-in request [:input :name] "Other"))))))
         (is (= :stale-catalogue
-               (:type (fixture/error-data #(runtime/execute! ctx ::model/rename-good
+               (:type (support/error-data #(runtime/execute! ctx ::model/rename-good
                                                              (assoc request :command-id "stale"))))))))))
 
 
@@ -144,8 +143,8 @@
   (with-redefs [runtime/execute! (fn [& _]
                                    (throw (ex-info "Accepted receipt unavailable"
                                                    {:type :journal-unavailable :retryable? true :command-id "C"})))]
-    (is (= {:type :journal-unavailable :retryable? true :command-id "C"}
-           (fixture/error-data #(handler/execute-action {} ::web/save cell))))))
+    (is (= {:type :journal-unavailable :retryable? true :command-id "C" :message "Accepted receipt unavailable"}
+           (support/error-data #(handler/execute-action {} ::web/save cell))))))
 
 
 (deftest rollback-after-domain-and-delivery-writes
@@ -158,7 +157,7 @@
                                    (apply original args)
                                    (reset! staged? true)
                                    (throw (ex-info "Injected failure after write" {:type :injected})))}
-            #(is (= :injected (:type (fixture/error-data (fn [] (runtime/execute! ctx ::model/rename-good request)))))))
+            #(is (= :injected (:type (support/error-data (fn [] (runtime/execute! ctx ::model/rename-good request)))))))
           (is @staged?)
           (is (= ["Bolt" 4] ((juxt :name :revision) (:row (current ctx)))))
           (is (empty? (pending-events ctx)))
@@ -217,7 +216,7 @@
       (let [definitions (assoc-in (bel/operations) [:models ::model/goods :events ::model/good-renamed :set]
                                   [:name :revision :actor :updated-at :article])]
         (with-redefs [bel/operations (constantly definitions)]
-          (is (= :validation (:type (fixture/error-data #(runtime/execute! ctx ::model/rename-good request)))))))
+          (is (= :validation (:type (support/error-data #(runtime/execute! ctx ::model/rename-good request)))))))
       (is (= "Bolt" (get-in (current ctx) [:row :name])))
       (is (empty? (pending-events ctx)))
       (is (= :accepted (:status (runtime/execute! ctx ::model/rename-good request)))))))
@@ -231,7 +230,7 @@
         (is (= receipt (runtime/execute! ctx ::model/rename-good request)))
         (let [delivery (first (delivery/pending (:bel/system ctx)))]
           (is (= receipt (get-in delivery [:result :receipt])))
-          (is (= fixture/scope (get-in delivery [:request :scope]))))))))
+          (is (= support/scope (get-in delivery [:request :scope]))))))))
 
 
 (deftest authorization-and-workspaces-cover-reads-writes-and-retries
@@ -239,20 +238,20 @@
     (fn [ctx _]
       (let [receipt (runtime/execute! ctx ::model/rename-good request)
             revoked (assoc ctx :memberships [])
-            other   (runtime/prepare-context (assoc ctx :workspace-id (:workspace-id fixture/other-scope)
-                                                    :memberships [{:workspace-id (:workspace-id fixture/other-scope)}]))]
+            other   (runtime/prepare-context (assoc ctx :workspace-id (:workspace-id support/other-scope)
+                                                    :memberships [{:workspace-id (:workspace-id support/other-scope)}]))]
         (doseq [operation [#(runtime/execute! revoked ::model/rename-good request) #(current revoked)]]
-          (is (= :forbidden (:type (fixture/error-data operation)))))
+          (is (= :forbidden (:type (support/error-data operation)))))
         (is (nil? (:row (current other))))
-        (is (= :not-found (:type (fixture/error-data #(runtime/execute! other ::model/rename-good request)))))
+        (is (= :not-found (:type (support/error-data #(runtime/execute! other ::model/rename-good request)))))
         (is (empty? (pending-events other)))
-        (baseline! (:repo ctx) fixture/other-scope)
+        (baseline! (:repo ctx) support/other-scope)
         (let [second-receipt (runtime/execute! other ::model/rename-good (assoc-in request [:input :name] "Other"))]
           (is (not= (:event-ids receipt) (:event-ids second-receipt)))
           (is (= "Other" (get-in (current other) [:row :name])))
           (is (= "Nut" (get-in (current ctx) [:row :name]))))
         (is (= :idempotency-conflict
-               (:type (fixture/error-data #(runtime/execute! (runtime/prepare-context (assoc ctx :user-id (random-uuid)))
+               (:type (support/error-data #(runtime/execute! (runtime/prepare-context (assoc ctx :user-id (random-uuid)))
                                                              ::model/rename-good request)))))))))
 
 
@@ -265,9 +264,9 @@
         (is (= name (get-in (current ctx) [:row :name])))
         (is (some #(= name (get-in % [:data :name])) (pending-events ctx)))
         (is (= :validation
-               (:type (fixture/error-data
+               (:type (support/error-data
                         #(runtime/coeffect :rdf/query ctx
-                                           {:query '{:select [?row] :where [[?row ?predicate ?value]]} :bindings {:graph (persistence/graph fixture/other-scope :domain)}})))))))))
+                                           {:query '{:select [?row] :where [[?row ?predicate ?value]]} :bindings {:graph (persistence/graph support/other-scope :domain)}})))))))))
 
 
 (deftest publication-is-after-commit-and-cannot-block-or-reject-acceptance
@@ -280,7 +279,7 @@
                                           (throw (ex-info "Notification failed" {})))]
           (let [work (future (handler/execute-action (assoc-in ctx [:bel/system :resources :realtime] :fixture) ::web/save cell))]
             (try
-              (is (= {:event {:topic :tover.stock.web/changed :scope-id (:workspace-id fixture/scope) :data {}}
+              (is (= {:event {:topic :tover.inventory.web/changed :scope-id (:workspace-id support/scope) :data {}}
                       :name  "Nut"}
                      (deref started 10000 ::timeout)))
               (is (= :view (:type (deref work 1000 {}))))
@@ -297,7 +296,7 @@
   (with-feature
     (fn [ctx _]
       (with-redefs [web/row (fn [_] (throw (ex-info "Rendering failed" {:type :validation})))]
-        (is (= :validation (:type (fixture/error-data
+        (is (= :validation (:type (support/error-data
                                     #(handler/prepare-result ctx (handler/execute-action ctx ::web/save cell)))))))
       (is (= "Nut" (get-in (current ctx) [:row :name])))
       (is (seq (handler/prepare-result ctx (handler/execute-action ctx ::web/save cell))))
@@ -381,7 +380,7 @@
         (doseq [result results :when (instance? Exception result)]
           (is (contains? #{:conflict :stale-catalogue} (:type (ex-data result)))))
         (let [loser (if (= "C" (:command-id (first accepted))) second request)]
-          (is (= :stale-catalogue (:type (fixture/error-data #(runtime/execute! ctx ::model/rename-good loser))))))))))
+          (is (= :stale-catalogue (:type (support/error-data #(runtime/execute! ctx ::model/rename-good loser))))))))))
 
 
 (deftest decisions-and-renderers-work-with-plain-data
@@ -497,8 +496,8 @@
     (is (= "urn:bel:model:tover.catalogues.rename.model%2Fgoods" (str (:type vocab))))
     (is (= "urn:bel:model:tover.catalogues.rename.model%2Fgoods:field:name" (str (get-in vocab [:fields :name]))))
     (is (= 3 (count (set (vals (:fields vocab))))))
-    (is (not= (source/subject (scoped fixture/scope) ::model/goods "G")
-              (source/subject (scoped fixture/other-scope) ::model/goods "G")))))
+    (is (not= (source/subject (scoped support/scope) ::model/goods "G")
+              (source/subject (scoped support/other-scope) ::model/goods "G")))))
 
 
 (deftest native-model-reads-reject-ambiguous-values-and-cross-workspace-references
@@ -509,13 +508,13 @@
             fields  (:fields (source/vocabulary (model-definition ::model/goods)))]
         (rdf/with-transaction [tx {:repo (:repo ctx) :level :serializable}]
           (rdf/add! tx graph subject (:name fields) "Conflicting name"))
-        (is (= :validation (:type (fixture/error-data #(current ctx)))))
-        (is (= :validation (:type (fixture/error-data #(runtime/execute! ctx ::model/rename-good request)))))
+        (is (= :validation (:type (support/error-data #(current ctx)))))
+        (is (= :validation (:type (support/error-data #(runtime/execute! ctx ::model/rename-good request)))))
         (is (empty? (pending-events ctx)))
         (baseline! (:repo ctx) (:scope ctx))
         (rdf/with-transaction [tx {:repo (:repo ctx) :level :serializable}]
-          (rdf/add! tx graph subject (:category-id fields) (source/subject (scoped fixture/other-scope) ::model/categories "private")))
-        (is (= :validation (:type (fixture/error-data #(runtime/read-model ctx ::model/good-row {:id "G"})))))))))
+          (rdf/add! tx graph subject (:category-id fields) (source/subject (scoped support/other-scope) ::model/categories "private")))
+        (is (= :validation (:type (support/error-data #(runtime/read-model ctx ::model/good-row {:id "G"})))))))))
 
 
 (deftest create-refuses-an-existing-goods-subject
@@ -527,29 +526,29 @@
                         (store/-create! (store/store ctx :catalogue) tx (store/store-scope (:scope ctx)) model %)))
             row    {:id    "G"     :name       "Other"                :revision 1 :article "" :barcode "" :unit "pcs"
                     :actor "alice" :updated-at "2026-11-11T00:00:00Z"}]
-        (is (= :identity-conflict (:type (fixture/error-data #(create row)))))
+        (is (= :identity-conflict (:type (support/error-data #(create row)))))
         (is (= "Bolt" (get-in (current ctx) [:row :name])))
         (create (assoc row :id "H"))
         (is (= "Other" (:name (runtime/read-model ctx ::model/goods {:id "H"}))))))))
 
 
 (deftest catalogue-graphs-refuse-non-workspace-scopes
-  (is (= :configuration (:type (fixture/error-data #(persistence/graphs {:kind :user :id (:workspace-id fixture/scope)}))))))
+  (is (= :configuration (:type (support/error-data #(persistence/graphs {:kind :user :id (:workspace-id support/scope)}))))))
 
 
 (deftest additional-rdf-types-do-not-hide-or-replace-the-model
   (bel/build-registry! ['tover.catalogues.rename.model 'tover.catalogues.rename.web])
-  (fixture/with-store
+  (support/with-store
     (fn [repo _]
       (let [ctx        (context repo)
-            graph      (persistence/graph fixture/scope :domain)
-            subject    (source/subject (scoped fixture/scope) ::model/goods "G")
+            graph      (persistence/graph support/scope :domain)
+            subject    (source/subject (scoped support/scope) ::model/goods "G")
             type       (rdf/iri "http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
             extra-type (rdf/iri "urn:test:AdditionalType")]
         (rdf/with-transaction [tx {:repo repo :level :serializable}]
           (rdf/add! tx graph subject type extra-type))
         (is (nil? (:row (current ctx))))
-        (baseline! repo fixture/scope)
+        (baseline! repo support/scope)
         (is (= "Bolt" (get-in (current ctx) [:row :name])))
         (is (= :accepted (:status (runtime/execute! ctx ::model/rename-good request))))
         (is (= "Nut" (get-in (current ctx) [:row :name])))

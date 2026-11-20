@@ -83,7 +83,7 @@
   (with-redefs [ns-find/find-namespaces
                 (fn [_classpath]
                   ['tover
-                   'tover.stock.web
+                   'tover.inventory.web
                    'tover.admin.views
                    'tover.admin.private
                    'tover-other.views
@@ -91,7 +91,7 @@
                    'tover.app-test.fixture
                    'tover.dev.seed
                    'tover.test.fixtures])]
-    (is (= ['tover 'tover.stock.web]
+    (is (= ['tover 'tover.inventory.web]
            (core/find-namespaces 'tover ['tover.admin])))))
 
 
@@ -121,8 +121,8 @@
                   classpath/system-classpath (fn [] [source-path test-path])
                   ns-find/find-namespaces    (fn [paths]
                                                (reset! scanned (vec paths))
-                                               ['tover.stock.web])]
-      (is (= ['tover.stock.web] (core/find-namespaces 'tover)))
+                                               ['tover.inventory.web])]
+      (is (= ['tover.inventory.web] (core/find-namespaces 'tover)))
       (is (= [test-path source-path] @scanned)))))
 
 
@@ -158,26 +158,26 @@
 
 (deftest expressions-use-explicit-live-payload
   (testing "The literal action map retains browser signal references"
-    (let [expression (->expr (@action :tover.stock.web/preview {:quantity $quantity}))]
+    (let [expression (->expr (@action :tover.inventory.web/preview {:quantity $quantity}))]
       (is (re-find #"@post\(" expression))
-      (is (re-find #"/action/tover.stock.web/preview" expression))
+      (is (re-find #"/action/tover.inventory.web/preview" expression))
       (is (re-find #"quantity.*\$quantity" expression))
       (is (not (re-find #"requestCancellation|retry" expression)))))
   (testing "Runtime ids and params interpolate at Clojure rendering time"
-    (let [id         :tover.stock.web/stock
+    (let [id         :tover.inventory.web/stock
           params     {:query "blue"}
           expression (->expr (@view ~id ~params))]
-      (is (re-find #"/view/tover.stock.web/stock" expression))
+      (is (re-find #"/view/tover.inventory.web/stock" expression))
       (is (re-find #"blue" expression))
       (is (not (re-find #"requestCancellation|retry" expression)))
       (is (not (re-find #"_selector" expression)))
       (is (not (re-find #"_patch_mode" expression)))))
-  (is (re-find #"payload.*\{\s*\}" (->expr (@action :tover.stock.web/discard)))))
+  (is (re-find #"payload.*\{\s*\}" (->expr (@action :tover.inventory.web/discard)))))
 
 
 (deftest expressions-accept-per-call-request-options
   (testing "Literal options retain live browser values"
-    (let [expression (->expr (@action :tover.stock.web/preview {:quantity $quantity}
+    (let [expression (->expr (@action :tover.inventory.web/preview {:quantity $quantity}
                                       {:requestCancellation "disabled" :retry "never" :retryMaxCount 0}))]
       (is (re-find #"requestCancellation.*disabled" expression))
       (is (re-find #"retry.*never" expression))
@@ -185,7 +185,7 @@
       (is (re-find #"quantity.*\$quantity" expression))))
   (testing "Server-provided options do not serialize the live payload"
     (let [options    {:retry "always" :retryMaxCount 2 :headers {"X-Example" "yes"}}
-          expression (->expr (@view :tover.stock.web/stock {:query $query} ~options))]
+          expression (->expr (@view :tover.inventory.web/stock {:query $query} ~options))]
       (is (re-find #"retry.*always" expression))
       (is (re-find #"retryMaxCount.*2" expression))
       (is (re-find #"X-Example.*yes" expression))
@@ -193,8 +193,8 @@
       (is (not (re-find #"\"\$query\"" expression)))))
   (testing "Views also accept literal options and actions accept server options"
     (let [options {:requestCancellation "cleanup"}]
-      (is (re-find #"requestCancellation.*cleanup" (->expr (@view :tover.stock.web/stock {} {:requestCancellation "cleanup"}))))
-      (is (re-find #"requestCancellation.*cleanup" (->expr (@action :tover.stock.web/discard {} ~options)))))))
+      (is (re-find #"requestCancellation.*cleanup" (->expr (@view :tover.inventory.web/stock {} {:requestCancellation "cleanup"}))))
+      (is (re-find #"requestCancellation.*cleanup" (->expr (@action :tover.inventory.web/discard {} ~options)))))))
 
 
 (deftest stream-declarations-share-discovery-and-instrumentation
@@ -275,13 +275,13 @@
 
 (deftest instructions-dispatch-on-type-and-validate-patch-modes
   (is (= :multi (m/type (m/schema core/Instruction))))
-  (doseq [instruction [{:type :view :id :tover.stock.web/stock}
+  (doseq [instruction [{:type :view :id :tover.inventory.web/stock}
                        {:type :elements :html [:div]}
                        {:type :signals :data {:ready true}}
                        {:type :elements :html [:div] :extra "Allowed"}]]
     (is (m/validate core/Instruction instruction)))
   (doseq [mode [:outer :inner :replace :prepend :append :before :after :remove]]
-    (is (m/validate core/Instruction {:type :view :id :tover.stock.web/stock :patch-mode mode}))
+    (is (m/validate core/Instruction {:type :view :id :tover.inventory.web/stock :patch-mode mode}))
     (is (m/validate core/Instruction {:type :elements :html [:div] :patch-mode mode})))
   (doseq [instruction [{:type :unknown :html [:div]}
                        {:type :view :html [:div]}

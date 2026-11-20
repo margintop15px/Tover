@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
 import { signIn, pageContext } from './auth.fixture.mjs';
-import { draftCell, draftGrid, openDraftCell, openReview, selectDrafts, signals, stockGrid } from './grid.fixture.mjs';
 
 const grid = page => page.locator('.catalogue-grid');
 const cell = (page, id, field) => grid(page).locator(`td[data-entry-id="${id}"][data-path="${field}"]`);
@@ -55,7 +54,7 @@ async function catalogueInput(page, id, field) {
   return input;
 }
 
-test('all five tables share inline saves, references, filters, layouts and translations', async ({ page }) => {
+test('all five tables share inline saves, references, filters and translations', async ({ page }) => {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await signIn(page);
   await expect(page.getByRole('link', { name: 'Catalogues', exact: true })).toBeVisible();
@@ -104,17 +103,6 @@ test('all five tables share inline saves, references, filters, layouts and trans
   await expect(cell(page, goods, 'name')).toBeVisible();
   await grid(page).getByRole('button', { name: 'Sort by Name', exact: true }).click();
   await expect(grid(page).locator('thead td[data-column-key="name"]')).toHaveAttribute('aria-sort', 'descending');
-
-  const header = grid(page).locator('thead td[data-column-key="name"]');
-  const box = await header.boundingBox();
-  const saved = page.waitForResponse(response => response.url().endsWith('/action/tover.stock.web/save-layout'));
-  await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2);
-  await page.mouse.down(); await page.mouse.move(box.x + box.width + 65, box.y + box.height / 2, { steps: 8 }); await page.mouse.up();
-  expect((await saved).status()).toBe(200);
-  await expect(grid(page)).toHaveAttribute('data-layout-status', 'Saved');
-  const width = await grid(page).evaluate(node => node.model.savedWidths?.name || node._columnLayout?.widths.name);
-  await page.reload();
-  await expect.poll(() => grid(page).evaluate(node => node.model.savedWidths?.name)).toBe(width);
 
   await page.getByRole('button', { name: 'Russian', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Справочники' })).toBeVisible();
@@ -315,111 +303,6 @@ test('a member-created category is reused without interrupting another member’
     await open(page, 'categories'); await page.locator('.catalogue-search').fill(name);
     await expect.poll(() => grid(page).evaluate(node => node.model.viewport.totalRows)).toBe(1);
   } finally { await other.close(); }
-});
-
-async function inventoryAction(page, action, data = {}) {
-  const { csrf, version } = await pageContext(page);
-  const response = await page.context().request.post(`/action/tover.stock.web/${action}`, {
-    headers: { origin: new URL(page.url()).origin, 'datastar-request': 'true', 'x-csrf-token': csrf, 'x-tover-context': version },
-    data: { view: 'stock', ...data },
-  });
-  expect(response.status()).toBe(200);
-  const body = await response.text();
-  const result = Object.assign({}, ...body.split('\n').filter(line => line.startsWith('data: signals ')).map(line => JSON.parse(line.slice(14))));
-  expect(result.saveStatus, body).not.toBe('Failed');
-  return result;
-}
-
-async function stockEdit(page, rowId, field, value, key = 'Enter') {
-  await expect.poll(() => stockGrid(page).evaluate(node => !!node.busy)).toBe(false);
-  await stockGrid(page).evaluate((node, { rowId, field }) => node.focusField(rowId, field), { rowId, field });
-  const input = stockGrid(page).locator('.inventory-cell-editor > input');
-  await expect(input).toBeVisible(); await input.fill(value); await input.press(key);
-  await expect(page.locator('#inventory-save-status')).toHaveText('Saved');
-  await expect.poll(() => stockGrid(page).evaluate(node => node._attempts.size)).toBe(0);
-}
-
-test('new Stock cells resolve goods, suggest warehouses and register manual entries only on Submit', async ({ page }) => {
-  await signIn(page); await open(page, 'goods');
-  const suffix = Date.now(), name = `Picker goods ${suffix}`, fresh = `Manual goods ${suffix}`;
-  const goods = await create(page, name);
-  await edit(page, goods, 'article', 'PICK-1');
-  await open(page, 'warehouses');
-  const warehouseName = `Picker warehouse ${suffix}`, warehouse = await create(page, warehouseName);
-  await edit(page, warehouse, 'name', `${warehouseName} renamed`);
-  await page.getByRole('link', { name: 'Stock', exact: true }).click();
-  await expect(stockGrid(page)).toBeVisible();
-  await page.getByRole('button', { name: 'Add row', exact: true }).click();
-  await expect.poll(() => stockGrid(page).evaluate(node => node.model.rows.filter(row => row.id.startsWith('draft:')).length)).toBeGreaterThan(0);
-  const rowId = await stockGrid(page).evaluate(node => node.model.rows.filter(row => row.id.startsWith('draft:')).at(-1).id);
-  await stockEdit(page, rowId, 'name', name, 'Tab');
-  await expect.poll(() => stockGrid(page).evaluate((node, id) => node.model.rows.find(row => row.id === id).cells[0].itemValue, rowId)).toBe(goods);
-  await stockEdit(page, rowId, 'name', '');
-  await expect.poll(() => stockGrid(page).evaluate(node => !!node.busy)).toBe(false);
-  await stockGrid(page).evaluate((node, rowId) => node.focusField(rowId, 'name'), rowId);
-  await stockGrid(page).locator('.inventory-cell-editor > input').fill(name);
-  const goodsChoices = stockGrid(page).getByLabel('Choose existing item', { exact: true });
-  await expect(goodsChoices.locator(`option[value="${goods}"]`)).toBeAttached();
-  await goodsChoices.selectOption(goods);
-  await expect.poll(() => stockGrid(page).evaluate(node => node._attempts.size)).toBe(0);
-  await expect.poll(() => stockGrid(page).evaluate((node, id) => node.model.rows.find(row => row.id === id).cells[0].itemValue, rowId)).toBe(goods);
-  await stockEdit(page, rowId, 'quantity', '2');
-  await stockGrid(page).evaluate((node, rowId) => node.focusField(rowId, 'location'), rowId);
-  const location = stockGrid(page).locator('.inventory-cell-editor > input');
-  await location.fill('Picker warehouse');
-  const choices = stockGrid(page).getByLabel('Choose record', { exact: true });
-  await expect(choices.locator(`option[value="${warehouseName}"]`)).toBeAttached();
-  await location.press('ArrowDown'); await expect(choices).toBeFocused();
-  await choices.selectOption(warehouseName);
-  await expect(page.locator('#inventory-save-status')).toHaveText('Saved');
-  await expect.poll(() => stockGrid(page).evaluate(node => node._attempts.size)).toBe(0);
-  await expect(stockGrid(page).locator(`tr[data-row-id="${rowId}"] td[data-column-key="location"]`)).toContainText(`${warehouseName} renamed`);
-  await stockEdit(page, rowId, 'name', fresh);
-  const provisional = await stockGrid(page).evaluate((node, id) => node.model.rows.find(row => row.id === id).cells[0].itemValue, rowId);
-  expect(provisional).not.toBe(goods);
-  await open(page, 'goods'); await page.locator('.catalogue-search').fill(fresh);
-  await expect.poll(() => grid(page).evaluate(node => node.model.viewport.totalRows)).toBe(0);
-  await page.getByRole('link', { name: 'Stock', exact: true }).click();
-  const draftId = await stockGrid(page).evaluate((node, id) => node.model.rows.find(row => row.id === id).cells[0].target.draftId, rowId);
-  await selectDrafts(page, [draftId]);
-  await page.getByRole('button', { name: 'Submit selected', exact: true }).click();
-  await expect(page.locator('#inventory-save-status')).toHaveText('Saved');
-  await open(page, 'goods'); await page.locator('.catalogue-search').fill(fresh);
-  await expect(cell(page, provisional, 'name')).toContainText(fresh);
-  await page.getByRole('link', { name: 'Stock', exact: true }).click();
-  const accepted = await stockGrid(page).evaluate((node, name) => node.model.rows.find(row => row.cells[0].value === name), fresh);
-  expect(accepted.cells[0].itemTarget).toBeUndefined();
-  expect(accepted.cells[1].value).toBe(2);
-});
-
-test('operation cells suggest catalogue-only suppliers and Transfer warehouses', async ({ page }) => {
-  await signIn(page); await open(page, 'suppliers');
-  const suffix = Date.now(), supplier = `Choice supplier ${suffix}`;
-  await create(page, supplier);
-  await open(page, 'warehouses');
-  const place = `Choice warehouse ${suffix}`; await create(page, place);
-  await page.goto('/');
-  const before = await signals(page, '_draftIds');
-  const added = await inventoryAction(page, 'add-entry', { kind: 'operation', type: 'purchase' });
-  const purchase = added._inventorySnapshot.draftIds.find(id => !before.includes(id));
-  await page.reload(); await openReview(page);
-  let input = await openDraftCell(page, purchase, 'party'); await input.fill('Choice supplier');
-  let picker = draftGrid(page).getByLabel('Choose record', { exact: true });
-  await expect(picker.locator(`option[value="${supplier}"]`)).toBeAttached();
-  await picker.selectOption(supplier);
-  await expect(draftCell(page, purchase, 'party')).toContainText(supplier);
-  const pending = await signals(page, '_draftIds');
-  const transferred = await inventoryAction(page, 'add-entry', { kind: 'operation', type: 'transfer' });
-  const transfer = transferred._inventorySnapshot.draftIds.find(id => !pending.includes(id));
-  await page.reload(); await openReview(page);
-  for (const field of ['from-location', 'to-location']) {
-    input = await openDraftCell(page, transfer, field); await input.fill('Choice warehouse');
-    picker = draftGrid(page).getByLabel('Choose record', { exact: true });
-    await expect(picker.locator(`option[value="${place}"]`)).toBeAttached();
-    await picker.selectOption(place);
-    await expect(draftCell(page, transfer, field)).toContainText(place);
-  }
-  await expect.poll(() => draftGrid(page).evaluate(node => node._attempts.size)).toBe(0);
 });
 
 test('Bel snapshot signals replace omitted fields, shorter arrays and explicit nulls', async ({ page }) => {
