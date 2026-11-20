@@ -150,7 +150,10 @@ class StockWorkbench extends HTMLElement {
     return Math.max(Number(row?.cells.find(cell => cell.target)?.target.revision ?? 0), this.revisions.get(id) ?? 0);
   }
   edit(detail) {
-    const values = { ...this.rowValues(detail.id), [detail.path]: detail.value };
+    // Build on the newest values this page holds: queued, then in flight, then the last read.
+    const inFlight = this.pending?.kind === 'save' && this.pending.id === detail.id ? this.pending.values : null;
+    const base = this.queued.get(detail.id) ?? inFlight ?? this.rowValues(detail.id);
+    const values = { ...base, [detail.path]: detail.value };
     const fresh = this.newRows.find(row => row.id === detail.id);
     if (fresh) fresh.values = values;
     // One save at a time per page; a later edit waits for the saved revision.

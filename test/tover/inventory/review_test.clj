@@ -134,7 +134,25 @@
 
 
 (deftest duplicate-variant-blocks
-  (is (= #{:duplicate-variant} (problems (review (facts [(entry "e" {:product-id "tee" :variant-label "m"})] {}) "e")))))
+  (let [archived {:stock-items (conj (:stock-items catalogue) {:stock-item-id "tee-s" :product-id "tee" :variant-label "S" :status "archived"
+                                                               :revision      2})}]
+    (is (= #{:duplicate-variant} (problems (review (facts [(entry "e" {:product-id "tee" :variant-label "s"})] archived) "e")))
+        "an archived item keeps its variant")))
+
+
+(deftest a-new-item-opens-in-several-warehouses
+  (testing "two selected openings of one new item share it and register it once"
+    (let [result (review (facts [(entry "a" {:product-name "Shirt"}) (entry "b" {:product-name "shirt " :warehouse-id nil :warehouse-name "Back"})] {})
+                         "a" "b")]
+      (is (:valid? result) (pr-str (:problems result)))
+      (is (= [[:warehouse "warehouse:b-0"] [:product "product:a-0"] [:stock-item "item:a-0"]]
+             (map (juxt :type :id) (:registrations result))))
+      (is (= [["item:a-0" "main"] ["item:a-0" "warehouse:b-0"]] (map (juxt :stock-item-id :warehouse-id) (:effects result))))))
+  (testing "after the first acceptance the second entry resolves to the accepted item"
+    (let [result (review (facts [(entry "b" {:product-id "tee" :variant-label " m"})] {}) "b")]
+      (is (:valid? result))
+      (is (= [] (:registrations result)))
+      (is (= ["tee-m"] (map :stock-item-id (:effects result)))))))
 
 
 (deftest archived-reference-blocks

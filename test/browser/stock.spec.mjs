@@ -69,3 +69,35 @@ test('declare, review and accept an opening; stock, money and history follow', a
   await expect(page.locator('.stock-history-rows')).toContainText('Opening');
   expect(errors).toEqual([]);
 });
+
+test('edits pasted into a saved entry while a save is in flight keep every value', async ({ page }) => {
+  await signIn(page);
+  const workbench = page.locator('stock-workbench');
+  const drafts = page.locator('.stock-drafts');
+  const saved = async () => {
+    await expect(page.locator('.stock-save-status')).toHaveText('');
+    await expect.poll(() => workbench.evaluate(node => !node.pending && node.queued.size === 0)).toBe(true);
+  };
+  await expect.poll(() => drafts.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  await page.getByRole('button', { name: 'Add opening', exact: true }).click();
+  const id = await workbench.evaluate(node => node.newRows[0].id);
+  await editCell(page, drafts, id, 'product', `Quick ${Date.now()}`);
+  await saved();
+  await page.reload();
+  await expect.poll(() => drafts.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  await expect(drafts.locator(`td[data-entry-id="${id}"][data-path="product"]`)).toBeVisible();
+
+  // A paste across one row emits its edits together; the first saves while the rest queue.
+  await drafts.evaluate((grid, id) => {
+    const target = path => grid.model.rows.find(row => row.id === id).cells.find(cell => cell.target?.path === path).target;
+    for (const [path, value] of [['quantity', '7'], ['unit-cost', '30'], ['reason', 'count']]) {
+      grid.dispatchEvent(new CustomEvent('stock-draft', { bubbles: true, detail: { ...target(path), value } }));
+    }
+  }, id);
+  await saved();
+  await page.reload();
+  await expect.poll(() => drafts.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  for (const [path, value] of [['quantity', '7'], ['unit-cost', '30'], ['reason', 'count']]) {
+    await expect(drafts.locator(`td[data-entry-id="${id}"][data-path="${path}"]`)).toContainText(value);
+  }
+});

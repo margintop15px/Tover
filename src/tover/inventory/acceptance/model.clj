@@ -123,29 +123,37 @@
 
 
 (defn- resolve-lines
-  "Every selected line with resolved ids: existing records by id or exact name, otherwise deterministic new ids
-  (`item:<line-id>`, `product:`/`warehouse:` + the first line id proposing that name)."
+  "Every selected line with resolved ids: existing records by id or exact name (an item by product and variant),
+  otherwise deterministic new ids shared by the batch: `product:`/`warehouse:`/`item:` + the first line id proposing it."
   {:malli/schema [:=> [:cat :map [:sequential :map]] [:vector :map]]}
-  [{:keys [products warehouses]} entries]
+  [{:keys [products warehouses stock-items]} entries]
   (let [all       (for [{:keys [entry-id] :as entry} entries line (:lines entry)] (assoc line :entry-id entry-id :entry entry))
         named     (fn [rows id-key] (into {} (map (juxt (comp text-key :name) id-key)) rows))
         products  (named products :product-id)
         stores    (named warehouses :warehouse-id)
-        first-id  (fn [field] (reduce (fn [m {:keys [line-id] :as line}]
-                                        (let [k (text-key (get line field))]
-                                          (if (and k (not (contains? m k))) (assoc m k line-id) m)))
-                                      {} (sort-by :line-id all)))
-        new-prods (first-id :product-name)
-        new-whs   (first-id :warehouse-name)]
-    (mapv (fn [{:keys [stock-item-id product-id product-name warehouse-id warehouse-name line-id] :as line}]
-            (let [pk (text-key product-name) wk (text-key warehouse-name)]
-              (cond-> line
-                (and (not warehouse-id) wk) (assoc :warehouse-id (or (stores wk) (str "warehouse:" (new-whs wk)))
-                                                   :new-warehouse? (not (stores wk)))
-                (and (not stock-item-id) (not product-id) pk) (assoc :product-id (or (products pk) (str "product:" (new-prods pk)))
-                                                                     :new-product? (not (products pk)))
-                (not stock-item-id) (assoc :stock-item-id (str "item:" line-id) :new-item? true))))
-          all)))
+        variant   (fn [line] [(:product-id line) (text-key (:variant-label line))])
+        items     (into {} (for [i stock-items :when (= "active" (:status i))] [(variant i) (:stock-item-id i)]))
+        first-id  (fn [key-fn lines] (reduce (fn [m {:keys [line-id] :as line}]
+                                               (let [k (key-fn line)]
+                                                 (if (and k (not (contains? m k))) (assoc m k line-id) m)))
+                                             {} (sort-by :line-id lines)))
+        new-prods (first-id (comp text-key :product-name) all)
+        new-whs   (first-id (comp text-key :warehouse-name) all)
+        resolved  (mapv (fn [{:keys [stock-item-id product-id product-name warehouse-id warehouse-name] :as line}]
+                          (let [pk (text-key product-name) wk (text-key warehouse-name)]
+                            (cond-> line
+                              (and (not warehouse-id) wk) (assoc :warehouse-id (or (stores wk) (str "warehouse:" (new-whs wk)))
+                                                                 :new-warehouse? (not (stores wk)))
+                              (and (not stock-item-id) (not product-id) pk) (assoc :product-id (or (products pk) (str "product:" (new-prods pk)))
+                                                                                   :new-product? (not (products pk))))))
+                        all)
+        new-items (first-id #(when-not (:stock-item-id %) (variant %)) resolved)]
+    (mapv (fn [{:keys [stock-item-id] :as line}]
+            (cond
+              stock-item-id line
+              (items (variant line)) (assoc line :stock-item-id (items (variant line)))
+              :else (assoc line :stock-item-id (str "item:" (new-items (variant line))) :new-item? true)))
+          resolved)))
 
 
 (defn- registrations
@@ -175,6 +183,12 @@
   ([line code data] (merge {:entry-id (:entry-id line) :line-id (:line-id line) :code code} data)))
 
 
+(defn- distinct-by-item
+  {:malli/schema [:=> [:cat [:sequential :map]] [:sequential :map]]}
+  [lines]
+  (vec (vals (into (sorted-map) (map (juxt :stock-item-id identity)) (reverse lines)))))
+
+
 (defn- uniqueness
   "New items: variant unique within the product; barcode and article owned by at most one product."
   {:malli/schema [:=> [:cat :map [:sequential :map]] [:sequential Problem]]}
@@ -189,9 +203,9 @@
                    (when-let [other (first (remove #{(:product-id line)} owners))]
                      (problem line :uniqueness-conflict {:owner-product (or (names other) other)})))]
     (concat
-      (for [[line index] (map vector fresh (range))
-            :let         [key [(:product-id line) (text-key (:variant-label line))]]
-            :when        (or (variants key) (some #(= key [(:product-id %) (text-key (:variant-label %))]) (take index fresh)))]
+      ;; Lines naming one new product and variant share one item, so only an existing (archived) item can collide.
+      (for [line  (distinct-by-item fresh)
+            :when (variants [(:product-id line) (text-key (:variant-label line))])]
         (problem line :duplicate-variant))
       (keep #(conflict % (get article (text-key (:article %)))) fresh)
       (for [line fresh code (:barcodes line) :let [found (conflict line (owner code))] :when found] found)
