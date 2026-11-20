@@ -30,6 +30,7 @@
     [clojure.string :as str]
     [com.brunobonacci.mulog :as mu]
     [tover.catalogues.records :as records]
+    [tover.inventory.actors :as actors]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.connector :as connector]
     [tover.marketplace.sync.ozon :as ozon]
@@ -64,8 +65,9 @@
 
 
 (def reasons
-  {:credentials-rejected "credentials rejected" :retries-exhausted "retries exhausted"
-   :repeated-cursor      "repeated cursor"      :incomplete-page   "incomplete page"})
+  {:credentials-rejected "credentials rejected"         :retries-exhausted "retries exhausted"
+   :repeated-cursor      "repeated cursor"              :incomplete-page   "incomplete page"
+   :unexpected-response  "unexpected provider response"})
 
 
 (def Reason
@@ -115,6 +117,11 @@
   (str "Ozon · " (or (:account-label connection) (:provider-account-id connection))))
 
 
+(defmethod actors/principal-label "connector"
+  [context _ connection-id]
+  (some-> (runtime/read-model context ::connections/connections {:connection-id connection-id}) connector-label))
+
+
 (def SyncRun
   [:map
    [:run-id Ref] [:connection-id Ref] [:trigger Trigger] [:triggered-by [:string {:min 1 :max 200}]]
@@ -147,12 +154,14 @@
         (concat Observed
                 [[:name {:optional true} [:string {:max 2000}]] [:identifiers Text] [:category {:optional true} :string]
                  [:attributes {:optional true} Text] [:unit-and-pack {:optional true} :string] [:archived :boolean]
-                 [:provider-updated-at {:optional true} At] [:facts Text]])))
+                 [:provider-updated-at {:optional true} At] [:facts Text]
+                 [:aliases-observed-at {:optional true} At]])))
 
 
 (def ExternalWarehouse
   (into [:map [:external-warehouse-id [:string {:min 1 :max 600}]]]
-        (concat Observed [[:name {:optional true} [:string {:max 2000}]] [:fulfilment-type [:enum "fbo" "fbs" "rfbs"]]])))
+        (concat Observed [[:name {:optional true} [:string {:max 2000}]] [:fulfilment-type [:enum "fbo" "fbs" "rfbs"]]
+                          [:active {:optional true} :boolean]])))
 
 
 (def OperationKind
@@ -229,9 +238,15 @@
 
 
 (defevent external-product-seen {:schema [:map [:external-product-id :string] [:last-observed-at At]]})
-(defevent external-warehouse-seen {:schema [:map [:external-warehouse-id :string] [:last-observed-at At]]})
+(defevent external-warehouse-seen {:schema [:map [:external-warehouse-id :string] [:last-observed-at At] [:active [:= true]]]})
 (defevent source-operation-seen {:schema [:map [:source-operation-id :string] [:last-observed-at At]]})
 (defevent attribute-definition-seen {:schema [:map [:field-definition-id :string] [:last-observed-at At]]})
+(defevent external-product-aliases-seen {:schema [:map [:external-product-id :string] [:aliases-observed-at At]]})
+
+
+;; After a full pass that finished without errors, bindings the pass did not see become inactive.
+(defevent external-product-bindings-expired {:schema [:map [:external-product-id :string] [:identifiers Text]]})
+(defevent external-warehouse-expired {:schema [:map [:external-warehouse-id :string] [:active [:= false]]]})
 
 
 (defevent marketplace-sync-completed
@@ -278,15 +293,18 @@
 
 (defmodel external-products
   {:id     :external-product-id :store :catalogue :schema ExternalProduct :policy ::records/workspace-member
-   :events {::external-product-observed {:set (into observed-fields [:name :identifiers :category :attributes :unit-and-pack
-                                                                     :archived :provider-updated-at :facts])}
-            ::external-product-seen     {:set [:last-observed-at]}}})
+   :events {::external-product-observed         {:set (into observed-fields [:name :identifiers :category :attributes :unit-and-pack
+                                                                             :archived :provider-updated-at :facts])}
+            ::external-product-seen             {:set [:last-observed-at]}
+            ::external-product-aliases-seen     {:set [:aliases-observed-at]}
+            ::external-product-bindings-expired {:set [:identifiers]}}})
 
 
 (defmodel external-warehouses
   {:id     :external-warehouse-id :store :catalogue :schema ExternalWarehouse :policy ::records/workspace-member
-   :events {::external-warehouse-observed {:set (into observed-fields [:name :fulfilment-type])}
-            ::external-warehouse-seen     {:set [:last-observed-at]}}})
+   :events {::external-warehouse-observed {:set (into observed-fields [:name :fulfilment-type :active])}
+            ::external-warehouse-seen     {:set [:last-observed-at :active]}
+            ::external-warehouse-expired  {:set [:active]}}})
 
 
 (defmodel source-operations
@@ -472,6 +490,10 @@
    [:line-key :string]
    [:identifiers [:vector Identifier]]
    [:quantity {:optional true} :string]
+   [:declared-quantity {:optional true} :string]
+   [:fact-quantity {:optional true} :string]
+   [:approved-quantity {:optional true} :string]
+   [:act-id {:optional true} :string]
    [:unit {:optional true} :string]
    [:warehouse {:optional true} :string]
    [:duplicate {:optional true} :boolean]
@@ -505,6 +527,7 @@
    [:occurred-at {:optional true} :string]
    [:planned-at {:optional true} :string]
    [:related-operation {:optional true} :string]
+   [:refetch-key {:optional true} :string]
    [:lines {:optional true} [:vector Line]]
    [:from-warehouse {:optional true} :string]
    [:to-warehouse {:optional true} :string]
@@ -677,13 +700,14 @@
             facts (dissoc observation :kind)
             hash (payload-hash facts)]
         (if (= hash (:payload-hash row))
-          [[{:type seen :data {id-key id :last-observed-at now}}] (assoc-in rows [id :last-observed-at] now) nil]
+          [[{:type seen :data (cond-> {id-key id :last-observed-at now} (= "warehouse" kind) (assoc :active true))}]
+           (update rows id assoc :last-observed-at now) nil]
           (let [common (observed-common {:id-key id-key} row {:id id :hash hash :adapter adapter} connection-id
                                         (or (:source-id observation) (:attribute-id observation)) now)
                 data   (merge common
                               {:facts (write-json (canonical facts))}
                               (case kind
-                                "warehouse" (cond-> {:fulfilment-type (:fulfilment-type observation)}
+                                "warehouse" (cond-> {:fulfilment-type (:fulfilment-type observation) :active true}
                                               (:name observation) (assoc :name (:name observation)))
                                 "operation" (cond-> (select-keys observation [:status :terminal :complete :occurred-at :planned-at
                                                                               :provider-updated-at :from-warehouse :to-warehouse])
@@ -702,11 +726,18 @@
 (defn- observe-product
   {:malli/schema [:=> [:cat :map :map :string :string :string [:maybe :map]] [:tuple [:vector :map] :map [:maybe :string]]]}
   [rows observation connection-id now adapter row]
-  (let [id    (entity-id connection-id observation)
-        facts (product-facts row observation)
-        hash  (payload-hash facts)]
-    (if (= hash (:payload-hash row))
-      [[{:type ::external-product-seen :data {:external-product-id id :last-observed-at now}}]
+  (let [id      (entity-id connection-id observation)
+        facts   (product-facts row observation)
+        hash    (payload-hash facts)
+        k       (juxt :type :value :role)
+        active  (set (map k (filter :active (read-json (:identifiers row)))))
+        aliases (when (= "product-aliases" (:kind observation))
+                  {:type ::external-product-aliases-seen :data {:external-product-id id :aliases-observed-at now}})
+        rows    (cond-> rows aliases (assoc-in [id :aliases-observed-at] now))]
+    ;; An unchanged payload whose bindings an earlier pass expired is observed again, reactivating them.
+    (if (and (= hash (:payload-hash row))
+             (every? #(contains? active (k %)) (concat (get-in facts [:base :identifiers]) (:aliases facts))))
+      [(cond-> [{:type ::external-product-seen :data {:external-product-id id :last-observed-at now}}] aliases (conj aliases))
        (assoc-in rows [id :last-observed-at] now) nil]
       (let [base     (:base facts)
             supplied (concat (:identifiers base) (:aliases facts))
@@ -719,16 +750,19 @@
                        (:category base) (assoc :category (:category base))
                        (:provider-updated-at base) (assoc :provider-updated-at (:provider-updated-at base))
                        (seq (:attributes facts)) (assoc :attributes (write-json (:attributes facts))))]
-        [[{:type ::external-product-observed :data data}] (assoc rows id data) (when-not row "product")]))))
+        [(cond-> [{:type ::external-product-observed :data data}] aliases (conj aliases))
+         (update rows id merge data) (when-not row "product")]))))
 
 
 (defn- refetch
-  "Known non-terminal operations of a dated domain stay on the refetch list until terminal."
+  "Known non-terminal operations of a dated domain stay on the refetch list until terminal. An operation is
+  refetched by its `refetch-key` when the provider looks it up by another id (returns by posting number)."
   {:malli/schema [:=> [:cat [:maybe :string] [:sequential :map]] :string]}
   [previous observations]
   (let [ops      (filter #(= "operation" (:kind %)) observations)
-        terminal (set (map :source-id (filter :terminal ops)))
-        open     (map :source-id (remove :terminal ops))]
+        key      #(or (:refetch-key %) (:source-id %))
+        open     (map key (remove :terminal ops))
+        terminal (apply disj (set (map key (filter :terminal ops))) open)]
     (write-json (vec (distinct (remove terminal (concat (read-json previous) open)))))))
 
 
@@ -741,15 +775,67 @@
         :else (:cursor position)))
 
 
+(def ^:private binding-passes
+  "Domains whose full pass expires the bindings it did not see, with the rows that hold them."
+  {"warehouses"  [::external-warehouses :external-warehouse-id]
+   "products"    [::external-products :external-product-id]
+   "sku-aliases" [::external-products :external-product-id]})
+
+
+(defmethod runtime/coeffect ::pass-rows
+  [_ context {:keys [connection-id domain domain-finished]}]
+  (if-let [[model id-key] (when (and connection-id domain-finished) (binding-passes domain))]
+    (into {} (for [row   (records/all-records context model id-key)
+                   :when (= connection-id (:connection-id row))]
+               [(get row id-key) row]))
+    {}))
+
+
+(defn expired-bindings
+  "Board decision: after a full pass of products, SKU aliases or warehouses that finished without errors, the
+  bindings that pass did not see become inactive. `rows` are the connection's rows after the pass's last batch;
+  seen means observed at or after the run started. A partial or failed pass never reaches here: its domain
+  does not finish in the run, and positions restart with each run."
+  {:malli/schema [:=> [:cat :string [:map-of :string :map] :string] [:vector :map]]}
+  [domain rows started-at]
+  (let [start   (instant started-at)
+        unseen? #(or (nil? %) (.isBefore ^Instant (instant %) start))
+        k       (juxt :type :value :role)]
+    (vec
+      (case domain
+        "warehouses"
+        (for [[id row] (sort rows)
+              :when    (and (not (false? (:active row))) (unseen? (:last-observed-at row)))]
+          {:type ::external-warehouse-expired :data {:external-warehouse-id id :active false}})
+
+        ("products" "sku-aliases")
+        (for [[id row] (sort rows)
+              :let     [bindings (read-json (:identifiers row))
+                        facts (read-json (:facts row))
+                        expire (if (= "products" domain)
+                                 (when (unseen? (:last-observed-at row)) (set (map k bindings)))
+                                   ;; Only bindings the aliases view alone supplied.
+                                 (when (unseen? (:aliases-observed-at row))
+                                   (apply disj (set (map k (:aliases facts))) (map k (get-in facts [:base :identifiers])))))
+                        after (mapv #(cond-> % (contains? expire (k %)) (assoc :active false)) bindings)]
+              :when    (not= after bindings)]
+          {:type ::external-product-bindings-expired :data {:external-product-id id :identifiers (write-json after)}})
+
+        []))))
+
+
 (defcommand record-source-observations
   {:input RecordSourceObservations :policy ::connector-principal
    :cofx  [run-cofx run-connection
            [:position ::position (fn [{:keys [run]} input] {:connection-id (:connection-id run) :domain (:domain input)})]
-           [:existing ::existing (fn [{:keys [run]} input] {:connection-id (:connection-id run) :observations (:observations input)})]]
+           [:existing ::existing (fn [{:keys [run]} input] {:connection-id (:connection-id run) :observations (:observations input)})]
+           [:pass-rows ::pass-rows (fn [{:keys [run]} input] (assoc (select-keys input [:domain :domain-finished])
+                                                                    :connection-id (:connection-id run)))]]
    :emits #{::source-batch-recorded ::source-domain-traversed ::external-product-observed ::external-product-seen
+            ::external-product-aliases-seen ::external-product-bindings-expired ::external-warehouse-expired
             ::external-warehouse-observed ::external-warehouse-seen ::source-operation-observed ::source-operation-seen
             ::attribute-definition-observed ::attribute-definition-seen ::source-stock-observed}}
-  [{:keys [now run connection position existing]}
+  [{:keys [now run connection position existing pass-rows]}
    {:keys [run-id domain batch-key next-position domain-finished covered-until observations adapter-version]}]
   (cond
     (nil? run) (fail! :unknown-run "Unknown run")
@@ -760,15 +846,15 @@
     (not= batch-key (current-key run-id position)) (fail! :stale-position "Stale position")
     (personal? observations) (fail! :personal-data-present "Personal data present")
     :else
-    (let [connection-id  (:connection-id run)
-          at             (str now)
-          [events _ new] (reduce (fn [[events rows new] o]
-                                   (let [[e rows kind] (observe rows o connection-id at adapter-version)]
-                                     [(into events e) rows (cond-> new kind (conj kind))]))
-                                 [[] existing []] observations)
-          found          (frequencies new)
-          finished       (decode (:finished-domains run))
-          covered        (later (:covered-until position) (or covered-until (:started-at run)))]
+    (let [connection-id     (:connection-id run)
+          at                (str now)
+          [events rows new] (reduce (fn [[events rows new] o]
+                                      (let [[e rows kind] (observe rows o connection-id at adapter-version)]
+                                        [(into events e) rows (cond-> new kind (conj kind))]))
+                                    [[] existing []] observations)
+          found             (frequencies new)
+          finished          (decode (:finished-domains run))
+          covered           (later (:covered-until position) (or covered-until (:started-at run)))]
       {:events (cond-> (conj events
                              {:type ::source-batch-recorded
                               :data (merge {:position-id      (position-id connection-id domain)                  :connection-id connection-id
@@ -780,6 +866,8 @@
                                             :found-operations (+ (:found-operations run 0) (found "operation" 0))
                                             :recorded-at      at}
                                            (select-keys next-position [:window-from :window-to]))})
+                 domain-finished
+                 (into (expired-bindings domain (merge pass-rows (select-keys rows (keys pass-rows))) (:started-at run)))
                  domain-finished
                  (conj {:type ::source-domain-traversed
                         :data {:run-id           run-id :connection-id connection-id :domain domain :covered-until covered
@@ -1077,7 +1165,7 @@
                 :unavailable (request ::record-fetch-setback {:run-id run-id :domain domain :setback "unavailable"})
                 :throttled (request ::record-fetch-setback {:run-id            run-id            :domain domain :setback "throttled"
                                                             :resume-not-before resume-not-before})
-                (:credentials-rejected :retries-exhausted :repeated-cursor :incomplete-page)
+                (:credentials-rejected :retries-exhausted :repeated-cursor :incomplete-page :unexpected-response)
                 (request ::complete-marketplace-sync {:run-id run-id         :outcome             "failed"            :failed-domain domain
                                                       :reason (reasons type) :unavailable-domains unavailable-domains})
                 (throw error))))))

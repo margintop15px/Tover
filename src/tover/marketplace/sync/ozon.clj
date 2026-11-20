@@ -9,7 +9,7 @@
   `step` reads one page or detail batch of a domain from an opaque traversal state and returns sanitized
   observations (only the facts named on the board; no buyer data, prices or raw payloads), the next state and
   whether the domain is finished. Failures are ex-info with `:type` one of `:credentials-rejected`
-  `:unavailable` `:throttled` `:retries-exhausted` `:repeated-cursor` `:incomplete-page`.
+  `:unavailable` `:throttled` `:retries-exhausted` `:repeated-cursor` `:incomplete-page` `:unexpected-response`.
 
   Response shapes follow docs/ozon-source-contracts.md. They are unverified against a live account, so readers
   accept the documented root or `result` wrapper and treat a missing required field as an incomplete page."
@@ -107,7 +107,7 @@
 (defn- retryable?
   {:malli/schema [:=> [:cat :int] :boolean]}
   [status]
-  (or (zero? status) (contains? #{408 425 429} status) (<= 500 status 599)))
+  (or (zero? status) (= 429 status) (<= 500 status 599)))
 
 
 (defn request!
@@ -134,8 +134,8 @@
             (>= attempt tries) (fail! :retries-exhausted)
             :else (do (sleep (or wait (+ (get try-waits (dec attempt)) (jitter 250))))
                       (recur (inc attempt)))))
-        ;; ponytail: other client errors have no board reason of their own; the page cannot be read.
-        :else (fail! :incomplete-page {:status status})))))
+        ;; Board decision: any other answer is not retried; the run fails and the position stays.
+        :else (fail! :unexpected-response {:status status})))))
 
 
 (defn env
@@ -407,7 +407,7 @@
                         :lines          (lines [(get row "product")] place)}
                  moment (assoc :occurred-at moment)
                  place (assoc :to-warehouse place)
-                 posting (assoc :related-operation (str kind ":" posting)))
+                 posting (assoc :related-operation (str kind ":" posting) :refetch-key posting))
                [])))
 
 
@@ -425,17 +425,44 @@
                ["actual time" "line quantity"])))
 
 
+(def ^:private act-quantities
+  {"declared_quantity" :declared-quantity "fact_quantity" :fact-quantity "approved_quantity" :approved-quantity})
+
+
+(defn- act-line
+  "Acceptance act quantities kept apart; the line quantity only when declared, fact and approved agree."
+  {:malli/schema [:=> [:cat :map [:maybe :map]] :map]}
+  [line act]
+  (let [quantities (into {} (keep (fn [[k field]] (some->> (text (get act k)) (vector field)))) act-quantities)
+        line       (cond-> (merge (dissoc line :quantity) quantities)
+                     (text (get act "act_id")) (assoc :act-id (text (get act "act_id"))))]
+    (if (and (= 3 (count quantities)) (apply = (vals quantities)))
+      (assoc line :quantity (:approved-quantity quantities))
+      line)))
+
+
 (defn supply
-  "`/v3/supply-order/get` order with its bundle items. Accepted quantities are unconfirmed (board decision)."
-  {:malli/schema [:=> [:cat :map [:sequential :map]] :map]}
-  [order bundle-items]
-  (let [to (text (or (get-in order ["drop_off_warehouse" "warehouse_id"])
-                     (get-in order ["supplies" 0 "storage_warehouse_id"])))]
-    (operation (cond-> {:operation-kind "supply" :source-id (required (text (or (get order "order_id") (get order "id"))))
-                        :status         (or (text (get order "state")) "unknown")
-                        :lines          (mapv #(dissoc % :quantity) (lines bundle-items to))}
-                 to (assoc :to-warehouse to))
-               ["actual time" "accepted quantity"])))
+  "`/v3/supply-order/get` order with its bundle items and acceptance act items (`/v1/supply-order/act/product/get`).
+  The actual time is unconfirmed (board decision); without an agreeing act the accepted quantity is too."
+  {:malli/schema [:function [:=> [:cat :map [:sequential :map]] :map]
+                  [:=> [:cat :map [:sequential :map] [:sequential :map]] :map]]}
+  ([order bundle-items] (supply order bundle-items []))
+  ([order bundle-items act-items]
+   (let [to       (text (or (get-in order ["drop_off_warehouse" "warehouse_id"])
+                            (get-in order ["supplies" 0 "storage_warehouse_id"])))
+         by-sku   (group-by #(sku (get % "sku")) act-items)
+         planned  (lines bundle-items to)
+         line-sku #(some (fn [{:keys [type value]}] (when (= "sku" type) value)) (:identifiers %))
+         extra    (remove #(contains? (set (keep line-sku planned)) (sku (get % "sku"))) act-items)
+         rows     (concat (map #(act-line % (first (by-sku (line-sku %)))) planned)
+                          (map #(act-line (first (lines [%] to)) %) extra))
+         rows     (vec (map-indexed #(assoc %2 :line-key (str (inc %1))) rows))
+         agreed?  (and (seq rows) (every? :quantity rows))]
+     (operation (cond-> {:operation-kind "supply" :source-id (required (text (or (get order "order_id") (get order "id"))))
+                         :status         (or (text (get order "state")) "unknown")
+                         :lines          rows}
+                  to (assoc :to-warehouse to))
+                (cond-> ["actual time"] (not agreed?) (conj "accepted quantity"))))))
 
 
 (defn removal
@@ -634,18 +661,33 @@
                                                      {:posting_number n :with {:analytics_data true}})))))))))
 
 
-(defmethod step "returns" [_ env context {:keys [last-id] :as state}]
-  ;; ponytail: the list has no detail call, so non-terminal returns are refetched only while inside the
-  ;; 1-day overlap; add a return-id filter once a live check confirms it.
-  (let [{:keys [from to]} (window context)
-        {:keys [body]}    (request! env "/v1/returns/list"
-                                    {:filter  {:logistic_return_date {:time_from from :time_to to}} :limit 500
-                                     :last_id (if last-id (BigInteger. ^String last-id) 0)})
-        rows              (required (items body ["returns"]))
-        next              (some-> (last rows) (get "id") text)
-        _                 (next-cursor! last-id next)
-        more?             (and (seq rows) (get body "has_next"))]
-    (page (mapv fbo-fbs-return rows) (assoc state :last-id next) (not more?))))
+(defn- returns-page
+  "One `/v1/returns/list` page under `filter`: the rows, the next cursor and whether more follow."
+  {:malli/schema [:=> [:cat Env :map [:maybe :string]] [:map [:rows [:vector :map]] [:next [:maybe :string]] [:more? :any]]]}
+  [env filter last-id]
+  (let [{:keys [body]} (request! env "/v1/returns/list"
+                                 {:filter filter :limit 500 :last_id (if last-id (BigInteger. ^String last-id) 0)})
+        rows           (vec (required (items body ["returns"])))
+        next           (some-> (last rows) (get "id") text)]
+    (next-cursor! last-id next)
+    {:rows rows :next next :more? (and (seq rows) (get body "has_next"))}))
+
+
+(defmethod step "returns" [_ env {:keys [refetch-ids] :as context} state]
+  ;; The list has no detail call: known non-terminal returns are read again by posting number (their
+  ;; refetch key), 50 postings per request, before the window is listed.
+  ;; ponytail: `posting_numbers` filter per the Ozon reference; confirm with a live check.
+  (let [{:keys [from to]}         (window context)
+        state (if (seq state) state {:pending (vec refetch-ids)})
+        {:keys [pending last-id]} state]
+    (if (seq pending)
+      (let [[batch more]              (split-at 50 pending)
+            {:keys [rows next more?]} (returns-page env {:posting_numbers (vec batch)} last-id)]
+        (page (mapv fbo-fbs-return rows)
+              (if more? (assoc state :last-id next) (assoc state :pending (vec more) :last-id nil))
+              false))
+      (let [{:keys [rows next more?]} (returns-page env {:logistic_return_date {:time_from from :time_to to}} last-id)]
+        (page (mapv fbo-fbs-return rows) (assoc state :last-id next) (not more?))))))
 
 
 (defmethod step "rfbs-returns" [_ env context state]
@@ -676,9 +718,27 @@
         (if (and (get body "has_next") next (not= next last-id)) (recur next acc) acc)))))
 
 
+(def ^:private accepted-states
+  "Supply order states after storage acceptance began, when an acceptance act can exist.
+  ponytail: from the Ozon state list; a live check may show acts earlier."
+  #{"ACCEPTANCE_AT_STORAGE_WAREHOUSE" "REPORTS_CONFIRMATION_AWAITING" "REPORT_REJECTED" "COMPLETED"})
+
+
+(defn- act-items
+  "Acceptance act items of every supply in an accepted `order`, one `/v1/supply-order/act/product/get` call
+  per supply; none before acceptance."
+  {:malli/schema [:=> [:cat Env :map] [:vector :map]]}
+  [env order]
+  (vec (for [supply-id (when (contains? accepted-states (some-> (text (get order "state")) str/upper-case))
+                         (keep #(text (get % "supply_id")) (get order "supplies")))
+             item      (required (items (:body (request! env "/v1/supply-order/act/product/get" {:supply_id supply-id}))
+                                        ["items" "products"]))]
+         item)))
+
+
 (defmethod step "supplies" [_ env context state]
   ;; ponytail: supply lists carry no date filter we rely on; every order is listed and the window only
-  ;; bounds coverage. The acceptance act is allowlisted but not read until its semantics are confirmed.
+  ;; bounds coverage. Act request and field names follow the contract doc; confirm with a live check.
   (dated context state 50
          (fn [last-id]
            (let [{:keys [body]} (request! env "/v3/supply-order/list" {:filter {} :limit 100 :last_id (or last-id "")})
@@ -691,7 +751,8 @@
                  found          (set (keep #(text (or (get % "order_id") (get % "id"))) orders))]
              (when-not (every? found ids) (fail! :incomplete-page))
              (for [order orders]
-               (supply order (bundle-items env (text (get-in order ["supplies" 0 "bundle_id"])))))))))
+               (supply order (bundle-items env (text (get-in order ["supplies" 0 "bundle_id"])))
+                       (act-items env order)))))))
 
 
 (defmethod step "removals" [_ env context {:keys [phase last-id]}]

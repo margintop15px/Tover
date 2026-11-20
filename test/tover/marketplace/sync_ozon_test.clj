@@ -70,6 +70,16 @@
     (is (= 2 (:tries (ozon/request! env "/v1/returns/list" {}))))))
 
 
+(deftest unexpected-client-error-is-not-retried
+  (doseq [status [400 404 408 422]]
+    (let [{:keys [env calls sleeps]} (env [{:status status} (ok {})])
+          error (thrown #(ozon/request! env "/v1/returns/list" {}))]
+      (is (= :unexpected-response (:type error)))
+      (is (= status (:status error)))
+      (is (= 1 (count @calls)) "one try only")
+      (is (empty? @sleeps)))))
+
+
 (deftest long-retry-delay-becomes-resume-not-before
   (let [{:keys [env sleeps]} (env [{:status 429 :headers {"retry-after" "1200"}}])
         error                (thrown #(ozon/request! env "/v1/returns/list" {}))]
@@ -173,6 +183,42 @@
   (is (false? (:complete (ozon/removal {"sku" "100" "quantity_for_return" 4 "return_id" 7} "from-stock")))))
 
 
+(deftest supply-act-quantities-kept-apart
+  (let [order    {"order_id" 5 "state" "COMPLETED" "drop_off_warehouse" {"warehouse_id" 2}}
+        bundle   [{"sku" 100 "quantity" 5} {"sku" 200 "quantity" 3}]
+        agreeing (ozon/supply order bundle [{"act_id" 77 "sku" 100 "declared_quantity" 5 "fact_quantity" 5 "approved_quantity" 5}
+                                            {"act_id" 77 "sku" 200 "declared_quantity" 3 "fact_quantity" 3 "approved_quantity" 3}])
+        differ   (ozon/supply order bundle [{"act_id" 77 "sku" 100 "declared_quantity" 5 "fact_quantity" 4 "approved_quantity" 5}
+                                            {"act_id" 77 "sku" 200 "declared_quantity" 3 "fact_quantity" 3 "approved_quantity" 3}])]
+    (is (= [{:declared-quantity "5" :fact-quantity "4" :approved-quantity "5" :act-id "77"}]
+           (map #(not-empty (select-keys % [:declared-quantity :fact-quantity :approved-quantity :act-id :quantity]))
+                (take 1 (:lines differ))))
+        "the three quantities stay apart and no line quantity is chosen")
+    (is (some #{"accepted quantity"} (:missing differ)) "disagreeing act keeps the supply incomplete")
+    (is (= ["5" "3"] (map :quantity (:lines agreeing))) "agreeing act gives the line quantity")
+    (is (= ["actual time"] (:missing agreeing)) "still incomplete: the actual time is unconfirmed")
+    (is (some #{"accepted quantity"} (:missing (ozon/supply order bundle))) "no act, no accepted quantity")))
+
+
+(deftest supply-acts-read-per-supply-once-accepted
+  (let [{:keys [env calls]} (env (fn [path body]
+                                   (ok (case path
+                                         "/v3/supply-order/list" {:order_ids [5 6] :last_id ""}
+                                         "/v3/supply-order/get" {:orders [{:order_id 5 :state "COMPLETED" :supplies [{:supply_id 51 :bundle_id "b"}]}
+                                                                          {:order_id 6 :state "DATA_FILLING" :supplies [{:supply_id 61}]}]}
+                                         "/v1/supply-order/bundle" {:items [{:sku 100 :quantity 5}] :has_next false}
+                                         "/v1/supply-order/act/product/get" {:items [{:sku           100               :act_id            9 :declared_quantity 5
+                                                                                      :fact_quantity 5                 :approved_quantity 5
+                                                                                      :supply        (:supply_id body)}]}))))
+        context             {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}}
+        listed              (ozon/step "supplies" env context {})
+        detailed            (ozon/step "supplies" env context (:state listed))]
+    (is (= [{:supply_id "51"}] (map :body (filter #(= "/v1/supply-order/act/product/get" (:path %)) @calls)))
+        "only the accepted order's supply")
+    (is (= [["5" ["5"]] ["6" []]]
+           (map (juxt :source-id #(mapv :quantity (:lines %))) (:observations detailed))))))
+
+
 (deftest received-return-is-complete
   (let [r (ozon/fbo-fbs-return {"id"       9223372036854775807 "posting_number"                  "FBO-1"   "schema" "FBO"
                                 "visual"   {"status" {"sys_name" "ReceivedBySeller"}}
@@ -214,6 +260,24 @@
 (deftest missing-detail-is-incomplete
   (let [{:keys [env]} (env [(ok {:items []})])]
     (is (= :incomplete-page (:type (thrown #(ozon/step "products" env {} {:pending ["9001"]})))))))
+
+
+(deftest non-terminal-return-is-refetched-until-terminal
+  (let [{:keys [env calls]} (env (fn [_ body]
+                                   (ok (if (get-in body [:filter :posting_numbers])
+                                         {:returns  [{:id      7 :posting_number "P-1" :schema "FBS" :visual {:status {:sys_name "MovingToSeller"}}
+                                                      :product {:sku 100 :quantity 1}}]
+                                          :has_next false}
+                                         {:returns [] :has_next false}))))
+        context             {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"} :refetch-ids ["P-1"]}
+        refetched           (ozon/step "returns" env context {})]
+    (is (= {:posting_numbers ["P-1"]} (get-in (first @calls) [:body :filter])) "read again by posting number")
+    (is (= [["7" "P-1" false]] (map (juxt :source-id :refetch-key :terminal) (:observations refetched))))
+    (is (not (:finished? refetched)))
+    (let [listed (ozon/step "returns" env context (:state refetched))]
+      (is (= {:logistic_return_date {:time_from "2026-12-09T06:00:00Z" :time_to "2026-12-10T06:00:00Z"}}
+             (get-in (last @calls) [:body :filter])) "then the window")
+      (is (:finished? listed)))))
 
 
 (deftest non-terminal-posting-outside-the-window-is-refetched

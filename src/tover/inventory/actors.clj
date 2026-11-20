@@ -3,6 +3,7 @@
     [bel-postgres.jdbc :as db]
     [bel.runtime :as runtime]
     [charred.api :as json]
+    [clojure.string :as str]
     [com.brunobonacci.mulog :as mu]
     [tover.shared.i18n :as i18n]))
 
@@ -31,6 +32,26 @@
       {})))
 
 
+(defmulti principal-label
+  "Label of a non-user actor `<kind>:<id>`, such as `connector:<connection id>`; nil when unknown.
+  The owning domain implements its kind, so this namespace depends on none of them."
+  (fn [_context kind _id] kind))
+
+
+(defmethod principal-label :default [_ _ _] nil)
+
+
+(defn- principal
+  {:malli/schema [:=> [:cat :map :any] [:maybe :string]]}
+  [context id]
+  (let [[kind id] (str/split (str id) #":" 2)]
+    (when id
+      (try (principal-label context kind id)
+           (catch Exception error
+             (mu/log ::principal-label-unavailable :kind kind :error-type (.getName (class error)))
+             nil)))))
+
+
 (defn enrich
   "Resolve presentation labels without changing immutable actor identifiers."
   {:malli/schema [:=> [:cat :map [:sequential :map]] [:vector :map]]}
@@ -39,5 +60,6 @@
     (mapv (fn [record]
             (reduce-kv (fn [record field label-field]
                          (if-let [id (get record field)]
-                           (assoc record label-field (get names (str id) (i18n/t "Unavailable user")))
+                           (assoc record label-field (or (get names (str id)) (principal context id)
+                                                         (i18n/t "Unavailable user")))
                            record)) record actor-fields)) records)))

@@ -10,6 +10,7 @@
     [charred.api :as json]
     [clojure.test :refer [deftest is testing use-fixtures]]
     [tover.catalogues.stores.model :as stores]
+    [tover.inventory.actors :as actors]
     [tover.inventory.store-test :as fixture]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.connector :as connector]
@@ -363,6 +364,59 @@
     (is (= "2026-12-11T06:00:00Z" (:last-observed-at (event plan ::sync/external-product-seen))))))
 
 
+(defn active-bindings
+  {:malli/schema [:=> [:cat [:maybe :map]] [:vector :any]]}
+  [data]
+  (mapv (juxt :value :active) (json/read-json (:identifiers data) :key-fn keyword)))
+
+
+(def old-row
+  "Listing 9001 as an earlier run left it."
+  (delay (assoc (event (record {} {:observations [(product "A-1")]}) ::sync/external-product-observed)
+                :last-observed-at "2026-12-01T06:00:00Z")))
+
+
+(deftest full-product-pass-expires-unseen-bindings
+  (let [finish #(record {:pass-rows {p @old-row}} (merge {:domain-finished true} %))]
+    (is (= [["9001" false] ["A-1" false] ["4600000000017" false]]
+           (active-bindings (event (finish {}) ::sync/external-product-bindings-expired)))
+        "not seen by this run's complete pass")
+    (is (nil? (event (finish {:observations [(product "A-1")]}) ::sync/external-product-bindings-expired))
+        "seen in the pass's last batch")
+    (is (nil? (event (record {:pass-rows {p @old-row}} {}) ::sync/external-product-bindings-expired))
+        "a pass that has not finished expires nothing")))
+
+
+(deftest expired-listing-seen-again-is-reactivated
+  (let [expired (assoc @old-row :identifiers (:identifiers (event (record {:pass-rows {p @old-row}} {:domain-finished true})
+                                                                  ::sync/external-product-bindings-expired)))
+        plan    (record {:existing {p expired}} {:observations [(product "A-1")]})]
+    (is (= [["9001" true] ["A-1" true] ["4600000000017" true]]
+           (active-bindings (event plan ::sync/external-product-observed))))))
+
+
+(deftest full-alias-pass-expires-only-alias-bindings
+  (let [aliased (event (record {:existing {p @old-row}}
+                               {:observations [{:kind "product-aliases" :source-id "9001" :aliases [{:type "sku" :value "555" :role "source"}]}]})
+                       ::sync/external-product-observed)
+        row     (assoc aliased :aliases-observed-at "2026-12-01T06:00:00Z" :last-observed-at "2026-12-10T07:00:00Z")
+        plan    (record {:pass-rows {p row}} {:domain "sku-aliases" :domain-finished true})]
+    (is (= [["9001" true] ["A-1" true] ["4600000000017" true] ["555" false]]
+           (active-bindings (event plan ::sync/external-product-bindings-expired))))
+    (is (nil? (event (record {:pass-rows {p (assoc row :aliases-observed-at "2026-12-10T06:30:00Z")}}
+                             {:domain "sku-aliases" :domain-finished true})
+                     ::sync/external-product-bindings-expired))
+        "aliases seen in this pass")))
+
+
+(deftest full-warehouse-pass-expires-unseen-warehouses
+  (let [w    (fn [id at] {:external-warehouse-id (str c ":" id) :connection-id c :last-observed-at at :active true})
+        plan (record {:pass-rows {(str c ":1") (w 1 "2026-12-01T06:00:00Z") (str c ":2") (w 2 "2026-12-10T06:00:01Z")}}
+                     {:domain "warehouses" :domain-finished true})]
+    (is (= [{:external-warehouse-id (str c ":1") :active false}]
+           (keep #(when (= ::sync/external-warehouse-expired (:type %)) (:data %)) (:events plan))))))
+
+
 (deftest same-barcode-under-two-connections
   (let [one (event (record {} {:observations [(product "A-1")]}) ::sync/external-product-observed)
         two (event (record {:run (run {:connection-id "c2"})} {:observations [(product "A-1")]}) ::sync/external-product-observed)]
@@ -419,6 +473,18 @@
     (is (= "[\"old\",\"new\"]" (:refetch-ids (event plan ::sync/source-batch-recorded))))))
 
 
+(deftest non-terminal-returns-are-refetched-by-posting
+  (let [ret  (fn [id posting status terminal]
+               {:kind  "operation" :operation-kind    "return" :source-id id :status status :terminal terminal :complete terminal
+                :lines []          :related-operation (str "fbs-posting:" posting) :refetch-key posting})
+        plan (record {:position {:refetch-ids "[\"P-1\",\"P-2\"]"}}
+                     {:domain       "returns"
+                      :observations [(ret "7" "P-1" "ReceivedBySeller" true) (ret "8" "P-2" "ReceivedBySeller" true)
+                                     (ret "9" "P-2" "MovingToSeller" false) (ret "10" "P-3" "MovingToSeller" false)]})]
+    (is (= "[\"P-2\",\"P-3\"]" (:refetch-ids (event plan ::sync/source-batch-recorded)))
+        "P-1 reached a terminal state; P-2 still has a return on the way")))
+
+
 ;; Slice 6 · Finish the sync run
 
 
@@ -447,6 +513,20 @@
     (is (= ["returns" "retries exhausted" "{\"products\":\"2026-12-10T06:00:00Z\"}" 1 "2026-12-11T06:01:00Z"]
            ((juxt :failed-domain :reason :saved-positions :consecutive-failures :next-attempt-at) data)))
     (is (nil? (event plan ::sync/source-domain-traversed)) "returns coverage does not move")))
+
+
+(deftest unexpected-provider-response
+  (let [finished (connections/encode-domains (take-while #(not= "returns" %) all-domains))
+        request  (sync/fetch-request (item (run {:finished-domains finished})
+                                           {"returns" {:run-id r :cursor "{:last-id \"7\"}" :finished false}}
+                                           [{:status 404}]))
+        input    (:input request)]
+    (is (= [::sync/complete-marketplace-sync {:run-id              r  :outcome "failed" :failed-domain "returns" :reason "unexpected provider response"
+                                              :unavailable-domains []}]
+           [(:id request) input])
+        "no batch is recorded, so the returns position does not move")
+    (let [data (event (complete {} (dissoc input :run-id)) ::sync/marketplace-sync-failed)]
+      (is (= [1 "2026-12-11T06:01:00Z"] ((juxt :consecutive-failures :next-attempt-at) data)) "counts toward the failure backoff"))))
 
 
 (deftest credentials-revoked-mid-run
@@ -645,4 +725,7 @@
                              (str c ":9001"))]
             (is (= [3 "Tee"] ((juxt :revision :name) product)) "aliases and attributes each added a revision")
             (is (some #(= {:type "barcode" :value "4600000000017"} (select-keys % [:type :value]))
-                      (json/read-json (:identifiers product) :key-fn keyword)))))))))
+                      (json/read-json (:identifiers product) :key-fn keyword)))))
+
+        (testing "history shows the connector principal as Ozon · account"
+          (is (= "Ozon · 123" (:actor-label (first (actors/enrich ctx [{:actor (str "connector:" c)}]))))))))))

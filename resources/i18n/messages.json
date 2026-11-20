@@ -808,6 +808,7 @@
     "retries exhausted": "retries exhausted",
     "repeated cursor": "repeated cursor",
     "incomplete page": "incomplete page",
+    "unexpected provider response": "unexpected provider response",
     "Connection paused": "Connection paused",
     "Throttled": "Throttled"
   },
@@ -1624,6 +1625,7 @@
     "retries exhausted": "повторы исчерпаны",
     "repeated cursor": "повторный курсор",
     "incomplete page": "неполная страница",
+    "unexpected provider response": "неожиданный ответ провайдера",
     "Connection paused": "Подключение приостановлено",
     "Throttled": "Ozon просит подождать"
   }
