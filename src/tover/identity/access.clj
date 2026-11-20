@@ -13,15 +13,15 @@
   - :workspace      :authenticated plus a selected workspace that is a current active membership
   - :manager        :workspace with role owner or admin"
   (:require
-   [bel.validation :as validation]
-   [com.brunobonacci.mulog :as mu]
-   [ring.util.codec :as codec]
-   [tover.identity.provider :as provider]
-   [tover.identity.session :as session]
-   [tover.shared.i18n :as i18n])
+    [bel.validation :as validation]
+    [com.brunobonacci.mulog :as mu]
+    [ring.util.codec :as codec]
+    [tover.identity.provider :as provider]
+    [tover.identity.session :as session]
+    [tover.shared.i18n :as i18n])
   (:import
-   [clojure.lang ExceptionInfo]
-   [java.time Instant]))
+    [clojure.lang ExceptionInfo]
+    [java.time Instant]))
 
 
 (def Policy
@@ -104,16 +104,16 @@
   {:malli/schema [:=> [:cat [:map [:session-store :any] [:provider {:optional true} :any]] [:maybe :string]] [:maybe Identity]]}
   [{:keys [session-store provider]} key]
   (let [result (session/transact!
-                session-store key
-                (fn [row directory]
-                  (if-not (and (session/live? row) (:tokens row) (:user-id row))
-                    [row nil]
-                    (let [{:keys [tokens error]} (if provider (refreshed provider (:tokens row)) {:tokens (:tokens row)})]
-                      (if error
-                        [nil {:error error}]
-                        (let [row   (assoc row :tokens tokens)
-                              facts (directory (:user-id row))]
-                          [row (when (session/valid? row (:boundary facts)) (identity-of key row facts))]))))))]
+                 session-store key
+                 (fn [row directory]
+                   (if-not (and (session/live? row) (:tokens row) (:user-id row))
+                     [row nil]
+                     (let [{:keys [tokens error]} (if provider (refreshed provider (:tokens row)) {:tokens (:tokens row)})]
+                       (if error
+                         [nil {:error error}]
+                         (let [row   (assoc row :tokens tokens)
+                               facts (directory (:user-id row))]
+                           [row (when (session/valid? row (:boundary facts)) (identity-of key row facts))]))))))]
     (if-let [error (:error result)]
       (throw error)
       result)))

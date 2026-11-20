@@ -2,12 +2,12 @@
   "The document for signed-out and account-setup pages (`body.identity-document > main.identity`) and the
   header language switch. Pages declare `:parent ::auth-shell` and render `page-content`."
   (:require
-   [bel.core :refer [defaction defpage]]
-   [bel.handler :as html]
-   [tover.identity.access :as access]
-   [tover.shared.i18n :as i18n]
-   [tover.shared.schema :as schema]
-   [tover.shared.ui.core :as ui]))
+    [bel.core :refer [defaction defpage]]
+    [bel.handler :as html]
+    [tover.identity.access :as access]
+    [tover.shared.i18n :as i18n]
+    [tover.shared.schema :as schema]
+    [tover.shared.ui.core :as ui]))
 
 
 (defn document
@@ -45,8 +45,8 @@
   {:status  200
    :headers {"content-type" "text/html; charset=utf-8"}
    :body    (html/render-html
-             (document {:request request :title (str title " · Tover")}
-                       (page-content request title content)))})
+              (document {:request request :title (str title " · Tover")}
+                        (page-content request title content)))})
 
 
 (defpage auth-shell

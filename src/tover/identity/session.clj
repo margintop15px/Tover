@@ -8,25 +8,25 @@
   password state) and is echoed by unsafe requests. A row is live while unexpired and not ended, and valid
   while live and not covered by the user's reset boundary."
   (:require
-   [bel-postgres.jdbc :as db]
-   [bel.core :refer [defmodel]]
-   [bel.runtime :as runtime]
-   [bel.validation :as validation]
-   [buddy.core.codecs :as codecs]
-   [buddy.core.crypto :as crypto]
-   [buddy.core.nonce :as nonce]
-   [charred.api :as json]
-   [clojure.edn :as edn]
-   [clojure.string :as str]
-   [com.brunobonacci.mulog :as mu]
-   [next.jdbc :as jdbc]
-   [next.jdbc.date-time :as date-time]
-   [next.jdbc.result-set :as result-set]
-   [ring.middleware.session.store :as ring]
-   [tover.accounts.profile.model :as profile])
+    [bel-postgres.jdbc :as db]
+    [bel.core :refer [defmodel]]
+    [bel.runtime :as runtime]
+    [bel.validation :as validation]
+    [buddy.core.codecs :as codecs]
+    [buddy.core.crypto :as crypto]
+    [buddy.core.nonce :as nonce]
+    [charred.api :as json]
+    [clojure.edn :as edn]
+    [clojure.string :as str]
+    [com.brunobonacci.mulog :as mu]
+    [next.jdbc :as jdbc]
+    [next.jdbc.date-time :as date-time]
+    [next.jdbc.result-set :as result-set]
+    [ring.middleware.session.store :as ring]
+    [tover.accounts.profile.model :as profile])
   (:import
-   [java.time Instant]
-   [java.util UUID]))
+    [java.time Instant]
+    [java.util UUID]))
 
 
 (date-time/read-as-instant)
@@ -101,7 +101,7 @@
 (defn new-row
   {:malli/schema [:=> [:cat :string] :map]} [id]
   (let [now (Instant/now)]
-    {:id         id  :session-id (UUID/randomUUID) :data {} :version (UUID/randomUUID)
+    {:id         id  :session-id (UUID/randomUUID)              :data {} :version (UUID/randomUUID)
      :created-at now :expires-at (.plusSeconds now ttl-seconds)}))
 
 
@@ -228,7 +228,7 @@
   [key input]
   (let [[iv encrypted] (str/split input #"\." 2)]
     (codecs/bytes->str
-     (crypto/decrypt (codecs/b64->bytes encrypted) key (codecs/b64->bytes iv) {:alg :aes256-gcm}))))
+      (crypto/decrypt (codecs/b64->bytes encrypted) key (codecs/b64->bytes iv) {:alg :aes256-gcm}))))
 
 
 (def ^:private directory-query
@@ -252,8 +252,8 @@
   (let [row (jdbc/execute-one! tx [directory-query user-id] {:builder-fn result-set/as-unqualified-lower-maps})]
     {:profile     (when row {:display-name (:display_name row) :language (:language row)})
      :boundary    (effective-boundary
-                   (when (:valid_after row) {:valid-after (:valid_after row) :kept-session-id (:kept_session_id row)})
-                   (when (:requested_at row) {:requested-at (:requested_at row) :session-id (:session_id row)}))
+                    (when (:valid_after row) {:valid-after (:valid_after row) :kept-session-id (:kept_session_id row)})
+                    (when (:requested_at row) {:requested-at (:requested_at row) :session-id (:session_id row)}))
      :memberships (mapv (fn [{:keys [workspace-id name role created-at]}]
                           {:workspace-id (parse-uuid workspace-id) :name name :role (keyword role) :created-at created-at})
                         (json/read-json (:memberships row) :key-fn keyword))}))
@@ -267,44 +267,44 @@
     (when-not (= 32 (alength key))
       (throw (ex-info "Session encryption key must contain 32 bytes" {:type :configuration})))
     (->Store
-     (fn [id f]
-       (mu/trace ::transaction {:pairs []}
-         (with-open [connection (jdbc/get-connection datasource)]
-           (jdbc/with-transaction [tx connection]
-             (let [stored          (jdbc/execute-one!
-                                    tx ["select session_id,data,tokens,user_id,workspace_id,version,created_at,expires_at,ended_at
+      (fn [id f]
+        (mu/trace ::transaction {:pairs []}
+          (with-open [connection (jdbc/get-connection datasource)]
+            (jdbc/with-transaction [tx connection]
+              (let [stored          (jdbc/execute-one!
+                                      tx ["select session_id,data,tokens,user_id,workspace_id,version,created_at,expires_at,ended_at
                                            from app_private.sessions where id=? for update" id]
-                                    {:builder-fn result-set/as-unqualified-lower-maps})
-                   row             (when stored
-                                     {:id         id                   :session-id   (:session_id stored)
-                                      :data       (edn/read-string (:data stored))
-                                      :tokens     (some->> (:tokens stored) (decrypt key) edn/read-string)
-                                      :user-id    (:user_id stored)    :workspace-id (:workspace_id stored)
-                                      :version    (:version stored)    :created-at   (:created_at stored)
-                                      :expires-at (:expires_at stored) :ended-at     (:ended_at stored)})
-                   [updated value] (f row #(read-directory tx %))]
-               (cond
-                 (and updated (not= row updated))
-                 (mu/trace ::persist {:pairs [:operation :write]}
-                   (jdbc/execute-one!
-                    tx ["insert into app_private.sessions(id,session_id,data,tokens,user_id,workspace_id,version,created_at,expires_at,ended_at)
+                                      {:builder-fn result-set/as-unqualified-lower-maps})
+                    row             (when stored
+                                      {:id         id :session-id                  (:session_id stored)
+                                       :data       (edn/read-string (:data stored))
+                                       :tokens     (some->> (:tokens stored) (decrypt key) edn/read-string)
+                                       :user-id    (:user_id stored) :workspace-id (:workspace_id stored)
+                                       :version    (:version stored) :created-at   (:created_at stored)
+                                       :expires-at (:expires_at stored) :ended-at  (:ended_at stored)})
+                    [updated value] (f row #(read-directory tx %))]
+                (cond
+                  (and updated (not= row updated))
+                  (mu/trace ::persist {:pairs [:operation :write]}
+                    (jdbc/execute-one!
+                      tx ["insert into app_private.sessions(id,session_id,data,tokens,user_id,workspace_id,version,created_at,expires_at,ended_at)
                            values(?,?,?,?,?,?,?,?,?,?)
                            on conflict(id) do update set session_id=excluded.session_id,data=excluded.data,tokens=excluded.tokens,
                              user_id=excluded.user_id,workspace_id=excluded.workspace_id,version=excluded.version,
                              expires_at=excluded.expires_at,ended_at=excluded.ended_at,updated_at=now()"
-                        id (:session-id updated) (pr-str (:data updated))
-                        (when (:tokens updated) (encrypt key (pr-str (:tokens updated))))
-                        (:user-id updated) (:workspace-id updated) (:version updated)
-                        (:created-at updated) (:expires-at updated) (:ended-at updated)]))
+                          id (:session-id updated) (pr-str (:data updated))
+                          (when (:tokens updated) (encrypt key (pr-str (:tokens updated))))
+                          (:user-id updated) (:workspace-id updated) (:version updated)
+                          (:created-at updated) (:expires-at updated) (:ended-at updated)]))
 
-                 (and row (nil? updated))
-                 (mu/trace ::persist {:pairs [:operation :delete]}
-                   (jdbc/execute-one! tx ["delete from app_private.sessions where id=?" id])))
-               value)))))
-     (fn [session-id]
-       (with-open [connection (jdbc/get-connection datasource)]
-         (:id (jdbc/execute-one! connection ["select id from app_private.sessions where session_id=?" session-id]
-                                 {:builder-fn result-set/as-unqualified-lower-maps})))))))
+                  (and row (nil? updated))
+                  (mu/trace ::persist {:pairs [:operation :delete]}
+                    (jdbc/execute-one! tx ["delete from app_private.sessions where id=?" id])))
+                value)))))
+      (fn [session-id]
+        (with-open [connection (jdbc/get-connection datasource)]
+          (:id (jdbc/execute-one! connection ["select id from app_private.sessions where session_id=?" session-id]
+                                  {:builder-fn result-set/as-unqualified-lower-maps})))))))
 
 
 ;; Bel authority
@@ -338,23 +338,23 @@
   [tx context]
   (check-context! context)
   (let [{:keys [actor user-id scope auth-session-id session-id]} context
-        row                                                      (db/execute-one! tx {:select [:user_id :session_id :data :created_at :expires_at :ended_at]
-                                                                                      :from   [:app_private.sessions] :where [:= :id auth-session-id] :for :share})
-        row                                                      (when row {:user-id    (:user_id row)    :session-id (:session_id row)
-                                                                            :data       (edn/read-string {:readers {}} (:data row))
-                                                                            :created-at (:created_at row) :expires-at (:expires_at row) :ended-at (:ended_at row)})]
+        row (db/execute-one! tx {:select [:user_id :session_id :data :created_at :expires_at :ended_at]
+                                 :from   [:app_private.sessions] :where [:= :id auth-session-id] :for :share})
+        row (when row {:user-id    (:user_id row) :session-id    (:session_id row)
+                       :data       (edn/read-string {:readers {}} (:data row))
+                       :created-at (:created_at row) :expires-at (:expires_at row) :ended-at (:ended_at row)})]
     (when-not (and (= user-id (:user-id row)) (= session-id (:session-id row)) (live? row))
       (ended!))
     (db/execute-one! tx {:select [[[:set_config "request.jwt.claim.sub" [:cast actor :text] true]]
                                   [[:set_config "tover.session_key" auth-session-id true]]]})
     (let [boundary (db/execute-one! tx {:select [:valid_after :kept_session_id] :from [:app_private.session_boundaries]
                                         :where  [:= :user_id user-id]           :for  :share})
-          attempt  (db/execute-one! tx {:select   [:requested_at :session_id] :from  [:app_private.password_resets]
+          attempt  (db/execute-one! tx {:select   [:requested_at :session_id] :from [:app_private.password_resets]
                                         :where    [:and [:= :user_id user-id] [:= :status "requested"]]
-                                        :order-by [[:requested_at :desc]]     :limit 1})]
+                                        :order-by [[:requested_at :desc]] :limit    1})]
       (when-not (valid? row (effective-boundary
-                             (when boundary {:valid-after (:valid_after boundary) :kept-session-id (:kept_session_id boundary)})
-                             (when attempt {:requested-at (:requested_at attempt) :session-id (:session_id attempt)})))
+                              (when boundary {:valid-after (:valid_after boundary) :kept-session-id (:kept_session_id boundary)})
+                              (when attempt {:requested-at (:requested_at attempt) :session-id (:session_id attempt)})))
         (ended!)))
     (let [principal {:user-id            user-id
                      :session-id         session-id

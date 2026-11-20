@@ -2,17 +2,17 @@
   "Profile setup: the display name, saved through the profile commands. The account language is set from the
   header switch."
   (:require
-   [bel.core :as bel :refer [defaction defpage]]
-   [bel.runtime :as runtime]
-   [clojure.string :as str]
-   [com.brunobonacci.mulog :as mu]
-   [tover.accounts.profile.model :as model]
-   [tover.identity.access :as access]
-   [tover.shared.i18n :as i18n]
-   [tover.shared.schema :as schema]
-   [tover.shared.ui.forms :refer [csrf-field]])
+    [bel.core :as bel :refer [defaction defpage]]
+    [bel.runtime :as runtime]
+    [clojure.string :as str]
+    [com.brunobonacci.mulog :as mu]
+    [tover.accounts.profile.model :as model]
+    [tover.identity.access :as access]
+    [tover.shared.i18n :as i18n]
+    [tover.shared.schema :as schema]
+    [tover.shared.ui.forms :refer [csrf-field]])
   (:import
-   [clojure.lang ExceptionInfo]))
+    [clojure.lang ExceptionInfo]))
 
 
 (def FormProps
