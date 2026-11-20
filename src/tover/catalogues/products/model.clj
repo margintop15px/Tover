@@ -93,10 +93,19 @@
 
 
 (defmethod runtime/coeffect ::usage
-  [_ _ _]
-  ;; ponytail: faked; no stock item or shared pending entry references a Bel product until 15/32a are built.
-  ;; Returns usage by product id; a missing id is unused.
-  {})
+  [_ context {:keys [product-ids]}]
+  ;; Usage by product id: active stock items, stock items ever registered, and a shared pending entry naming the
+  ;; product directly or through one of its stock items. A missing id is unused.
+  (let [items   (records/all-records context :tover.inventory.stock-items.model/stock-items :stock-item-id)
+        owner   (into {} (map (juxt :stock-item-id :product-id)) items)
+        pending (runtime/coeffect :tover.inventory.entries.model/pending context {})
+        named   (fn [pid] (some (fn [entry] (when (some #(or (= pid (:product-id %)) (= pid (owner (:stock-item-id %)))) (:lines entry))
+                                              (:entry-id entry)))
+                                pending))
+        by-prod (group-by :product-id items)]
+    (into {} (for [pid product-ids]
+               [pid {:active-stock-items (count (filter #(= "active" (:status %)) (by-prod pid)))
+                     :stock-items-ever   (count (by-prod pid)) :pending-entry (named pid)}]))))
 
 
 (defn- fail!

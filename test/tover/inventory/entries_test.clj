@@ -210,8 +210,13 @@
             (save "s1" first-save)))
         (testing "one entry"
           (is (= 1 (count (:entries (runtime/read-model ctx ::entries/pending-entries {}))))))
-        (save "s2" {:entry-id "e2" :kind "opening" :lines [{:line-id "a" :warehouse-id "old" :product-name "Mug"}]})
         (execute! ctx :tover.catalogues.warehouses.model/archive-warehouse "a1" {:warehouse-id "old" :revision 1})
+        (save "s2" {:entry-id "e2" :kind "opening" :lines [{:line-id "a" :product-name "Mug"}]})
+        (testing "a shared pending entry blocks archiving the warehouse it names"
+          (save "s2b" {:entry-id "e3" :kind "opening" :lines [{:line-id "z" :warehouse-id "main"}]})
+          (is (= :pending-reference
+                 (:type (rejection #(execute! ctx :tover.catalogues.warehouses.model/archive-warehouse "a2" {:warehouse-id "main" :revision 1})))))
+          (execute! ctx ::entries/discard-inventory-draft "d1" {:workspace-id workspace :entry-id "e3" :revision 1}))
         (let [{[e1 e2] :entries} (runtime/read-model ctx ::entries/pending-entries {})]
           (testing "everyone sees shared work with its saved values"
             (is (= [{:line-id   "l1"     :product-name "T-shirt" :barcodes ["4600000000017"] :warehouse-id "main" :quantity 5
@@ -221,9 +226,9 @@
           (testing "findings cover every pending entry"
             (is (contains? (set (map (juxt :line-id :code) (:findings (runtime/read-model ctx ::entries/pending-entries {}))))
                            ["a" :new-reference])))
-          (testing "incomplete entry and archived reference show blockers"
+          (testing "incomplete entry shows blockers"
             (is (= #{[nil :occurred-at :occurred-at-missing] ["a" :quantity :quantity-missing]
-                     ["a" :warehouse-id :archived-reference]}
+                     ["a" :warehouse-id :warehouse-missing]}
                    (set (map (juxt :line-id :field :code) (:blockers e2)))))))
         (testing "stale save through the store keeps the attempt out"
           (is (= :stale-draft (:type (rejection #(save "s3" (assoc opening :expected-revision 7)))))))

@@ -20,7 +20,8 @@
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
   (bel/build-registry! ['tover.catalogues.warehouses.model 'tover.catalogues.suppliers.model 'tover.catalogues.categories.model
-                        'tover.catalogues.stores.model 'tover.catalogues.products.model])
+                        'tover.catalogues.stores.model 'tover.catalogues.products.model 'tover.inventory.stock-items.model 'tover.inventory.entries.model
+                        'tover.inventory.acceptance.model 'tover.workspaces.currency.model])
   (f))
 
 

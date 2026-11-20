@@ -4,7 +4,8 @@
   (:require
     [bel.core :refer [defcommand defevent defmodel defreadmodel]]
     [bel.runtime :as runtime]
-    [tover.catalogues.records :as records :refer [Id Status Text]]))
+    [tover.catalogues.records :as records :refer [Id Status Text]]
+    [tover.inventory.valuation :as valuation]))
 
 
 (def Purpose
@@ -61,10 +62,13 @@
 
 
 (defmethod runtime/coeffect ::usage
-  [_ _ _]
-  ;; ponytail: faked; no accepted balance or shared pending entry names a Bel warehouse until inventory runs on them.
-  ;; Returns `{:stock? bool :pending-entry id}` for the warehouse; nothing blocks archiving yet.
-  {:stock? false :pending-entry nil})
+  [_ context {:keys [warehouse-id]}]
+  ;; `{:stock? bool :pending-entry id}`: any non-zero accepted balance here, and a shared pending entry naming it.
+  (let [{:keys [records lines]} (runtime/coeffect :tover.inventory.acceptance.model/history context {})
+        balances                (:balances (valuation/replay records lines))
+        pending                 (runtime/coeffect :tover.inventory.entries.model/pending context {})]
+    {:stock?        (boolean (some (fn [[[_ w] b]] (and (= w warehouse-id) (not (zero? (:quantity b))))) balances))
+     :pending-entry (some (fn [entry] (when (some #(= warehouse-id (:warehouse-id %)) (:lines entry)) (:entry-id entry))) pending)}))
 
 
 (def ^:private all

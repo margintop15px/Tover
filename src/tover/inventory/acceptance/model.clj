@@ -91,10 +91,11 @@
 
 (defmethod runtime/coeffect ::history
   [_ context _]
-  ;; Every accepted record revision with its acceptance time, and every accepted line, for `valuation/replay`.
+  ;; Every accepted record revision with its acceptance time and actor, and every accepted line, for `valuation/replay`.
   ;; ponytail: full scan per read; add a per-pair index when history grows large.
-  (let [recorded (into {} (map (juxt :acceptance-id :recorded-at)) (records/all-records context ::acceptances :acceptance-id))]
-    {:records (mapv #(assoc % :recorded-at (get recorded (:acceptance-id %))) (records/all-records context ::records :record-revision-id))
+  (let [accepted (into {} (map (juxt :acceptance-id #(select-keys % [:recorded-at :actor])))
+                       (records/all-records context ::acceptances :acceptance-id))]
+    {:records (mapv #(merge % (get accepted (:acceptance-id %))) (records/all-records context ::records :record-revision-id))
      :lines   (records/all-records context ::record-lines :record-line-id)}))
 
 
