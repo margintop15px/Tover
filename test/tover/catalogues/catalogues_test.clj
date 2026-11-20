@@ -1,6 +1,5 @@
 (ns tover.catalogues.catalogues-test
   (:require
-    [bel.core :as bel]
     [clojure.java.io :as io]
     [clojure.test :refer [deftest is]]
     [tover.catalogues.query :as query]
@@ -316,8 +315,7 @@
 
 (deftest catalogue-endpoints-require-current-workspace-membership
   (doseq [declaration [#'web/index #'web/page #'web/table #'web/window #'web/choices #'web/save]]
-    (is (= :workspace (get-in (meta declaration) [:bel/route-data :tover/access]))))
-  (is (some? (bel/get-action :tover.catalogues.web/save))))
+    (is (= :workspace (get-in (meta declaration) [:bel/route-data :tover/access])))))
 
 
 (deftest stock-location-corrections-display-the-destination-after-a-warehouse-rename

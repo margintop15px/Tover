@@ -330,7 +330,9 @@
                [:circle {:cx 12 :cy 12 :r 3}]]
      :submit [:path {:d "M12 21V3 m-7 7 7-7 7 7"}]
      :refresh [:path {:d "M20 10a8 8 0 1 0-2 8 M20 4v6h-6"}]
-     :close [:path {:d "m6 6 12 12 M6 18 18 6"}])])
+     :close [:path {:d "m6 6 12 12 M6 18 18 6"}]
+     :active [:g [:rect {:x 3 :y 4 :width 18 :height 16 :rx 2}] [:path {:d "M3 10h18 M9 4v16"}]]
+     :archived [:path {:d "M3 4h18v4H3z M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8 M10 12h4"}])])
 
 
 (defn change-toolbar
@@ -467,7 +469,7 @@
                                         (fn [_error] nil)))))
     :data-on:inventory-resnapshot        (->expr (set! $inventoryChanged (js* "String(Date.now())")))
     :data-on:inventory-catalogue-options
-    (->expr (.catch (@view :tover.catalogues.web/choices
+    (->expr (.catch (@view :tover.stock.web/catalogue-choices
                            {:kind evt.detail.target.lookupKind :requestId evt.detail.requestId :text evt.detail.text}
                            {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0})
                     (fn [_error]

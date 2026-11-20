@@ -128,7 +128,7 @@
    [:=> [:cat HandlerOptions] schema/Handler]}
   [options]
   ;; Isolated milestones enter live discovery only with their complete cutover.
-  (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename]})
+  (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename 'tover.catalogues.web]})
 
   (let [{:keys [realtime session-store origin development?]} (validation/check! HandlerOptions options)
         context (select-keys options [:repo :realtime :provider :session-store :origin :bel/system])

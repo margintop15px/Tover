@@ -4,6 +4,8 @@
     [bel.realtime :as realtime]
     [charred.api :as charred]
     [clojure.string :as str]
+    [tover.catalogues.query :as catalogue-query]
+    [tover.catalogues.schema :as catalogue-schema]
     [tover.catalogues.store :as catalogue]
     [tover.inventory.actors :as actors]
     [tover.inventory.completion :as completion]
@@ -390,6 +392,18 @@
   [{:keys [context input]}]
   (let [options (reference-choices context (:text input))]
     {:type :signals :data {:_referenceOptionsJson (charred/write-json-str {:requestId (:requestId input) :status "ok" :options options})}}))
+
+
+(defview catalogue-choices
+  "Catalogue reference choices for stock and operation cells (moved from the retired catalogue grid)."
+  {:route-data {:tover/access :workspace}
+   :schema     [:map [:kind catalogue-schema/Kind] [:text [:string {:max 500}]] [:requestId :string]]
+   :query      (fn [context input] {:context context :input input})}
+  [{:keys [context] {:keys [kind text requestId]} :input}]
+  {:type :signals :data {:_catalogueChoicesJson (charred/write-json-str
+                                                  {:requestId requestId :status "ok"
+                                                   :options   (inventory-store/read-snapshot (:repo context) context
+                                                                                             (fn [conn _] (catalogue-query/choices conn context (keyword kind) text)))})}})
 
 
 (defaction update-filters

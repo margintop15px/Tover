@@ -293,9 +293,9 @@
                              user_id=excluded.user_id,workspace_id=excluded.workspace_id,version=excluded.version,
                              expires_at=excluded.expires_at,ended_at=excluded.ended_at,updated_at=now()"
                         id (:session-id updated) (pr-str (:data updated))
-                        (when (:tokens updated) (encrypt key (pr-str (:tokens updated)))
-                              (:user-id updated) (:workspace-id updated) (:version updated)
-                              (:created-at updated) (:expires-at updated) (:ended-at updated))]))
+                        (when (:tokens updated) (encrypt key (pr-str (:tokens updated))))
+                        (:user-id updated) (:workspace-id updated) (:version updated)
+                        (:created-at updated) (:expires-at updated) (:ended-at updated)]))
 
                  (and row (nil? updated))
                  (mu/trace ::persist {:pairs [:operation :delete]}

@@ -292,7 +292,7 @@ The one-store rule holds for every board command under this table. The automatic
 ### 12.2 Identity model
 
 - Product: catalogue card. Name unique per workspace, trimmed and case-insensitive, archived products included.
-- Stock item: child of a product; variant label unique within the product; owns unit (locked by first quantity record), article (descriptive) and barcodes. A barcode belongs to at most one stock item per workspace, archived items included, so a barcode names one stock item. Condition is Regular or Defective (§12.5).
+- Stock item: child of a product; variant label unique within the product; owns unit (locked by first quantity record), article and barcodes. An article or barcode belongs to at most one product per workspace, archived included; items of that product may share it, so a barcode names a product and the member picks the item. Condition is Regular or Defective (§12.5).
 - Every quantity-bearing line and every marketplace mapping targets a stock item id. The product is reached through it.
 - External listing `(connection, provider product id)` → member-confirmed mapping → stock item. Barcode, article and name only rank candidates.
 

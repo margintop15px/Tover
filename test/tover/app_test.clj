@@ -57,7 +57,8 @@
                 request {:request-method :post :uri "/missing"
                          :headers        {"host"             "localhost:3031" "origin" "http://localhost:3031"
                                           "datastar-request" "true"}}]
-            (is (some? (bel/get-action :tover.catalogues.web/save)))
+            (is (nil? (bel/get-action :tover.catalogues.web/save)))
+            (is (some? (bel/get-action :tover.catalogues.grid/save)))
             (is (nil? (bel/get-action :tover.catalogues.rename.web/save)))
             (is (nil? (bel/get-view :tover.catalogues.rename.web/row)))
             (is (some? (bel/get-action :tover.workspaces.create.web/create)))
@@ -483,18 +484,21 @@
             :tover.accounts.profile.web/profile           "/account/profile"
             :tover.stock.web/page "/"
             :tover.operations.web/page                    "/operations"
-            :tover.catalogues.web/index                   "/catalogues"
-            :tover.catalogues.web/page                    "/catalogues/:kind"}
+            :tover.catalogues.grid/catalogue              "/catalogues"
+            :tover.catalogues.grid/warehouse-catalogue    "/catalogues/warehouses"
+            :tover.catalogues.grid/store-catalogue        "/catalogues/stores"}
            (select-keys routes [:tover.identity.sign-in.web/login :tover.identity.signup.web/signup
                                 :tover.identity.resend.web/recover-signup :tover.identity.confirm.web/confirm
                                 :tover.identity.recovery.web/recover :tover.identity.recovery.web/password
                                 :tover.identity.sign-out.web/confirm-sign-out
                                 :tover.workspaces.select.web/page :tover.accounts.profile.web/profile
                                 :tover.stock.web/page :tover.operations.web/page
-                                :tover.catalogues.web/index :tover.catalogues.web/page])))
+                                :tover.catalogues.grid/catalogue :tover.catalogues.grid/warehouse-catalogue
+                                :tover.catalogues.grid/store-catalogue])))
     (is (not-any? #(re-find #"^tover\.(auth|teams)\b|^tover\.workspaces\.web$" (namespace %)) (keys routes)))
     (doseq [id [:tover.stock.web/page :tover.operations.web/page
-                :tover.catalogues.web/index :tover.catalogues.web/page]]
+                :tover.catalogues.grid/catalogue :tover.catalogues.grid/supplier-catalogue
+                :tover.catalogues.grid/category-catalogue]]
       (is (= :tover.shared.web.core/shell (:bel/parent (bel/get-page id)))))
     (is (every? (fn [id]
                   (not (contains? #{"tover.actions" "tover.views" "tover.pages"
@@ -604,7 +608,7 @@
     (fn [{:keys [browser] :as services}]
       (let [{:keys [request!]} browser]
         (support/sign-in! services browser "unnamed@example.test")
-        (doseq [[uri query location] [["/catalogues/x" {} "/account/profile?return-to=%2Fcatalogues%2Fx"]
+        (doseq [[uri query location] [["/catalogues" {"archived" "true"} "/account/profile?return-to=%2Fcatalogues%3Farchived%3Dtrue"]
                                       ["/workspace" {"a" "1"} "/account/profile?return-to=%2Fworkspace%3Fa%3D1"]]]
           (let [response (request! :get uri query)]
             (is (= 303 (:status response)) uri)
