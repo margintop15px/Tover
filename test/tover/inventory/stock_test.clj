@@ -215,3 +215,18 @@
         (testing "a product with an active stock item cannot be archived; one that had items cannot be deleted"
           (is (= :active-stock-items (:type (rejection #(execute! ctx ::products/archive-product "x3" {:product-id "tee" :revision 1})))))
           (is (= :had-stock-item (:type (rejection #(execute! ctx ::products/delete-product "x4" {:product-id "tee" :revision 1}))))))))))
+
+
+;; 14 · Read opening-stock facts and catalogue choices
+
+
+(deftest cells-know-their-effective-opening
+  (let [row (item (stock/table (facts {:history (history (record "a" 1 "opening" 1 [["tee-m" "main" 0 nil]]))}) true) "tee-m")]
+    (is (true? (get-in row [:cells "main" :opened?])) "a zero opening still counts")
+    (is (false? (get-in row [:cells "shop" :opened?])))))
+
+
+(deftest archived-warehouse-is-marked
+  (let [archived (assoc-in catalogue [:warehouses 1 :status] "archived")
+        table    (stock/table (facts {:catalogue archived :history (history (record "a" 1 "opening" 1 [["tee-m" "shop" 2 nil]]))}) true)]
+    (is (= [["main" false] ["shop" true]] (map (juxt :id :archived?) (:warehouses table))))))

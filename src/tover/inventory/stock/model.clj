@@ -10,9 +10,10 @@
 
 
 (defn- cell
-  {:malli/schema [:=> [:cat [:maybe valuation/Balance] :boolean] :map]}
-  [balance pending?]
-  {:quantity (:quantity balance 0) :value (if balance (valuation/value balance) 0M) :valued? (:valued? balance true) :pending? pending?})
+  {:malli/schema [:=> [:cat [:maybe valuation/Balance] :boolean :boolean] :map]}
+  [balance pending? opened?]
+  {:quantity (:quantity balance 0) :value (if balance (valuation/value balance) 0M) :valued? (:valued? balance true) :pending? pending?
+   :opened?  opened?})
 
 
 (defn- total
@@ -31,6 +32,9 @@
   [{{:keys [products stock-items barcodes warehouses]} :catalogue :keys [history pending currency]} hide-empty?]
   (let [balances (:balances (valuation/replay (:records history) (:lines history)))
         locked   (set (map :stock-item-id (:lines history)))
+        ;; Item and warehouse pairs with an effective opening: chapter 14 allows one, later counts are corrections.
+        openings (set (map :record-revision-id (filter #(= "opening" (:kind %)) (valuation/business-order (:records history)))))
+        opened   (set (for [l (:lines history) :when (openings (:record-revision-id l))] [(:stock-item-id l) (:warehouse-id l)]))
         touched  (set (for [entry pending line (:lines entry)] [(:stock-item-id line) (:warehouse-id line)]))
         codes    (group-by :stock-item-id barcodes)
         columns  (->> warehouses
@@ -39,12 +43,12 @@
         by-prod  (group-by :product-id stock-items)
         row      (fn [{:keys [stock-item-id] :as i}]
                    (let [cells (into {} (for [{w :warehouse-id} columns]
-                                          [w (cell (balances [stock-item-id w]) (contains? touched [stock-item-id w]))]))]
+                                          [w (cell (balances [stock-item-id w]) (contains? touched [stock-item-id w]) (contains? opened [stock-item-id w]))]))]
                      (merge (select-keys i [:stock-item-id :variant-label :article :unit])
                             {:barcodes  (mapv :barcode (codes stock-item-id)) :unit-locked? (contains? locked stock-item-id)
                              :archived? (= "archived" (:status i))            :cells        cells :total (total (vals cells))})))]
     {:currency   currency
-     :warehouses (mapv #(hash-map :id (:warehouse-id %) :name (:name %)) columns)
+     :warehouses (mapv #(hash-map :id (:warehouse-id %) :name (:name %) :archived? (= "archived" (:status %))) columns)
      :products   (vec (for [p     (sort-by (comp records/name-key :name) (remove #(= "deleted" (:status %)) products))
                             :let  [items (mapv row (sort-by (comp str :variant-label) (by-prod (:product-id p))))]
                             :when (or (seq items) (not hide-empty?))]

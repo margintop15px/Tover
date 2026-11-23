@@ -122,6 +122,7 @@ class StockWorkbench extends HTMLElement {
   }
   set suggestResponse(response) {
     if (!this.list || !response || response.requestId !== this.suggestRequest || !this.fresh(response)) return;
+    if (response.failed) { this.suggestFailed(); return; }
     const options = [...response.options];
     if (!response.exact && response.text.trim()) options.push({ kind: 'create', label: response.text.trim() });
     this.options = options; this.active = 0;
@@ -135,6 +136,16 @@ class StockWorkbench extends HTMLElement {
     this.list.hidden = !options.length;
     this.search.setAttribute('aria-expanded', String(!this.list.hidden));
     this.highlight();
+  }
+  // A failed lookup is not "no match": offer Retry and no Create.
+  suggestFailed() {
+    if (!this.list) return;
+    this.options = [];
+    const item = element('li', { className: 'stock-option stock-option-failed' });
+    this.retryNotice(item, () => this.suggest());
+    this.list.replaceChildren(item);
+    this.list.hidden = false;
+    this.search.setAttribute('aria-expanded', 'true');
   }
   highlight() {
     [...this.list.children].forEach((node, index) => node.setAttribute('aria-selected', String(index === this.active)));

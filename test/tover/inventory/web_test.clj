@@ -152,3 +152,45 @@
               :then  {:type :view :id ::web/saved :input {:commandId "c3"}}
               :catch {:type :view :id ::web/failed :input {:commandId "c3"}}}
              (web/accept {} {:workspaceId workspace :selection selection :order ["a"] :fingerprint "f" :commandId "c3"}))))))
+
+
+;; 14 · Read opening-stock facts and catalogue choices
+
+
+(deftest opening-is-offered-once-per-cell
+  (let [table  (-> table
+                   (assoc-in [:products 0 :items 0 :cells "main" :opened?] true)
+                   (update :warehouses conj {:id "old" :name "Old" :archived? true})
+                   (assoc-in [:products 0 :items 0 :cells "old"] {:quantity 2 :value nil :valued? false :pending? false}))
+        model  (web/stock-grid table {:mode "units" :entries []})
+        column (fn [k] (nth (cells-of model "tee-m") (.indexOf ^java.util.List (mapv :key (:columns model)) k)))]
+    (testing "item without opening offers one"
+      (is (= "quantity" (get-in (column "shop") [:editor :type])))
+      (is (not (:readOnly (column "shop")))))
+    (testing "existing opening blocks another; correction is offered instead"
+      (is (:readOnly (column "main")))
+      (is (re-find #"correction" (:title (column "main")))))
+    (testing "archived warehouse not offered"
+      (is (:readOnly (column "old"))))))
+
+
+;; 32a · Read inventory drafts and active catalogue suggestions
+
+
+(def ^:private catalogue
+  {:products    [{:product-id "tee" :name "T-shirt" :status "active"} {:product-id "mug" :name "Mug" :status "active"}]
+   :stock-items [{:stock-item-id "tee-m" :product-id "tee" :variant-label "M" :article "T-100" :status "active"}
+                 {:stock-item-id "tee-l" :product-id "tee" :variant-label "L" :status "active"}]
+   :barcodes    []
+   :warehouses  []})
+
+
+(deftest suggestions-show-two-kinds
+  (is (= [["item" "T-shirt / M · T-100"] ["item" "T-shirt / L"] ["product" "T-shirt"]]
+         (map (juxt :kind :label) (:options (web/suggestions catalogue "T-sh")))))
+  (is (= [["product" "Mug"]] (map (juxt :kind :label) (:options (web/suggestions catalogue "Mug")))) "a product without items")
+  (is (true? (:exact (web/suggestions catalogue "mug")))))
+
+
+(deftest lookup-failure-is-not-no-match
+  (is (= {:text "T-sh" :failed true :options []} (web/suggestions nil "T-sh"))))

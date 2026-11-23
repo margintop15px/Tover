@@ -124,7 +124,7 @@
                     (= :blank details-editable?) (assoc :value (get details "unit-cost" "") :title (i18n/t "Unit cost")
                                                         :target {:type "stock-new-field" :id id :rowId id :path "unit-cost"})
                     (and (empty? lines) (not= :blank details-editable?)) (assoc :readOnly true))
-        w-cell    (fn [{w :id}]
+        w-cell    (fn [{w :id gone? :archived?}]
                     (let [ls    (by-w w)
                           line  (first ls)
                           cell  (get-in accepted [:cells w])
@@ -137,6 +137,11 @@
                                         :entry  (:entry-id line) :revision (or (:revision line) 0) :shared (< 1 (:line-count line 1))
                                         :values (merge base {"warehouse-id" w} (line-values line))})
                         (and (not money?) locked?) (assoc :readOnly true)
+                        ;; ponytail: only a hint until chapter 15 offers the correction from this cell.
+                        (and (not money?) (nil? line) (:opened? cell))
+                        (assoc :readOnly true :title (i18n/t "An opening is accepted here. Change the count with a stock correction."))
+                        (and (not money?) (nil? line) gone?)
+                        (assoc :readOnly true :title (i18n/t "This warehouse is archived. Restore it to add stock."))
                         line (assoc :value (if money?
                                              (if (every? (comp decimal :unit-cost) ls)
                                                (money (reduce + 0M (for [l ls] (* (decimal (:unit-cost l)) (or (decimal (:quantity l)) 0M)))))
@@ -352,29 +357,27 @@
    :data {:_stockTableJson (json {:requestId requestId :model (table-model context mode (and hideEmpty (not (:pending scope)) (empty? (select-keys scope [:productId :itemId]))) scope)})}})
 
 
+(defn suggestions
+  "The picker's answer: stock items and products from `references/suggest`, or `:failed` when the catalogue could not
+  be read, so a lookup failure is never shown as no match."
+  {:malli/schema [:=> [:cat [:maybe :map] :string] :map]}
+  [catalogue text]
+  (if-not catalogue
+    {:text text :failed true :options []}
+    {:text    text
+     :exact   (boolean (some #(and (= "active" (:status %)) (same-name? text (:name %))) (:products catalogue)))
+     :options (vec (for [{:keys [kind id label fill]} (take 12 (when-not (str/blank? text) (references/suggest text catalogue)))]
+                     (if (= "product" kind)
+                       {:kind "product" :id id :label label}
+                       {:kind "item" :id id :productId (:product-id fill) :label label})))}))
+
+
 (defview suggest
   {:route-data access :schema [:map [:requestId :string] [:text [:string {:max 200}]]]
    :query      (fn [context input] {:context context :input input})}
   [{:keys [context] {:keys [requestId text]} :input}]
-  (let [{:keys [products stock-items barcodes]} (read-or-nil context ::references/draft-catalogue {})
-        q (str/lower-case (str/trim text))
-        hit? #(and (seq q) % (str/includes? (str/lower-case %) q))
-        active #(filter (comp #{"active"} :status) %)
-        names (into {} (map (juxt :product-id :name)) products)
-        codes (group-by :stock-item-id barcodes)]
-    {:type :signals
-     :data {:_stockSuggestJson
-            (json {:requestId requestId :text text
-                   :exact     (boolean (some #(same-name? text (:name %)) (active products)))
-                   :options   (vec (take 12 (concat
-                                              (for [p (active products) :when (hit? (:name p))]
-                                                {:kind "product" :id (:product-id p) :label (:name p)})
-                                              (for [{:keys [stock-item-id product-id variant-label article]} (active stock-items)
-                                                    :let [found (filter #(hit? (:barcode %)) (codes stock-item-id))]
-                                                    :when (or (hit? variant-label) (hit? article) (seq found))]
-                                                {:kind  "item" :id stock-item-id :productId product-id
-                                                 :label (str (names product-id) (when (seq variant-label) (str " / " variant-label)))
-                                                 :hint  (str/join " · " (remove empty? (cons article (map :barcode found))))}))))})}}))
+  {:type :signals
+   :data {:_stockSuggestJson (json (assoc (suggestions (read-or-nil context ::references/draft-catalogue {}) text) :requestId requestId))}})
 
 
 (defn- labels
