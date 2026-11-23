@@ -484,3 +484,63 @@
         (is (= [["item:p-0" "main" 2 400.0000M]]
                (map (juxt :stock-item-id :warehouse-id :quantity :value)
                     (:balances (runtime/read-model ctx ::acceptance/acceptance-result {:acceptance-id "acc-2"})))))))))
+
+
+;; 20–25 · Accept returns, transfers, production, defects, write-offs and payments
+
+
+(deftest defect-registers-the-counterpart-once
+  (let [defect #(operation "defect" % {:reason "torn"} {:stock-item-id "tee-m" :quantity 1})
+        f      (trade-facts [(defect "d") (assoc (defect "e") :occurred-at (day 18))])
+        plan   (accept f (input f "e" "d"))]
+    (is (= [{:stock-item-id   "tee-m~defect" :product-id "tee"    :variant-label "M · defect" :unit "pcs" :condition "defective"
+             :regular-item-id "tee-m"        :status     "active" :revision      1}]
+           (map #(dissoc % :barcodes) (of-type plan ::stock-items/stock-item-registered))))
+    (is (= [[-1 nil] [1 0] [-1 nil] [1 0]] (map (juxt :quantity-change :carry-from) (of-type plan ::acceptance/inventory-record-line-accepted))))))
+
+
+(deftest production-registers-a-new-output
+  (let [f    (trade-facts [(operation "production" "m" {} {:stock-item-id "tee-m" :quantity 2 :side "input"}
+                                      {:product-id "tee" :variant-label "Bundle" :unit "pcs" :quantity 1 :side "output"})])
+        plan (accept f (input f "m"))]
+    (is (= ["item:m-1"] (map :stock-item-id (of-type plan ::stock-items/stock-item-registered))))
+    (is (= [["tee-m" -2] ["item:m-1" 1]] (map (juxt :stock-item-id :quantity-change) (of-type plan ::acceptance/inventory-record-line-accepted))))))
+
+
+(deftest payment-keeps-the-exact-amount
+  (let [f    (trade-facts [(assoc (operation "payment" "pay" {:direction "in" :store-id "web" :amount "1234.56"}) :lines [])])
+        plan (accept f (input f "pay"))]
+    (is (= [["payment" "in" "web" "1234.56"]] (map (juxt :kind :direction :store-id :amount) (of-type plan ::acceptance/inventory-record-accepted))))
+    (is (= [] (of-type plan ::acceptance/inventory-record-line-accepted)))))
+
+
+(deftest other-operations-through-the-store
+  (support/with-store
+    (fn [repo _]
+      (let [ctx     (context repo [{:workspace-id workspace :role :member}])
+            save    #(execute! ctx ::entries/save-shared-inventory-entry %1 (merge {:workspace-id workspace :occurred-at "2026-11-19T00:00:00Z"} %2))
+            submit  (fn [id ids]
+                      (let [selection {:selection (mapv #(hash-map :entry-id % :revision 1) ids) :order ids}
+                            review    (runtime/read-model ctx ::acceptance/inventory-review selection)]
+                        (is (:valid? review) (pr-str (:problems review)))
+                        (execute! ctx ::acceptance/accept-reviewed-inventory-changes id
+                                  (merge selection {:workspace-id workspace :acceptance-id id :fingerprint (:fingerprint review)}))))
+            balance #(set (map (juxt :stock-item-id :warehouse-id :quantity :value) (:balances (runtime/read-model ctx ::acceptance/acceptance-result {:acceptance-id %}))))]
+        (execute! ctx ::warehouses/register-warehouse "w1" {:warehouse-id "main" :name "Main"})
+        (execute! ctx ::warehouses/register-warehouse "w2" {:warehouse-id "back" :name "Back"})
+        (execute! ctx ::products/register-product "p1" {:product-id "tee" :name "T-shirt"})
+        (execute! ctx ::suppliers/register-supplier "s1" {:supplier-id "tex" :name "Textiles LLC"})
+        (save "e1" {:entry-id "p" :kind "purchase" :supplier-id "tex"
+                    :lines    [{:line-id "p-0" :product-id "tee" :variant-label "M" :unit "pcs" :warehouse-id "main" :quantity "10" :unit-cost "100.00"}]})
+        (submit "acc-1" ["p"])
+        (save "e2" {:entry-id "t" :kind "transfer" :from-warehouse-id "main" :to-warehouse-id "back"
+                    :lines    [{:line-id "t-0" :stock-item-id "item:p-0" :quantity "4"}]})
+        (submit "acc-2" ["t"])
+        (is (= #{["item:p-0" "main" 6 600.0000M] ["item:p-0" "back" 4 400.0000M]} (balance "acc-2")))
+        (save "e3" {:entry-id "d" :kind "defect" :reason "torn" :lines [{:line-id "d-0" :stock-item-id "item:p-0" :warehouse-id "back" :quantity "1"}]})
+        (submit "acc-3" ["d"])
+        (is (contains? (balance "acc-3") ["item:p-0~defect" "back" 1 100.0000M]))
+        (save "e4" {:entry-id "pay" :kind "payment" :direction "out" :supplier-id "tex" :amount "1000.00"})
+        (submit "acc-4" ["pay"])
+        (is (= [["payment" 1000M] ["defect" nil] ["transfer" nil] ["purchase" 1000M]]
+               (map (juxt :kind #(some-> ^BigDecimal (:total %) .stripTrailingZeros)) (runtime/read-model ctx ::acceptance/accepted-operations {}))))))))

@@ -262,3 +262,16 @@
   (is (empty? (run {}
                    (entry "p" "purchase" {:stock-item-id "tee-m" :warehouse-id "main" :quantity 5})
                    (entry "s" "sale" {:stock-item-id "tee-m" :warehouse-id "main" :quantity 3})))))
+
+
+(deftest other-operations-overdraw-their-source
+  (let [facts {:balances {["tee-m" "main"] {:quantity 5}}}]
+    (is (= #{["t-0" :insufficient-stock :error]}
+           (codes (run facts (assoc (entry "t" "transfer" {:stock-item-id "tee-m" :quantity 6}) :from-warehouse-id "main" :to-warehouse-id "back")))))
+    (is (empty? (run facts (assoc (entry "t" "transfer" {:stock-item-id "tee-m" :quantity 5}) :from-warehouse-id "main" :to-warehouse-id "back")
+                     (entry "s" "sale" {:stock-item-id "tee-m" :warehouse-id "back" :quantity 5})))
+        "a pending transfer covers a sale at its destination")
+    (doseq [kind ["supplier-return" "defect" "write-off"]]
+      (is (= #{["x-0" :insufficient-stock :error]} (codes (run facts (entry "x" kind {:stock-item-id "tee-m" :warehouse-id "main" :quantity 6})))) kind))
+    (is (= #{["m-0" :insufficient-stock :error]}
+           (codes (run facts (entry "m" "production" {:stock-item-id "tee-m" :warehouse-id "main" :quantity 6 :side "input"})))))))

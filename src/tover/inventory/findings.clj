@@ -7,7 +7,8 @@
     [clojure.string :as str]
     [com.brunobonacci.mulog :as mu]
     [tover.catalogues.records :as records]
-    [tover.inventory.changes :as changes])
+    [tover.inventory.changes :as changes]
+    [tover.inventory.movements :as movements])
   (:import
     [java.util.concurrent TimeUnit TimeoutException]))
 
@@ -16,13 +17,6 @@
   "A line finding names its line; a stock item change finding has no line and names the stock item."
   [:map [:entry-id :string] [:line-id [:maybe :string]] [:stock-item-id {:optional true} :string] [:field :keyword]
    [:code :keyword] [:level [:enum :info :warning :error]] [:related {:optional true} :map]])
-
-
-(def ^:private direction
-  "Incoming or outgoing per kind; a Correction's side depends on its count. ponytail: Transfer and Production sides
-  arrive with chapters 21–22."
-  {"opening" :in  "purchase" :in  "customer-return" :in
-   "sale"    :out "defect"   :out "write-off"       :out "supplier-return" :out})
 
 
 (defn- text-key
@@ -105,16 +99,18 @@
 
 (defn- stock
   "Per stock item and warehouse: error when one entry's outgoing exceeds accepted plus all pending incoming;
-  otherwise a warning on every contributor when the pending outgoing total does. Dates are ignored."
+  otherwise a warning on every contributor when the pending outgoing total does. Dates are ignored. Operations count
+  through `movements/expand`: a transfer's source, a production input and a defect's Regular item are outgoing."
   {:malli/schema [:=> [:cat :map [:sequential :map]] [:sequential Finding]]}
-  [{:keys [balances]} all]
-  (let [side   (fn [{:keys [kind quantity stock-item-id warehouse-id] :as line}]
-                 (if (= "correction" kind)
-                   (let [change (- quantity (get-in balances [[stock-item-id warehouse-id] :quantity] 0))]
-                     (assoc line :side (if (neg? change) :out :in) :quantity (abs change)))
-                   (assoc line :side (direction kind))))
-        moving (filter #(and (:side %) (pos-int? (:quantity %)))
-                       (map side (filter #(and (:stock-item-id %) (:warehouse-id %) (int? (:quantity %))) all)))]
+  [{:keys [balances entries stock-items]} all]
+  (let [count-side (fn [{:keys [quantity stock-item-id warehouse-id] :as line}]
+                     (let [change (- quantity (get-in balances [[stock-item-id warehouse-id] :quantity] 0))]
+                       (assoc line :side (if (neg? change) :out :in) :quantity (abs change))))
+        counts     (map count-side (filter #(and (= "correction" (:kind %)) (int? (:quantity %))) all))
+        moves      (for [line  (movements/lines-of stock-items (remove #(= "correction" (:kind %)) entries))
+                         :when (int? (:change line))]
+                     (assoc line :side (if (neg? (:change line)) :out :in) :quantity (abs (:change line))))
+        moving     (filter #(and (:stock-item-id %) (:warehouse-id %) (pos-int? (:quantity %))) (concat counts moves))]
     (mapcat (fn [[pair pair-lines]]
               (let [{in :in out :out} (group-by :side pair-lines)
                     available         (+ (get-in balances [pair :quantity] 0) (reduce + 0 (map :quantity in)))

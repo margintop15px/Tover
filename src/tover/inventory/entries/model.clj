@@ -17,8 +17,24 @@
 
 
 (def kinds
-  "Opening (chapter 14), Correction (the chapter 15 count), Purchase (chapter 18) and Sale (chapter 19)."
-  [:enum "opening" "correction" "purchase" "sale"])
+  "Opening (chapter 14), Correction (the chapter 15 count) and the operations of chapters 18–25."
+  [:enum "opening" "correction" "purchase" "sale" "customer-return" "supplier-return" "transfer" "production" "defect"
+   "write-off" "payment"])
+
+
+(def operation-rules
+  "Per operation kind (board `Save Shared Inventory Entry` § Kind …): the line price field, whether lines may propose
+  new stock items (`:outputs`: production outputs only), the party (`:either`: a supplier or a store), and whether a
+  reason is required."
+  {"purchase"        {:price :unit-cost :new-items true :party :supplier}
+   "sale"            {:price :unit-price :party :store}
+   "customer-return" {:price :unit-price :party :store}
+   "supplier-return" {:price :unit-price :party :supplier}
+   "transfer"        {}
+   "production"      {:new-items :outputs}
+   "defect"          {:reason? true}
+   "write-off"       {:reason? true}
+   "payment"         {:party :either}})
 
 
 (def Entry
@@ -31,6 +47,12 @@
    [:supplier-id {:optional true :bel/ref :tover.catalogues.suppliers.model/suppliers} Id]
    [:supplier-name {:optional true} :string]
    [:store-id {:optional true :bel/ref :tover.catalogues.stores.model/stores} Id]
+   ;; Transfer: one source and one destination for every line.
+   [:from-warehouse-id {:optional true :bel/ref :tover.catalogues.warehouses.model/warehouses} Id]
+   [:to-warehouse-id {:optional true :bel/ref :tover.catalogues.warehouses.model/warehouses} Id]
+   ;; Payment: money received (in) or paid (out), an exact decimal above 0; the counterparty is the supplier or store.
+   [:direction {:optional true} [:enum "in" "out"]]
+   [:amount {:optional true} :string]
    [:status [:enum "pending" "accepted" "discarded"]]
    [:revision [:int {:min 1}]]
    [:saved-by :uuid]])
@@ -48,7 +70,9 @@
    [:warehouse-name {:optional true} :string]
    [:quantity {:optional true} :int]
    [:unit-cost {:optional true} :string]
-   [:unit-price {:optional true} :string]])
+   [:unit-price {:optional true} :string]
+   ;; Production only.
+   [:side {:optional true} [:enum "input" "output"]]])
 
 
 (def EntryLine
@@ -94,7 +118,8 @@
 
 
 (def ^:private entry-fields
-  [:kind :occurred-at :reason :supplier-id :supplier-name :store-id :status :revision :saved-by])
+  [:kind :occurred-at :reason :supplier-id :supplier-name :store-id :from-warehouse-id :to-warehouse-id :direction :amount
+   :status :revision :saved-by])
 
 
 (def ^:private line-keys
@@ -340,6 +365,10 @@
    [:supplier-id {:optional true} [:maybe Id]]
    [:supplier-name {:optional true} [:maybe [:string {:max 500}]]]
    [:store-id {:optional true} [:maybe Id]]
+   [:from-warehouse-id {:optional true} [:maybe Id]]
+   [:to-warehouse-id {:optional true} [:maybe Id]]
+   [:direction {:optional true} [:maybe [:enum "in" "out"]]]
+   [:amount {:optional true} [:maybe :string]]
    [:lines {:optional true} [:vector DraftLine]]
    [:changes {:optional true} [:vector DraftChange]]])
 
@@ -387,39 +416,70 @@
 
 
 (defn- check-operation-line!
-  "Purchase and Sale lines move 1 or more units. A sale takes existing stock items from existing warehouses and
-  carries a sale price; a purchase carries a purchase price (unit cost)."
-  {:malli/schema [:=> [:cat :string Line] :nil]}
-  [kind {:keys [line-id quantity] :as line}]
-  (when (and quantity (< quantity 1))
-    (invalid! :quantity "Enter a whole number of 1 or more." {:line-id line-id :attempted (str quantity)}))
-  (if (= "sale" kind)
-    (do (when (some line new-item-fields)
-          (invalid! :stock-item-id "A sale takes existing stock items only." {:line-id line-id}))
-        (when (:warehouse-name line)
-          (invalid! :warehouse-id "A sale takes stock from an existing warehouse." {:line-id line-id :attempted (:warehouse-name line)}))
-        (when (:unit-cost line)
-          (invalid! :unit-cost "A sale has a sale price, not a unit cost." {:line-id line-id :attempted (:unit-cost line)})))
-    (when (:unit-price line)
-      (invalid! :unit-price "Only a sale has a sale price." {:line-id line-id :attempted (:unit-price line)}))))
+  "Operation lines move 1 or more units. Only a purchase line, or a production output, may propose a new stock item,
+  and only a purchase a new warehouse. A line carries its kind's price field only; a transfer line takes the entry's
+  warehouses; a defect starts from a Regular item; only production lines have a side."
+  {:malli/schema [:=> [:cat :map :string Line] :nil]}
+  [references kind {:keys [line-id quantity side] :as line}]
+  (let [{:keys [price new-items]} (operation-rules kind)
+        fail! (fn [field message attempted] (invalid! field message {:line-id line-id :attempted attempted}))]
+    (when (and quantity (< quantity 1))
+      (fail! :quantity "Enter a whole number of 1 or more." (str quantity)))
+    (when (and (some line new-item-fields) (not (or (true? new-items) (and (= :outputs new-items) (= "output" side)))))
+      (fail! :stock-item-id "Choose an existing stock item." nil))
+    (when (and (:warehouse-name line) (not= "purchase" kind))
+      (fail! :warehouse-id "Choose an existing warehouse." (:warehouse-name line)))
+    (when (and (= "transfer" kind) (:warehouse-id line))
+      (fail! :warehouse-id "A transfer line takes the transfer's warehouses." (:warehouse-id line)))
+    (doseq [field [:unit-cost :unit-price] :when (and (get line field) (not= field price))]
+      (fail! field "This operation has no such price." (get line field)))
+    (when (and side (not= "production" kind))
+      (fail! :side "Only production lines are inputs or outputs." side))
+    (when (and (= "defect" kind) (= "defective" (some #(when (= (:stock-item-id line) (:id %)) (:condition %)) (:stock-items references))))
+      (fail! :stock-item-id "Choose a regular stock item." (:stock-item-id line)))))
 
 
 (defn- check-references!
-  "Supplier for a purchase and store for a sale only. A new choice must be an active record; a saved one is kept even
-  if archived."
+  "Supplier, store, warehouse pair and payment fields only where the kind has them. A new choice must be an active
+  record; a saved one is kept even if archived."
   {:malli/schema [:=> [:cat :map [:maybe :map] :map] :nil]}
   [references entry {:keys [kind] :as input}]
-  (let [supplier? (some #(blank->nil (get input %)) [:supplier-id :supplier-name])]
-    (when (and supplier? (not= "purchase" kind))
-      (invalid! :supplier-id "Only a purchase has a supplier." {}))
-    (when (and (blank->nil (:store-id input)) (not= "sale" kind))
-      (invalid! :store-id "Only a sale has a store." {}))
-    (doseq [[field records] [[:supplier-id :suppliers] [:store-id :stores]]
-            :let            [id (blank->nil (get input field))]
+  (let [party     (:party (operation-rules kind))
+        given     #(blank->nil (get input %))
+        supplier? (#{:supplier :either} party)
+        store?    (#{:store :either} party)]
+    (when (and (given :supplier-id) (not supplier?))
+      (invalid! :supplier-id "This operation has no supplier." {}))
+    (when (and (given :supplier-name) (not= "purchase" kind))
+      (invalid! :supplier-id "Choose an existing supplier." {:attempted (given :supplier-name)}))
+    (when (and (given :store-id) (not store?))
+      (invalid! :store-id "This operation has no store." {}))
+    (when (and (= :either party) (given :supplier-id) (given :store-id))
+      (invalid! :supplier-id "Choose one counterparty." {}))
+    (when (and (some given [:from-warehouse-id :to-warehouse-id]) (not= "transfer" kind))
+      (invalid! :from-warehouse-id "Only a transfer has a source and a destination." {}))
+    (when (and (given :from-warehouse-id) (= (given :from-warehouse-id) (given :to-warehouse-id)))
+      (invalid! :to-warehouse-id "Choose a different destination warehouse." {:attempted (given :to-warehouse-id)}))
+    (when (and (some given [:direction :amount]) (not= "payment" kind))
+      (invalid! :amount "Only a payment has an amount." {}))
+    (when (and (= "payment" kind) (seq (:lines input)))
+      (invalid! :lines "A payment has no lines." {}))
+    (doseq [[field records] [[:supplier-id :suppliers] [:store-id :stores] [:from-warehouse-id :warehouses] [:to-warehouse-id :warehouses]]
+            :let            [id (given field)]
             :when           (and id (not= id (get entry field)))]
       (try (records/check-related! id (get references records) :validation)
            (catch clojure.lang.ExceptionInfo _
              (invalid! field "Choose an active record of this workspace." {:attempted id}))))))
+
+
+(defn- parse-payment-amount
+  "Board kind Payment: an exact amount above 0."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [text]
+  (let [amount (parse-amount :amount text)]
+    (when-not (pos? amount)
+      (invalid! :amount "Enter an amount above 0." {:attempted text}))
+    (str amount)))
 
 
 (defn- clean-barcodes
@@ -500,7 +560,7 @@
 (defn- choices
   {:malli/schema [:=> [:cat [:sequential :map] :keyword] [:vector :map]]}
   [rows id-key]
-  (mapv #(hash-map :id (get % id-key) :status (:status %)) rows))
+  (mapv #(cond-> {:id (get % id-key) :status (:status %)} (:condition %) (assoc :condition (:condition %))) rows))
 
 
 (defmethod runtime/coeffect ::references
@@ -530,10 +590,12 @@
   (check-references! references entry input)
   (let [before   (into {} (map (juxt :line-id identity)) lines)
         parsed   (mapv #(parse-line references (get before (:line-id %)) %) (:lines input))
-        _        (case kind
-                   "correction" (run! check-correction-line! parsed)
-                   ("purchase" "sale") (run! #(check-operation-line! kind %) parsed)
-                   (run! #(when (:unit-price %) (invalid! :unit-price "Only a sale has a sale price." {:line-id (:line-id %)})) parsed))
+        _        (cond
+                   (= "correction" kind) (run! check-correction-line! parsed)
+                   (operation-rules kind) (run! #(check-operation-line! references kind %) parsed)
+                   :else (run! #(doseq [field [:unit-price :side] :when (get % field)]
+                                  (invalid! field "This operation has no such field." {:line-id (:line-id %)}))
+                               parsed))
         prior    (into {} (map (juxt :stock-item-id identity)) changes)
         proposed (mapv #(parse-change references (get prior (:stock-item-id %)) %) (:changes input))
         instant  (some-> (blank->nil occurred-at) parse-instant)
@@ -543,7 +605,11 @@
                    (blank->nil (:supplier-id input)) (assoc :supplier-id (:supplier-id input))
                    (and (not (blank->nil (:supplier-id input))) (blank->nil (:supplier-name input)))
                    (assoc :supplier-name (str/trim (:supplier-name input)))
-                   (blank->nil (:store-id input)) (assoc :store-id (:store-id input)))]
+                   (blank->nil (:store-id input)) (assoc :store-id (:store-id input))
+                   (blank->nil (:from-warehouse-id input)) (assoc :from-warehouse-id (:from-warehouse-id input))
+                   (blank->nil (:to-warehouse-id input)) (assoc :to-warehouse-id (:to-warehouse-id input))
+                   (:direction input) (assoc :direction (:direction input))
+                   (blank->nil (:amount input)) (assoc :amount (parse-payment-amount (:amount input))))]
     {:events (-> [{:type ::shared-inventory-entry-saved :data saved}]
                  (into (line-events entry-id lines parsed))
                  (into (change-events entry-id (or changes []) proposed)))
@@ -571,30 +637,50 @@
 
 (defn blockers
   "What keeps a pending entry from review: missing facts and archived references, per line and field. An entry
-  with only stock item changes needs no occurrence time."
+  with only stock item changes needs no occurrence time; a transfer's lines take its warehouses; a payment has no lines."
   {:malli/schema [:=> [:cat :map [:sequential Line] :map] [:vector :map]]}
-  [entry lines status]
-  (into (cond-> (if (or (:occurred-at entry) (and (empty? lines) (seq (:changes entry))))
-                  []
-                  [{:line-id nil :field :occurred-at :code :occurred-at-missing}])
-          (and (= "purchase" (:kind entry)) (not (some entry [:supplier-id :supplier-name])))
-          (conj {:line-id nil :field :supplier-id :code :supplier-missing})
-          (and (#{"purchase" "sale"} (:kind entry)) (empty? lines))
-          (conj {:line-id nil :field :lines :code :lines-missing})
-          (and (:supplier-id entry) (not= "active" (get-in status [:suppliers (:supplier-id entry)])))
-          (conj {:line-id nil :field :supplier-id :code :archived-reference})
-          (and (:store-id entry) (not= "active" (get-in status [:stores (:store-id entry)])))
-          (conj {:line-id nil :field :store-id :code :archived-reference}))
-        (mapcat (fn [{:keys [line-id] :as line}]
-                  (concat
-                    (when-not (:quantity line) [{:line-id line-id :field :quantity :code :quantity-missing}])
-                    (when-not (some line [:warehouse-id :warehouse-name]) [{:line-id line-id :field :warehouse-id :code :warehouse-missing}])
-                    (when-not (some line [:stock-item-id :product-id :product-name]) [{:line-id line-id :field :stock-item-id :code :item-missing}])
-                    (for [[field kind] reference-fields
-                          :let         [id (get line field)]
-                          :when        (and id (not= "active" (get-in status [kind id])))]
-                      {:line-id line-id :field field :code :archived-reference}))))
-        lines))
+  [{:keys [kind] :as entry} lines status]
+  (let [{:keys [party reason?] :as rules} (operation-rules kind)
+        entry-blocker (fn [field code] {:line-id nil :field field :code code})
+        archived? (fn [index id] (and id (not= "active" (get-in status [index id]))))]
+    (into (cond-> (if (or (:occurred-at entry) (and (empty? lines) (seq (:changes entry))))
+                    []
+                    [(entry-blocker :occurred-at :occurred-at-missing)])
+            (and (= :supplier party) (not (some entry [:supplier-id :supplier-name])))
+            (conj (entry-blocker :supplier-id :supplier-missing))
+            (and rules (not= "payment" kind) (empty? lines))
+            (conj (entry-blocker :lines :lines-missing))
+            (and reason? (str/blank? (:reason entry)))
+            (conj (entry-blocker :reason :reason-missing))
+            (and (= "transfer" kind) (not (:from-warehouse-id entry)))
+            (conj (entry-blocker :from-warehouse-id :warehouse-missing))
+            (and (= "transfer" kind) (not (:to-warehouse-id entry)))
+            (conj (entry-blocker :to-warehouse-id :warehouse-missing))
+            (and (= "production" kind) (seq lines) (not-any? #(= "input" (:side %)) lines))
+            (conj (entry-blocker :lines :inputs-missing))
+            (and (= "production" kind) (seq lines) (not-any? #(= "output" (:side %)) lines))
+            (conj (entry-blocker :lines :outputs-missing))
+            (and (= "payment" kind) (not (:direction entry)))
+            (conj (entry-blocker :direction :direction-missing))
+            (and (= "payment" kind) (not (some entry [:supplier-id :store-id])))
+            (conj (entry-blocker :supplier-id :counterparty-missing))
+            (and (= "payment" kind) (not (:amount entry)))
+            (conj (entry-blocker :amount :amount-missing))
+            (archived? :suppliers (:supplier-id entry)) (conj (entry-blocker :supplier-id :archived-reference))
+            (archived? :stores (:store-id entry)) (conj (entry-blocker :store-id :archived-reference))
+            (archived? :warehouses (:from-warehouse-id entry)) (conj (entry-blocker :from-warehouse-id :archived-reference))
+            (archived? :warehouses (:to-warehouse-id entry)) (conj (entry-blocker :to-warehouse-id :archived-reference)))
+          (mapcat (fn [{:keys [line-id] :as line}]
+                    (concat
+                      (when-not (:quantity line) [{:line-id line-id :field :quantity :code :quantity-missing}])
+                      (when-not (or (= "transfer" kind) (some line [:warehouse-id :warehouse-name]))
+                        [{:line-id line-id :field :warehouse-id :code :warehouse-missing}])
+                      (when-not (some line [:stock-item-id :product-id :product-name]) [{:line-id line-id :field :stock-item-id :code :item-missing}])
+                      (when (and (= "production" kind) (not (:side line))) [{:line-id line-id :field :side :code :side-missing}])
+                      (for [[field index] reference-fields
+                            :when         (archived? index (get line field))]
+                        {:line-id line-id :field field :code :archived-reference}))))
+          lines)))
 
 
 (defmethod runtime/coeffect ::pending

@@ -466,3 +466,84 @@
         sel {:selection [{:entry-id "s" :revision 1}] :order ["s"]}]
     (is (not= (:fingerprint (acceptance/review f sel))
               (:fingerprint (acceptance/review (assoc-in f [:stores 0 :name] "Shop") sel))))))
+
+
+;; 20–25 · Review returns, transfers, production, defects, write-offs and payments
+
+
+(def more
+  (-> (merge catalogue suppliers)
+      (assoc :history opened-5)
+      (update :warehouses conj {:warehouse-id "back" :name "Back" :status "active" :revision 1})
+      (update :stock-items conj {:stock-item-id "mug-1" :product-id "mug" :variant-label "" :unit "pcs" :condition "regular" :status "active" :revision 1})))
+
+
+(defn- cells
+  {:malli/schema [:=> [:cat :map] [:sequential :any]]}
+  [result]
+  (map (juxt :stock-item-id :warehouse-id :quantity-after #(some-> ^BigDecimal (:value-after %) .stripTrailingZeros)) (:effects result)))
+
+
+(deftest returns-move-at-the-average
+  (is (= [[7 700M]] (values (review (facts [(operation "customer-return" "r" {:store-id "web"} {:stock-item-id "tee-m" :quantity 2 :unit-price "150.00"})] more) "r")))
+      "a customer return enters at the average, whatever price it carries")
+  (is (= [[3 300M]] (values (review (facts [(operation "supplier-return" "r" {:supplier-id "tex"} {:stock-item-id "tee-m" :quantity 2})] more) "r"))))
+  (is (= #{:supplier-missing} (problems (review (facts [(operation "supplier-return" "r" {} {:stock-item-id "tee-m" :quantity 2})] more) "r"))))
+  (is (= #{:negative-balance} (problems (review (facts [(operation "supplier-return" "r" {:supplier-id "tex"} {:stock-item-id "tee-m" :quantity 6})] more) "r")))))
+
+
+(def at-150
+  "10 at 100.00 and 10 at 200.00 in Main."
+  (-> opened-at-100
+      (assoc-in [:lines 0 :quantity-change] 10)
+      (update :records conj {:record-revision-id "p#1" :record-id "p"   :revision    1       :acceptance-id "a" :kind "purchase" :occurred-at (day 2)
+                             :sequence           0     :cancelled false :recorded-at (day 2)})
+      (update :lines conj {:record-line-id  "p#1/0" :record-revision-id "p#1"    :position 0 :stock-item-id "tee-m" :warehouse-id "main"
+                           :quantity-change 10      :unit-cost          "200.00"})))
+
+
+(deftest transfer-carries-the-cost
+  (let [transfer #(operation "transfer" "t" {:from-warehouse-id "main" :to-warehouse-id "back"} {:stock-item-id "tee-m" :warehouse-id nil :quantity %})]
+    (is (= [["tee-m" "back" 5 750M] ["tee-m" "main" 15 2250M]]
+           (sort (cells (review (facts [(transfer 5)] (assoc more :history at-150)) "t")))))
+    (is (= #{:negative-balance} (problems (review (facts [(transfer 21)] (assoc more :history at-150)) "t"))))
+    (is (= [[:entry-incomplete :to-warehouse-id]]
+           (map (juxt :code :field) (:problems (review (facts [(assoc (transfer 5) :to-warehouse-id nil)] more) "t")))))))
+
+
+(deftest production-spreads-the-input-cost
+  (let [history (assoc-in opened-at-100 [:lines 0] {:record-line-id "r#1/0" :record-revision-id "r#1" :position  0       :stock-item-id "tee-m"
+                                                    :warehouse-id   "main"  :quantity-change    12    :unit-cost "10.00"})
+        made    #(operation "production" "m" {} {:stock-item-id "tee-m" :quantity 12 :side "input"} {:stock-item-id "mug-1" :quantity % :side "output"})]
+    (is (= [["mug-1" "main" 1 120M] ["tee-m" "main" 0 0M]] (sort (cells (review (facts [(made 1)] (assoc more :history history)) "m")))))
+    (is (= [["mug-1" "main" 2 120M] ["tee-m" "main" 0 0M]] (sort (cells (review (facts [(made 2)] (assoc more :history history)) "m"))))
+        "two units share 120.00")
+    (is (= #{:outputs-missing} (problems (review (facts [(operation "production" "m" {} {:stock-item-id "tee-m" :quantity 1 :side "input"})] more) "m"))))
+    (is (= #{:inputs-missing} (problems (review (facts [(operation "production" "m" {} {:stock-item-id "mug-1" :quantity 1 :side "output"})] more) "m"))))
+    (is (= #{:negative-balance} (problems (review (facts [(made 1)] more) "m"))) "5 in stock, 12 needed")))
+
+
+(deftest defect-moves-to-the-counterpart
+  (let [defect #(operation "defect" % {:reason "torn"} {:stock-item-id "tee-m" :quantity 2})
+        result (review (facts [(defect "d") (assoc (defect "e") :occurred-at (day 18))] more) "e" "d")]
+    (is (:valid? result) (pr-str (:problems result)))
+    (is (= [["tee-m" "main" 1 100M] ["tee-m~defect" "main" 4 400M]] (sort (cells result))) "cost follows the units")
+    (is (= [[:stock-item "tee-m~defect" "T-shirt / M · defect"]] (map (juxt :type :id :label) (:registrations result))) "one counterpart for two defects")
+    (is (= #{:reason-missing} (problems (review (facts [(dissoc (defect "d") :reason)] more) "d"))))))
+
+
+(deftest write-off-at-the-average
+  (let [write-off #(operation "write-off" "w" {:reason "lost"} {:stock-item-id "tee-m" :quantity %})]
+    (is (= [[3 300M]] (values (review (facts [(write-off 2)] more) "w"))))
+    (is (= #{:negative-balance} (problems (review (facts [(write-off 6)] more) "w"))))
+    (is (= #{:reason-missing} (problems (review (facts [(dissoc (write-off 2) :reason)] more) "w"))))))
+
+
+(deftest payment-is-a-record-without-lines
+  (let [payment (assoc (operation "payment" "pay" {:direction "out" :supplier-id "tex" :amount "1500.00"}) :lines [])
+        result  (review (facts [payment] more) "pay")]
+    (is (:valid? result) (pr-str (:problems result)))
+    (is (= [["payment" "out" "tex" "1500.00"]] (map (juxt :kind :direction :supplier-id :amount) (get-in result [:records :records]))))
+    (is (= [] (get-in result [:records :lines])))
+    (is (= #{:direction-missing :counterparty-missing :amount-missing}
+           (problems (review (facts [(assoc payment :direction nil :supplier-id nil :amount nil)] more) "pay"))))))

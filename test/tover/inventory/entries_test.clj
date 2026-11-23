@@ -419,3 +419,63 @@
     (is (= #{[:lines :lines-missing]} (codes {:kind "sale" :occurred-at at} [])))
     (is (= #{[:supplier-id :archived-reference]} (codes {:kind "purchase" :occurred-at at :supplier-id "gone"} [line])))
     (is (= #{[:store-id :archived-reference]} (codes {:kind "sale" :occurred-at at :store-id "closed"} [line])))))
+
+
+;; 20–25 · Propose returns, transfers, production, defects, write-offs and payments
+
+
+(def transfer
+  {:entry-id "t1" :kind "transfer" :occurred-at "2026-11-19T00:00:00Z" :from-warehouse-id "main" :to-warehouse-id "back"
+   :lines    [{:line-id "l1" :stock-item-id "tee-m" :quantity "3"}]})
+
+
+(def with-back
+  (-> references
+      (update :warehouses conj {:id "back" :status "active"})
+      (update :stock-items conj {:id "tee-m~defect" :status "active" :condition "defective"})))
+
+
+(defn- other-rejection
+  {:malli/schema [:=> [:cat :map] [:maybe :map]]}
+  [input]
+  (select-keys (rejection #(decide ::entries/save-shared-inventory-entry {:references with-back} input)) [:type :field]))
+
+
+(deftest save-each-other-kind
+  (let [saved #(get-in (decide ::entries/save-shared-inventory-entry {:references with-back} %) [:events 0 :data])]
+    (is (= "web" (:store-id (saved (assoc sale :kind "customer-return")))) "a customer return may name a store and price")
+    (is (= "tex" (:supplier-id (saved (-> sale (assoc :kind "supplier-return" :supplier-id "tex") (dissoc :store-id))))))
+    (is (= ["main" "back"] ((juxt :from-warehouse-id :to-warehouse-id) (saved transfer))))
+    (is (= ["input" "output"]
+           (map :side (rest (map :data (:events (decide ::entries/save-shared-inventory-entry {:references with-back} {:entry-id "m1" :kind "production" :occurred-at "2026-11-19T00:00:00Z"
+                                                                                                                       :lines    [{:line-id "a" :stock-item-id "tee-m" :warehouse-id "main" :quantity "2" :side "input"}
+                                                                                                                                  {:line-id "b" :product-id "tee" :variant-label "Pack" :unit "pcs" :warehouse-id "main" :quantity "1" :side "output"}]})))))))
+    (is (= ["out" "tex" "10.5"] ((juxt :direction :supplier-id :amount)
+                                 (saved {:entry-id "pay" :kind "payment" :occurred-at "2026-11-19T00:00:00Z" :direction "out" :supplier-id "tex" :amount "10,5"}))))))
+
+
+(deftest other-kinds-reject-what-they-do-not-take
+  (is (= {:type :validation :field :quantity} (other-rejection (assoc-in transfer [:lines 0 :quantity] "0"))))
+  (is (= {:type :validation :field :to-warehouse-id} (other-rejection (assoc transfer :to-warehouse-id "main"))) "same warehouse")
+  (is (= :validation (:type (other-rejection (assoc-in transfer [:lines 0 :warehouse-id] "main")))) "a transfer line has no warehouse")
+  (is (= :validation (:type (other-rejection (-> sale (assoc :kind "customer-return") (update-in [:lines 0] #(-> % (assoc :product-name "Cup") (dissoc :stock-item-id)))))))
+      "no new item on a return")
+  (is (= :validation (:type (other-rejection (assoc sale :kind "supplier-return" :store-id "web")))))
+  (is (= {:type :validation :field :stock-item-id}
+         (other-rejection {:entry-id "d1" :kind "defect" :reason "torn" :lines [{:line-id "l1" :stock-item-id "tee-m~defect" :warehouse-id "main" :quantity "1"}]}))
+      "a defect takes a Regular item")
+  (is (= :validation (:type (other-rejection {:entry-id "pay" :kind "payment" :supplier-id "tex" :store-id "web" :amount "1"}))) "one counterparty")
+  (is (= {:type :validation :field :amount} (other-rejection {:entry-id "pay" :kind "payment" :supplier-id "tex" :amount "0"})))
+  (is (= :validation (:type (other-rejection {:entry-id "pay" :kind "payment" :supplier-id "tex" :amount "1" :lines [{:line-id "l1" :stock-item-id "tee-m"}]})))
+      "a payment has no lines"))
+
+
+(deftest other-kind-blockers
+  (let [status {:warehouses {"main" "active" "old" "archived"} :stock-items {"tee-m" "active"} :suppliers {"tex" "active"} :stores {}}
+        codes  #(set (map (juxt :field :code) (entries/blockers %1 %2 status)))]
+    (is (= #{[:reason :reason-missing]} (codes {:kind "write-off" :occurred-at at} [{:line-id "l1" :stock-item-id "tee-m" :warehouse-id "main" :quantity 1}])))
+    (is (= #{[:to-warehouse-id :warehouse-missing]} (codes {:kind "transfer" :occurred-at at :from-warehouse-id "main"} [{:line-id "l1" :stock-item-id "tee-m" :quantity 1}])))
+    (is (= #{[:from-warehouse-id :archived-reference]}
+           (codes {:kind "transfer" :occurred-at at :from-warehouse-id "old" :to-warehouse-id "main"} [{:line-id "l1" :stock-item-id "tee-m" :quantity 1}])))
+    (is (= #{[:lines :outputs-missing]} (codes {:kind "production" :occurred-at at} [{:line-id "l1" :stock-item-id "tee-m" :warehouse-id "main" :quantity 1 :side "input"}])))
+    (is (= #{[:direction :direction-missing] [:supplier-id :counterparty-missing] [:amount :amount-missing]} (codes {:kind "payment" :occurred-at at} [])))))

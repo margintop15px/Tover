@@ -9,6 +9,7 @@
     [tover.catalogues.records :as records :refer [Id]]
     [tover.inventory.changes :as changes]
     [tover.inventory.entries.model :as entries]
+    [tover.inventory.movements :as movements]
     [tover.inventory.stock-items.model :as stock-items]
     [tover.inventory.valuation :as valuation]
     [tover.workspaces.currency.model :as currency])
@@ -34,7 +35,10 @@
    [:cancelled :boolean]
    [:reason {:optional true} :string]
    [:supplier-id {:optional true :bel/ref :tover.catalogues.suppliers.model/suppliers} Id]
-   [:store-id {:optional true :bel/ref :tover.catalogues.stores.model/stores} Id]])
+   [:store-id {:optional true :bel/ref :tover.catalogues.stores.model/stores} Id]
+   ;; Payment only.
+   [:direction {:optional true} [:enum "in" "out"]]
+   [:amount {:optional true} :string]])
 
 
 (def RecordLine
@@ -49,7 +53,9 @@
    [:quantity-change {:optional true} :int]
    [:counted-quantity {:optional true} [:int {:min 0}]]
    [:unit-cost {:optional true} :string]
-   [:unit-price {:optional true} :string]])
+   [:unit-price {:optional true} :string]
+   ;; The entering half of a transfer or defect: the position of the leaving half whose average cost it takes.
+   [:carry-from {:optional true} [:int {:min 0}]]])
 
 
 (defevent inventory-changes-accepted {:schema Acceptance})
@@ -71,7 +77,7 @@
    :schema Record
    :policy ::records/workspace-member
    :events {::inventory-record-accepted {:create [:record-id :revision :acceptance-id :kind :occurred-at :sequence :amends
-                                                  :cancelled :reason :supplier-id :store-id]}}})
+                                                  :cancelled :reason :supplier-id :store-id :direction :amount]}}})
 
 
 (defmodel record-lines
@@ -80,7 +86,7 @@
    :schema RecordLine
    :policy ::records/workspace-member
    :events {::inventory-record-line-accepted {:create [:record-revision-id :position :stock-item-id :warehouse-id
-                                                       :quantity-change :counted-quantity :unit-cost :unit-price]}}})
+                                                       :quantity-change :counted-quantity :unit-cost :unit-price :carry-from]}}})
 
 
 (defn record-revision-id
@@ -262,30 +268,30 @@
   [lines]
   (for [{:keys [new-item? unit] :as line} lines
         :let [unit (some-> unit str/trim not-empty)]
-        :when (and new-item? unit (not (stock-items/unit? unit)))]
+        :when (and new-item? unit (not (:new-counterpart? line)) (not (stock-items/unit? unit)))]
     (problem line :unknown-unit)))
 
 
 (defn- tentative
-  "Selected entries as record revisions and lines, in reviewed order, recorded `now`."
-  {:malli/schema [:=> [:cat [:sequential :map] [:sequential :string] :any] :map]}
-  [lines order now]
+  "Selected entries as record revisions, and their signed lines (`movements/expand`) as record lines, in reviewed
+  order, recorded `now`. A payment is a record without lines."
+  {:malli/schema [:=> [:cat [:sequential :map] [:sequential :map] [:sequential :string] :any] :map]}
+  [entries lines order now]
   (let [position (zipmap order (range))
         grouped  (group-by :entry-id lines)]
-    {:records (vec (for [[entry-id ls] grouped
-                         :let          [{:keys [kind occurred-at supplier-id store-id]} (:entry (first ls))]]
+    {:records (vec (for [{:keys [entry-id kind occurred-at supplier-id store-id direction amount]} entries
+                         :when (or (= "payment" kind) (grouped entry-id))]
                      (present {:record-revision-id (record-revision-id entry-id 1) :record-id entry-id :revision  1     :kind        kind
                                :occurred-at        occurred-at :sequence (position entry-id 0)         :cancelled false :recorded-at now
-                               :supplier-id        supplier-id :store-id store-id})))
+                               :supplier-id        supplier-id :store-id store-id :direction direction                  :amount      amount})))
      :lines   (vec (for [[entry-id ls] grouped
                          [index line]  (map vector (range) ls)]
-                     (cond-> {:record-line-id     (record-line-id (record-revision-id entry-id 1) index)
-                              :record-revision-id (record-revision-id entry-id 1) :position index
-                              :stock-item-id      (:stock-item-id line) :warehouse-id       (:warehouse-id line)
-                              (if (= "correction" (:kind (:entry line))) :counted-quantity :quantity-change)
-                              (cond-> (:quantity line) (= "sale" (:kind (:entry line))) -)}
-                       (:unit-cost line) (assoc :unit-cost (:unit-cost line))
-                       (:unit-price line) (assoc :unit-price (:unit-price line)))))}))
+                     (present {:record-line-id     (record-line-id (record-revision-id entry-id 1) index)
+                               :record-revision-id (record-revision-id entry-id 1) :position index
+                               :stock-item-id      (:stock-item-id line) :warehouse-id       (:warehouse-id line)
+                               (if (= "correction" (:kind (:entry line))) :counted-quantity :quantity-change)
+                               (if (= "correction" (:kind (:entry line))) (:quantity line) (:change line))
+                               :unit-cost          (:unit-cost line) :unit-price             (:unit-price line)   :carry-from (:carry-from line)})))}))
 
 
 (defn- openings
@@ -440,13 +446,14 @@
         status   (entries/status-index facts)
         blocked  (for [entry picked {:keys [code line-id field]} (entries/blockers entry (:lines entry) status)]
                    {:entry-id (:entry-id entry) :line-id line-id :field field
-                    :code     (if (#{:archived-reference :supplier-missing :lines-missing} code) code :entry-incomplete)})
+                    :code     (if (#{:quantity-missing :warehouse-missing :item-missing :occurred-at-missing} code) :entry-incomplete code)})
         future   (for [{:keys [entry-id occurred-at]} picked :when (and occurred-at (pos? (compare occurred-at now)))]
                    {:entry-id entry-id :line-id nil :code :future-occurrence})
-        lines    (resolve-lines facts (with-suppliers picked))
+        sellers  (with-suppliers picked)
+        lines    (resolve-lines facts (map #(assoc % :lines (movements/expand % (partial movements/counterpart (:stock-items facts)))) sellers))
         usable   (if (seq blocked) [] lines)
         changes  (if (seq blocked) [] (picked-changes picked))
-        proposed (tentative usable order now)
+        proposed (tentative (if (seq blocked) [] sellers) usable order now)
         before   (valuation/replay (:records history) (:lines history))
         after    (valuation/replay (into (:records history) (:records proposed)) (into (:lines history) (:lines proposed)))
         pairs    (distinct (map (juxt :stock-item-id :warehouse-id) usable))
@@ -524,6 +531,13 @@
    :unknown-unit          [:validation "Choose a unit from the list."]
    :supplier-missing      [:validation "Choose a supplier."]
    :lines-missing         [:validation "Add at least one line."]
+   :reason-missing        [:validation "Enter a reason."]
+   :inputs-missing        [:validation "Add at least one input."]
+   :outputs-missing       [:validation "Add at least one output."]
+   :side-missing          [:validation "Choose input or output."]
+   :direction-missing     [:validation "Choose received or paid."]
+   :counterparty-missing  [:validation "Choose a supplier or store."]
+   :amount-missing        [:validation "Enter an amount above 0."]
    :supplier-name-taken   [:supplier-name-taken "A supplier with this name already exists."]
    :archived-reference    [:archived-reference "Restore the archived record first."]
    :count-without-history [:validation "This stock has no history here. Declare opening stock first."]
@@ -554,9 +568,9 @@
            ;; Lines naming one new product and variant share one item: register it, and each of its barcodes, once.
            (for [l (sort-by :line-id (first :stock-item-id :new-item?))]
              {:type ::stock-items/stock-item-registered
-              :data (present {:stock-item-id (:stock-item-id l)  :product-id (:product-id l)  :variant-label (trim (:variant-label l))
-                              :article       (trim (:article l)) :unit       (trim (:unit l)) :condition     "regular"                 :status "active"
-                              :revision      1})})
+              :data (present {:stock-item-id   (:stock-item-id l)   :product-id (:product-id l)  :variant-label (trim (:variant-label l))
+                              :article         (trim (:article l))  :unit       (trim (:unit l)) :condition     (:condition l "regular")  :status "active"
+                              :regular-item-id (:regular-item-id l) :revision   1})})
            (for [[item code] (distinct (for [l lines :when (:new-item? l) code (:barcodes l)] [(:stock-item-id l) code]))]
              {:type ::stock-items/stock-item-barcode-assigned
               :data {:barcode-id (stock-items/barcode-id item code) :stock-item-id item :barcode code}})))))
@@ -617,21 +631,23 @@
 
 
 (defn operations
-  "Effective purchase and sale records, newest first, each with its lines and derived total: the sum of priced line
-  amounts (quantity × unit cost for a purchase, × unit price for a sale), `partial?` when some line has no price."
+  "Effective operation records (every kind but opening and correction), newest first, each with its lines and derived
+  total: a payment's amount, else the sum of priced line amounts (quantity × the kind's price field), `partial?` when
+  some line of a priced kind has no price. Kinds without a price have no total."
   {:malli/schema [:=> [:cat :map] [:vector :map]]}
   [{:keys [records lines]}]
   (let [by-record (group-by :record-revision-id lines)]
     (->> (valuation/effective records)
-         (filter (comp #{"purchase" "sale"} :kind))
+         (remove (comp #{"opening" "correction"} :kind))
          (sort-by (juxt :occurred-at :recorded-at :sequence) #(compare %2 %1))
-         (mapv (fn [{:keys [kind record-revision-id] :as r}]
+         (mapv (fn [{:keys [kind record-revision-id amount] :as r}]
                  (let [ls     (vec (sort-by :position (by-record record-revision-id)))
-                       price  (if (= "sale" kind) :unit-price :unit-cost)
-                       priced (filter price ls)]
+                       price  (get-in entries/operation-rules [kind :price])
+                       priced (when price (filter price ls))]
                    (assoc r :lines ls
-                          :total (when (seq priced) (reduce + 0M (map #(* (abs (:quantity-change %)) (bigdec (price %))) priced)))
-                          :partial? (< (count priced) (count ls)))))))))
+                          :total (cond amount (bigdec amount)
+                                       (seq priced) (reduce + 0M (map #(* (abs (:quantity-change %)) (bigdec (price %))) priced)))
+                          :partial? (boolean (and price (< (count priced) (count ls)))))))))))
 
 
 (defreadmodel accepted-operations
