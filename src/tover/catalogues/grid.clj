@@ -34,6 +34,31 @@
   (mapv #(assoc % :id (:product-id %) :category-id (:category %) :default-warehouse-id (:default-warehouse %)) products))
 
 
+(defn purchased
+  "Board chapter 18 · Supplier history: per supplier, the stock items bought from it in accepted purchases, grouped
+  by product, as `Product: variant, variant; Product: …`."
+  {:malli/schema [:=> [:cat [:sequential :map] :map] :map]}
+  [operations {:keys [products stock-items]}]
+  (let [product (into {} (map (juxt :product-id :name)) products)
+        item    (into {} (map (juxt :stock-item-id identity)) stock-items)]
+    (into {} (for [[supplier ops] (group-by :supplier-id (filter #(= "purchase" (:kind %)) operations))
+                   :let           [items (keep item (distinct (mapcat #(map :stock-item-id (:lines %)) ops)))]]
+               [supplier (str/join "; " (for [[p is] (sort-by (comp records/name-key str product key) (group-by :product-id items))]
+                                          (let [variants (sort (keep #(not-empty (:variant-label %)) is))]
+                                            (str (product p) (when (seq variants) (str ": " (str/join ", " variants)))))))]))))
+
+
+(defn- with-purchases
+  "Supplier rows with what was bought from them; without it when the history cannot be read."
+  {:malli/schema [:=> [:cat :map [:vector :map]] [:vector :map]]}
+  [context rows]
+  (let [bought (try (purchased (runtime/read-model context :tover.inventory.acceptance.model/accepted-operations {})
+                               (runtime/read-model context :tover.inventory.references/draft-catalogue {}))
+                    (catch ExceptionInfo error
+                      (if (:status (ex-data error)) (throw error) (do (mu/log ::purchases-unavailable :message (ex-message error)) {}))))]
+    (mapv #(assoc % :purchased (bought (:id %))) rows)))
+
+
 (def ^:private purposes
   [["storage" "Storage"] ["sales" "Sales"] ["production" "Production"]])
 
@@ -53,10 +78,12 @@
                   :columns  [{:key :name :label "Name" :width 280} {:key :description :label "Description" :width 280}
                              {:key :purpose :label "Purpose" :width 160 :options purposes}]}
     "suppliers" {:title    "Suppliers" :read-model ::suppliers/supplier-catalogue :rows :records :by-id :id :id-key :supplier-id
+                 :extra    with-purchases
                  :commands [::suppliers/register-supplier ::suppliers/update-supplier ::suppliers/archive-supplier
                             ::suppliers/restore-supplier]
                  :columns  [{:key :name :label "Name" :width 280} {:key :address :label "Address" :width 280}
-                            {:key :contact :label "Contact information" :width 240}]}
+                            {:key :contact :label "Contact information" :width 240}
+                            {:key :purchased :label "Purchased" :width 320 :read-only true}]}
     "categories" {:title    "Categories" :read-model ::categories/category-catalogue :rows :records :by-id :id :id-key :category-id
                   :commands [::categories/register-category ::categories/update-category ::categories/archive-category
                              ::categories/restore-category]
@@ -113,12 +140,14 @@
   (let [{:keys [columns commands]} (get kinds kind)
         target (fn [path] {:type "catalogue-edit" :id id :rowId id :revision revision :path path :kind kind})]
     {:id    id :groupId id :label (:name row)
-     :cells (conj (mapv (fn [{:keys [key lookup options]}]
+     :cells (conj (mapv (fn [{:keys [key lookup options read-only]}]
                           (let [value (get row key)]
-                            (assoc (cond lookup (reference-cell value)
-                                         options (select-cell value options)
-                                         :else {:value (or value "") :editor {:type "text"}})
-                                   :target (cond-> (target (name key)) lookup (assoc :lookupKind lookup)))))
+                            (if read-only
+                              {:value (or value "") :readOnly true}
+                              (assoc (cond lookup (reference-cell value)
+                                           options (select-cell value options)
+                                           :else {:value (or value "") :editor {:type "text"}})
+                                     :target (cond-> (target (name key)) lookup (assoc :lookupKind lookup))))))
                         columns)
                   (assoc (status-cell row (= 5 (count commands))) :target (target "status")))}))
 
@@ -152,8 +181,8 @@
   "Rows of `kind`, or nil when they cannot be read: unavailable information is never shown as an empty grid."
   {:malli/schema [:=> [:cat :map Kind :map] [:maybe [:vector :map]]]}
   [context kind input]
-  (let [{:keys [read-model rows]} (get kinds kind)]
-    (try (rows (runtime/read-model context read-model input))
+  (let [{:keys [read-model rows extra] :or {extra (fn [_ found] found)}} (get kinds kind)]
+    (try (extra context (rows (runtime/read-model context read-model input)))
          (catch ExceptionInfo error
            (if (:status (ex-data error))
              (throw error)

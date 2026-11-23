@@ -385,3 +385,16 @@
          (web/entry-names [{:entry-id "o" :kind "opening" :lines [{:stock-item-id "tee-m" :warehouse-id "main" :quantity 5}]}
                            {:entry-id "c" :kind "correction" :lines [] :changes [{:stock-item-id "tee-m" :archive true}]}]
                           {"tee-m" "T-shirt / M"} {"main" "Main"}))))
+
+
+;; 18 / 19 · Pending purchases and sales show on the stock table
+
+
+(deftest pending-operations-show-their-effect
+  (let [model (web/stock-grid table {:mode    "units"
+                                     :entries [{:entry-id "p" :revision 1 :kind "purchase" :lines [{:line-id "p-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 4}]}
+                                               {:entry-id "s" :revision 1 :kind "sale" :lines [{:line-id "s-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 1}]}]})
+        main  (nth (cells-of model "tee-m") (.indexOf ^java.util.List (mapv :key (:columns model)) "main"))]
+    (is (= ["5 → " "8" true] ((juxt :prefix :value :readOnly) main)))
+    (is (re-find #"Purchase \+4" (:title main)))
+    (is (empty? (:pending model)) "they are not selectable in the stock preview")))

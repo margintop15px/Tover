@@ -13,7 +13,8 @@
 
 (use-fixtures :each bel-test/isolated-registry
   (fn [f]
-    (bel/build-registry! ['tover.shared.web.core 'tover.catalogues.warehouses.model 'tover.catalogues.categories.model
+    (bel/build-registry! ['tover.shared.web.core 'tover.catalogues.warehouses.model 'tover.catalogues.suppliers.model
+                          'tover.catalogues.stores.model 'tover.catalogues.categories.model
                           'tover.catalogues.products.model 'tover.inventory.stock-items.model
                           'tover.inventory.entries.model 'tover.inventory.acceptance.model])
     (f))
@@ -32,7 +33,9 @@
 (def references
   {:warehouses  [{:id "main" :status "active"} {:id "old" :status "archived"}]
    :products    [{:id "tee" :status "active"}]
-   :stock-items [{:id "tee-m" :status "active"}]})
+   :stock-items [{:id "tee-m" :status "active"}]
+   :suppliers   [{:id "tex" :status "active"} {:id "gone" :status "archived"}]
+   :stores      [{:id "web" :status "active"} {:id "closed" :status "archived"}]})
 
 
 (defn decide
@@ -347,3 +350,72 @@
         (testing "another workspace never sees these entries"
           (is (= {:entries [] :findings []}
                  (runtime/read-model (context repo #uuid "00000000-0000-0000-0000-000000000002") ::entries/pending-entries {}))))))))
+
+
+;; 18 · Propose the purchase · 19 · Propose the sale
+
+
+(def purchase
+  {:entry-id "p1" :kind "purchase" :occurred-at "2026-11-19T00:00:00Z" :supplier-id "tex"
+   :lines    [{:line-id "l1" :stock-item-id "tee-m" :warehouse-id "main" :quantity "5" :unit-cost "200.00"}]})
+
+
+(def sale
+  {:entry-id "s1" :kind "sale" :occurred-at "2026-11-19T00:00:00Z" :store-id "web"
+   :lines    [{:line-id "l1" :stock-item-id "tee-m" :warehouse-id "main" :quantity "3" :unit-price "150.00"}]})
+
+
+(defn- save-rejection
+  {:malli/schema [:=> [:cat :map] [:maybe :map]]}
+  [input]
+  (select-keys (rejection #(decide ::entries/save-shared-inventory-entry {} input)) [:type :field]))
+
+
+(deftest save-a-purchase-and-a-sale
+  (let [plan (decide ::entries/save-shared-inventory-entry {} purchase)]
+    (is (= ["purchase" "tex"] ((juxt :kind :supplier-id) (get-in plan [:events 0 :data]))))
+    (is (= [5 "200.00"] ((juxt :quantity :unit-cost) (get-in plan [:events 1 :data])))))
+  (let [plan (decide ::entries/save-shared-inventory-entry {} sale)]
+    (is (= ["sale" "web"] ((juxt :kind :store-id) (get-in plan [:events 0 :data]))))
+    (is (= [3 "150.00"] ((juxt :quantity :unit-price) (get-in plan [:events 1 :data])))))
+  (testing "a price is optional"
+    (is (not (contains? (get-in (decide ::entries/save-shared-inventory-entry {} (update-in sale [:lines 0] dissoc :unit-price)) [:events 1 :data])
+                        :unit-price))))
+  (testing "a new supplier is saved by name"
+    (is (= [nil "Cotton Co"] ((juxt :supplier-id :supplier-name)
+                              (get-in (decide ::entries/save-shared-inventory-entry {} (-> purchase (dissoc :supplier-id) (assoc :supplier-name " Cotton Co ")))
+                                      [:events 0 :data]))))))
+
+
+(deftest operation-quantities-are-whole-and-positive
+  (doseq [bad ["0" "-3" "2.5"] op [purchase sale]]
+    (is (= {:type :validation :field :quantity} (save-rejection (assoc-in op [:lines 0 :quantity] bad))) (str (:kind op) " " bad))))
+
+
+(deftest negative-prices-are-rejected
+  (is (= {:type :validation :field :unit-cost} (save-rejection (assoc-in purchase [:lines 0 :unit-cost] "-1"))))
+  (is (= {:type :validation :field :unit-price} (save-rejection (assoc-in sale [:lines 0 :unit-price] "-1")))))
+
+
+(deftest a-sale-takes-existing-stock
+  (is (= {:type :validation :field :stock-item-id}
+         (save-rejection (update-in sale [:lines 0] #(-> % (dissoc :stock-item-id) (assoc :product-name "Cup"))))))
+  (is (= :validation (:type (save-rejection (update-in sale [:lines 0] #(-> % (dissoc :warehouse-id) (assoc :warehouse-name "Back"))))))))
+
+
+(deftest references-fit-the-kind
+  (is (= :validation (:type (save-rejection (assoc purchase :store-id "web")))))
+  (is (= :validation (:type (save-rejection (assoc sale :supplier-id "tex")))))
+  (is (= :validation (:type (save-rejection (assoc-in purchase [:lines 0 :unit-price] "1")))))
+  (is (= {:type :validation :field :supplier-id} (save-rejection (assoc purchase :supplier-id "gone"))) "a new selection must be active")
+  (is (= {:type :validation :field :store-id} (save-rejection (assoc sale :store-id "closed")))))
+
+
+(deftest operation-blockers
+  (let [status {:warehouses {"main" "active"} :stock-items {"tee-m" "active"} :suppliers {"gone" "archived"} :stores {"closed" "archived"}}
+        line   {:line-id "l1" :stock-item-id "tee-m" :warehouse-id "main" :quantity 1}
+        codes  #(set (map (juxt :field :code) (entries/blockers %1 %2 status)))]
+    (is (= #{[:supplier-id :supplier-missing]} (codes {:kind "purchase" :occurred-at at} [line])))
+    (is (= #{[:lines :lines-missing]} (codes {:kind "sale" :occurred-at at} [])))
+    (is (= #{[:supplier-id :archived-reference]} (codes {:kind "purchase" :occurred-at at :supplier-id "gone"} [line])))
+    (is (= #{[:store-id :archived-reference]} (codes {:kind "sale" :occurred-at at :store-id "closed"} [line])))))

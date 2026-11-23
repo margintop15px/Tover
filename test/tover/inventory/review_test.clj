@@ -335,3 +335,134 @@
     (is (:valid? result) (pr-str (:problems result)))
     (is (= [["tee-m" "main" 0 3]] (map (juxt :stock-item-id :warehouse-id :quantity-before :quantity-after) (:effects result)))
         "opening 5, then the count sets 3, whatever order was sent")))
+
+
+;; 18 · Review the purchase · 19 · Review the sale
+
+
+(def suppliers
+  {:suppliers [{:supplier-id "tex" :name "Textiles LLC" :status "active" :revision 1}
+               {:supplier-id "gone" :name "Gone Ltd" :status "archived" :revision 2}]
+   :stores    [{:store-id "web" :name "Web shop" :default-warehouse-id "main" :status "active" :revision 1}
+               {:store-id "closed" :name "Closed" :status "archived" :revision 2}]})
+
+
+(defn- operation
+  {:malli/schema [:=> [:cat :string :string :map [:* :map]] :map]}
+  [kind id fields & lines]
+  (merge (apply entry id lines) {:kind kind} fields))
+
+
+(defn- values
+  {:malli/schema [:=> [:cat :map] [:sequential :any]]}
+  [result]
+  (map (juxt :quantity-after #(.stripTrailingZeros ^BigDecimal (:value-after %))) (:effects result)))
+
+
+(deftest purchase-values-by-moving-average
+  (let [purchase #(operation "purchase" "p" {:supplier-id "tex"} (merge {:stock-item-id "tee-m"} %))]
+    (is (= [[10 1500M]] (values (review (facts [(purchase {:unit-cost "200.00"})] (assoc suppliers :history opened-5)) "p")))
+        "5 at 100.00 plus 5 at 200.00")
+    (is (= [[10 1000M]] (values (review (facts [(purchase {})] (assoc suppliers :history opened-5)) "p")))
+        "an unpriced line enters at the average")))
+
+
+(deftest purchase-needs-a-supplier-and-a-line
+  (is (= #{:supplier-missing} (problems (review (facts [(operation "purchase" "p" {} {:stock-item-id "tee-m"})] suppliers) "p"))))
+  (is (= [:supplier-id] (map :field (:problems (review (facts [(operation "purchase" "p" {} {:stock-item-id "tee-m"})] suppliers) "p")))))
+  (is (= #{:lines-missing} (problems (review (facts [(operation "purchase" "p" {:supplier-id "tex"})] suppliers) "p")))))
+
+
+(deftest purchase-in-the-future-or-before-the-opening
+  (is (= #{:future-occurrence}
+         (problems (review (facts [(operation "purchase" "p" {:supplier-id "tex" :occurred-at (day 21)} {:stock-item-id "tee-m"})] suppliers) "p"))))
+  (let [history (assoc-in opened-5 [:records 0 :occurred-at] (day 5))]
+    (is (= #{:opening-not-first}
+           (problems (review (facts [(operation "purchase" "p" {:supplier-id "tex" :occurred-at (day 3)} {:stock-item-id "tee-m"})]
+                                    (assoc suppliers :history history))
+                             "p"))))))
+
+
+(deftest archived-warehouse-supplier-or-store-blocks
+  (is (= #{:archived-reference}
+         (problems (review (facts [(operation "purchase" "p" {:supplier-id "tex"} {:stock-item-id "tee-m" :warehouse-id "old"})] suppliers) "p"))))
+  (is (= #{:archived-reference} (problems (review (facts [(operation "purchase" "p" {:supplier-id "gone"} {:stock-item-id "tee-m"})] suppliers) "p"))))
+  (is (= #{:archived-reference}
+         (problems (review (facts [(operation "sale" "s" {:store-id "closed"} {:stock-item-id "tee-m" :quantity 1})] (assoc suppliers :history opened-5)) "s")))))
+
+
+(deftest new-supplier-registered-once
+  (let [result (review (facts [(operation "purchase" "a" {:supplier-name "Cotton Co"} {:stock-item-id "tee-m"})
+                               (assoc (operation "purchase" "b" {:supplier-name " cotton  co"} {:stock-item-id "tee-m"}) :occurred-at (day 18))]
+                              suppliers)
+                       "a" "b")]
+    (is (:valid? result) (pr-str (:problems result)))
+    (is (= [[:supplier "supplier:a" "Cotton Co"]] (map (juxt :type :id :label) (:registrations result))))
+    (is (= #{"supplier:a"} (set (map :supplier-id (get-in result [:records :records])))))))
+
+
+(deftest supplier-name-taken
+  (let [result (review (facts [(operation "purchase" "p" {:supplier-name "textiles llc"} {:stock-item-id "tee-m"})] suppliers) "p")]
+    (is (= #{:supplier-name-taken} (problems result)))
+    (is (= "Textiles LLC" (:owner-supplier (first (:problems result)))))))
+
+
+(deftest sale-values-at-the-average
+  (let [sale (operation "sale" "s" {:store-id "web"} {:stock-item-id "tee-m" :quantity 3 :unit-price "150.00"})
+        f    (facts [sale] (assoc suppliers :history (assoc-in opened-at-100 [:lines 0 :quantity-change] 10)))]
+    (is (= [[7 700M]] (values (review f "s"))) "10 at 100.00, 3 sold")
+    (is (= [[-3 "150.00" "web"]]
+           (let [{:keys [records lines]} (:records (acceptance/review f {:selection [{:entry-id "s" :revision 1}] :order ["s"]}))]
+             (map (juxt :quantity-change :unit-price (constantly (:store-id (first records)))) lines))))))
+
+
+(deftest sale-shortage-names-the-pair
+  (let [result (review (facts [(operation "sale" "s" {} {:stock-item-id "tee-m" :quantity 6})] (assoc suppliers :history opened-5)) "s")]
+    (is (= #{:negative-balance} (problems result)))
+    (is (= ["tee-m" "main" (day 19)] ((juxt :stock-item-id :warehouse-id :occurred-at) (first (:problems result)))))))
+
+
+(deftest backdated-sale-breaks-a-later-one
+  (let [history (-> opened-5
+                    (update :records conj {:record-revision-id "s#1"    :record-id "s" :revision  1     :acceptance-id "a"      :kind "sale"
+                                           :occurred-at        (day 10) :sequence  0   :cancelled false :recorded-at   (day 10)})
+                    (update :lines conj {:record-line-id "s#1/0" :record-revision-id "s#1" :position 0 :stock-item-id "tee-m"
+                                         :warehouse-id   "main"  :quantity-change    -4}))]
+    (is (= #{:negative-balance}
+           (problems (review (facts [(operation "sale" "n" {:occurred-at (day 5)} {:stock-item-id "tee-m" :quantity 2})] (assoc suppliers :history history)) "n"))))))
+
+
+(deftest purchase-covers-a-pending-sale
+  (let [result (review (facts [(operation "purchase" "p" {:supplier-id "tex" :occurred-at (day 18)} {:stock-item-id "tee-m"})
+                               (operation "sale" "s" {} {:stock-item-id "tee-m" :quantity 3})]
+                              (assoc suppliers :history (assoc-in opened-5 [:lines 0 :quantity-change] 0)))
+                       "p" "s")]
+    (is (:valid? result) (pr-str (:problems result)))
+    (is (= [[2 200M]] (values result)))))
+
+
+(deftest sales-at-the-same-second-need-an-order
+  (is (= #{:order-required}
+         (problems (review (facts [(operation "sale" "a" {} {:stock-item-id "tee-m" :quantity 1})
+                                   (operation "sale" "b" {} {:stock-item-id "tee-m" :quantity 1})]
+                                  (assoc suppliers :history opened-5))
+                           "a" "b")))))
+
+
+(deftest accepted-operations-newest-first-with-totals
+  (let [record (fn [id kind at] {:record-revision-id (str id "#1") :record-id id    :revision    1        :acceptance-id "a" :kind kind :occurred-at (day at)
+                                 :sequence           0             :cancelled false :recorded-at (day at)})
+        line   (fn [id pos q & [k v]] (cond-> {:record-line-id (str id "#1/" pos) :record-revision-id (str id "#1") :position        pos
+                                               :stock-item-id  "tee-m"            :warehouse-id       "main"        :quantity-change q}
+                                        k (assoc k v)))
+        ops    (acceptance/operations {:records [(record "o" "opening" 1) (record "p" "purchase" 2) (record "s" "sale" 3)]
+                                       :lines   [(line "p" 0 5 :unit-cost "200.00") (line "p" 1 2) (line "s" 0 -3 :unit-price "150.00")]})]
+    (is (= [["s" 450M false] ["p" 1000M true]]
+           (map (juxt :record-id #(.stripTrailingZeros ^BigDecimal (:total %)) :partial?) ops)))))
+
+
+(deftest fingerprint-sees-the-store
+  (let [f   (facts [(operation "sale" "s" {:store-id "web"} {:stock-item-id "tee-m" :quantity 1})] (assoc suppliers :history opened-5))
+        sel {:selection [{:entry-id "s" :revision 1}] :order ["s"]}]
+    (is (not= (:fingerprint (acceptance/review f sel))
+              (:fingerprint (acceptance/review (assoc-in f [:stores 0 :name] "Shop") sel))))))

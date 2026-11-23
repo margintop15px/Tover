@@ -62,10 +62,12 @@
 
 
 (defn- proposals
-  "Proposed new names per field: product names, warehouse names."
-  {:malli/schema [:=> [:cat [:sequential :map]] [:sequential :map]]}
-  [all]
+  "Proposed new names per field: product names, warehouse names, and the new supplier of a purchase (no line)."
+  {:malli/schema [:=> [:cat [:sequential :map] [:sequential :map]] [:sequential :map]]}
+  [entries all]
   (concat
+    (for [{:keys [entry-id supplier-id supplier-name]} entries :when (and (not supplier-id) (text-key supplier-name))]
+      {:line {:entry-id entry-id :line-id nil} :field :supplier-name :key (text-key supplier-name)})
     (for [line all :when (and (not (:stock-item-id line)) (not (:product-id line)) (text-key (:product-name line)))]
       {:line line :field :product-name :key (text-key (:product-name line))})
     (for [line all :when (and (not (:warehouse-id line)) (text-key (:warehouse-name line)))]
@@ -74,10 +76,11 @@
 
 (defn- references
   {:malli/schema [:=> [:cat :map [:sequential :map]] [:sequential Finding]]}
-  [{:keys [products warehouses]} all]
+  [{:keys [products warehouses suppliers entries]} all]
   (let [existing {:product-name   (map #(hash-map :id (:product-id %) :name (:name %)) products)
-                  :warehouse-name (map #(hash-map :id (:warehouse-id %) :name (:name %)) warehouses)}
-        proposed (proposals all)]
+                  :warehouse-name (map #(hash-map :id (:warehouse-id %) :name (:name %)) warehouses)
+                  :supplier-name  (map #(hash-map :id (:supplier-id %) :name (:name %)) suppliers)}
+        proposed (proposals entries all)]
     (concat
       (for [{:keys [line field]} proposed] (finding line field :new-reference :info nil))
       (for [line all :when (new-item? line)] (finding line :variant-label :new-reference :info nil))

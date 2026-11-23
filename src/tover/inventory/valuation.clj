@@ -11,7 +11,7 @@
   [:map [:quantity :int] [:average [:maybe decimal?]] [:valued? :boolean]])
 
 
-(defn- effective
+(defn effective
   "Latest revision per record id; a cancelled latest revision removes the record."
   {:malli/schema [:=> [:cat [:sequential :map]] [:sequential :map]]}
   [records]

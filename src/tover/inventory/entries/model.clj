@@ -17,8 +17,8 @@
 
 
 (def kinds
-  "Opening (chapter 14) and Correction, the chapter 15 count."
-  [:enum "opening" "correction"])
+  "Opening (chapter 14), Correction (the chapter 15 count), Purchase (chapter 18) and Sale (chapter 19)."
+  [:enum "opening" "correction" "purchase" "sale"])
 
 
 (def Entry
@@ -27,6 +27,10 @@
    [:kind kinds]
    [:occurred-at {:optional true} validation/Instant]
    [:reason {:optional true} :string]
+   ;; Purchase: an existing supplier, or the name of one registered on acceptance. Sale: the store (sales channel).
+   [:supplier-id {:optional true :bel/ref :tover.catalogues.suppliers.model/suppliers} Id]
+   [:supplier-name {:optional true} :string]
+   [:store-id {:optional true :bel/ref :tover.catalogues.stores.model/stores} Id]
    [:status [:enum "pending" "accepted" "discarded"]]
    [:revision [:int {:min 1}]]
    [:saved-by :uuid]])
@@ -43,7 +47,8 @@
    [:warehouse-id {:optional true :bel/ref :tover.catalogues.warehouses.model/warehouses} Id]
    [:warehouse-name {:optional true} :string]
    [:quantity {:optional true} :int]
-   [:unit-cost {:optional true} :string]])
+   [:unit-cost {:optional true} :string]
+   [:unit-price {:optional true} :string]])
 
 
 (def EntryLine
@@ -89,7 +94,7 @@
 
 
 (def ^:private entry-fields
-  [:kind :occurred-at :reason :status :revision :saved-by])
+  [:kind :occurred-at :reason :supplier-id :supplier-name :store-id :status :revision :saved-by])
 
 
 (def ^:private line-keys
@@ -278,13 +283,14 @@
 
 (defn parse-amount
   "A nonnegative decimal with at most 4 fraction digits; `,` and `.` both separate decimals."
-  {:malli/schema [:=> [:cat :string] decimal?]}
-  [text]
-  (let [normalized (str/replace (str/trim text) "," ".")]
-    (cond
-      (re-matches #"-\d+(\.\d+)?" normalized) (invalid! :unit-cost "Enter an amount of 0 or more." {:attempted text})
-      (re-matches #"\d+(\.\d{1,4})?" normalized) (bigdec normalized)
-      :else (invalid! :unit-cost "Enter an amount with at most 4 decimal places." {:attempted text}))))
+  {:malli/schema [:function [:=> [:cat :string] decimal?] [:=> [:cat :keyword :string] decimal?]]}
+  ([text] (parse-amount :unit-cost text))
+  ([field text]
+   (let [normalized (str/replace (str/trim text) "," ".")]
+     (cond
+       (re-matches #"-\d+(\.\d+)?" normalized) (invalid! field "Enter an amount of 0 or more." {:attempted text})
+       (re-matches #"\d+(\.\d{1,4})?" normalized) (bigdec normalized)
+       :else (invalid! field "Enter an amount with at most 4 decimal places." {:attempted text})))))
 
 
 (defn parse-instant
@@ -308,8 +314,9 @@
 (def DraftLine
   "A line as typed: quantity and unit cost arrive as cell text and are checked at save."
   (into [:map [:line-id Id] [:barcodes {:optional true} [:maybe [:vector Id]]]
-         [:quantity {:optional true} [:maybe [:or :int :string]]] [:unit-cost {:optional true} [:maybe :string]]]
-        (comp (remove (comp #{:quantity :unit-cost} first))
+         [:quantity {:optional true} [:maybe [:or :int :string]]] [:unit-cost {:optional true} [:maybe :string]]
+         [:unit-price {:optional true} [:maybe :string]]]
+        (comp (remove (comp #{:quantity :unit-cost :unit-price} first))
               (map (fn [[key props schema]] [key (dissoc props :bel/ref) [:maybe schema]])))
         line-fields))
 
@@ -330,6 +337,9 @@
    [:kind kinds]
    [:occurred-at {:optional true} [:maybe :string]]
    [:reason {:optional true} [:maybe [:string {:max 1000}]]]
+   [:supplier-id {:optional true} [:maybe Id]]
+   [:supplier-name {:optional true} [:maybe [:string {:max 500}]]]
+   [:store-id {:optional true} [:maybe Id]]
    [:lines {:optional true} [:vector DraftLine]]
    [:changes {:optional true} [:vector DraftChange]]])
 
@@ -356,6 +366,7 @@
       (cond-> line
         (:quantity line) (update :quantity parse-quantity)
         (:unit-cost line) (update :unit-cost (comp str parse-amount))
+        (:unit-price line) (update :unit-price #(str (parse-amount :unit-price %)))
         (empty? (:barcodes line)) (dissoc :barcodes))
       (catch clojure.lang.ExceptionInfo error
         (throw (ex-info (ex-message error) (assoc (ex-data error) :line-id line-id)))))))
@@ -373,6 +384,42 @@
     (invalid! :stock-item-id "A correction counts existing stock items only." {:line-id line-id}))
   (when (:unit-cost line)
     (invalid! :unit-cost "A correction has no unit cost." {:line-id line-id :attempted (:unit-cost line)})))
+
+
+(defn- check-operation-line!
+  "Purchase and Sale lines move 1 or more units. A sale takes existing stock items from existing warehouses and
+  carries a sale price; a purchase carries a purchase price (unit cost)."
+  {:malli/schema [:=> [:cat :string Line] :nil]}
+  [kind {:keys [line-id quantity] :as line}]
+  (when (and quantity (< quantity 1))
+    (invalid! :quantity "Enter a whole number of 1 or more." {:line-id line-id :attempted (str quantity)}))
+  (if (= "sale" kind)
+    (do (when (some line new-item-fields)
+          (invalid! :stock-item-id "A sale takes existing stock items only." {:line-id line-id}))
+        (when (:warehouse-name line)
+          (invalid! :warehouse-id "A sale takes stock from an existing warehouse." {:line-id line-id :attempted (:warehouse-name line)}))
+        (when (:unit-cost line)
+          (invalid! :unit-cost "A sale has a sale price, not a unit cost." {:line-id line-id :attempted (:unit-cost line)})))
+    (when (:unit-price line)
+      (invalid! :unit-price "Only a sale has a sale price." {:line-id line-id :attempted (:unit-price line)}))))
+
+
+(defn- check-references!
+  "Supplier for a purchase and store for a sale only. A new choice must be an active record; a saved one is kept even
+  if archived."
+  {:malli/schema [:=> [:cat :map [:maybe :map] :map] :nil]}
+  [references entry {:keys [kind] :as input}]
+  (let [supplier? (some #(blank->nil (get input %)) [:supplier-id :supplier-name])]
+    (when (and supplier? (not= "purchase" kind))
+      (invalid! :supplier-id "Only a purchase has a supplier." {}))
+    (when (and (blank->nil (:store-id input)) (not= "sale" kind))
+      (invalid! :store-id "Only a sale has a store." {}))
+    (doseq [[field records] [[:supplier-id :suppliers] [:store-id :stores]]
+            :let            [id (blank->nil (get input field))]
+            :when           (and id (not= id (get entry field)))]
+      (try (records/check-related! id (get references records) :validation)
+           (catch clojure.lang.ExceptionInfo _
+             (invalid! field "Choose an active record of this workspace." {:attempted id}))))))
 
 
 (defn- clean-barcodes
@@ -460,7 +507,9 @@
   [_ context _]
   {:warehouses  (choices (records/all-records context :tover.catalogues.warehouses.model/warehouses :warehouse-id) :warehouse-id)
    :products    (choices (records/all-records context :tover.catalogues.products.model/products :product-id) :product-id)
-   :stock-items (choices (records/all-records context :tover.inventory.stock-items.model/stock-items :stock-item-id) :stock-item-id)})
+   :stock-items (choices (records/all-records context :tover.inventory.stock-items.model/stock-items :stock-item-id) :stock-item-id)
+   :suppliers   (choices (records/all-records context :tover.catalogues.suppliers.model/suppliers :supplier-id) :supplier-id)
+   :stores      (choices (records/all-records context :tover.catalogues.stores.model/stores :store-id) :store-id)})
 
 
 (def ^:private draft-facts
@@ -478,15 +527,23 @@
   (current-draft! entry lines (or changes []) expected-revision)
   (when (and (seq (:changes input)) (not= "correction" kind))
     (invalid! :changes "Only a correction changes stock items." {}))
+  (check-references! references entry input)
   (let [before   (into {} (map (juxt :line-id identity)) lines)
         parsed   (mapv #(parse-line references (get before (:line-id %)) %) (:lines input))
-        _        (when (= "correction" kind) (run! check-correction-line! parsed))
+        _        (case kind
+                   "correction" (run! check-correction-line! parsed)
+                   ("purchase" "sale") (run! #(check-operation-line! kind %) parsed)
+                   (run! #(when (:unit-price %) (invalid! :unit-price "Only a sale has a sale price." {:line-id (:line-id %)})) parsed))
         prior    (into {} (map (juxt :stock-item-id identity)) changes)
         proposed (mapv #(parse-change references (get prior (:stock-item-id %)) %) (:changes input))
         instant  (some-> (blank->nil occurred-at) parse-instant)
         saved    (cond-> {:entry-id entry-id :kind kind :status "pending" :revision (inc (or expected-revision 0)) :saved-by actor}
                    instant (assoc :occurred-at instant)
-                   (blank->nil reason) (assoc :reason (str/trim reason)))]
+                   (blank->nil reason) (assoc :reason (str/trim reason))
+                   (blank->nil (:supplier-id input)) (assoc :supplier-id (:supplier-id input))
+                   (and (not (blank->nil (:supplier-id input))) (blank->nil (:supplier-name input)))
+                   (assoc :supplier-name (str/trim (:supplier-name input)))
+                   (blank->nil (:store-id input)) (assoc :store-id (:store-id input)))]
     {:events (-> [{:type ::shared-inventory-entry-saved :data saved}]
                  (into (line-events entry-id lines parsed))
                  (into (change-events entry-id (or changes []) proposed)))
@@ -517,9 +574,17 @@
   with only stock item changes needs no occurrence time."
   {:malli/schema [:=> [:cat :map [:sequential Line] :map] [:vector :map]]}
   [entry lines status]
-  (into (if (or (:occurred-at entry) (and (empty? lines) (seq (:changes entry))))
-          []
-          [{:line-id nil :field :occurred-at :code :occurred-at-missing}])
+  (into (cond-> (if (or (:occurred-at entry) (and (empty? lines) (seq (:changes entry))))
+                  []
+                  [{:line-id nil :field :occurred-at :code :occurred-at-missing}])
+          (and (= "purchase" (:kind entry)) (not (some entry [:supplier-id :supplier-name])))
+          (conj {:line-id nil :field :supplier-id :code :supplier-missing})
+          (and (#{"purchase" "sale"} (:kind entry)) (empty? lines))
+          (conj {:line-id nil :field :lines :code :lines-missing})
+          (and (:supplier-id entry) (not= "active" (get-in status [:suppliers (:supplier-id entry)])))
+          (conj {:line-id nil :field :supplier-id :code :archived-reference})
+          (and (:store-id entry) (not= "active" (get-in status [:stores (:store-id entry)])))
+          (conj {:line-id nil :field :store-id :code :archived-reference}))
         (mapcat (fn [{:keys [line-id] :as line}]
                   (concat
                     (when-not (:quantity line) [{:line-id line-id :field :quantity :code :quantity-missing}])
@@ -552,16 +617,20 @@
   {:products    (records/all-records context :tover.catalogues.products.model/products :product-id)
    :warehouses  (records/all-records context :tover.catalogues.warehouses.model/warehouses :warehouse-id)
    :stock-items (records/all-records context :tover.inventory.stock-items.model/stock-items :stock-item-id)
-   :barcodes    (records/all-records context :tover.inventory.stock-items.model/stock-item-barcodes :barcode-id)})
+   :barcodes    (records/all-records context :tover.inventory.stock-items.model/stock-item-barcodes :barcode-id)
+   :suppliers   (records/all-records context :tover.catalogues.suppliers.model/suppliers :supplier-id)
+   :stores      (records/all-records context :tover.catalogues.stores.model/stores :store-id)})
 
 
 (defn status-index
   "Catalogue status by kind and id, as `blockers` takes it."
   {:malli/schema [:=> [:cat :map] :map]}
-  [{:keys [warehouses products stock-items]}]
+  [{:keys [warehouses products stock-items suppliers stores]}]
   {:warehouses  (into {} (map (juxt :warehouse-id :status)) warehouses)
    :products    (into {} (map (juxt :product-id :status)) products)
-   :stock-items (into {} (map (juxt :stock-item-id :status)) stock-items)})
+   :stock-items (into {} (map (juxt :stock-item-id :status)) stock-items)
+   :suppliers   (into {} (map (juxt :supplier-id :status)) suppliers)
+   :stores      (into {} (map (juxt :store-id :status)) stores)})
 
 
 ;; Pending entries with blockers, and draft findings over all of them (nil when the rules are unavailable).

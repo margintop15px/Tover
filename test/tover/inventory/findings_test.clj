@@ -243,3 +243,22 @@
               (codes (run two-mugs (correction "a" [] [{:stock-item-id "mug-1" :barcodes-added ["4600000000048"]}])
                           (entry "o" "opening" {:product-id "tee" :variant-label "L" :barcodes ["4600000000048"] :warehouse-id "main" :quantity 1}))))
         "and the new item's line shows it too")))
+
+
+;; 18 · Propose the purchase
+
+
+(deftest new-supplier-with-a-similar-name
+  (let [facts {:suppliers [{:supplier-id "tex" :name "Textiles LLC" :status "active"}]}
+        found (run facts (assoc (entry "p" "purchase" {:stock-item-id "tee-m" :warehouse-id "main" :quantity 1}) :supplier-name "textiles  llc"))]
+    (is (= #{[nil :new-reference :info] [nil :similar-reference :warning]} (codes found)))
+    (is (= #{:supplier-name} (set (map :field found))))
+    (is (= {:id "tex" :name "Textiles LLC"} (:related (first (filter #(= :similar-reference (:code %)) found))))))
+  (is (= #{[nil :new-reference :info]}
+         (codes (run {:suppliers []} (assoc (entry "p" "purchase" {:stock-item-id "tee-m" :warehouse-id "main" :quantity 1}) :supplier-name "Cotton Co"))))))
+
+
+(deftest pending-purchase-covers-a-sale
+  (is (empty? (run {}
+                   (entry "p" "purchase" {:stock-item-id "tee-m" :warehouse-id "main" :quantity 5})
+                   (entry "s" "sale" {:stock-item-id "tee-m" :warehouse-id "main" :quantity 3})))))

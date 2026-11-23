@@ -184,3 +184,9 @@
 .stock-order { margin: 4px 0; padding-left: 20px; }
 .stock-move-dialog label { display: grid; gap: 4px; margin-bottom: 12px; }
 .stock-move-dialog h2 { margin-top: 0; font-size: 1rem; }
+
+/* Operations smart input: the unfinished addition as editable chips. */
+.operations-smart-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; padding: 0.5rem 0; }
+.operations-smart-chips[hidden] { display: none; }
+.operations-chip-kind { font-weight: 600; }
+.operations-add { white-space: nowrap; }

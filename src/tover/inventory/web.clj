@@ -89,7 +89,7 @@
   {:malli/schema [:=> [:cat :map :map] :map]}
   [{:keys [mode currency warehouses preview?]}
    {:keys [id className product-cell label label-cell details details-editable? base locked? accepted lines actions item correction correction-id
-           default-warehouse]}]
+           default-warehouse operations]}]
   (let [money?    (= "money" mode)
         archived? (:archived? item)
         ;; An existing row's counts and stock item changes go to its one Correction entry (chapter 15).
@@ -173,6 +173,12 @@
                           (and (= w default-warehouse) (nil? line)) (assoc :title (i18n/t "This product's default warehouse"))
                           (and (not money?) (nil? line) gone?)
                           (assoc :readOnly true :title (i18n/t "This warehouse is archived. Restore it to add stock."))
+                          ;; Pending purchases and sales are submitted from Operations; here they only show their effect.
+                          (and (not money?) (get operations w) (nil? line) (nil? count))
+                          (assoc :value (str (+ (:quantity cell 0) (reduce + (map :change (operations w)))))
+                                 :prefix (str (if (seq shown) shown "0") " → ") :className "inventory-cell-number stock-cell-pending" :readOnly true
+                                 :title (str/join "\n" (cons (i18n/t "Pending operations, submitted from Operations:")
+                                                             (map :label (operations w)))))
                           line (assoc :value (if money?
                                                (if (every? (comp decimal :unit-cost) ls)
                                                  (money (reduce + 0M (for [l ls] (* (decimal (:unit-cost l)) (or (decimal (:quantity l)) 0M)))))
@@ -326,6 +332,11 @@
         lines (pending-lines (filter #(= "opening" (:kind % "opening")) entries))
         ;; ponytail: one Correction per row; a second member's correction of the same item only shows in Submit.
         corrections (filter #(= "correction" (:kind %)) entries)
+        operations (group-by :stock-item-id
+                             (for [{:keys [kind lines]} entries :when (#{"purchase" "sale"} kind)
+                                   {:keys [stock-item-id warehouse-id quantity]} lines :when (and stock-item-id warehouse-id (int? quantity))]
+                               {:stock-item-id stock-item-id :warehouse-id warehouse-id :change (if (= "sale" kind) (- quantity) quantity)
+                                :label         (str (i18n/t (str/capitalize kind)) " " (if (= "sale" kind) "−" "+") quantity)}))
         corrected (into {} (for [{:keys [lines changes] :as c} (reverse corrections)
                                  :let [item (or (:stock-item-id (first lines)) (:stock-item-id (first changes)))]
                                  :when item]
@@ -367,6 +378,7 @@
                                              :details       {"article" article "barcodes" (str/join ", " barcodes) "unit" unit}
                                              :base          {"stock-item-id" stock-item-id} :accepted       {:cells (:cells item) :total (:total item)}
                                              :lines         (at-item stock-item-id)
+                                             :operations    (group-by :warehouse-id (operations stock-item-id))
                                              :item          (assoc item :product-id product-id) :correction correction
                                              :correction-id (or (:entry-id correction) (str "correction-" (random-uuid)))
                                              :actions       [{:type "item-history" :id stock-item-id :label (i18n/t "History")}]})
@@ -550,7 +562,7 @@
 ;; Reads
 
 
-(defn- read-or-nil
+(defn read-or-nil
   "A read model's answer, or nil when it cannot be read: unavailable stock is never shown as empty."
   {:malli/schema [:=> [:cat :map :qualified-keyword :map] :any]}
   [context id input]
@@ -698,7 +710,7 @@
 ;; Actions
 
 
-(defn- descriptor
+(defn descriptor
   {:malli/schema [:=> [:cat :qualified-keyword :string :map] :map]}
   [command command-id input]
   {:type  :command :id command :command-id command-id :input input
@@ -742,7 +754,8 @@
         at    (or (not-empty (str/trim occurredAt)) (some-> (:occurred-at entry) str))
         why   (or (not-empty (str/trim reason)) (:reason entry))]
     (descriptor ::entries/save-shared-inventory-entry commandId
-                (cond-> {:workspace-id workspaceId :entry-id entryId :kind (:kind entry "opening") :expected-revision revision :lines (vec (:lines entry))}
+                (cond-> (merge (select-keys entry [:supplier-id :supplier-name :store-id])
+                               {:workspace-id workspaceId :entry-id entryId :kind (:kind entry "opening") :expected-revision revision :lines (vec (:lines entry))})
                   (seq (:changes entry)) (assoc :changes (:changes entry))
                   at (assoc :occurred-at at)
                   why (assoc :reason why)))))

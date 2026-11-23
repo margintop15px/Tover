@@ -18,7 +18,8 @@
 
 (use-fixtures :each bel-test/isolated-registry
   (fn [f]
-    (bel/build-registry! ['tover.shared.web.core 'tover.catalogues.warehouses.model 'tover.catalogues.categories.model
+    (bel/build-registry! ['tover.shared.web.core 'tover.catalogues.warehouses.model 'tover.catalogues.suppliers.model
+                          'tover.catalogues.stores.model 'tover.catalogues.categories.model
                           'tover.catalogues.products.model 'tover.inventory.stock-items.model
                           'tover.inventory.entries.model 'tover.inventory.acceptance.model
                           'tover.workspaces.currency.model 'tover.inventory.stock.model])

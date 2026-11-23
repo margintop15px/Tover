@@ -24,7 +24,7 @@
     [:script {:src "/theme.js?v=2"}]
     [:script {:src "/identity.js?v=2" :defer true}]
     [:link {:rel "stylesheet" :href "/app.css"}]
-    [:link {:rel "stylesheet" :href "/stock.css?v=one-table"}]
+    [:link {:rel "stylesheet" :href "/stock.css?v=operations-1"}]
     [:link {:rel "stylesheet" :href "/inventory.css?v=workflow-2"}]
     [:link {:rel "stylesheet" :href "/vendor/jspreadsheet-ce/jspreadsheet.css" :data-inventory-asset "jspreadsheet.css"}]
     [:link {:rel "stylesheet" :href "/vendor/jspreadsheet-ce/jsuites.css" :data-inventory-asset "jsuites.css"}]
@@ -34,7 +34,8 @@
     [:script {:type "module" :src "/dates.js"}]
     [:script {:type "module" :src "/inventory-grid.js"}]
     [:script {:type "module" :src "/catalogues.js"}]
-    [:script {:type "module" :src "/stock.js"}]]
+    [:script {:type "module" :src "/stock.js"}]
+    [:script {:type "module" :src "/operations.js"}]]
    (into [:body
           ;; Profile setup comes first: until then the workspace stream would only answer profile-required.
           (when (and (get-in request [:tover/identity :workspace-id]) (get-in request [:tover/identity :profile-complete?]))

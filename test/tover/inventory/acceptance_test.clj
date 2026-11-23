@@ -8,6 +8,8 @@
     [clojure.test :refer [deftest is testing use-fixtures]]
     [tover.catalogues.products.model :as products]
     [tover.catalogues.records :as records]
+    [tover.catalogues.stores.model :as stores]
+    [tover.catalogues.suppliers.model :as suppliers]
     [tover.catalogues.warehouses.model :as warehouses]
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
@@ -19,7 +21,8 @@
 
 (use-fixtures :each bel-test/isolated-registry
   (fn [f]
-    (bel/build-registry! ['tover.shared.web.core 'tover.catalogues.warehouses.model 'tover.catalogues.categories.model
+    (bel/build-registry! ['tover.shared.web.core 'tover.catalogues.warehouses.model 'tover.catalogues.suppliers.model
+                          'tover.catalogues.stores.model 'tover.catalogues.categories.model
                           'tover.catalogues.products.model 'tover.inventory.stock-items.model
                           'tover.inventory.entries.model 'tover.inventory.acceptance.model
                           'tover.workspaces.currency.model])
@@ -366,5 +369,118 @@
                (select-keys (item) [:variant-label :article :unit :status :revision]))
             "the article is cleared, the item archived")
         (is (= [["item:a-0" "main" 0 nil]]
+               (map (juxt :stock-item-id :warehouse-id :quantity :value)
+                    (:balances (runtime/read-model ctx ::acceptance/acceptance-result {:acceptance-id "acc-2"})))))))))
+
+
+;; 18 · Accept the reviewed purchase · 19 · Accept the reviewed sale
+
+
+(def trading
+  {:suppliers [{:supplier-id "tex" :name "Textiles LLC" :status "active" :revision 1}]
+   :stores    [{:store-id "web" :name "Web shop" :status "active" :revision 1}]})
+
+
+(defn- operation
+  {:malli/schema [:=> [:cat :string :string :map [:* :map]] :map]}
+  [kind id fields & lines]
+  (merge (apply entry id lines) {:kind kind} fields))
+
+
+(defn- trade-facts
+  {:malli/schema [:=> [:cat [:sequential :map]] :map]}
+  [entries]
+  (-> (facts entries) (update :catalogue merge trading) (assoc :history (assoc-in opened-5 [:lines 0 :unit-cost] "100.00"))))
+
+
+(deftest accept-a-priced-purchase
+  (let [f    (trade-facts [(operation "purchase" "p" {:supplier-id "tex" :reason "restock"} {:stock-item-id "tee-m" :unit-cost "200.00"})])
+        plan (accept f (input f "p"))]
+    (is (= [{:record-revision-id "p#1" :record-id "p"   :revision    1     :acceptance-id "acc-1"   :kind "purchase" :occurred-at (day 19)
+             :sequence           0     :cancelled false :supplier-id "tex" :reason        "restock"}]
+           (of-type plan ::acceptance/inventory-record-accepted)))
+    (is (= [[5 "200.00"]] (map (juxt :quantity-change :unit-cost) (of-type plan ::acceptance/inventory-record-line-accepted))))
+    (is (= [{:entry-id "p" :status "accepted" :revision 2}] (of-type plan ::entries/shared-inventory-entry-accepted)))))
+
+
+(deftest new-supplier-registered-with-the-purchase
+  (let [f    (trade-facts [(operation "purchase" "p" {:supplier-name " Cotton Co "} {:stock-item-id "tee-m"})])
+        plan (accept f (input f "p"))]
+    (is (= [{:supplier-id "supplier:p" :name "Cotton Co" :status "active" :revision 1}] (of-type plan ::suppliers/supplier-registered)))
+    (is (= ["supplier:p"] (map :supplier-id (of-type plan ::acceptance/inventory-record-accepted))))))
+
+
+(deftest supplier-name-taken-meanwhile
+  (let [f     (trade-facts [(operation "purchase" "p" {:supplier-name "Cotton Co"} {:stock-item-id "tee-m"})])
+        seen  (input f "p")
+        later (update-in f [:catalogue :suppliers] conj {:supplier-id "cc" :name "cotton co" :status "active" :revision 1})]
+    (is (= :review-outdated (:type (rejection #(accept later seen)))) "the review saw no such supplier")
+    (let [r (rejection #(accept later (input later "p")))]
+      (is (= :supplier-name-taken (:type r)))
+      (is (= "cotton co" (get-in r [:problem :owner-supplier]))))))
+
+
+(deftest archived-supplier-or-store-rejects
+  (let [f (-> (trade-facts [(operation "purchase" "p" {:supplier-id "tex"} {:stock-item-id "tee-m"})])
+              (assoc-in [:catalogue :suppliers 0 :status] "archived"))]
+    (is (= :archived-reference (:type (rejection #(accept f (input f "p")))))))
+  (let [f (-> (trade-facts [(operation "sale" "s" {:store-id "web"} {:stock-item-id "tee-m" :quantity 1})])
+              (assoc-in [:catalogue :stores 0 :status] "archived"))]
+    (is (= :archived-reference (:type (rejection #(accept f (input f "s"))))))))
+
+
+(deftest new-stock-item-on-a-purchase-line
+  (let [f    (trade-facts [(operation "purchase" "p" {:supplier-id "tex"} {:product-id "tee" :variant-label "XL" :unit "pcs"})])
+        plan (accept f (input f "p"))]
+    (is (= [["item:p-0" "pcs"]] (map (juxt :stock-item-id :unit) (of-type plan ::stock-items/stock-item-registered))))
+    (is (= ["item:p-0"] (map :stock-item-id (of-type plan ::acceptance/inventory-record-line-accepted))))))
+
+
+(deftest accept-a-sale
+  (let [f    (trade-facts [(operation "sale" "s" {:store-id "web"} {:stock-item-id "tee-m" :quantity 3 :unit-price "150.00"})])
+        plan (accept f (input f "s"))]
+    (is (= [["sale" "web"]] (map (juxt :kind :store-id) (of-type plan ::acceptance/inventory-record-accepted))))
+    (is (= [[-3 "150.00" nil]] (map (juxt :quantity-change :unit-price :unit-cost) (of-type plan ::acceptance/inventory-record-line-accepted))))))
+
+
+(deftest stock-taken-meanwhile
+  (let [f     (trade-facts [(operation "sale" "s" {} {:stock-item-id "tee-m" :quantity 3})])
+        seen  (input f "s")
+        later (-> f
+                  (update-in [:history :records] conj {:record-revision-id "x#1"   :record-id "x" :revision  1     :acceptance-id "a1"    :kind "sale"
+                                                       :occurred-at        (day 2) :sequence  0   :cancelled false :recorded-at   (day 2)})
+                  (update-in [:history :lines] conj {:record-line-id "x#1/0" :record-revision-id "x#1" :position 0 :stock-item-id "tee-m"
+                                                     :warehouse-id   "main"  :quantity-change    -4}))]
+    (is (= :review-outdated (:type (rejection #(accept later seen)))))
+    (is (= :negative-balance (:type (rejection #(accept later (input later "s"))))) "a new review shows the shortage")))
+
+
+(deftest operations-through-the-store
+  (support/with-store
+    (fn [repo _]
+      (let [ctx    (context repo [{:workspace-id workspace :role :member}])
+            save   #(execute! ctx ::entries/save-shared-inventory-entry %1 (merge {:workspace-id workspace :occurred-at "2026-11-19T00:00:00Z"} %2))
+            submit (fn [id ids]
+                     (let [selection {:selection (mapv #(hash-map :entry-id % :revision 1) ids) :order ids}
+                           review    (runtime/read-model ctx ::acceptance/inventory-review selection)]
+                       (is (:valid? review) (pr-str (:problems review)))
+                       (merge selection {:workspace-id workspace :acceptance-id id :fingerprint (:fingerprint review)})))]
+        (execute! ctx ::warehouses/register-warehouse "w1" {:warehouse-id "main" :name "Main"})
+        (execute! ctx ::products/register-product "p1" {:product-id "tee" :name "T-shirt"})
+        (execute! ctx ::stores/register-store "st1" {:store-id "web" :name "Web shop"})
+        (save "s1" {:entry-id "p" :kind "purchase" :supplier-name "Cotton Co"
+                    :lines    [{:line-id "p-0" :product-id "tee" :variant-label "M" :unit "pcs" :warehouse-id "main" :quantity "5" :unit-cost "200.00"}]})
+        (let [accept (submit "acc-1" ["p"])]
+          (is (= :accepted (:status (execute! ctx ::acceptance/accept-reviewed-inventory-changes "acc-1" accept))))
+          (testing "a retry returns the original result and stock rises once"
+            (is (= :accepted (:status (execute! ctx ::acceptance/accept-reviewed-inventory-changes "acc-1" accept))))
+            (is (= [["item:p-0" "main" 5]]
+                   (map (juxt :stock-item-id :warehouse-id :quantity)
+                        (:balances (runtime/read-model ctx ::acceptance/acceptance-result {:acceptance-id "acc-1"})))))))
+        (is (= [["supplier:p" "Cotton Co"]] (map (juxt :supplier-id :name) (records/all-records ctx ::suppliers/suppliers :supplier-id))))
+        (save "s2" {:entry-id "s" :kind "sale" :store-id "web"
+                    :lines    [{:line-id "s-0" :stock-item-id "item:p-0" :warehouse-id "main" :quantity "3" :unit-price "250.00"}]})
+        (execute! ctx ::acceptance/accept-reviewed-inventory-changes "acc-2" (submit "acc-2" ["s"]))
+        (is (= [["item:p-0" "main" 2 400.0000M]]
                (map (juxt :stock-item-id :warehouse-id :quantity :value)
                     (:balances (runtime/read-model ctx ::acceptance/acceptance-result {:acceptance-id "acc-2"})))))))))

@@ -66,7 +66,7 @@
     (is (= ["Main" "" "storage" "active"] (map :value cells)))
     (is (= "select" (get-in (nth cells 2) [:editor :type])) "purpose is a select")
     (is (= ["active" "archived"] (map :value (get-in (nth cells 3) [:editor :options]))) "warehouses never delete"))
-  (is (= ["name" "address" "contact" "status"] (map :key (:columns (grid/grid "suppliers" [] {})))))
+  (is (= ["name" "address" "contact" "purchased" "status"] (map :key (:columns (grid/grid "suppliers" [] {})))))
   (is (= ["name" "status"] (map :key (:columns (grid/grid "categories" [] {})))))
   (is (= ["name" "description" "purpose"] (map (comp :path :target) (:draftCells (grid/grid "warehouses" [] {}))))
       "a new row starts from empty cells for every field but status")
@@ -80,3 +80,16 @@
     (is (re-find #"catalogue-workbench" html))
     (is (re-find #"/catalogues/warehouses" html) "kind links")
     (is (re-find #"/catalogues/stores\?archived=true" html))))
+
+
+(deftest supplier-lists-what-was-bought-from-it
+  (is (= {"tex" "Mug: blue; T-shirt: L, M"}
+         (grid/purchased [{:kind "purchase" :supplier-id "tex" :lines [{:stock-item-id "tee-m"} {:stock-item-id "mug-b"}]}
+                          {:kind "purchase" :supplier-id "tex" :lines [{:stock-item-id "tee-l"} {:stock-item-id "tee-m"}]}
+                          {:kind "sale" :store-id "web" :lines [{:stock-item-id "tee-m"}]}]
+                         {:products    [{:product-id "tee" :name "T-shirt"} {:product-id "mug" :name "Mug"}]
+                          :stock-items [{:stock-item-id "tee-m" :product-id "tee" :variant-label "M"}
+                                        {:stock-item-id "tee-l" :product-id "tee" :variant-label "L"}
+                                        {:stock-item-id "mug-b" :product-id "mug" :variant-label "blue"}]})))
+  (is (= {:value "Mug: blue" :readOnly true}
+         (nth (:cells (grid/grid-row "suppliers" {:id "tex" :revision 1 :name "Tex" :status "active" :purchased "Mug: blue"})) 3))))

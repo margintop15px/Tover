@@ -122,6 +122,7 @@ class CatalogueWorkbench extends HTMLElement {
   }
   draftRow({ id, values }) {
     const cells = this.savedModel.draftCells.map(cell => {
+      if (!cell.target) return cell; // a read-only column, such as a supplier's purchases
       const path = cell.target.path, value = values[path] ?? '';
       const options = cell.editor?.type === 'select' ? cell.editor.options : null;
       const display = !value ? '' : options ? (options.find(option => option.value === value)?.label ?? '') : cell.editor?.type === 'catalogue-reference' ? (this.labels.get(value) ?? '') : value;
