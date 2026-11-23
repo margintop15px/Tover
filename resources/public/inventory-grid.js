@@ -389,7 +389,14 @@ export class InventoryGrid extends HTMLElement {
         const row = index + 1;
         this._rows.splice(row, 0, { id: `detail:${this._rowDetail.rowId}`, detail: true,
           detailPosition: this._rows[index].rowIndex + 1, cells: this._model.columns.map(() => ({})) });
-        this._merges = this._merges.map(merge => ({ ...merge, row: merge.row >= row ? merge.row + 1 : merge.row }));
+        // A row span the detail lands inside (a product over its items) ends above it and resumes below it.
+        this._merges = this._merges.flatMap(merge => {
+          if (merge.row >= row) return [{ ...merge, row: merge.row + 1 }];
+          const end = merge.row + (merge.rowspan || 1);
+          if (end <= row) return [merge];
+          return [{ ...merge, rowspan: row - merge.row }, { ...merge, row: row + 1, rowspan: end - row }]
+            .filter(part => part.rowspan > 1 || (part.colspan || 1) > 1);
+        });
         this._merges.push({ row, col: 0, colspan: this._model.columns.length });
       }
     }

@@ -23,29 +23,93 @@
                  :total      {:quantity 8 :value 500.0000M :valued "partial"}}]})
 
 
+(defn- cells-of
+  {:malli/schema [:=> [:cat :map :string] [:vector :map]]}
+  [model id]
+  (:cells (some #(when (= id (:id %)) %) (:rows model))))
+
+
 (defn- cells
   {:malli/schema [:=> [:cat :map :string] [:vector :any]]}
   [model id]
   (mapv #(or (:display %) (:value %)) (:cells (some #(when (= id (:id %)) %) (:rows model)))))
 
 
-(deftest stock-grid-groups-items-under-products
-  (let [model (web/stock-grid table {:mode "units"})]
-    (is (= ["item" "main" "shop" "total"] (map :key (:columns model))))
-    (is (= ["product:tee" "tee-m"] (map :id (:rows model))) "a product group row, then its items")
-    (is (= ["T-shirt" "" "" "8"] (cells model "product:tee")) "the group row shows the total")
-    (is (= ["M · T-100" "5" "3" "8"] (cells model "tee-m")))
-    (is (= "item-history" (get-in (first (:cells (second (:rows model)))) [:actions 0 :type])))
-    (is (re-find #"stock-cell-pending" (:className (get-in (second (:rows model)) [:cells 2])))
-        "a cell touched by pending work is marked")))
+(def ^:private opening
+  [{:entry-id "e" :revision 1 :kind "opening" :lines [{:product-id "tee" :variant-label "L" :warehouse-id "shop" :quantity 2 :unit-cost "10"}]}])
 
 
-(deftest money-mode-dashes-unvalued-and-marks-partial-totals
-  (let [model (web/stock-grid table {:mode "money"})
-        total (last (:cells (second (:rows model))))]
-    (is (= ["M · T-100" "500.00" "—" "500.00"] (cells model "tee-m")))
-    (is (:partial total))
-    (is (:partial (last (:cells (first (:rows model))))))))
+(deftest stock-grid-is-one-table-with-pending-openings
+  (let [model (web/stock-grid table {:mode "units" :entries opening})]
+    (is (= ["product" "item" "article" "barcodes" "unit" "unit-cost" "main" "shop" "total"] (map :key (:columns model))))
+    (is (= ["tee-m" "new:tee:L"] (map :id (:rows model))) "a row per stock item; a new item has its own row")
+    (is (= [{:row 0 :col 0 :rowspan 2}] (:merges model)) "the product spans its items")
+    (is (= ["T-shirt" "M" "T-100" "" "" "100.00" "5" "3" "8"] (cells model "tee-m")))
+    (is (= ["" "L" "" "" "" "10" "" "2" "2"] (cells model "new:tee:L")) "the pending opening and its total")
+    (is (= [{:entry-id "e" :revision 1 :rowId "new:tee:L"}] (:pending model)))
+    (is (= "quantity" (get-in (cells-of model "tee-m") [6 :editor :type])) "warehouse cells take whole quantities")))
+
+
+(deftest pending-covers-every-opening
+  (let [entry  (fn [id & lines] {:entry-id id :revision 1 :lines (vec (map-indexed #(assoc %2 :line-id (str id "-" %1)) lines))})
+        line   (fn [quantity warehouse] (cond-> {:stock-item-id "tee-m" :quantity quantity :unit-cost "2"} warehouse (assoc :warehouse-id warehouse)))
+        grid   (fn [mode & entries] (web/stock-grid table {:mode mode :scope {:pending true} :entries entries}))
+        column (fn [model k] (nth (cells-of model "tee-m") (.indexOf ^java.util.List (mapv :key (:columns model)) k)))]
+    (testing "Money previews the same openings as Units"
+      (is (= [{:entry-id "a" :revision 1 :rowId "tee-m"}] (:pending (grid "money" (entry "a" (line 5 "main")))))))
+    (testing "two openings of one pair show their sum, read-only, and are both pending"
+      (let [model (grid "units" (entry "a" (line 5 "main")) (entry "b" (line 3 "main")))]
+        (is (= ["a" "b"] (map :entry-id (:pending model))))
+        (is (= "8" (:value (column model "main"))))
+        (is (:readOnly (column model "main")))))
+    (testing "a line without a warehouse has its own column and cannot be submitted"
+      (let [model (grid "units" (entry "a" (line 5 nil)))]
+        (is (= "5" (:value (column model "no-warehouse"))))
+        (is (= [{:entry-id "a" :revision 1 :rowId "tee-m" :blocked true}] (:pending model))))
+      (is (not-any? #{"no-warehouse"} (map :key (:columns (grid "units" (entry "a" (line 5 "main"))))))))
+    (testing "discarding a row removes its lines only"
+      (let [discards (fn [& lines] (->> (cells-of (grid "units" (apply entry "a" lines)) "tee-m") (mapcat :actions)
+                                        (some #(when (= "stock-discard-row" (:type %)) (:entries %))) (map (juxt :line :shared))))]
+        (is (= [["a-0" false]] (discards (line 5 "main") (line 2 "shop"))) "the whole entry is this row")
+        (is (= [["a-0" true]] (discards (line 5 "main") {:product-id "tee" :variant-label "L" :warehouse-id "shop" :quantity 1})))))
+    (testing "filters hide rows, not pending openings"
+      (is (= [{:entry-id "a" :revision 1 :rowId "tee-m"}]
+             (:pending (web/stock-grid table {:mode "units" :scope {:pending true :productId "other"} :entries [(entry "a" (line 5 "main"))]})))))))
+
+
+(deftest editing-one-line-keeps-the-others
+  (let [saved [{:line-id "e-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 5}
+               {:line-id "e-1" :stock-item-id "tee-m" :warehouse-id "back" :quantity 2 :barcodes []}]
+        input (fn [values] (:lines (web/entry-input {:stock-items [{:stock-item-id "tee-m" :status "active"}]
+                                                     :warehouses  [{:warehouse-id "main" :status "active"}]}
+                                                    workspace "e" 1 values saved)))]
+    (is (= [{:line-id "e-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity "7"} (second saved)]
+           (input {"line-id" "e-0" "stock-item-id" "tee-m" "warehouse-id" "main" "quantity" "7"})))
+    (is (= [(second saved)] (input {"line-id" "e-0" "remove" "true"})) "one line can be discarded")))
+
+
+(deftest money-mode-shows-amounts
+  (let [model (web/stock-grid table {:mode "money" :entries opening})]
+    (is (= ["500.00" "—" "500.00"] (subvec (cells model "tee-m") 6)))
+    (is (= ["" "20.00" "20.00"] (subvec (cells model "new:tee:L") 6)))
+    (is (:partial (peek (cells-of model "tee-m"))) "the total includes unvalued stock")
+    (is (not (:partial (peek (cells-of model "new:tee:L")))))
+    (is (= "—" (peek (cells (web/stock-grid table {:mode "money" :entries (update-in opening [0 :lines 0] dissoc :unit-cost)}) "new:tee:L")))
+        "a wholly unvalued total is not zero")))
+
+
+(deftest submit-sets-time-and-reason
+  (let [at    (java.time.Instant/parse "2026-11-19T10:00:00Z")
+        lines [{:line-id "e-0" :stock-item-id "tee-m" :quantity 5} {:line-id "e-1" :stock-item-id "tee-m" :quantity 2}]
+        input (fn [values]
+                (with-redefs [runtime/read-model (fn [& _] {:entries [{:entry-id "e" :revision 3 :occurred-at at :reason "Count" :lines lines}]})]
+                  (:input (web/describe-entry {} (merge {:workspaceId workspace :entryId "e" :revision 3 :commandId "c"} values)))))]
+    (is (= {:workspace-id workspace              :entry-id "e"         :kind "opening" :expected-revision 3 :lines lines
+            :occurred-at  "2026-11-01T00:00:00Z" :reason   "Stocktake"}
+           (input {:occurredAt "2026-11-01T00:00:00Z" :reason "Stocktake"})))
+    (testing "an unset value keeps the opening's own"
+      (is (= ["2026-11-19T10:00:00Z" "Stocktake"] ((juxt :occurred-at :reason) (input {:occurredAt "" :reason "Stocktake"}))))
+      (is (= "Count" (:reason (input {:occurredAt "2026-11-01T00:00:00Z" :reason " "})))))))
 
 
 (deftest stock-page-hides-products-without-items-by-default

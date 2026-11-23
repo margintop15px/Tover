@@ -1,5 +1,5 @@
 import { t } from './i18n.js';
-import { formatDate } from './dates.js';
+import { formatDate, toISOString } from './dates.js';
 import './inventory-grid.js';
 
 // ponytail: per-browser preferences; per-member preferences move to chapter 30.
@@ -19,6 +19,9 @@ document.addEventListener('datastar-fetch', event => {
   if (workbench && ['error', 'retries-failed'].includes(event.detail.type)) workbench.requestFailed(workbench.pending ? 'save' : 'read');
 });
 
+// The search box filters the one grid and pending openings live in its cells.
+const now = () => new Date().toISOString();
+
 class StockWorkbench extends HTMLElement {
   connectedCallback() { queueMicrotask(() => this.connect()); }
   connect() {
@@ -28,35 +31,63 @@ class StockWorkbench extends HTMLElement {
     this.mode = prefs.get('mode', 'units');
     this.days = prefs.get('period', '30');
     this.hideEmpty = true;
+    this.scope = {};
     this.grid = this.querySelector('.stock-grid');
-    this.drafts = this.querySelector('.stock-drafts');
-    this.reviewPanel = this.querySelector('.stock-review');
     this.notice = this.querySelector('.stock-notice');
-    this.tableNotice = this.querySelector('.stock-table-notice');
     this.status = this.querySelector('.stock-save-status');
-    this.reviewButton = this.querySelector('.stock-review-button');
-    this.newRows = [];
+    this.submitButton = this.querySelector('.stock-submit');
+    this.submitDetails = this.querySelector('.stock-submit-details');
+    this.submitTime = this.querySelector('.stock-submit-time');
+    this.submitReason = this.querySelector('.stock-submit-reason');
+    this.pendingButton = this.querySelector('.stock-pending-filter');
+    this.search = this.querySelector('.stock-search-input');
+    this.chip = this.querySelector('.stock-filter-chip');
+    this.list = this.querySelector('.stock-suggestions');
     this.queued = new Map();
     this.revisions = new Map();
     this.values = new Map();
-    this.selected = [];
-    this.grid.model = JSON.parse(this.dataset.model);
-    this.pendingModel = JSON.parse(this.dataset.pending);
-    if (this.pendingModel) this.showDrafts(); else this.retryNotice(this.notice, () => this.refreshPending());
+    this.cellEntries = new Map();
+    this.showModel(JSON.parse(this.dataset.model));
     if (this.mode !== 'units') this.refreshTable();
     this.showMode();
 
-    this.querySelector('.stock-hide-empty input').addEventListener('change', event => { this.hideEmpty = event.target.checked; this.refreshTable(); });
+    const hide = this.querySelector('.stock-hide-empty');
+    hide.addEventListener('click', () => { this.hideEmpty = !this.hideEmpty; hide.setAttribute('aria-pressed', String(this.hideEmpty)); this.refreshTable(); });
     for (const button of this.querySelectorAll('.stock-mode button')) {
       button.addEventListener('click', () => { this.mode = button.dataset.mode; prefs.set('mode', this.mode); this.showMode(); this.refreshTable(); });
     }
-    this.querySelector('.stock-add').addEventListener('click', () => this.addRow());
-    this.reviewButton.addEventListener('click', () => this.review());
-    this.addEventListener('stock-draft', event => this.edit(event.detail));
-    this.addEventListener('stock-discard', event => this.discard(event.detail));
-    this.addEventListener('review-selection', event => { this.selected = event.detail.selected; this.reviewButton.disabled = !this.selected.length; });
+    this.pendingButton.addEventListener('click', () => (this.scope.pending ? this.leavePreview() : this.setScope({ ...this.scope, pending: true }, this.scopeLabel)));
+    this.submitButton.addEventListener('click', () => this.review());
+    this.chip.addEventListener('click', () => { this.setScope({}, ''); this.search.focus(); });
+    this.search.addEventListener('input', () => { clearTimeout(this.typing); this.typing = setTimeout(() => this.suggest(), 120); });
+    this.search.addEventListener('keydown', event => this.searchKey(event));
+    this.search.addEventListener('blur', () => setTimeout(() => this.closeSuggestions(), 150));
+    this.addEventListener('stock-cell', event => this.edit(event.detail));
+    // A new row's details wait in the filter until its first quantity saves them with the opening.
+    this.addEventListener('stock-new-field', event => { this.grid.acknowledgeSave(event.detail); this.scope = { ...this.scope, [event.detail.path === 'item' ? 'variant' : event.detail.path]: event.detail.value.trim() }; this.refreshTable(); });
+    // Unit cost and a new item's details apply to every pending opening of the row.
+    this.addEventListener('stock-item-field', event => {
+      const { entries, field, value } = event.detail;
+      entries.forEach((entry, index) => this.edit({ ...entry, id: event.detail.id, path: `${field}:${index}`, field, value, target: index ? null : event.detail }));
+    });
+    this.addEventListener('stock-add-item', event => {
+      if (event.detail.name) { this.setScope({ productName: event.detail.name, newRow: true, pending: true }, '', true); return; }
+      // "+" adds a row under the product in place; the table keeps its filter.
+      this.setScope({ ...this.scope, productName: undefined, addTo: event.detail.id, newRow: true }, this.scopeLabel, true);
+    });
     this.addEventListener('item-history', event => this.toggleHistory(event.detail));
-    for (const property of ['tableResponse', 'pendingResponse', 'reviewResponse', 'historyResponse', 'saveResponse', 'changed']) {
+    // Rows are included unless unticked, so rows added during the preview are included too.
+    this.addEventListener('review-selection', event => {
+      this.excluded = [...new Set(this.model.pending.map(entry => entry.rowId))].filter(id => !event.detail.selected.includes(id));
+      this.grid.selectedEntries = event.detail.selected;
+      this.selected = event.detail.selected; this.showSubmit();
+    });
+    this.addEventListener('stock-discard-row', event => {
+      if (this.pending || !window.confirm(t('Discard the pending changes of this row? This cannot be undone.'))) return;
+      this.discards = event.detail.entries.map(({ entry, revision, line, shared, values }) => ({ id: entry, line, shared, values, revision: Math.max(revision, this.revisions.get(entry) ?? 0) }));
+      this.discard(this.discards.shift());
+    });
+    for (const property of ['tableResponse', 'suggestResponse', 'reviewResponse', 'historyResponse', 'saveResponse', 'changed']) {
       if (Object.prototype.hasOwnProperty.call(this, property)) { const value = this[property]; delete this[property]; this[property] = value; }
     }
   }
@@ -69,7 +100,7 @@ class StockWorkbench extends HTMLElement {
   emit(name, detail) { this.dispatchEvent(new CustomEvent(name, { bubbles: true, detail })); }
   setStatus(status, message = '') {
     this.status.textContent = status === 'Saved' ? '' : t(status);
-    this.drafts.saveStatus = status;
+    this.grid.saveStatus = status;
     this.notice.textContent = message;
     this.notice.setAttribute('role', status === 'Failed' ? 'alert' : 'status');
   }
@@ -82,149 +113,209 @@ class StockWorkbench extends HTMLElement {
     for (const button of this.querySelectorAll('.stock-mode button')) button.setAttribute('aria-pressed', String(button.dataset.mode === this.mode));
   }
 
+  // Search: suggestions filter the one table; picking a product opens a new stock item row under it.
+  suggest() {
+    const text = this.search.value.trim();
+    if (!text) { this.closeSuggestions(); return; }
+    this.suggestRequest = crypto.randomUUID();
+    this.emit('stock-suggest', { requestId: this.suggestRequest, text });
+  }
+  set suggestResponse(response) {
+    if (!this.list || !response || response.requestId !== this.suggestRequest || !this.fresh(response)) return;
+    const options = [...response.options];
+    if (!response.exact && response.text.trim()) options.push({ kind: 'create', label: response.text.trim() });
+    this.options = options; this.active = 0;
+    this.list.replaceChildren(...options.map((option, index) => {
+      const item = element('li', { role: 'option', id: `stock-option-${index}`, className: `stock-option stock-option-${option.kind}` },
+        element('span', { className: 'stock-option-label', textContent: option.kind === 'create' ? t('Create product «{p0}»', { p0: option.label }) : option.label }),
+        element('span', { className: 'stock-option-kind', textContent: option.kind === 'product' ? t('Product') : option.kind === 'item' ? (option.hint || t('Stock item')) : '' }));
+      item.addEventListener('mousedown', event => { event.preventDefault(); this.choose(option); });
+      return item;
+    }));
+    this.list.hidden = !options.length;
+    this.search.setAttribute('aria-expanded', String(!this.list.hidden));
+    this.highlight();
+  }
+  highlight() {
+    [...this.list.children].forEach((node, index) => node.setAttribute('aria-selected', String(index === this.active)));
+    this.search.setAttribute('aria-activedescendant', this.list.hidden ? '' : `stock-option-${this.active}`);
+  }
+  searchKey(event) {
+    if (event.key === 'Escape') { this.closeSuggestions(); return; }
+    if (this.list.hidden || !this.options?.length) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      this.active = (this.active + (event.key === 'ArrowDown' ? 1 : -1) + this.options.length) % this.options.length;
+      this.highlight();
+    } else if (event.key === 'Enter') { event.preventDefault(); this.choose(this.options[this.active]); }
+  }
+  closeSuggestions() { this.list.hidden = true; this.search.setAttribute('aria-expanded', 'false'); }
+  choose(option) {
+    this.closeSuggestions(); this.search.value = '';
+    if (option.kind === 'product') this.setScope({ productId: option.id, newRow: true, pending: this.scope.pending }, option.label, true);
+    else if (option.kind === 'item') this.setScope({ itemId: option.id, pending: this.scope.pending }, option.label);
+    // A new product opens at the top of the preview; the table is not filtered.
+    else this.setScope({ productName: option.label, newRow: true, pending: true }, '', true);
+  }
+  // Leaving the preview keeps a product filter; a product being created only lived in the preview.
+  leavePreview() {
+    this.submitTime.value = ''; this.submitReason.value = '';
+    this.setScope(this.scope.productName ? {} : { ...this.scope, pending: false }, this.scope.productName ? '' : this.scopeLabel);
+  }
+  setScope(scope, label, focus = false) {
+    this.scope = Object.fromEntries(Object.entries(scope).filter(([, value]) => value !== false));
+    this.scopeLabel = label;
+    this.focusNew = focus;
+    this.chip.hidden = !label;
+    this.chip.textContent = label ? `${label} ×` : '';
+    this.pendingButton.setAttribute('aria-pressed', String(Boolean(scope.pending)));
+    this.refreshTable();
+  }
+
   // Stock table
   refreshTable() {
     this.tableRequest = crypto.randomUUID();
-    this.emit('stock-query', { requestId: this.tableRequest, mode: this.mode, hideEmpty: this.hideEmpty });
+    this.emit('stock-query', { requestId: this.tableRequest, mode: this.mode, hideEmpty: this.hideEmpty, filter: this.scope });
+  }
+  showModel(model) {
+    this.model = model;
+    this.grid.model = model;
+    // A dot says there is something to preview; in preview the table itself shows it.
+    this.pendingButton.classList.toggle('has-pending', Boolean(model.pending.length) && !this.scope.pending);
+    // Preview starts with every row included; unticked rows wait for a later submit.
+    const rows = [...new Set(model.pending.filter(entry => !entry.blocked).map(entry => entry.rowId))];
+    if (!this.scope.pending) this.excluded = [];
+    this.selected = this.scope.pending ? rows.filter(id => !(this.excluded ?? []).includes(id)) : null;
+    this.grid.selectedEntries = this.selected ?? [];
+    this.showSubmit();
+    const row = this.focusNew && model.rows.find(candidate => candidate.className === 'stock-new-row');
+    this.focusNew = false;
+    if (row) this.grid.whenReady.then(() => this.grid.focusField(row.id, 'item'));
+  }
+  showSubmit() {
+    const count = this.scope.pending ? (this.selected ?? []).length : 0;
+    this.submitButton.disabled = !count;
+    this.submitDetails.hidden = !this.scope.pending;
+    this.submitButton.title = !this.model.pending.length ? t('No pending changes')
+      : !this.scope.pending ? t('Preview pending changes to submit them')
+        : count ? t('Submit the selected changes') : t('Select the changes to submit');
   }
   set tableResponse(response) {
     if (!this.grid || !response || response.requestId !== this.tableRequest || !this.fresh(response)) return;
-    if (!response.model) { this.retryNotice(this.tableNotice, () => this.refreshTable()); return; }
-    this.tableNotice.replaceChildren();
-    this.grid.model = response.model;
+    if (!response.model) { this.retryNotice(this.notice, () => this.refreshTable()); return; }
+    // A retry offer goes once the table loads; a save error stays until the next save.
+    if (this.notice.querySelector('button')) this.notice.replaceChildren();
+    this.showModel(response.model);
+    const [id, queued] = this.queued.entries().next().value || [];
+    if (id && !this.pending) { this.queued.delete(id); this.save(id, queued); }
   }
   set changed(value) {
     if (!this.grid || !value || value === this.lastChange) return;
     this.lastChange = value;
-    this.refreshTable();
-    if (!this.pending) this.refreshPending();
+    if (!this.pending) this.refreshTable();
   }
 
-  // Opening drafts: every cell commit saves the whole entry.
-  refreshPending() {
-    this.pendingRequest = crypto.randomUUID();
-    this.emit('stock-pending', { requestId: this.pendingRequest });
-  }
-  set pendingResponse(response) {
-    if (!this.drafts || !response || response.requestId !== this.pendingRequest || !this.fresh(response)) return;
-    if (!response.model) { this.retryNotice(this.notice, () => this.refreshPending()); return; }
-    this.pendingModel = response.model;
-    const saved = new Set(response.model.rows.map(row => row.id));
-    this.newRows = this.newRows.filter(row => !saved.has(row.id));
-    this.selected = this.selected.filter(id => saved.has(id));
-    this.reviewButton.disabled = !this.selected.length;
-    this.showDrafts();
-    this.drafts.selectedEntries = this.selected;
-    const [id, values] = this.queued.entries().next().value || [];
-    if (id && !this.pending) { this.queued.delete(id); this.save(id, values); }
-  }
-  newRow({ id, values }) {
-    const cells = this.pendingModel.draftCells.map((cell, index) => (index === 0 ? { value: '' }
-      : { ...cell, value: values[cell.target.path] ?? '', target: { ...cell.target, id, rowId: id } }));
-    return { id, groupId: id, className: 'stock-new-row', cells: [...cells, { value: t('New') }] };
-  }
-  showDrafts() {
-    const count = this.newRows.length;
-    this.drafts.model = { ...this.pendingModel,
-      rows: [...this.newRows.map((row, index) => ({ ...this.newRow(row), rowIndex: index, groupIndex: index })),
-        ...this.pendingModel.rows.map(row => ({ ...row, rowIndex: row.rowIndex + count, groupIndex: row.groupIndex + count }))] };
-  }
-  addRow() {
-    const id = crypto.randomUUID();
-    this.newRows.unshift({ id, values: {} });
-    this.showDrafts();
-    this.drafts.whenReady.then(() => this.drafts.focusField(id, 'product'));
-  }
-  rowValues(id) {
-    const fresh = this.newRows.find(row => row.id === id);
-    if (fresh) return { ...fresh.values };
-    const row = this.pendingModel.rows.find(candidate => candidate.id === id);
-    const read = Number(row?.cells.find(cell => cell.target)?.target.revision ?? 0);
-    // Until the read catches up with this page's own save, the values it sent are the current ones.
-    if (this.values.has(id) && (this.revisions.get(id) ?? 0) >= read) return { ...this.values.get(id) };
-    return Object.fromEntries((row?.cells || []).filter(cell => cell.target).map(cell => [cell.target.path, String(cell.value ?? '')]));
-  }
-  revision(id) {
-    // The page's own last save may be newer than the last read of pending work.
-    const row = this.pendingModel.rows.find(candidate => candidate.id === id);
-    return Math.max(Number(row?.cells.find(cell => cell.target)?.target.revision ?? 0), this.revisions.get(id) ?? 0);
-  }
+  // A cell commit saves a one-line opening for that item and warehouse.
   edit(detail) {
-    // Build on the newest values this page holds: queued, then in flight, then the last read.
-    const inFlight = this.pending?.kind === 'save' && this.pending.id === detail.id ? this.pending.values : null;
-    const base = this.queued.get(detail.id) ?? inFlight ?? this.rowValues(detail.id);
-    const values = { ...base, [detail.path]: detail.value };
-    const fresh = this.newRows.find(row => row.id === detail.id);
-    if (fresh) fresh.values = values;
-    // One save at a time per page; a later edit waits for the saved revision.
-    if (this.pending) { this.queued.set(detail.id, values); this.lastTarget = detail; return; }
-    this.lastTarget = detail;
-    this.save(detail.id, values);
+    const key = `${detail.id}|${detail.path}|${detail.values.variant ?? ''}|${detail.values.product ?? ''}`;
+    const id = detail.entry || this.cellEntries.get(key) || crypto.randomUUID();
+    this.cellEntries.set(key, id);
+    // The line is the unit of an edit; other lines of its entry have their own.
+    const slot = detail.values['line-id'] ?? `${id}-0`;
+    if (detail.entry && detail.field === 'quantity' && !detail.value.trim()) { this.discard({ id, line: slot, shared: detail.shared, values: detail.values, revision: Math.max(detail.revision, this.revisions.get(id) ?? 0) }); return; }
+    // Build on the newest values this page holds: queued, then in flight, then its own last save, then the read.
+    const inFlight = this.pending?.kind === 'save' && this.pending.slot === slot ? this.pending.values : null;
+    const own = (this.revisions.get(id) ?? 0) >= detail.revision ? this.values.get(slot) : null;
+    const base = this.queued.get(slot)?.values ?? inFlight ?? own ?? detail.values;
+    // A new row's details live in the filter; typing can outrun the table read that carries them.
+    const typed = detail.id.startsWith('new-row:') ? Object.fromEntries(['variant', 'article', 'barcodes', 'unit', 'unit-cost']
+      .filter(key => this.scope[key] !== undefined).map(key => [key, this.scope[key]])) : {};
+    const values = { 'occurred-at': now(), ...base, ...typed, [detail.field]: detail.value };
+    const request = { id, values, revision: detail.revision, target: 'target' in detail ? detail.target : detail };
+    if (this.pending) { this.queued.set(slot, request); return; }
+    this.save(slot, request);
   }
-  save(id, values) {
-    this.pending = { kind: 'save', id, revision: this.revision(id), values, commandId: crypto.randomUUID(), target: this.lastTarget };
+  save(slot, { id, values, revision, target }) {
+    const current = Math.max(revision, this.revisions.get(id) ?? 0);
+    this.pending = { kind: 'save', id, slot, revision: current, values, commandId: crypto.randomUUID(), target };
     this.setStatus('Saving');
-    this.emit('stock-save', { workspaceId: this.workspaceId, entryId: id, revision: this.pending.revision, values, commandId: this.pending.commandId });
+    this.emit('stock-save', { workspaceId: this.workspaceId, entryId: id, revision: current, values, commandId: this.pending.commandId });
   }
-  discard(action) {
-    if (this.pending || !window.confirm(t('Discard this entry? This cannot be undone.'))) return;
-    this.pending = { kind: 'discard', id: action.id, commandId: crypto.randomUUID() };
+  discard({ id, revision, line, shared, values }) {
+    if (this.pending) return;
+    // Other lines of the entry stay.
+    if (shared) { this.save(line, { id, revision, values: { ...values, 'line-id': line, remove: 'true' } }); this.pending.kind = 'discard-line'; return; }
+    this.pending = { kind: 'discard', id, commandId: crypto.randomUUID() };
     this.setStatus('Saving');
-    this.emit('stock-discard', { workspaceId: this.workspaceId, entryId: action.id, revision: Number(action.revision), commandId: this.pending.commandId });
+    this.emit('stock-discard', { workspaceId: this.workspaceId, entryId: id, revision, commandId: this.pending.commandId });
   }
   set saveResponse(response) {
     if (!this.pending || !response || response.commandId !== this.pending.commandId) return;
     const request = this.pending; this.pending = null;
     if (response.status === 'ok') {
-      if (request.kind === 'save') { this.revisions.set(request.id, request.revision + 1); this.values.set(request.id, request.values); }
-      if (request.target) this.drafts.acknowledgeSave(request.target);
-      if (request.kind === 'accept') { this.closeReview(); this.selected = []; this.refreshTable(); }
+      if (['save', 'discard-line', 'describe'].includes(request.kind)) this.revisions.set(request.id, request.revision + 1);
+      if (['save', 'discard-line'].includes(request.kind)) this.values.set(request.slot, request.values);
+      if (request.kind === 'describe') { this.forget(request.id); this.describe(); return; }
+      if (request.target) this.grid.acknowledgeSave(request.target);
+      // The new item now has its own row; the blank row starts over.
+      if (request.target?.id.startsWith('new-row:')) for (const key of ['variant', 'article', 'barcodes', 'unit', 'unit-cost']) delete this.scope[key];
+      if (request.kind === 'accept') {
+        this.leavePreview();
+      }
       this.setStatus('Saved');
-    } else if (request.kind === 'accept') {
-      this.setStatus('Saved');
-      this.reviewPanel.querySelector('.stock-review-problems')?.replaceChildren(element('li', { role: 'alert', textContent: response.message }));
     } else {
       this.setStatus('Failed', response.message);
     }
-    this.refreshPending();
+    // Fanned-out edits save one after another before the table is read again.
+    const [id, queued] = this.queued.entries().next().value || [];
+    if (id && request.kind === 'save' && response.status === 'ok') { this.queued.delete(id); this.save(id, queued); return; }
+    if (request.kind.startsWith('discard') && response.status === 'ok' && this.discards?.length) { this.discard(this.discards.shift()); return; }
+    this.refreshTable();
   }
 
   // Review and accept
   review() {
-    const ids = new Set(this.selected);
-    const rows = this.pendingModel.rows.filter(row => ids.has(row.id));
-    this.reviewRequest = crypto.randomUUID();
-    this.emit('stock-review', { requestId: this.reviewRequest, selection: rows.map(row => ({ 'entry-id': row.id, revision: this.revision(row.id) })), order: rows.map(row => row.id) });
+    if (this.pending || this.submitButton.disabled) return;
+    // An entry is submitted whole: every row it touches must be included and complete.
+    const left = new Set(this.model.pending.filter(entry => entry.blocked || !this.selected.includes(entry.rowId)).map(entry => entry['entry-id']));
+    const rows = [...new Map(this.model.pending.filter(entry => !left.has(entry['entry-id'])).map(entry => [entry['entry-id'], entry])).values()];
+    if (!rows.length) { this.setStatus('Failed', t('Include every row of the opening.')); return; }
+    const shown = new Set(this.model.rows.map(row => row.id));
+    const hidden = this.selected.filter(id => !shown.has(id)).length;
+    if (hidden && !window.confirm(t('The filter hides {p0} selected rows. Submit them too?', { p0: hidden }))) return;
+    this.reviewed = rows.map(row => ({ 'entry-id': row['entry-id'], revision: row.revision }));
+    const details = { occurredAt: toISOString(this.submitTime.value), reason: this.submitReason.value.trim() };
+    if (!this.submitTime.checkValidity()) { this.submitTime.reportValidity(); return; }
+    this.describing = details.occurredAt || details.reason ? { details, entries: [...this.reviewed] } : null;
+    this.describe();
   }
-  closeReview() { this.reviewPanel.hidden = true; this.reviewPanel.replaceChildren(); }
+  // The time and reason given at submit are saved on each opening, then the openings are reviewed.
+  describe() {
+    const entry = this.describing?.entries.shift();
+    if (!entry) { this.describing = null; this.requestReview(); return; }
+    const id = entry['entry-id'];
+    const revision = Math.max(entry.revision, this.revisions.get(id) ?? 0);
+    this.pending = { kind: 'describe', id, revision, commandId: crypto.randomUUID() };
+    this.setStatus('Saving');
+    this.emit('stock-describe', { workspaceId: this.workspaceId, entryId: id, revision, ...this.describing.details, commandId: this.pending.commandId });
+  }
+  // A later cell edit must build on the described opening, not on this page's older values.
+  forget(id) {
+    for (const [slot] of this.values) if (slot.startsWith(id)) this.values.delete(slot);
+  }
+  requestReview() {
+    const rows = this.reviewed;
+    this.reviewRequest = crypto.randomUUID();
+    this.emit('stock-review', { requestId: this.reviewRequest, selection: rows.map(row => ({ 'entry-id': row['entry-id'], revision: Math.max(row.revision, this.revisions.get(row['entry-id']) ?? 0) })), order: rows.map(row => row['entry-id']) });
+  }
   set reviewResponse(response) {
-    if (!this.reviewPanel || !response || response.requestId !== this.reviewRequest || !this.fresh(response)) return;
+    if (!this.grid || !response || response.requestId !== this.reviewRequest || !this.fresh(response)) return;
     const { review } = response;
-    this.reviewPanel.hidden = false;
-    if (!review) { this.retryNotice(this.reviewPanel, () => this.review()); return; }
-    const effects = element('table', { className: 'stock-review-effects' },
-      element('thead', {}, element('tr', {}, ...['Stock item', 'Warehouse', 'Quantity', 'Value'].map(label => element('th', { textContent: t(label) })))),
-      element('tbody', {}, ...review.effects.map(effect => element('tr', {},
-        element('td', { textContent: effect.item || effect['stock-item-id'] }),
-        element('td', { textContent: effect.warehouse || effect['warehouse-id'] }),
-        element('td', { className: 'stock-review-quantity', textContent: `${effect['quantity-before']} → ${effect['quantity-after']}` }),
-        element('td', { textContent: `${effect.valueBefore ?? '—'} → ${effect.valueAfter ?? '—'}` })))));
-    const registrations = element('ul', { className: 'stock-review-registrations' },
-      ...review.registrations.map(item => element('li', { textContent: `${item.type}: ${item.label}` })));
-    const problems = element('ul', { className: 'stock-review-problems' },
-      ...review.problems.map(problem => element('li', { role: 'alert', textContent: problem.message })));
-    const accept = element('button', { type: 'button', className: 'stock-accept', textContent: t('Accept'), disabled: !review['valid?'] });
-    accept.addEventListener('click', () => {
-      if (this.pending) return;
-      this.pending = { kind: 'accept', commandId: crypto.randomUUID() };
-      this.setStatus('Saving');
-      this.emit('stock-accept', { workspaceId: this.workspaceId, selection: response.selection, order: response.order, fingerprint: review.fingerprint, commandId: this.pending.commandId });
-    });
-    const close = element('button', { type: 'button', textContent: t('Close') });
-    close.addEventListener('click', () => this.closeReview());
-    this.reviewPanel.replaceChildren(element('h2', { textContent: t('Review') }), effects,
-      review.registrations.length ? element('h3', { textContent: t('Will be registered') }) : null, registrations, problems,
-      element('div', { className: 'sheet-actions' }, accept, close));
+    if (!review) { this.setStatus('Failed', t('Could not check the pending changes. Try again.')); return; }
+    if (!review['valid?']) { this.setStatus('Failed', review.problems.map(problem => problem.message).join(' ')); return; }
+    this.pending = { kind: 'accept', commandId: crypto.randomUUID() };
+    this.setStatus('Saving');
+    this.emit('stock-accept', { workspaceId: this.workspaceId, selection: response.selection, order: response.order, fingerprint: review.fingerprint, commandId: this.pending.commandId });
   }
 
   // History below the item's row
@@ -282,9 +373,8 @@ class StockWorkbench extends HTMLElement {
 
   requestFailed(kind) {
     if (kind === 'save') { this.pending = null; this.setStatus('Failed', t('Could not save. Your edit is retained; retry when connected.')); }
-    else if (kind === 'table') this.retryNotice(this.tableNotice, () => this.refreshTable());
-    else if (kind === 'pending') this.retryNotice(this.notice, () => this.refreshPending());
-    else if (kind === 'review') this.retryNotice(this.reviewPanel, () => this.review());
+    else if (kind === 'table') this.retryNotice(this.notice, () => this.refreshTable());
+    else if (kind === 'review') this.setStatus('Failed', t('Could not check the pending changes. Try again.'));
     else if (kind === 'history' && this.historyNode) this.retryNotice(this.historyNode.querySelector('.stock-history-body'), () => this.loadHistory(this.historyItem));
   }
 }

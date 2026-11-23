@@ -98,4 +98,7 @@
      :refresh [:path {:d "M20 10a8 8 0 1 0-2 8 M20 4v6h-6"}]
      :close [:path {:d "m6 6 12 12 M6 18 18 6"}]
      :active [:g [:rect {:x 3 :y 4 :width 18 :height 16 :rx 2}] [:path {:d "M3 10h18 M9 4v16"}]]
-     :archived [:path {:d "M3 4h18v4H3z M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8 M10 12h4"}])])
+     :archived [:path {:d "M3 4h18v4H3z M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8 M10 12h4"}]
+     :hide-empty [:path {:d "M3 3l18 18 M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4 M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6 M9.9 9.9a3 3 0 0 0 4.2 4.2"}]
+     :units [:path {:d "M9 4 7 20 M17 4l-2 16 M4 9h16 M3 15h16"}]
+     :money [:g [:circle {:cx 12 :cy 12 :r 9}] [:path {:d "M15 9.5a3 2.5 0 0 0-3-1.5c-1.7 0-3 .9-3 2s1.3 1.7 3 2 3 .9 3 2-1.3 2-3 2a3 2.5 0 0 1-3-1.5 M12 6v12"}]])])

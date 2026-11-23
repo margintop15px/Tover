@@ -110,17 +110,12 @@ cd test/browser
 npx playwright install chromium
 cd ../..
 npm --prefix test/browser test
-cd test/browser && npx playwright test --config ce.config.mjs
+cd test/browser && npx playwright test --config stock.config.mjs
 npx playwright test --config i18n.config.mjs
 npx playwright test --config catalogues.config.mjs
 npx playwright test --config identity.config.mjs
-npx playwright test --config viewport.config.mjs
-npx playwright test --config viewport-app.config.mjs
+npx playwright test --config management.config.mjs
 ```
-
-The viewport suites reproduce 10,000-record scrolling with isolated static fixtures, then exercise real RDF acceptance, window queries, details and member updates in a separate temporary application store. They do not use or modify local inventory. RDF read tests also forbid full snapshots/history during initial reads, verify bounded payload decoding, and cover projection backfill, reopen and rollback.
-
-Reproduce scoped acceptance checks with `clojure -M:dev:test --focus tover.inventory.scoped-acceptance-test --focus tover.inventory.affected-query-test --focus tover.inventory.history-projection-test`. These compare incremental acceptance with full rebuilds and guard against decoding or replaying unrelated history.
 
 Run `python3 scripts/test-i18n-emails.py` against the running local identity profile to check both languages for all four email templates and the English fallback. It creates uniquely named test accounts and retains them.
 
@@ -130,4 +125,4 @@ Release gates include all eight operations, heavy lineage/replay coverage, concu
 
 `src/tover` groups Identity, Accounts, Workspaces, Invitations, Catalogues and Inventory, with application authorization and persistence bindings. `src/bel` owns declarations, rendering, transport, flows and infrastructure contracts. Optional storage implementations live separately in `src/bel_rdf` and `src/bel_postgres`; Tover loads and wires them. Shared application infrastructure is under `tover.shared`. Production resources include browser assets and the semantic package. `dev` contains REPL tooling and isolated fixtures; `test` mirrors domains and contains browser/deployment checks.
 
-Imports, marketplace integrations, evidence uploads and accounting reports are deferred. [Legacy contracts](docs/legacy-contracts/README.md) retain historical integration behavior. [Experiment findings](docs/bel-experiment-findings.md) summarize the retired prototypes. The [Bel DSL](docs/bel-dsl-proposal.md) runs onboarding live and an isolated [Goods rename slice](docs/bel-next-milestone.md), sharing a PostgreSQL event/receipt journal. Goods domain data remains RDF. Inventory and catalogue browser specs predate the cutover's explicit workspace selection and may fail until their own cutover. Keep credentials, private captures, generated dependencies and all persistent stores out of Git.
+Imports, marketplace integrations, evidence uploads and accounting reports are deferred. [Legacy contracts](docs/legacy-contracts/README.md) retain historical integration behavior. [Experiment findings](docs/bel-experiment-findings.md) summarize the retired prototypes. The [Bel DSL](docs/bel-dsl-proposal.md) runs onboarding live and an isolated [Goods rename slice](docs/bel-next-milestone.md), sharing a PostgreSQL event/receipt journal. Goods domain data remains RDF. Keep credentials, private captures, generated dependencies and all persistent stores out of Git.

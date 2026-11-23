@@ -24,7 +24,7 @@
     [:script {:src "/theme.js?v=2"}]
     [:script {:src "/identity.js?v=2" :defer true}]
     [:link {:rel "stylesheet" :href "/app.css"}]
-    [:link {:rel "stylesheet" :href "/stock.css?v=workflow-2"}]
+    [:link {:rel "stylesheet" :href "/stock.css?v=one-table"}]
     [:link {:rel "stylesheet" :href "/inventory.css?v=workflow-2"}]
     [:link {:rel "stylesheet" :href "/vendor/jspreadsheet-ce/jspreadsheet.css" :data-inventory-asset "jspreadsheet.css"}]
     [:link {:rel "stylesheet" :href "/vendor/jspreadsheet-ce/jsuites.css" :data-inventory-asset "jsuites.css"}]

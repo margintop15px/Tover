@@ -79,7 +79,6 @@
 @media(pointer:coarse){#inventory-evidence-workbench button:not(inventory-grid *){min-height:44px}}
 
 /* Jspreadsheet owns its cells; Datastar binds server models and application events. */
-#inventory-evidence-workbench .stock-sheet{display:flex;flex-direction:column;flex:0 0 auto;min-width:0}
 :is(#inventory-evidence-workbench,.catalogue-workbench) .sheet-toolbar{display:flex;align-items:center;gap:12px;height:40px;min-height:40px;padding:5px 12px;border-bottom:1px solid var(--iw-line);background:var(--iw-bg)}
 :is(#inventory-evidence-workbench,.catalogue-workbench) .sheet-change-status{display:flex;align-items:center;gap:12px;min-width:0;color:var(--iw-muted);font-size:12px;white-space:nowrap}
 #inventory-evidence-workbench .sheet-count{display:inline-flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums;font-weight:500}
@@ -124,3 +123,50 @@
 #inventory-evidence-workbench .sheet-goods-value{display:flex;align-items:center;gap:4px;min-width:0;height:32px;margin-left:-6px}
 #inventory-evidence-workbench .sheet-goods-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #inventory-evidence-workbench .sheet-history-toggle svg{display:block;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+/* ponytail: spike of the one-table stock page */
+.stock-workbench .stock-search{position:relative}
+.stock-workbench .stock-mode{display:inline-flex;gap:2px;margin:0 4px;padding:0 4px;border-left:1px solid var(--iw-line);border-right:1px solid var(--iw-line)}
+:is(#inventory-evidence-workbench,.stock-workbench) .sheet-actions button.sheet-icon-button[aria-pressed=true]{color:var(--iw-blue);background:var(--iw-blue-fill)}
+:is(#inventory-evidence-workbench,.stock-workbench) .sheet-actions button.stock-submit:enabled{color:var(--iw-green)}
+:is(#inventory-evidence-workbench,.stock-workbench) .sheet-actions button.stock-submit:hover:enabled{color:var(--iw-green);background:var(--iw-green-fill)}
+.stock-workbench .stock-pending-filter{position:relative}
+.stock-workbench .stock-pending-filter.has-pending::after{content:"";position:absolute;top:3px;right:3px;width:7px;height:7px;border-radius:50%;background:var(--iw-green)}
+.stock-workbench .stock-save-status{font-size:12px;white-space:nowrap}
+.stock-workbench .stock-filter-chip{flex:0 0 auto;padding:3px 9px;border:1px solid color-mix(in srgb,var(--iw-blue) 30%,var(--iw-line));border-radius:999px;background:var(--iw-blue-fill);color:var(--iw-blue);font-size:12px;cursor:pointer}
+.stock-workbench .stock-filter-chip[hidden]{display:none}
+.stock-workbench .stock-notice:empty{display:none}
+.stock-workbench .stock-notice{padding:6px 16px;font-size:12px;color:var(--iw-red)}
+.stock-workbench .stock-suggestions{position:absolute;z-index:20;left:16px;right:16px;top:calc(100% - 8px);margin:0;padding:4px 0;list-style:none;max-height:320px;overflow:auto;background:var(--iw-bg);border:1px solid var(--iw-line);border-radius:6px;box-shadow:0 8px 24px rgb(0 0 0/.12)}
+.stock-workbench .stock-suggestions[hidden]{display:none}
+.stock-workbench .stock-option{display:flex;justify-content:space-between;gap:12px;padding:7px 12px;cursor:pointer;font-size:13px}
+.stock-workbench .stock-option[aria-selected=true],.stock-workbench .stock-option:hover{background:var(--iw-soft)}
+.stock-workbench .stock-option-kind{color:var(--iw-muted);font-size:12px;white-space:nowrap}
+.stock-workbench .stock-option-create{border-top:1px solid var(--iw-line);color:var(--iw-blue)}
+.stock-workbench .stock-grid{overflow-x:auto}
+#stock-grid .jss_worksheet>tbody>tr>td.stock-product-cell{vertical-align:top;padding-top:7px;font-weight:600}
+/* One baseline across a row: actions and checkboxes sit on the text line */
+#stock-grid .jss_worksheet>tbody>tr>td{line-height:20px}
+#stock-grid .jss_worksheet>tbody>tr>td :is(.inventory-cell-action,input[type=checkbox]){vertical-align:middle;margin-top:-2px}
+#stock-grid .jss_worksheet>tbody>tr>td.stock-cell-pending{background:var(--iw-green-fill);color:var(--iw-green);font-weight:600}
+#stock-grid .jss_worksheet>tbody>tr.stock-new-row>td.stock-variant-cell{box-shadow:inset 2px 0 0 var(--iw-blue)}
+#stock-grid .jss_worksheet>tbody>tr>td.stock-variant-empty{color:var(--iw-muted);font-style:italic}
+/* History below an item's row, after the legacy item history panel */
+#stock-grid .stock-history{padding:11px 16px 14px;border-top:1px solid var(--iw-line);background:var(--iw-bg);font-size:12px}
+#stock-grid .stock-history>.sheet-actions{display:flex;align-items:center;gap:8px;margin:0 0 10px}
+#stock-grid .stock-history-tabs{display:inline-flex;border:1px solid var(--iw-line);border-radius:5px;overflow:hidden}
+#stock-grid .stock-history-tabs button{height:26px;padding:0 10px;border:0;background:var(--iw-bg);color:var(--iw-muted);font-size:12px;cursor:pointer}
+#stock-grid .stock-history-tabs button+button{border-left:1px solid var(--iw-line)}
+#stock-grid .stock-history-tabs button[aria-selected=true]{background:var(--iw-blue-fill);color:var(--iw-blue)}
+#stock-grid .stock-history-period{margin-left:auto;height:26px;padding:0 6px;border:1px solid var(--iw-line);border-radius:5px;background:var(--iw-bg);color:var(--iw-ink);font-size:12px}
+#stock-grid .stock-history-body{max-width:100%;overflow-x:auto}
+#stock-grid .stock-history-body p{margin:4px 0;color:var(--iw-muted)}
+#stock-grid .stock-history-rows{border-collapse:collapse;font-size:11px;line-height:1.35}
+#stock-grid .stock-history-rows :is(th,td){height:28px;padding:4px 8px;text-align:left;border:1px solid var(--iw-line);white-space:nowrap;font-weight:400}
+#stock-grid .stock-history-rows th{background:var(--iw-soft);color:var(--iw-muted);font-weight:500}
+#stock-grid .stock-history-rows td:nth-child(4),#stock-grid .stock-history-rows td:nth-child(5),#stock-grid .stock-history-rows td:nth-child(6){text-align:right;font-variant-numeric:tabular-nums}
+#stock-grid .stock-history-superseded td{color:var(--iw-muted);text-decoration:line-through}
+
+.stock-submit-details{display:inline-flex;gap:4px}
+.stock-submit-details[hidden]{display:none}
+.stock-submit-details input{height:28px;padding:0 6px;border:1px solid var(--iw-line);border-radius:5px;background:var(--iw-bg);color:var(--iw-ink);font-size:12px}
+.stock-submit-reason{width:140px}

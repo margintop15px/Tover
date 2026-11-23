@@ -79,7 +79,7 @@
 (defn unit-label
   {:malli/schema [:=> [:cat [:maybe :string]] [:maybe :string]]}
   [unit]
-  (if (= "pcs" unit) (t "pcs") unit))
+  (if (#{"pcs" "kg" "g" "l" "ml" "m" "pack"} unit) (t unit) unit))
 
 
 (defn translate-labels
