@@ -191,7 +191,7 @@
         (execute! ctx ::warehouses/register-warehouse "w1" {:warehouse-id "main" :name "Main"})
         (execute! ctx ::warehouses/register-warehouse "w2" {:warehouse-id "back" :name "Back"})
         (execute! ctx ::products/register-product "p1" {:product-id "tee" :name "T-shirt"})
-        (save "s1" {:entry-id "a" :lines [{:line-id   "a-0"    :product-id "tee" :variant-label "M" :warehouse-id "main" :quantity "5"
+        (save "s1" {:entry-id "a" :lines [{:line-id   "a-0"    :product-id "tee" :variant-label "M" :unit "pcs" :warehouse-id "main" :quantity "5"
                                            :unit-cost "100.00"}]})
         (let [selection {:selection [{:entry-id "a" :revision 1}] :order ["a"]}
               review    (runtime/read-model ctx ::acceptance/inventory-review selection)]
@@ -240,7 +240,10 @@
   (let [archived (update catalogue :stock-items conj {:stock-item-id "tee-l" :product-id "tee" :variant-label "L" :status "archived"
                                                       :revision      2})]
     (is (nil? (item (stock/table (facts {:catalogue archived}) true) "tee-l")))
-    (is (true? (:archived? (item (stock/table (facts {:catalogue archived :show-archived? true}) true) "tee-l"))))))
+    (is (true? (:archived? (item (stock/table (facts {:catalogue archived :show-archived? true}) true) "tee-l"))))
+    (testing "a pending Restore keeps the archived item visible"
+      (let [pending [{:entry-id "c" :kind "correction" :revision 1 :lines [] :changes [{:stock-item-id "tee-l" :restore true}]}]]
+        (is (true? (:archived? (item (stock/table (facts {:catalogue archived :pending pending}) true) "tee-l"))))))))
 
 
 (deftest pending-item-changes-are-on-the-row

@@ -595,23 +595,28 @@
 
 (defview review
   {:route-data access
-   :schema     [:map [:requestId :string] [:selection [:vector [:map [:entry-id :string] [:revision :int]]]] [:order [:vector :string]]]
+   :schema     [:map [:requestId :string] [:selection [:vector [:map [:entry-id :string] [:revision :int]]]] [:order [:vector :string]]
+                [:ordered {:optional true} :boolean]]
    :query      (fn [context input] {:context context :input input})}
-  [{:keys [context] {:keys [requestId selection order]} :input}]
-  (let [result    (read-or-nil context ::acceptance/inventory-review {:selection selection :order order})
+  [{:keys [context] {:keys [requestId selection order ordered]} :input}]
+  (let [result    (read-or-nil context ::acceptance/inventory-review {:selection selection :order order :ordered? (boolean ordered)})
         catalogue (read-or-nil context ::references/draft-catalogue {})
         label     (when (and result catalogue) (labels catalogue (:registrations result)))
         currency  (or (:currency (read-or-nil context ::currency/workspace-currency {})) "EUR")]
     {:type :signals
      :data {:_stockReviewJson
-            (json {:requestId requestId :selection selection :order order
+            (json {:requestId requestId :selection selection :order order :ordered (boolean ordered)
                    :review    (when label
                                 (-> result
                                     (update :effects (partial mapv #(assoc % :item (label (:stock-item-id %)) :warehouse (label (:warehouse-id %))
                                                                            :valueBefore (some-> (:value-before %) (amount currency))
                                                                            :valueAfter (some-> (:value-after %) (amount currency)))))
                                     (update :registrations (partial mapv #(update % :type (fn [t] (i18n/t (str/capitalize (str/replace (name t) "-" " ")))))))
-                                    (update :problems (partial mapv #(assoc % :message (i18n/t (or (problem-text (:code %)) (second (acceptance/rejection (:code %))) "Check this value.")))))))})}}))
+                                    (update :problems (partial mapv #(assoc % :message
+                                                                            (if (= :order-required (:code %))
+                                                                              (i18n/t "{p0} in {p1}: changes at the same second need an order."
+                                                                                      {:p0 (label (:stock-item-id %)) :p1 (label (:warehouse-id %))})
+                                                                              (i18n/t (or (problem-text (:code %)) (second (acceptance/rejection (:code %))) "Check this value."))))))))})}}))
 
 
 (defview history
@@ -708,11 +713,12 @@
 (defaction accept
   {:route-data access
    :schema     [:map [:workspaceId :uuid] [:selection [:vector [:map [:entry-id :string] [:revision :int]]]] [:order [:vector :string]]
-                [:fingerprint :string] [:commandId CommandId]]}
-  [_ {:keys [workspaceId selection order fingerprint commandId]}]
+                [:fingerprint :string] [:commandId CommandId] [:ordered {:optional true} :boolean]]}
+  [_ {:keys [workspaceId selection order fingerprint commandId ordered]}]
   ;; The attempt id is the acceptance id, so a retried attempt recovers the same acceptance.
   (descriptor ::acceptance/accept-reviewed-inventory-changes commandId
-              {:workspace-id workspaceId :acceptance-id commandId :selection selection :order order :fingerprint fingerprint}))
+              (cond-> {:workspace-id workspaceId :acceptance-id commandId :selection selection :order order :fingerprint fingerprint}
+                ordered (assoc :ordered? true))))
 
 
 (defstream changed

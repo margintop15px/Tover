@@ -44,7 +44,7 @@
 (def catalogue
   {:products    [{:product-id "tee" :name "T-shirt" :status "active" :revision 1}
                  {:product-id "mug" :name "Mug" :status "active" :revision 1}]
-   :stock-items [{:stock-item-id "tee-m" :product-id "tee" :variant-label "M" :condition "regular" :status "active" :revision 1}
+   :stock-items [{:stock-item-id "tee-m" :product-id "tee" :variant-label "M" :unit "pcs" :condition "regular" :status "active" :revision 1}
                  {:stock-item-id "mug-1" :product-id "mug" :condition "regular" :status "active" :revision 1}]
    :barcodes    []
    :warehouses  [{:warehouse-id "main" :name "Main" :status "active" :revision 1}]})
@@ -54,7 +54,7 @@
   {:malli/schema [:=> [:cat :string [:* :map]] :map]}
   [id & lines]
   {:entry-id id :kind "opening" :occurred-at (day 19) :status "pending" :revision 1
-   :lines    (vec (map-indexed #(merge {:line-id (str id "-" %1) :warehouse-id "main" :quantity 5} %2) lines))})
+   :lines    (vec (map-indexed #(merge {:line-id (str id "-" %1) :warehouse-id "main" :quantity 5 :unit "pcs"} %2) lines))})
 
 
 (defn- facts
@@ -111,7 +111,7 @@
 (deftest opening-with-a-new-stock-item
   (let [f    (facts [(entry "e" {:product-id "tee" :variant-label " L "})])
         plan (accept f (input f "e"))]
-    (is (= [{:stock-item-id "item:e-0" :product-id "tee" :variant-label "L" :condition "regular" :status "active" :revision 1}]
+    (is (= [{:stock-item-id "item:e-0" :product-id "tee" :variant-label "L" :unit "pcs" :condition "regular" :status "active" :revision 1}]
            (of-type plan ::stock-items/stock-item-registered)))
     (is (= ["item:e-0"] (map :stock-item-id (of-type plan ::acceptance/inventory-record-line-accepted))))))
 
@@ -233,9 +233,9 @@
                                                                                 %2))]
         (execute! ctx ::warehouses/register-warehouse "w1" {:warehouse-id "main" :name "Main"})
         (execute! ctx ::products/register-product "p1" {:product-id "tee" :name "T-shirt"})
-        (save "s1" {:entry-id "a" :lines [{:line-id   "a-0"    :product-id "tee" :variant-label "M" :warehouse-id "main" :quantity "5"
+        (save "s1" {:entry-id "a" :lines [{:line-id   "a-0"    :product-id "tee" :variant-label "M" :unit "pcs" :warehouse-id "main" :quantity "5"
                                            :unit-cost "100.00"}]})
-        (save "s2" {:entry-id "b" :lines [{:line-id "b-0" :product-id "tee" :variant-label "L" :warehouse-id "main" :quantity "2"}]})
+        (save "s2" {:entry-id "b" :lines [{:line-id "b-0" :product-id "tee" :variant-label "L" :unit "pcs" :warehouse-id "main" :quantity "2"}]})
         (save "s3" {:entry-id "c" :lines [{:line-id "c-0" :product-id "tee" :variant-label "S" :warehouse-id "main"}]})
         (let [selection {:selection [{:entry-id "a" :revision 1} {:entry-id "b" :revision 1}] :order ["a" "b"]}
               review    (runtime/read-model ctx ::acceptance/inventory-review selection)
@@ -291,7 +291,7 @@
 (deftest field-change-only
   (let [f    (facts [(dissoc (correction "c" [] [{:stock-item-id "tee-m" :article "T-101"}]) :occurred-at)])
         plan (accept f (input f "c"))]
-    (is (= [{:stock-item-id "tee-m" :variant-label "M" :article "T-101" :revision 2}] (of-type plan ::stock-items/stock-item-updated)))
+    (is (= [{:stock-item-id "tee-m" :variant-label "M" :article "T-101" :unit "pcs" :revision 2}] (of-type plan ::stock-items/stock-item-updated)))
     (is (= [] (of-type plan ::acceptance/inventory-record-accepted)))
     (is (= [{:entry-id "c" :status "accepted" :revision 2}] (of-type plan ::entries/shared-inventory-entry-accepted)))))
 
@@ -315,7 +315,7 @@
 (deftest move-and-update-together
   (let [f    (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug" :variant-label "red"}])])
         plan (accept f (input f "c"))]
-    (is (= [{:stock-item-id "tee-m" :variant-label "red" :revision 2}] (of-type plan ::stock-items/stock-item-updated)))
+    (is (= [{:stock-item-id "tee-m" :variant-label "red" :unit "pcs" :revision 2}] (of-type plan ::stock-items/stock-item-updated)))
     (is (= [{:stock-item-id "tee-m" :previous-product-id "tee" :product-id "mug" :variant-label "red" :revision 3}]
            (of-type plan ::stock-items/stock-item-moved)))))
 

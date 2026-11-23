@@ -173,3 +173,49 @@
     (is (= #{["c" "mug-1" :duplicate-variant :error]}
            (change-codes (run (update facts :stock-items conj {:stock-item-id "mug-2" :product-id "mug" :variant-label "2" :status "active"})
                               (correction "c" [] [{:stock-item-id "mug-1" :variant-label "2"}])))))))
+
+
+(def two-mugs
+  {:stock-items [{:stock-item-id "tee-m" :product-id "tee" :variant-label "M" :article "T-100" :status "active"}
+                 {:stock-item-id "mug-1" :product-id "mug" :variant-label "1" :status "active"}
+                 {:stock-item-id "mug-2" :product-id "mug" :variant-label "2" :status "active"}]})
+
+
+(deftest moving-to-a-taken-variant-is-a-duplicate-variant
+  (is (= #{["c" "tee-m" :duplicate-variant :error]}
+         (change-codes (run (update two-mugs :stock-items conj {:stock-item-id "mug-m" :product-id "mug" :variant-label "m" :status "active"})
+                            (correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}]))))))
+
+
+(deftest field-conflict-on-barcodes-is-per-barcode
+  (is (empty? (run {} (correction "a" [] [{:stock-item-id "tee-m" :barcodes-added ["4600000000024"]}])
+                   (correction "b" [] [{:stock-item-id "tee-m" :barcodes-added ["4600000000031"]}])))
+      "two different barcodes do not conflict")
+  (let [found (run {} (correction "a" [] [{:stock-item-id "tee-m" :barcodes-added ["4600000000024"]}])
+                   (correction "b" [] [{:stock-item-id "tee-m" :barcodes-removed ["4600000000024"]}]))]
+    (is (= #{["a" "tee-m" :field-conflict :warning] ["b" "tee-m" :field-conflict :warning]} (change-codes found)))
+    (is (= #{:barcodes} (set (map :field found))))
+    (is (= #{{:value "4600000000024"}} (set (map :related found))))))
+
+
+(deftest edited-values-checked-against-other-pending-entries
+  (testing "variant label claimed by another pending change in the same product"
+    (is (= #{["a" "mug-1" :duplicate-variant :error] ["b" "mug-2" :duplicate-variant :error]}
+           (change-codes (run two-mugs (correction "a" [] [{:stock-item-id "mug-1" :variant-label "blue"}])
+                              (correction "b" [] [{:stock-item-id "mug-2" :variant-label "Blue"}]))))))
+  (testing "article claimed for another product by another pending change"
+    (is (= #{["a" "mug-1" :article-conflict :error] ["b" "tee-m" :article-conflict :error]}
+           (change-codes (run two-mugs (correction "a" [] [{:stock-item-id "mug-1" :article "X-1"}])
+                              (correction "b" [] [{:stock-item-id "tee-m" :article "x-1"}])))))
+    (is (empty? (run two-mugs (correction "a" [] [{:stock-item-id "mug-1" :article "X-1"}])
+                     (correction "b" [] [{:stock-item-id "mug-2" :article "x-1"}])))
+        "sharing within one product is fine"))
+  (testing "barcode a change adds is claimed by a new item of another product"
+    (is (= #{["a" "mug-1" :barcode-conflict :error]}
+           (change-codes (filter :stock-item-id
+                                 (run two-mugs (correction "a" [] [{:stock-item-id "mug-1" :barcodes-added ["4600000000048"]}])
+                                      (entry "o" "opening" {:product-id "tee" :variant-label "L" :barcodes ["4600000000048"] :warehouse-id "main" :quantity 1}))))))
+    (is (some #(= ["o-0" :barcode-conflict :error] %)
+              (codes (run two-mugs (correction "a" [] [{:stock-item-id "mug-1" :barcodes-added ["4600000000048"]}])
+                          (entry "o" "opening" {:product-id "tee" :variant-label "L" :barcodes ["4600000000048"] :warehouse-id "main" :quantity 1}))))
+        "and the new item's line shows it too")))

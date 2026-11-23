@@ -143,23 +143,33 @@
         (finding line field code :error (when (= :id (first conflict)) {:id (second conflict) :name (get names (second conflict))}))))))
 
 
+(defn- claims
+  "Pending new items as the catalogue state acceptance would produce them, so edited values are checked against
+  other entries' proposals too. A proposed product stands in under its name."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:sequential :map]]}
+  [all]
+  (for [line all :when (new-item? line)]
+    (assoc (select-keys line [:variant-label :article :barcodes :unit :product-name])
+           :new-item? true :stock-item-id (str "pending:" (:entry-id line) ":" (:line-id line))
+           :product-id (or (:product-id line) (str "pending:" (text-key (:product-name line)))))))
+
+
 (defn- item-changes
-  "Each entry's stock item changes checked as acceptance would, after that entry's own counts; field conflicts across
-  all pending entries."
-  {:malli/schema [:=> [:cat :map] [:sequential Finding]]}
-  [{:keys [entries balances] :as facts}]
-  (let [facts  (assoc facts :history {:lines (map (fn [[item warehouse]] {:stock-item-id item :warehouse-id warehouse}) (keys balances))})
-        tagged (fn [{:keys [entry-id] :as entry}] (map #(assoc % :entry-id entry-id) (:changes entry)))
-        found  (concat
-                 (for [{:keys [lines] :as entry} entries
-                       :when (seq (:changes entry))
-                       :let [counted (into {} (for [l lines :when (int? (:quantity l))]
-                                                [[(:stock-item-id l) (:warehouse-id l)] {:quantity (:quantity l)}]))]
-                       problem                   (changes/problems facts [] (tagged entry) {:balances (merge balances counted)})
-                       :when (not= :field-conflict (:code problem))]
-                   problem)
-                 (filter (comp #{:field-conflict} :code) (changes/problems facts [] (mapcat tagged entries) {:balances balances})))]
-    (for [{:keys [code field] :as p} found]
+  "Each entry's stock item changes checked as acceptance would, after that entry's own counts, against the state every
+  pending entry proposes; field conflicts across all pending entries."
+  {:malli/schema [:=> [:cat :map [:sequential :map]] [:sequential Finding]]}
+  [{:keys [entries balances] :as facts} all]
+  (let [facts   (assoc facts :history {:lines (map (fn [[item warehouse]] {:stock-item-id item :warehouse-id warehouse}) (keys balances))})
+        changes (for [{:keys [entry-id] :as entry} entries c (:changes entry)] (assoc c :entry-id entry-id))
+        fresh   (claims all)
+        found   (for [{:keys [entry-id lines] :as entry} entries
+                      :when (seq (:changes entry))
+                      :let [counted (into {} (for [l lines :when (int? (:quantity l))]
+                                               [[(:stock-item-id l) (:warehouse-id l)] {:quantity (:quantity l)}]))]
+                      problem (changes/problems facts fresh changes {:balances (merge balances counted)})
+                      :when (= entry-id (:entry-id problem))]
+                  problem)]
+    (for [{:keys [code field] :as p} (distinct found)]
       (cond-> {:entry-id (:entry-id p) :line-id nil :stock-item-id (:stock-item-id p) :field (or field :status)
                :code     (if (= :uniqueness-conflict code) (if (= :barcodes field) :barcode-conflict :article-conflict) code)
                :level    (if (= :field-conflict code) :warning :error)}
@@ -172,14 +182,19 @@
   {:malli/schema [:=> [:cat :map] [:vector Finding]]}
   [{:keys [entries stock-items barcodes] :as facts}]
   (let [all     (lines entries)
-        product (into {} (map (juxt :stock-item-id :product-id)) stock-items)]
+        product (into {} (map (juxt :stock-item-id :product-id)) stock-items)
+        ;; Values a pending change claims, under the product the item has after its move.
+        edits   (for [{:keys [changes]} entries c changes] (assoc c :owner (or (:product-id c) (product (:stock-item-id c)))))]
     (vec (concat (references facts all)
                  (duplicate-variants facts all)
                  (stock facts all)
-                 (item-changes facts)
-                 (ownership facts all :barcodes :barcode-conflict (map (juxt :barcode (comp product :stock-item-id)) barcodes))
+                 (item-changes facts all)
+                 (ownership facts all :barcodes :barcode-conflict
+                            (concat (map (juxt :barcode (comp product :stock-item-id)) barcodes)
+                                    (for [{:keys [owner barcodes-added]} edits code barcodes-added] [code owner])))
                  (ownership facts all :article :article-conflict
-                            (keep #(when-let [k (text-key (:article %))] [k (:product-id %)]) stock-items))))))
+                            (concat (keep #(when-let [k (text-key (:article %))] [k (:product-id %)]) stock-items)
+                                    (keep #(when-let [k (text-key (:article %))] [k (:owner %)]) edits)))))))
 
 
 (defn derive-within-limit

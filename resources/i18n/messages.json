@@ -882,7 +882,12 @@
     "Cannot archive: another pending entry names this item.": "Cannot archive: another pending entry names this item.",
     "The move conflicts with {p0}.": "The move conflicts with {p0}.",
     "Another pending entry changes this field.": "Another pending entry changes this field.",
-    "This product's default warehouse": "This product's default warehouse"
+    "This product's default warehouse": "This product's default warehouse",
+    "{p0} in {p1}: changes at the same second need an order.": "{p0} in {p1}: changes at the same second need an order.",
+    "Table order": "Table order",
+    "Reverse order": "Reverse order",
+    "Set the stock item's unit first.": "Set the stock item's unit first.",
+    "Entries for the same stock at the same second need an order.": "Entries for the same stock at the same second need an order."
   },
   "ru": {
     "Stock": "Остатки",
@@ -1771,6 +1776,11 @@
     "Cannot archive: another pending entry names this item.": "Нельзя архивировать: позиция есть в другом ожидающем черновике.",
     "The move conflicts with {p0}.": "Перенос конфликтует с {p0}.",
     "Another pending entry changes this field.": "Другой ожидающий черновик меняет это поле.",
-    "This product's default warehouse": "Склад товара по умолчанию"
+    "This product's default warehouse": "Склад товара по умолчанию",
+    "{p0} in {p1}: changes at the same second need an order.": "{p0} в {p1}: для изменений в одну и ту же секунду нужен порядок.",
+    "Table order": "Как в таблице",
+    "Reverse order": "В обратном порядке",
+    "Set the stock item's unit first.": "Сначала укажите единицу измерения позиции.",
+    "Entries for the same stock at the same second need an order.": "Для записей об одном остатке в одну секунду нужен порядок."
   }
 }

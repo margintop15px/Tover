@@ -57,16 +57,21 @@
   (let [{:keys [items codes]} (produce facts lines changes)
         current               (by :stock-item-id stock-items)
         product               (by :product-id products)
-        names                 #(or (:name (product %)) %)
+        proposed              (into {} (keep #(when (:product-name %) [(:product-id %) (:product-name %)])) lines)
+        names                 #(or (:name (product %)) (proposed %) %)
         locked                (set (map :stock-item-id (:lines history)))
         carriers              (reduce (fn [m [item code]] (update m code (fnil conj #{}) item)) {} codes)
         flag                  (fn [c code data] (merge {:entry-id (:entry-id c) :line-id nil :code code :stock-item-id (:stock-item-id c)} data))
-        writes                (for [c changes k (keys c) :let [field (change-field k)] :when field] [[(:stock-item-id c) field] (:entry-id c)])]
+        ;; Barcodes are written one value at a time: two entries conflict only on the same barcode.
+        writes                (for [c     changes k (keys c) :let [field (change-field k)] :when field
+                                    value (if (= :barcodes field) (get c k) [nil])]
+                                [[(:stock-item-id c) field value] (:entry-id c)])]
     (concat
-      (for [[[item field] ws] (group-by first writes)
-            :when             (< 1 (count (distinct (map second ws))))
-            entry-id          (distinct (map second ws))]
-        {:entry-id entry-id :line-id nil :code :field-conflict :stock-item-id item :field field})
+      (for [[[item field value] ws] (group-by first writes)
+            :when                   (< 1 (count (distinct (map second ws))))
+            entry-id                (distinct (map second ws))]
+        (cond-> {:entry-id entry-id :line-id nil :code :field-conflict :stock-item-id item :field field}
+          value (assoc :value value)))
       (mapcat
         (fn [{:keys [stock-item-id unit archive restore] :as c}]
           (let [was    (current stock-item-id)
@@ -84,7 +89,7 @@
                   [(flag c :move-conflict {:field :product-id :product-id (:product-id c)})]))
               (when (or moved? (contains? c :variant-label))
                 (when (seq (others #(= [(:product-id %) (text-key (:variant-label %))] [(:product-id now) (text-key (:variant-label now))])))
-                  [(flag c (if moved? :move-conflict :duplicate-variant) {:field :variant-label :variant-label (:variant-label now)})]))
+                  [(flag c :duplicate-variant {:field :variant-label :variant-label (:variant-label now)})]))
               (when-let [k (and (or moved? (contains? c :article)) (text-key (:article now)))]
                 (for [other (others #(and (= k (text-key (:article %))) (not= (:product-id now) (:product-id %))))]
                   (flag c clash {:field :article :value (:article now) :owner-product (names (:product-id other)) :other-item (:stock-item-id other)})))

@@ -28,7 +28,7 @@
 
 (defn table
   "Products with their stock items, one cell per warehouse. `hide-empty?` drops products without stock items; archived
-  items show only with `:show-archived?`. A row carries its pending stock item changes; its fields stay accepted."
+  items show only with `:show-archived?` or a pending change, so a proposed Restore stays visible. A row carries its pending stock item changes; its fields stay accepted."
   {:malli/schema [:=> [:cat :map :boolean] :map]}
   [{{:keys [products stock-items barcodes warehouses]} :catalogue :keys [history pending currency show-archived?]} hide-empty?]
   (let [balances (:balances (valuation/replay (:records history) (:lines history)))
@@ -42,7 +42,8 @@
         columns  (->> warehouses
                       (filter #(or (= "active" (:status %)) (some (fn [[[_ w] b]] (and (= w (:warehouse-id %)) (pos? (:quantity b)))) balances)))
                       (sort-by (comp records/name-key :name)))
-        by-prod  (group-by :product-id (if show-archived? stock-items (remove #(= "archived" (:status %)) stock-items)))
+        by-prod  (group-by :product-id (if show-archived? stock-items
+                                           (remove #(and (= "archived" (:status %)) (not (changes (:stock-item-id %)))) stock-items)))
         row      (fn [{:keys [stock-item-id] :as i}]
                    (let [cells (into {} (for [{w :warehouse-id} columns]
                                           [w (cell (balances [stock-item-id w]) (contains? touched [stock-item-id w]) (contains? recorded [stock-item-id w]))]))]

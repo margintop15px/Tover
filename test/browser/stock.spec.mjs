@@ -52,6 +52,19 @@ async function chooseInCatalogue(page, id, path, label) {
   await expect(grid.locator(`td[data-entry-id="${id}"][data-path="${path}"]`)).toContainText(label);
 }
 
+async function chooseCell(page, rowId, column, label) {
+  const grid = page.locator('#stock-grid');
+  const select = grid.locator(`td[data-entry-id="${rowId}"][data-path="${column}"] .inventory-cell-editor > select`);
+  await expect(async () => {
+    if (!(await select.isVisible())) await grid.evaluate((node, { rowId, column }) => node.focusField(rowId, column), { rowId, column });
+    await expect(select).toBeVisible({ timeout: 250 });
+  }).toPass({ timeout: 5000 });
+  await select.selectOption({ label });
+  await select.press('Enter');
+  await expect(page.locator('.stock-save-status')).toHaveText('');
+  await expect.poll(() => page.locator('stock-workbench').evaluate(node => !node.pending && node.queued.size === 0)).toBe(true);
+}
+
 const shot = (page, name) => process.env.STOCK_SHOTS && page.screenshot({ path: `${process.env.STOCK_SHOTS}/${name}.png`, fullPage: true });
 
 async function cell(page, rowId, column, value) {
@@ -88,8 +101,10 @@ test('find a product, add a stock item with an opening in the one table, review 
   await cell(page, `new-row:${productId}`, warehouse, '5');
   await expect(grid.locator('td.stock-cell-pending').first()).toContainText('5');
   await cell(page, `new:${productId}:M`, 'unit-cost', '100');
+  await chooseCell(page, `new:${productId}:M`, 'unit', 'pcs');
   await cell(page, `new-row:${productId}`, 'item', 'S');
   await cell(page, `new-row:${productId}`, warehouse, '2');
+  await chooseCell(page, `new:${productId}:S`, 'unit', 'pcs');
   await shot(page, '4-pending');
 
   await expect(page.locator('.stock-submit')).toBeDisabled();
@@ -165,6 +180,7 @@ test('creating a product opens it at the top of the preview with an editable cos
   const row = () => grid.evaluate((node, suffix) => node.model.rows.find(row => row.id.includes(suffix) && row.id.endsWith(':Red'))?.id ?? null, String(suffix));
   await expect.poll(row).not.toBeNull();
   const key = await row();
+  await chooseCell(page, key, 'unit', 'pcs');
   await expect(grid.locator(`tr[data-row-id="${key}"] td[data-column-key="unit-cost"]`)).toHaveText('10');
   await expect(grid.locator(`input[data-review-entry="${key}"]`)).toBeChecked();
   await expect(grid.locator('tr[data-row-id="new-row:' + key.split(':').slice(1, 3).join(':') + '"] td[data-column-key="unit-cost"]')).toHaveText('');
@@ -204,6 +220,7 @@ test('count a stock item and change its article from its row, then submit both',
   await cell(page, `new-row:${productId}`, 'item', 'blue');
   await expect.poll(() => page.evaluate(() => document.activeElement?.closest('td')?.dataset.path ?? document.querySelector('#stock-grid td.highlight, #stock-grid td.jss_cursor')?.dataset.path)).toBe(warehouse);
   await cell(page, `new-row:${productId}`, warehouse, '5');
+  await chooseCell(page, `new:${productId}:blue`, 'unit', 'pcs');
   await page.locator('.stock-pending-filter').click();
   await page.locator('.stock-submit-time').fill(yesterday());
   await page.locator('.stock-submit').click();

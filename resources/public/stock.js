@@ -345,10 +345,27 @@ class StockWorkbench extends HTMLElement {
     if (!this.grid || !response || response.requestId !== this.reviewRequest || !this.fresh(response)) return;
     const { review } = response;
     if (!review) { this.setStatus('Failed', t('Could not check the pending changes. Try again.')); return; }
+    const ties = review.problems.filter(problem => problem.code === 'order-required');
+    if (ties.length && ties.length === review.problems.length) { this.chooseOrder(response, ties); return; }
     if (!review['valid?']) { this.setStatus('Failed', review.problems.map(problem => problem.message).join(' ')); return; }
     this.pending = { kind: 'accept', commandId: crypto.randomUUID() };
     this.setStatus('Saving');
-    this.emit('stock-accept', { workspaceId: this.workspaceId, selection: response.selection, order: response.order, fingerprint: review.fingerprint, commandId: this.pending.commandId });
+    this.emit('stock-accept', { workspaceId: this.workspaceId, selection: response.selection, order: response.order, ordered: response.ordered, fingerprint: review.fingerprint, commandId: this.pending.commandId });
+  }
+  // Entries on one stock at the same second need the member's order (chapter 17); the review then runs again with it.
+  // ponytail: table order or its reverse, which covers two tied entries; a free reorder when three or more tie.
+  chooseOrder(response, ties) {
+    this.setStatus('Failed', [...new Set(ties.map(tie => tie.message))].join(' '));
+    const choice = (label, order) => {
+      const button = element('button', { type: 'button', className: 'stock-order-choice', textContent: t(label) });
+      button.addEventListener('click', () => {
+        this.notice.replaceChildren();
+        this.reviewRequest = crypto.randomUUID();
+        this.emit('stock-review', { requestId: this.reviewRequest, selection: response.selection, order, ordered: true });
+      });
+      return button;
+    };
+    this.notice.append(' ', choice('Table order', response.order), ' ', choice('Reverse order', [...response.order].reverse()));
   }
 
   // History below the item's row

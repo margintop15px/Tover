@@ -106,7 +106,9 @@
 
 
 (def Selection
-  [:map [:selection [:vector [:map [:entry-id Id] [:revision [:int {:min 1}]]]]] [:order [:vector Id]]])
+  "`ordered?`: the member confirmed `order` for entries that share a stock item, warehouse and second."
+  [:map [:selection [:vector [:map [:entry-id Id] [:revision [:int {:min 1}]]]]] [:order [:vector Id]]
+   [:ordered? {:optional true} :boolean]])
 
 
 (def Problem changes/Problem)
@@ -286,6 +288,28 @@
       (problem line :count-without-history))))
 
 
+(defn- units-required
+  "Board `Stock Item Updated`: a quantity-bearing line needs its item's unit, set before or in the same selection."
+  {:malli/schema [:=> [:cat :map [:sequential :map] [:sequential :map]] [:sequential Problem]]}
+  [facts lines changes]
+  (let [{:keys [items]} (changes/produce facts lines changes)]
+    (for [line lines :when (str/blank? (:unit (items (:stock-item-id line))))]
+      (problem line :unit-required))))
+
+
+(defn- ties
+  "Board chapter 17: entries other than openings on one stock item and warehouse at the same second need the member's
+  explicit order. An opening always comes first in its timeline, so it ties with nothing."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:sequential Problem]]}
+  [lines]
+  (for [[[item warehouse at] ls] (group-by (juxt :stock-item-id :warehouse-id (comp :occurred-at :entry))
+                                           (remove #(= "opening" (:kind (:entry %))) lines))
+        :when                    (and at (< 1 (count (distinct (map :entry-id ls)))))
+        entry-id                 (distinct (map :entry-id ls))]
+    {:entry-id entry-id :line-id nil :code :order-required :stock-item-id item :warehouse-id warehouse
+     :tied     (vec (distinct (map :entry-id ls)))}))
+
+
 (defn- picked-changes
   {:malli/schema [:=> [:cat [:sequential :map]] [:vector :map]]}
   [picked]
@@ -359,7 +383,7 @@
   "The exact effects of accepting `selection` in `order` now: before/after per affected pair, required registrations,
   blocking problems and the fingerprint acceptance must match. Nothing here is stored."
   {:malli/schema [:=> [:cat :map Selection] :map]}
-  [{:keys [entries history now] :as facts} {:keys [selection order] :as input}]
+  [{:keys [entries history now] :as facts} {:keys [selection order ordered?] :as input}]
   (let [compact  (fn [m] (into {} (remove (comp nil? val)) m))
         pending  (by :entry-id (map #(update (compact %) :lines (partial mapv compact)) entries))
         changed  (for [{:keys [entry-id revision]} selection
@@ -383,6 +407,8 @@
                                         (uniqueness facts usable)
                                         (unknown-units usable)
                                         (counts-without-history history usable)
+                                        (units-required facts usable changes)
+                                        (when-not ordered? (ties usable))
                                         (changes/problems facts usable changes after)
                                         (when-let [{:keys [stock-item-id warehouse-id occurred-at]} (:error after)]
                                           [{:entry-id     (first order) :code        :negative-balance :stock-item-id stock-item-id
@@ -434,7 +460,7 @@
 
 (def Accept
   [:map [:workspace-id :uuid] [:acceptance-id Id] [:fingerprint [:string {:min 1}]]
-   [:selection [:vector [:map [:entry-id Id] [:revision [:int {:min 1}]]]]] [:order [:vector Id]]])
+   [:selection [:vector [:map [:entry-id Id] [:revision [:int {:min 1}]]]]] [:order [:vector Id]] [:ordered? {:optional true} :boolean]])
 
 
 (def rejection
@@ -450,6 +476,8 @@
    :unknown-unit          [:validation "Choose a unit from the list."]
    :archived-reference    [:archived-reference "Restore the archived product or warehouse first."]
    :count-without-history [:validation "This stock has no history here. Declare opening stock first."]
+   :unit-required         [:validation "Set the stock item's unit first."]
+   :order-required        [:order-required "Entries for the same stock at the same second need an order."]
    :unit-locked           [:unit-locked "The unit is fixed once the item has stock history."]
    :field-conflict        [:field-conflict "Two selected entries change the same stock item field."]
    :move-conflict         [:move-conflict "The move would make a value belong to two products."]
@@ -492,7 +520,7 @@
              :tover.inventory.entries.model/shared-inventory-entry-accepted}}
   [{:keys [scope actor now] :as facts} {:keys [acceptance-id fingerprint selection order] :as input}]
   (entries/check-workspace! scope input)
-  (let [{:keys [problems lines records item-events] :as result} (review (assoc (review-input facts) :now now) (select-keys input [:selection :order]))
+  (let [{:keys [problems lines records item-events] :as result} (review (assoc (review-input facts) :now now) (select-keys input [:selection :order :ordered?]))
         reasons (into {} (map (juxt :entry-id :reason)) (:entries facts))]
     (when (not= fingerprint (:fingerprint result))
       (records/fail! :review-outdated "Something the review saw changed. Review it again." {}))

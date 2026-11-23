@@ -16,7 +16,7 @@
 (def catalogue
   {:products    [{:product-id "tee" :name "T-shirt" :status "active" :revision 1}
                  {:product-id "mug" :name "Mug" :status "active" :revision 1}]
-   :stock-items [{:stock-item-id "tee-m" :product-id "tee" :variant-label "M" :article "T-100" :condition "regular" :status "active"
+   :stock-items [{:stock-item-id "tee-m" :product-id "tee" :variant-label "M" :article "T-100" :unit "pcs" :condition "regular" :status "active"
                   :revision      1}]
    :barcodes    [{:barcode-id "tee-m|4600000000017" :stock-item-id "tee-m" :barcode "4600000000017"}]
    :warehouses  [{:warehouse-id "main" :name "Main" :status "active" :revision 1}
@@ -27,7 +27,7 @@
   {:malli/schema [:=> [:cat :string [:* :map]] :map]}
   [id & lines]
   {:entry-id id :kind "opening" :occurred-at (day 19) :status "pending" :revision 1
-   :lines    (vec (map-indexed #(merge {:line-id (str id "-" %1) :warehouse-id "main" :quantity 5} %2) lines))})
+   :lines    (vec (map-indexed #(merge {:line-id (str id "-" %1) :warehouse-id "main" :quantity 5 :unit "pcs"} %2) lines))})
 
 
 (defn- facts
@@ -279,10 +279,35 @@
 (deftest move-to-the-current-parent-or-a-taken-variant
   (let [catalogue (update catalogue :stock-items conj {:stock-item-id "mug-m" :product-id "mug" :variant-label "M" :status "active" :revision 1})]
     (is (= #{:move-conflict} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "tee"}])] {}) "c"))))
-    (is (= #{:move-conflict} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}])] catalogue) "c"))))
+    (is (= #{:duplicate-variant} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}])] catalogue) "c")))
+        "a taken variant label is a duplicate variant (chapter 16)")
     (is (:valid? (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug" :variant-label "M2"}])] catalogue) "c")))))
 
 
 (deftest renamed-variant-must-stay-unique
   (let [catalogue (update catalogue :stock-items conj {:stock-item-id "tee-l" :product-id "tee" :variant-label "L" :status "active" :revision 1})]
     (is (= #{:duplicate-variant} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :variant-label " l"}])] catalogue) "c"))))))
+
+
+(deftest a-count-needs-the-item-unit
+  (let [unitless (assoc-in catalogue [:stock-items 0 :unit] nil)]
+    (is (= #{:unit-required} (problems (review (facts [(correction "c" [["main" 3]] [])] (assoc unitless :history opened-5)) "c"))))
+    (is (= #{:unit-required} (problems (review (facts [(entry "o" {:stock-item-id "tee-m"})] unitless) "o")))
+        "an opening needs it too")
+    (is (:valid? (review (facts [(correction "u" [] [{:stock-item-id "tee-m" :unit "pcs"}]) (entry "o" {:stock-item-id "tee-m"})] unitless) "u" "o"))
+        "a unit set in the same selection counts")))
+
+
+(deftest tie-needs-a-choice
+  (let [history (assoc-in opened-5 [:records 0 :kind] "opening")
+        tied    [(correction "a" [["main" 3]] []) (correction "b" [["main" 4]] [])]
+        result  (review (facts tied {:history history}) "a" "b")]
+    (is (= #{:order-required} (problems result)))
+    (is (= #{["a" ["a" "b"]] ["b" ["a" "b"]]} (set (map (juxt :entry-id :tied) (:problems result)))))
+    (let [chosen (acceptance/review (facts tied {:history history}) {:selection [{:entry-id "b" :revision 1} {:entry-id "a" :revision 1}]
+                                                                     :order     ["b" "a"] :ordered? true})]
+      (is (:valid? chosen))
+      (is (= [["tee-m" "main" 5 3]] (map (juxt :stock-item-id :warehouse-id :quantity-before :quantity-after) (:effects chosen)))
+          "the member's order decides: b counts 4, then a counts 3"))
+    (is (:valid? (review (facts [(correction "a" [["main" 3]] []) (assoc (correction "b" [["main" 4]] []) :occurred-at (day 18))] {:history history}) "a" "b"))
+        "different seconds need no choice")))
