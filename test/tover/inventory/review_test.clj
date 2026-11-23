@@ -178,3 +178,111 @@
     (is (not= (print base) (print (assoc base :currency "EUR"))))
     (let [on-pair (facts [(entry "e" {:stock-item-id "tee-m" :warehouse-id "main"})] {})]
       (is (not= (print on-pair) (print (assoc on-pair :history (assoc-in accepted-opening [:records 0 :kind] "purchase")))) "accepted lines on the affected pair"))))
+
+
+;; 15 · Review the correction and later effects
+
+
+(defn- correction
+  "A Correction entry: `counts` are `[warehouse counted]` pairs for tee-m, `changes` stock item changes."
+  {:malli/schema [:=> [:cat :string [:sequential :any] [:sequential :map]] :map]}
+  [id counts changes]
+  (cond-> {:entry-id id :kind "correction" :occurred-at (day 19) :status "pending" :revision 1
+           :lines    (vec (map-indexed (fn [i [warehouse counted]]
+                                         {:line-id (str id "-" i) :stock-item-id "tee-m" :warehouse-id warehouse :quantity counted})
+                                       counts))}
+    (seq changes) (assoc :changes (vec changes))))
+
+
+(def opened-at-100
+  (assoc-in accepted-opening [:lines 0 :unit-cost] "100.00"))
+
+
+(def opened-5
+  (assoc-in opened-at-100 [:lines 0 :quantity-change] 5))
+
+
+(deftest count-down-with-value
+  (let [result (review (facts [(correction "c" [["main" 3]] [])] {:history opened-5}) "c")]
+    (is (:valid? result))
+    (is (= [["tee-m" "main" 5 3 500M 300M]]
+           (map (juxt :stock-item-id :warehouse-id :quantity-before :quantity-after
+                      #(.stripTrailingZeros ^BigDecimal (:value-before %)) #(.stripTrailingZeros ^BigDecimal (:value-after %)))
+                (:effects result))))))
+
+
+(deftest backdated-count-breaks-a-later-sale
+  (let [history (-> opened-5
+                    (update :records conj {:record-revision-id "s#1"    :record-id "s" :revision  1     :acceptance-id "a"      :kind "sale"
+                                           :occurred-at        (day 10) :sequence  0   :cancelled false :recorded-at   (day 10)})
+                    (update :lines conj {:record-line-id "s#1/0" :record-revision-id "s#1" :position 0 :stock-item-id "tee-m"
+                                         :warehouse-id   "main"  :quantity-change    -5}))]
+    (is (= #{:negative-balance} (problems (review (facts [(assoc (correction "c" [["main" 3]] []) :occurred-at (day 5))] {:history history}) "c"))))))
+
+
+(deftest count-needs-history
+  (is (= #{:count-without-history} (problems (review (facts [(correction "c" [["main" 3]] [])] {}) "c"))))
+  (is (:valid? (review (facts [(entry "o" {:stock-item-id "tee-m"}) (assoc (correction "c" [["main" 3]] []) :occurred-at (day 19))] {}) "o" "c"))
+      "an opening in the same selection gives the pair history"))
+
+
+(deftest same-field-changed-twice
+  (let [result (review (facts [(correction "a" [] [{:stock-item-id "tee-m" :article "T-1"}])
+                               (correction "b" [] [{:stock-item-id "tee-m" :article "T-2" :unit "kg"}])]
+                              {})
+                       "a" "b")]
+    (is (= #{:field-conflict} (problems result)))
+    (is (= #{["a" :article] ["b" :article]} (set (map (juxt :entry-id :field) (:problems result)))))))
+
+
+(deftest archive-blocker-shown
+  (let [result (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :archive true}])] {:history opened-5}) "c")]
+    (is (= [[:archive-blocked "main"]] (map (juxt :code :warehouse-id) (:problems result))))))
+
+
+(deftest archive-after-counting-to-zero
+  (is (:valid? (review (facts [(correction "c" [["main" 0]] [{:stock-item-id "tee-m" :archive true}])] {:history opened-5}) "c"))))
+
+
+(deftest archive-blocked-by-another-draft
+  (let [result (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :archive true}]) (entry "other" {:stock-item-id "tee-m"})] {})
+                       "c")]
+    (is (= [[:archive-blocked "other"]] (map (juxt :code :other-entry-id) (:problems result))))))
+
+
+(deftest restore-needs-an-active-product
+  (let [archived (-> catalogue (assoc-in [:products 0 :status] "archived") (assoc-in [:stock-items 0 :status] "archived"))]
+    (is (= #{:restore-needs-product}
+           (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :restore true}])] archived) "c"))))))
+
+
+(deftest unit-locked-by-history
+  (is (= #{:unit-locked} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :unit "kg"}])] {:history opened-5}) "c"))))
+  (is (:valid? (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :unit "kg"}])] {}) "c")) "unlocked without history"))
+
+
+(deftest barcode-owned-by-another-product
+  (let [catalogue (update catalogue :stock-items conj {:stock-item-id "mug-blue" :product-id "mug" :variant-label "blue" :status "active" :revision 1})
+        result    (review (facts [(correction "c" [] [{:stock-item-id "mug-blue" :barcodes-added ["4600000000017"]}])] catalogue) "c")]
+    (is (= [[:uniqueness-conflict "T-shirt"]] (map (juxt :code :owner-product) (:problems result))))))
+
+
+(deftest move-with-a-shared-article
+  (let [catalogue (update catalogue :stock-items conj {:stock-item-id "tee-l"  :product-id "tee" :variant-label "L" :article "T-100"
+                                                       :status        "active" :revision   1})]
+    (is (= [[:move-conflict "T-100"]]
+           (map (juxt :code :value) (:problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}])] catalogue) "c")))))
+    (is (:valid? (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug" :article "M-1"}])] catalogue) "c"))
+        "changing the article in the same entry lets the move through")))
+
+
+(deftest move-to-the-current-parent-or-a-taken-variant
+  (let [catalogue (update catalogue :stock-items conj {:stock-item-id "mug-m" :product-id "mug" :variant-label "M" :status "active" :revision 1})]
+    (is (= #{:move-conflict} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "tee"}])] {}) "c"))))
+    (is (= #{:move-conflict} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}])] catalogue) "c"))))
+    (is (:valid? (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug" :variant-label "M2"}])] catalogue) "c")))))
+
+
+(deftest renamed-variant-must-stay-unique
+  (let [catalogue (update catalogue :stock-items conj {:stock-item-id "tee-l" :product-id "tee" :variant-label "L" :status "active" :revision 1})]
+    (is (= #{:duplicate-variant} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :variant-label " l"}])] catalogue) "c"))))))

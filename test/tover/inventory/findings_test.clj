@@ -103,3 +103,73 @@
     (is (nil? (findings/derive-within-limit {}))))
   (with-redefs [findings/derive (fn [_] (throw (ex-info "boom" {})))]
     (is (nil? (findings/derive-within-limit {})))))
+
+
+;; 15 · Findings of corrections
+
+
+(defn- correction
+  {:malli/schema [:=> [:cat :string [:sequential :map] [:sequential :map]] :map]}
+  [id counts changes]
+  (cond-> (apply entry id "correction" (map #(merge {:stock-item-id "tee-m" :warehouse-id "main"} %) counts))
+    (seq changes) (assoc :changes (vec changes))))
+
+
+(defn- change-codes
+  {:malli/schema [:=> [:cat [:sequential :map]] [:set :any]]}
+  [found]
+  (set (map (juxt :entry-id :stock-item-id :code :level) found)))
+
+
+(def stocked {:balances {["tee-m" "main"] {:quantity 5}}})
+
+
+(deftest count-direction-against-the-accepted-balance
+  (is (= #{["c-0" :insufficient-stock :warning] ["s-0" :insufficient-stock :warning]}
+         (codes (run stocked (correction "c" [{:quantity 3}] []) (entry "s" "sale" {:stock-item-id "tee-m" :warehouse-id "main" :quantity 4}))))
+      "counting 3 of 5 takes 2 out")
+  (is (empty? (run stocked (correction "c" [{:quantity 8}] []) (entry "s" "sale" {:stock-item-id "tee-m" :warehouse-id "main" :quantity 7})))
+      "counting 8 of 5 brings 3 in"))
+
+
+(deftest unit-locked
+  (is (= #{["c" "tee-m" :unit-locked :error]} (change-codes (run stocked (correction "c" [] [{:stock-item-id "tee-m" :unit "kg"}])))))
+  (is (empty? (run {} (correction "c" [] [{:stock-item-id "tee-m" :unit "kg"}])))))
+
+
+(deftest archive-blocked
+  (let [found (run stocked (correction "c" [] [{:stock-item-id "tee-m" :archive true}]))]
+    (is (= #{["c" "tee-m" :archive-blocked :error]} (change-codes found)))
+    (is (= {:warehouse-id "main"} (:related (first found)))))
+  (is (empty? (run stocked (correction "c" [{:quantity 0}] [{:stock-item-id "tee-m" :archive true}]))) "counted to zero in the same entry")
+  (is (= {:other-entry-id "o"}
+         (:related (first (run {} (correction "c" [] [{:stock-item-id "tee-m" :archive true}])
+                               (entry "o" "opening" {:stock-item-id "tee-m" :warehouse-id "main" :quantity 1})))))))
+
+
+(deftest restore-needs-product
+  (is (= #{["c" "tee-m" :restore-needs-product :error]}
+         (change-codes (run {:products [{:product-id "tee" :name "T-shirt" :status "archived"}]}
+                            (correction "c" [] [{:stock-item-id "tee-m" :restore true}]))))))
+
+
+(deftest move-conflict
+  (is (= #{["c" "tee-m" :move-conflict :error]} (change-codes (run {} (correction "c" [] [{:stock-item-id "tee-m" :product-id "tee"}])))))
+  (is (empty? (run {} (correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}])))))
+
+
+(deftest field-conflict
+  (is (= #{["a" "tee-m" :field-conflict :warning] ["b" "tee-m" :field-conflict :warning]}
+         (change-codes (run {} (correction "a" [] [{:stock-item-id "tee-m" :article "A"}])
+                            (correction "b" [] [{:stock-item-id "tee-m" :article "B"}]))))))
+
+
+(deftest edited-values-keep-ownership
+  (let [facts {:stock-items (conj (:stock-items catalogue) {:stock-item-id "mug-1" :product-id "mug" :variant-label "1" :status "active"})}]
+    (is (= #{["c" "mug-1" :barcode-conflict :error]}
+           (change-codes (run facts (correction "c" [] [{:stock-item-id "mug-1" :barcodes-added ["4600000000017"]}])))))
+    (is (= #{["c" "mug-1" :article-conflict :error]}
+           (change-codes (run facts (correction "c" [] [{:stock-item-id "mug-1" :article "t-100"}])))))
+    (is (= #{["c" "mug-1" :duplicate-variant :error]}
+           (change-codes (run (update facts :stock-items conj {:stock-item-id "mug-2" :product-id "mug" :variant-label "2" :status "active"})
+                              (correction "c" [] [{:stock-item-id "mug-1" :variant-label "2"}])))))))

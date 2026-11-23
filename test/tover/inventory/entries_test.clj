@@ -189,6 +189,95 @@
          (:type (rejection #(decide ::entries/discard-inventory-draft {:entry (assoc saved :status "accepted")} {:entry-id "e1" :revision 3}))))))
 
 
+;; 15 · Propose a stock correction
+
+
+(def references-with-mug
+  (-> references
+      (update :products conj {:id "cup" :status "active"} {:id "mug" :status "active"})
+      (update :stock-items conj {:id "mug-blue" :status "active"} {:id "old-item" :status "archived"})))
+
+
+(defn correct
+  {:malli/schema [:=> [:cat :map] :map]}
+  [input]
+  (decide ::entries/save-shared-inventory-entry {:references references-with-mug}
+          (merge {:entry-id "c1" :kind "correction" :lines []} input)))
+
+
+(def count-line {:line-id "l1" :stock-item-id "tee-m" :warehouse-id "main" :quantity "7"})
+
+
+(deftest count-saved-as-pending
+  (let [plan (correct {:lines [count-line]})]
+    (is (= "correction" (get-in plan [:events 0 :data :kind])))
+    (is (= 7 (get-in plan [:events 1 :data :quantity])))))
+
+
+(deftest zero-is-a-count-blank-is-not
+  (is (= 0 (get-in (correct {:lines [(assoc count-line :quantity "0")]}) [:events 1 :data :quantity])))
+  (is (not (contains? (get-in (correct {:lines [(assoc count-line :quantity " ")]}) [:events 1 :data]) :quantity))))
+
+
+(deftest invalid-count-kept
+  (doseq [bad ["-1" "2.5"]]
+    (is (= {:type :validation :field :quantity :line-id "l1" :attempted bad}
+           (select-keys (rejection #(correct {:lines [(assoc count-line :quantity bad)]})) [:type :field :line-id :attempted])))))
+
+
+(deftest one-row-one-entry
+  (let [plan (correct {:lines [count-line] :changes [{:stock-item-id "tee-m" :article "TS-M"}]})]
+    (is (= [::entries/shared-inventory-entry-saved ::entries/inventory-entry-line-saved ::entries/inventory-entry-change-saved]
+           (types plan)))
+    (is (= {:entry-change-id "c1/tee-m" :entry-id "c1" :stock-item-id "tee-m" :article "TS-M"} (get-in plan [:events 2 :data])))))
+
+
+(deftest empty-text-clears-a-field
+  (is (= "" (get-in (correct {:changes [{:stock-item-id "tee-m" :article " " :variant-label nil}]}) [:events 1 :data :article])))
+  (is (not (contains? (get-in (correct {:changes [{:stock-item-id "tee-m" :variant-label nil}]}) [:events 1 :data]) :variant-label))))
+
+
+(deftest barcode-list-cleaned
+  (let [plan (correct {:changes [{:stock-item-id "mug-blue" :barcodes-added ["4600000000024" "0" " " "4600000000024"]}]})]
+    (is (= [{:entry-change-barcode-id "c1/mug-blue|add|4600000000024" :entry-change-id "c1/mug-blue" :op "add"
+             :barcode                 "4600000000024"}]
+           (mapv :data (filter (comp #{::entries/inventory-entry-change-barcode-added} :type) (:events plan)))))))
+
+
+(deftest move-proposed
+  (is (= "mug" (get-in (correct {:changes [{:stock-item-id "mug-blue" :product-id "mug"}]}) [:events 1 :data :product-id]))))
+
+
+(deftest restore-names-an-archived-item
+  (is (true? (get-in (correct {:changes [{:stock-item-id "old-item" :restore true}]}) [:events 1 :data :restore]))))
+
+
+(deftest invalid-corrections-name-the-field
+  (doseq [[input field] [[{:lines [(assoc count-line :unit-cost "1.00")]} :unit-cost]
+                         [{:lines [{:line-id "l1" :product-name "Mug" :warehouse-id "main" :quantity "1"}]} :stock-item-id]
+                         [{:changes [{:stock-item-id "unknown"}]} :stock-item-id]
+                         [{:changes [{:stock-item-id "mug-blue" :unit "crate"}]} :unit]
+                         [{:changes [{:stock-item-id "mug-blue" :archive true :restore true}]} :archive]
+                         [{:changes [{:stock-item-id "mug-blue" :product-id "nope"}]} :product-id]
+                         [{:kind "opening" :changes [{:stock-item-id "mug-blue" :archive true}]} :changes]]]
+    (is (= [:validation field] ((juxt :type :field) (rejection #(correct input)))) (pr-str input))))
+
+
+(deftest removed-change-is-deleted
+  (let [stored [{:stock-item-id "mug-blue" :archive true :barcodes-added ["4600000000024"]}]
+        plan   (decide ::entries/save-shared-inventory-entry
+                       {:references references-with-mug :entry (assoc saved :entry-id "c1" :kind "correction") :changes stored}
+                       {:entry-id "c1" :kind "correction" :expected-revision 3 :changes []})]
+    (is (= [::entries/shared-inventory-entry-saved ::entries/inventory-entry-change-barcode-removed ::entries/inventory-entry-change-removed]
+           (types plan)))))
+
+
+(deftest change-only-entry-needs-no-time
+  (is (= [] (entries/blockers {:kind "correction" :changes [{:stock-item-id "mug-blue" :archive true}]} [] {})))
+  (is (= [{:line-id nil :field :occurred-at :code :occurred-at-missing}]
+         (entries/blockers {:kind "correction"} [] {}))))
+
+
 ;; 16 · Read shared pending inventory work, through the store
 
 

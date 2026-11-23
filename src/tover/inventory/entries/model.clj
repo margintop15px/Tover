@@ -16,10 +16,15 @@
     [java.time.temporal ChronoUnit]))
 
 
+(def kinds
+  "Opening (chapter 14) and Correction, the chapter 15 count."
+  [:enum "opening" "correction"])
+
+
 (def Entry
   [:map
    [:entry-id Id]
-   [:kind [:enum "opening"]]
+   [:kind kinds]
    [:occurred-at {:optional true} validation/Instant]
    [:reason {:optional true} :string]
    [:status [:enum "pending" "accepted" "discarded"]]
@@ -57,6 +62,32 @@
   (into [:map [:line-id Id] [:barcodes {:optional true} [:vector Id]]] line-fields))
 
 
+(def change-fields
+  "One proposed stock item change of a Correction. Absent means unchanged; an empty string clears variant label or article."
+  [[:stock-item-id {:bel/ref :tover.inventory.stock-items.model/stock-items} Id]
+   [:variant-label {:optional true} :string]
+   [:article {:optional true} :string]
+   [:unit {:optional true} :string]
+   [:product-id {:optional true :bel/ref :tover.catalogues.products.model/products} Id]
+   [:archive {:optional true} :boolean]
+   [:restore {:optional true} :boolean]])
+
+
+(def EntryChange
+  "Id is `entry-id/stock-item-id`."
+  (into [:map [:entry-change-id Id] [:entry-id {:bel/ref ::entries} Id]] change-fields))
+
+
+(def EntryChangeBarcode
+  "Id is `entry-change-id|op|barcode`."
+  [:map [:entry-change-barcode-id Id] [:entry-change-id {:bel/ref ::entry-changes} Id] [:op [:enum "add" "remove"]] [:barcode Id]])
+
+
+(def Change
+  "A change as commands take it and read models return it."
+  (into [:map [:barcodes-added {:optional true} [:vector Id]] [:barcodes-removed {:optional true} [:vector Id]]] change-fields))
+
+
 (def ^:private entry-fields
   [:kind :occurred-at :reason :status :revision :saved-by])
 
@@ -72,6 +103,10 @@
 (defevent inventory-entry-line-removed {:schema [:map [:entry-line-id Id]]})
 (defevent inventory-entry-line-barcode-added {:schema EntryLineBarcode})
 (defevent inventory-entry-line-barcode-removed {:schema [:map [:entry-line-barcode-id Id]]})
+(defevent inventory-entry-change-saved {:schema EntryChange})
+(defevent inventory-entry-change-removed {:schema [:map [:entry-change-id Id]]})
+(defevent inventory-entry-change-barcode-added {:schema EntryChangeBarcode})
+(defevent inventory-entry-change-barcode-removed {:schema [:map [:entry-change-barcode-id Id]]})
 
 
 (defmodel entries
@@ -101,6 +136,24 @@
    :policy ::records/workspace-member
    :events {::inventory-entry-line-barcode-added   {:create [:entry-line-id :barcode]}
             ::inventory-entry-line-barcode-removed {:delete true}}})
+
+
+(defmodel entry-changes
+  {:id     :entry-change-id
+   :store  :catalogue
+   :schema EntryChange
+   :policy ::records/workspace-member
+   :events {::inventory-entry-change-saved   {:set (into [:entry-id] (map first) change-fields)}
+            ::inventory-entry-change-removed {:delete true}}})
+
+
+(defmodel entry-change-barcodes
+  {:id     :entry-change-barcode-id
+   :store  :catalogue
+   :schema EntryChangeBarcode
+   :policy ::records/workspace-member
+   :events {::inventory-entry-change-barcode-added   {:create [:entry-change-id :op :barcode]}
+            ::inventory-entry-change-barcode-removed {:delete true}}})
 
 
 (defn entry-line-id
@@ -145,6 +198,55 @@
                                     {:type ::inventory-entry-line-barcode-added
                                      :data {:entry-line-barcode-id (barcode-id id barcode) :entry-line-id id :barcode barcode}}))))
                       (range) new)))))
+
+
+(defn- change-barcodes
+  "A change's barcodes as `[op barcode]` pairs."
+  {:malli/schema [:=> [:cat [:maybe :map]] [:set [:tuple :string :string]]]}
+  [change]
+  (into (set (map #(vector "add" %) (:barcodes-added change))) (map #(vector "remove" %)) (:barcodes-removed change)))
+
+
+(defn change-events
+  "Events that turn the stored changes `old` into `new`, one change per stock item."
+  {:malli/schema [:=> [:cat :string [:sequential Change] [:sequential Change]] [:vector :map]]}
+  [entry-id old new]
+  (let [before  (into {} (map (juxt :stock-item-id identity)) old)
+        kept    (set (map :stock-item-id new))
+        id-of   #(str entry-id "/" %)
+        code-id (fn [change-id [op barcode]] (str change-id "|" op "|" barcode))
+        dropped (fn [change-id pairs]
+                  (mapv #(hash-map :type ::inventory-entry-change-barcode-removed :data {:entry-change-barcode-id (code-id change-id %)})
+                        (sort pairs)))]
+    (-> []
+        (into (mapcat (fn [{:keys [stock-item-id] :as change}]
+                        (let [id (id-of stock-item-id)]
+                          (conj (dropped id (change-barcodes change)) {:type ::inventory-entry-change-removed :data {:entry-change-id id}}))))
+              (remove (comp kept :stock-item-id) old))
+        (into (mapcat (fn [{:keys [stock-item-id] :as change}]
+                        (let [id       (id-of stock-item-id)
+                              previous (change-barcodes (get before stock-item-id))
+                              current  (change-barcodes change)]
+                          (concat [{:type ::inventory-entry-change-saved
+                                    :data (assoc (dissoc change :barcodes-added :barcodes-removed) :entry-change-id id :entry-id entry-id)}]
+                                  (dropped id (remove current previous))
+                                  (for [[op barcode :as pair] (sort (remove previous current))]
+                                    {:type ::inventory-entry-change-barcode-added
+                                     :data {:entry-change-barcode-id (code-id id pair) :entry-change-id id :op op :barcode barcode}})))))
+              new))))
+
+
+(defn assemble-changes
+  "Stored change and barcode rows as `Change`s ordered by stock item."
+  {:malli/schema [:=> [:cat [:sequential :map] [:sequential :map]] [:vector Change]]}
+  [changes barcodes]
+  (let [by-change (group-by :entry-change-id barcodes)]
+    (mapv (fn [{:keys [entry-change-id] :as change}]
+            (let [codes (fn [op] (vec (sort (keep #(when (= op (:op %)) (:barcode %)) (get by-change entry-change-id)))))]
+              (cond-> (dissoc change :entry-change-id :entry-id)
+                (seq (codes "add")) (assoc :barcodes-added (codes "add"))
+                (seq (codes "remove")) (assoc :barcodes-removed (codes "remove")))))
+          (sort-by :stock-item-id changes))))
 
 
 (defn assemble
@@ -212,15 +314,24 @@
         line-fields))
 
 
+(def DraftChange
+  "A change as typed; barcode lists may hold blanks and \"0\", dropped at save."
+  (into [:map [:barcodes-added {:optional true} [:maybe [:vector :string]]]
+         [:barcodes-removed {:optional true} [:maybe [:vector :string]]]]
+        (map (fn [[key props schema]] [key (dissoc props :bel/ref) (if (= key :stock-item-id) schema [:maybe schema])]))
+        change-fields))
+
+
 (def SaveEntry
   [:map
    [:workspace-id :uuid]
    [:entry-id Id]
    [:expected-revision {:optional true} [:maybe [:int {:min 1}]]]
-   [:kind [:enum "opening"]]
+   [:kind kinds]
    [:occurred-at {:optional true} [:maybe :string]]
    [:reason {:optional true} [:maybe [:string {:max 1000}]]]
-   [:lines {:optional true} [:vector DraftLine]]])
+   [:lines {:optional true} [:vector DraftLine]]
+   [:changes {:optional true} [:vector DraftChange]]])
 
 
 (def ^:private reference-fields
@@ -250,6 +361,54 @@
         (throw (ex-info (ex-message error) (assoc (ex-data error) :line-id line-id)))))))
 
 
+(def ^:private new-item-fields
+  [:product-id :product-name :variant-label :article :unit :barcodes])
+
+
+(defn- check-correction-line!
+  "A Correction counts existing stock items and carries no unit cost."
+  {:malli/schema [:=> [:cat Line] :nil]}
+  [{:keys [line-id] :as line}]
+  (when (some line new-item-fields)
+    (invalid! :stock-item-id "A correction counts existing stock items only." {:line-id line-id}))
+  (when (:unit-cost line)
+    (invalid! :unit-cost "A correction has no unit cost." {:line-id line-id :attempted (:unit-cost line)})))
+
+
+(defn- clean-barcodes
+  {:malli/schema [:=> [:cat [:maybe [:sequential [:maybe :string]]]] [:vector :string]]}
+  [values]
+  (into [] (comp (keep #(some-> % str/trim)) (remove #{"" "0"}) (distinct)) values))
+
+
+(defn- parse-change
+  "A typed change as stored. The item may be archived (restore); a move target must be active."
+  {:malli/schema [:=> [:cat :map [:maybe :map] :map] Change]}
+  [references previous {:keys [stock-item-id] :as change}]
+  (let [fail!  (fn [field message attempted] (invalid! field message {:stock-item-id stock-item-id :attempted attempted}))
+        text   (fn [value] (some-> value str/trim))
+        change (cond-> (into {} (remove (comp nil? val)) change)
+                 (:variant-label change) (update :variant-label text)
+                 (:article change) (update :article text)
+                 true (update :unit blank->nil)
+                 true (update :product-id blank->nil)
+                 true (update :barcodes-added clean-barcodes)
+                 true (update :barcodes-removed clean-barcodes))
+        change (into {} (remove (fn [[_ v]] (or (nil? v) (false? v) (and (coll? v) (empty? v))))) change)]
+    (when-not (some #(= stock-item-id (:id %)) (:stock-items references))
+      (fail! :stock-item-id "Choose a stock item of this workspace." stock-item-id))
+    (when-let [product-id (:product-id change)]
+      (when (not= product-id (:product-id previous))
+        (try (records/check-related! product-id (:products references) :validation)
+             (catch clojure.lang.ExceptionInfo _ (fail! :product-id "Choose an active record of this workspace." product-id)))))
+    (when-let [unit (:unit change)]
+      (when-not (or (= unit (:unit previous)) (stock-items/unit? unit))
+        (fail! :unit "Choose a unit from the list." unit)))
+    (when (and (:archive change) (:restore change))
+      (fail! :archive "Archive or restore, not both." true))
+    change))
+
+
 (defn check-workspace!
   "Reject input whose workspace differs from the request scope; never retarget."
   {:malli/schema [:=> [:cat :map :map] :nil]}
@@ -260,12 +419,13 @@
 
 (defn- current-draft!
   "The pending entry at `revision`, or a rejection carrying the current saved values."
-  {:malli/schema [:=> [:cat [:maybe :map] [:sequential Line] [:maybe :int]] [:maybe :map]]}
-  [entry lines revision]
+  {:malli/schema [:=> [:cat [:maybe :map] [:sequential Line] [:sequential Change] [:maybe :int]] [:maybe :map]]}
+  [entry lines changes revision]
   (when (and entry (not= "pending" (:status entry)))
     (records/fail! :entry-not-pending "This entry is already accepted or discarded." {:current entry}))
   (when-not (= revision (:revision entry))
-    (records/fail! :stale-draft "This entry changed. Review the latest values." {:current (some-> entry (assoc :lines (vec lines)))}))
+    (records/fail! :stale-draft "This entry changed. Review the latest values."
+                   {:current (some-> entry (assoc :lines (vec lines)) (cond-> (seq changes) (assoc :changes (vec changes))))}))
   entry)
 
 
@@ -282,6 +442,14 @@
     (assemble lines (filterv (comp ids :entry-line-id) (records/all-records context ::entry-line-barcodes :entry-line-barcode-id)))))
 
 
+(defmethod runtime/coeffect ::changes
+  [_ context {:keys [entry-id]}]
+  (let [changes (filterv #(= entry-id (:entry-id %)) (records/all-records context ::entry-changes :entry-change-id))
+        ids     (set (map :entry-change-id changes))]
+    (assemble-changes changes (filterv (comp ids :entry-change-id)
+                                       (records/all-records context ::entry-change-barcodes :entry-change-barcode-id)))))
+
+
 (defn- choices
   {:malli/schema [:=> [:cat [:sequential :map] :keyword] [:vector :map]]}
   [rows id-key]
@@ -296,24 +464,32 @@
 
 
 (def ^:private draft-facts
-  [[:entry ::entries entry-key] [:lines ::lines entry-key]])
+  [[:entry ::entries entry-key] [:lines ::lines entry-key] [:changes ::changes entry-key]])
 
 
 (defcommand save-shared-inventory-entry
   {:input SaveEntry :policy ::records/workspace-member
    :cofx  (conj draft-facts [:references ::references (constantly {})])
    :emits #{::shared-inventory-entry-saved ::inventory-entry-line-saved ::inventory-entry-line-removed
-            ::inventory-entry-line-barcode-added ::inventory-entry-line-barcode-removed}}
-  [{:keys [scope actor entry lines references]} {:keys [entry-id expected-revision kind occurred-at reason] :as input}]
+            ::inventory-entry-line-barcode-added ::inventory-entry-line-barcode-removed ::inventory-entry-change-saved
+            ::inventory-entry-change-removed ::inventory-entry-change-barcode-added ::inventory-entry-change-barcode-removed}}
+  [{:keys [scope actor entry lines changes references]} {:keys [entry-id expected-revision kind occurred-at reason] :as input}]
   (check-workspace! scope input)
-  (current-draft! entry lines expected-revision)
-  (let [before  (into {} (map (juxt :line-id identity)) lines)
-        parsed  (mapv #(parse-line references (get before (:line-id %)) %) (:lines input))
-        instant (some-> (blank->nil occurred-at) parse-instant)
-        saved   (cond-> {:entry-id entry-id :kind kind :status "pending" :revision (inc (or expected-revision 0)) :saved-by actor}
-                  instant (assoc :occurred-at instant)
-                  (blank->nil reason) (assoc :reason (str/trim reason)))]
-    {:events (into [{:type ::shared-inventory-entry-saved :data saved}] (line-events entry-id lines parsed))
+  (current-draft! entry lines (or changes []) expected-revision)
+  (when (and (seq (:changes input)) (not= "correction" kind))
+    (invalid! :changes "Only a correction changes stock items." {}))
+  (let [before   (into {} (map (juxt :line-id identity)) lines)
+        parsed   (mapv #(parse-line references (get before (:line-id %)) %) (:lines input))
+        _        (when (= "correction" kind) (run! check-correction-line! parsed))
+        prior    (into {} (map (juxt :stock-item-id identity)) changes)
+        proposed (mapv #(parse-change references (get prior (:stock-item-id %)) %) (:changes input))
+        instant  (some-> (blank->nil occurred-at) parse-instant)
+        saved    (cond-> {:entry-id entry-id :kind kind :status "pending" :revision (inc (or expected-revision 0)) :saved-by actor}
+                   instant (assoc :occurred-at instant)
+                   (blank->nil reason) (assoc :reason (str/trim reason)))]
+    {:events (-> [{:type ::shared-inventory-entry-saved :data saved}]
+                 (into (line-events entry-id lines parsed))
+                 (into (change-events entry-id (or changes []) proposed)))
      :fx     (records/publish scope)}))
 
 
@@ -323,22 +499,27 @@
 
 (defcommand discard-inventory-draft
   {:input DiscardEntry :policy ::records/workspace-member :cofx draft-facts
-   :emits #{::inventory-draft-discarded ::inventory-entry-line-removed ::inventory-entry-line-barcode-removed}}
-  [{:keys [scope entry lines]} {:keys [entry-id revision] :as input}]
+   :emits #{::inventory-draft-discarded ::inventory-entry-line-removed ::inventory-entry-line-barcode-removed
+            ::inventory-entry-change-removed ::inventory-entry-change-barcode-removed}}
+  [{:keys [scope entry lines changes]} {:keys [entry-id revision] :as input}]
   (check-workspace! scope input)
   (when-not entry
     (records/fail! :not-found "This entry no longer exists." {}))
-  (current-draft! entry lines revision)
-  {:events (into [{:type ::inventory-draft-discarded :data {:entry-id entry-id :status "discarded" :revision (inc revision)}}]
-                 (line-events entry-id lines []))
+  (current-draft! entry lines (or changes []) revision)
+  {:events (-> [{:type ::inventory-draft-discarded :data {:entry-id entry-id :status "discarded" :revision (inc revision)}}]
+               (into (line-events entry-id lines []))
+               (into (change-events entry-id (or changes []) [])))
    :fx     (records/publish scope)})
 
 
 (defn blockers
-  "What keeps a pending entry from review: missing facts and archived references, per line and field."
+  "What keeps a pending entry from review: missing facts and archived references, per line and field. An entry
+  with only stock item changes needs no occurrence time."
   {:malli/schema [:=> [:cat :map [:sequential Line] :map] [:vector :map]]}
   [entry lines status]
-  (into (if (:occurred-at entry) [] [{:line-id nil :field :occurred-at :code :occurred-at-missing}])
+  (into (if (or (:occurred-at entry) (and (empty? lines) (seq (:changes entry))))
+          []
+          [{:line-id nil :field :occurred-at :code :occurred-at-missing}])
         (mapcat (fn [{:keys [line-id] :as line}]
                   (concat
                     (when-not (:quantity line) [{:line-id line-id :field :quantity :code :quantity-missing}])
@@ -355,10 +536,14 @@
   [_ context _]
   (let [entries  (filterv #(= "pending" (:status %)) (records/all-records context ::entries :entry-id))
         by-entry (group-by :entry-id (records/all-records context ::entry-lines :entry-line-id))
-        barcodes (group-by :entry-line-id (records/all-records context ::entry-line-barcodes :entry-line-barcode-id))]
+        barcodes (group-by :entry-line-id (records/all-records context ::entry-line-barcodes :entry-line-barcode-id))
+        changes  (group-by :entry-id (records/all-records context ::entry-changes :entry-change-id))
+        codes    (group-by :entry-change-id (records/all-records context ::entry-change-barcodes :entry-change-barcode-id))]
     (mapv (fn [{:keys [entry-id] :as entry}]
-            (let [rows (get by-entry entry-id)]
-              (assoc entry :lines (assemble rows (mapcat (comp barcodes :entry-line-id) rows)))))
+            (let [rows    (get by-entry entry-id)
+                  changed (get changes entry-id)]
+              (cond-> (assoc entry :lines (assemble rows (mapcat (comp barcodes :entry-line-id) rows)))
+                (seq changed) (assoc :changes (assemble-changes changed (mapcat (comp codes :entry-change-id) changed))))))
           entries)))
 
 

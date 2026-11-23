@@ -94,3 +94,39 @@
   (is (= "1100.00" (valuation/display-amount 1100.0000M "EUR")))
   (is (= "1100" (valuation/display-amount 1100.0000M "JPY")))
   (is (= "0.12" (valuation/display-amount 0.1250M "EUR")) "half-even"))
+
+
+;; 15 · Correct stock: a count sets the balance; its change is derived on every replay.
+
+
+(defn- count-of
+  {:malli/schema [:=> [:cat :string :int :int] :map]}
+  [id on counted]
+  (let [rid (str id "#1")]
+    {:record {:record-revision-id rid      :record-id id    :revision 1 :kind "correction" :occurred-at (day on) :sequence 0
+              :recorded-at        (day on) :cancelled false}
+     :lines  [{:record-revision-id rid :position 0 :stock-item-id "i" :warehouse-id "w" :counted-quantity counted}]}))
+
+
+(deftest count-down-leaves-at-the-average
+  (let [b (balance (record "o" {:kind "opening"} [5 "100.00"]) (count-of "c" 2 3))]
+    (is (= 3 (:quantity b)))
+    (is (== 300.00M (valuation/value b)))))
+
+
+(deftest count-up-enters-at-the-average
+  (is (== 700.00M (valuation/value (balance (record "o" {:kind "opening"} [5 "100.00"]) (count-of "c" 2 7))))))
+
+
+(deftest count-up-on-unvalued-stock-stays-unvalued
+  (is (false? (:valued? (balance (record "o" {:kind "opening"} [5]) (count-of "c" 2 7))))))
+
+
+(deftest count-effect-is-re-derived
+  (let [steps (:steps (replay (record "o" {:kind "opening"} [5]) (count-of "late" 10 7) (count-of "early" 5 9)))]
+    (is (= [["o#1" 5 5] ["early#1" 4 9] ["late#1" -2 7]] (map (juxt :record-revision-id :quantity-change :balance-after) steps)))))
+
+
+(deftest count-never-excuses-an-earlier-shortage
+  (is (= :negative-balance
+         (:type (:error (replay (record "o" {:kind "opening"} [5]) (record "s" {:on 3} [-6]) (count-of "c" 10 4)))))))

@@ -7,6 +7,7 @@
     [clojure.string :as str]
     [clojure.walk :as walk]
     [tover.catalogues.records :as records :refer [Id]]
+    [tover.inventory.changes :as changes]
     [tover.inventory.entries.model :as entries]
     [tover.inventory.stock-items.model :as stock-items]
     [tover.inventory.valuation :as valuation]
@@ -16,7 +17,7 @@
 
 
 (def Acceptance
-  [:map [:acceptance-id Id] [:actor :uuid] [:recorded-at validation/Instant] [:record-count [:int {:min 1}]]])
+  [:map [:acceptance-id Id] [:actor :uuid] [:recorded-at validation/Instant] [:record-count [:int {:min 0}]]])
 
 
 (def Record
@@ -26,7 +27,7 @@
    [:record-id Id]
    [:revision [:int {:min 1}]]
    [:acceptance-id {:bel/ref ::acceptances} Id]
-   [:kind [:enum "opening"]]
+   [:kind entries/kinds]
    [:occurred-at validation/Instant]
    [:sequence [:int {:min 0}]]
    [:amends {:optional true} Id]
@@ -35,14 +36,16 @@
 
 
 (def RecordLine
-  "Id is `record-revision-id/position`. Money is an exact decimal string in the workspace currency."
+  "Id is `record-revision-id/position`. Money is an exact decimal string in the workspace currency. A Correction line
+  carries the counted balance instead of a change; replay derives its change."
   [:map
    [:record-line-id Id]
    [:record-revision-id {:bel/ref ::records} Id]
    [:position [:int {:min 0}]]
    [:stock-item-id {:bel/ref :tover.inventory.stock-items.model/stock-items} Id]
    [:warehouse-id {:bel/ref :tover.catalogues.warehouses.model/warehouses} Id]
-   [:quantity-change :int]
+   [:quantity-change {:optional true} :int]
+   [:counted-quantity {:optional true} [:int {:min 0}]]
    [:unit-cost {:optional true} :string]])
 
 
@@ -74,7 +77,7 @@
    :schema RecordLine
    :policy ::records/workspace-member
    :events {::inventory-record-line-accepted {:create [:record-revision-id :position :stock-item-id :warehouse-id
-                                                       :quantity-change :unit-cost]}}})
+                                                       :quantity-change :counted-quantity :unit-cost]}}})
 
 
 (defn record-revision-id
@@ -106,8 +109,7 @@
   [:map [:selection [:vector [:map [:entry-id Id] [:revision [:int {:min 1}]]]]] [:order [:vector Id]]])
 
 
-(def Problem
-  [:map [:entry-id :string] [:line-id {:optional true} [:maybe :string]] [:code :keyword]])
+(def Problem changes/Problem)
 
 
 (defn- text-key
@@ -183,6 +185,12 @@
   ([line code data] (merge {:entry-id (:entry-id line) :line-id (:line-id line) :code code} data)))
 
 
+(defn- present
+  {:malli/schema [:=> [:cat :map] :map]}
+  [m]
+  (into {} (remove (comp nil? val)) m))
+
+
 (defn- distinct-by-item
   {:malli/schema [:=> [:cat [:sequential :map]] [:sequential :map]]}
   [lines]
@@ -237,10 +245,10 @@
                       :occurred-at        occurred-at :sequence (position entry-id 0)         :cancelled false :recorded-at now}))
      :lines   (vec (for [[entry-id ls] grouped
                          [index line]  (map vector (range) ls)]
-                     (cond-> {:record-line-id     (record-line-id (record-revision-id entry-id 1) index)
+                     (cond-> {:record-line-id (record-line-id (record-revision-id entry-id 1) index)
                               :record-revision-id (record-revision-id entry-id 1) :position index
-                              :stock-item-id      (:stock-item-id line) :warehouse-id       (:warehouse-id line)
-                              :quantity-change    (:quantity line)}
+                              :stock-item-id (:stock-item-id line) :warehouse-id            (:warehouse-id line)
+                              (if (= "correction" (:kind (:entry line))) :counted-quantity :quantity-change) (:quantity line)}
                        (:unit-cost line) (assoc :unit-cost (:unit-cost line)))))}))
 
 
@@ -266,6 +274,57 @@
       (problem line code))))
 
 
+(defn- counts-without-history
+  "A count needs accepted history for its pair, or an opening in the same selection; the first count is an opening."
+  {:malli/schema [:=> [:cat :map [:sequential :map]] [:sequential Problem]]}
+  [history lines]
+  (let [known (into (set (map (juxt :stock-item-id :warehouse-id) (:lines history)))
+                    (comp (filter #(= "opening" (:kind (:entry %)))) (map (juxt :stock-item-id :warehouse-id)))
+                    lines)]
+    (for [line  lines
+          :when (and (= "correction" (:kind (:entry line))) (not (known [(:stock-item-id line) (:warehouse-id line)])))]
+      (problem line :count-without-history))))
+
+
+(defn- picked-changes
+  {:malli/schema [:=> [:cat [:sequential :map]] [:vector :map]]}
+  [picked]
+  (vec (for [{:keys [entry-id changes]} picked change changes] (assoc change :entry-id entry-id))))
+
+
+(defn- item-events
+  "Catalogue facts turning the current stock items into the produced ones; each fact takes the next revision."
+  {:malli/schema [:=> [:cat :map [:sequential :map] [:sequential :map]] [:vector :map]]}
+  [{:keys [stock-items barcodes] :as facts} lines changes]
+  (let [{:keys [items codes]} (changes/produce facts lines changes)
+        current               (by :stock-item-id stock-items)
+        before                (set (map (juxt :stock-item-id :barcode) barcodes))
+        value                 #(some-> % str/trim not-empty)]
+    (vec (mapcat
+           (fn [item]
+             (let [was    (current item)
+                   now    (items item)
+                   fields (present {:variant-label (value (:variant-label now)) :article (value (:article now)) :unit (value (:unit now))})
+                   facts  (concat
+                            (when (not= fields (present (select-keys was [:variant-label :article :unit])))
+                              [[::stock-items/stock-item-updated (assoc fields :stock-item-id item)]])
+                            (when (not= (:product-id now) (:product-id was))
+                              [[::stock-items/stock-item-moved (present {:stock-item-id item              :previous-product-id (:product-id was)
+                                                                         :product-id    (:product-id now) :variant-label       (:variant-label fields)})]])
+                            (when (not= (:status now) (:status was))
+                              [[(if (= "archived" (:status now)) ::stock-items/stock-item-archived ::stock-items/stock-item-restored)
+                                {:stock-item-id item :status (:status now)}]]))
+                   pairs  (fn [s] (sort (filter #(= item (first %)) s)))]
+               (concat
+                 (map-indexed (fn [i [type data]] {:type type :data (assoc data :revision (+ (:revision was) 1 i))}) facts)
+                 (for [[_ code] (pairs (remove codes before))]
+                   {:type ::stock-items/stock-item-barcode-removed :data {:barcode-id (stock-items/barcode-id item code)}})
+                 (for [[_ code] (pairs (remove before codes))]
+                   {:type ::stock-items/stock-item-barcode-assigned
+                    :data {:barcode-id (stock-items/barcode-id item code) :stock-item-id item :barcode code}}))))
+           (distinct (map :stock-item-id changes))))))
+
+
 (defn- sha256
   {:malli/schema [:=> [:cat :string] :string]}
   [text]
@@ -276,11 +335,11 @@
   "What the review saw: the selection and order, the selected entries, referenced and same-named catalogue records,
   owners of the barcodes and articles used, accepted record ids on the affected pairs, and the currency."
   {:malli/schema [:=> [:cat :map Selection [:sequential :map]] :string]}
-  [{:keys [products warehouses stock-items barcodes history currency entries]} selection lines]
-  (let [ids      (fn [k] (set (keep k lines)))
+  [{:keys [products warehouses stock-items barcodes history currency entries]} selection lines changes]
+  (let [ids      (fn [k] (set (concat (keep k lines) (keep k changes))))
         names    (set (keep (comp text-key :product-name) lines))
         stores   (set (keep (comp text-key :warehouse-name) lines))
-        codes    (set (mapcat :barcodes lines))
+        codes    (set (concat (mapcat :barcodes lines) (mapcat :barcodes-added changes)))
         articles (set (keep (comp text-key :article) lines))
         pairs    (set (map (juxt :stock-item-id :warehouse-id) lines))
         picked   (set (map :entry-id (:selection selection)))]
@@ -291,7 +350,7 @@
                                     (sort-by :product-id (filter #(or ((ids :product-id) (:product-id %)) (names (text-key (:name %)))) products))
                                     (sort-by :warehouse-id (filter #(or ((ids :warehouse-id) (:warehouse-id %)) (stores (text-key (:name %)))) warehouses))
                                     (sort-by :stock-item-id (filter #(or ((ids :stock-item-id) (:stock-item-id %)) (articles (text-key (:article %)))) stock-items))
-                                    (sort-by :barcode-id (filter (comp codes :barcode) barcodes))
+                                    (sort-by :barcode-id (filter #(or (codes (:barcode %)) ((ids :stock-item-id) (:stock-item-id %))) barcodes))
                                     (sort (keep #(when (pairs [(:stock-item-id %) (:warehouse-id %)]) (:record-line-id %)) (:lines history)))
                                     currency])))))
 
@@ -314,6 +373,7 @@
                    {:entry-id entry-id :line-id nil :code :future-occurrence})
         lines    (resolve-lines facts picked)
         usable   (if (seq blocked) [] lines)
+        changes  (if (seq blocked) [] (picked-changes picked))
         proposed (tentative usable order now)
         before   (valuation/replay (:records history) (:lines history))
         after    (valuation/replay (into (:records history) (:records proposed)) (into (:lines history) (:lines proposed)))
@@ -322,6 +382,8 @@
                                         (when (seq usable) (openings history usable))
                                         (uniqueness facts usable)
                                         (unknown-units usable)
+                                        (counts-without-history history usable)
+                                        (changes/problems facts usable changes after)
                                         (when-let [{:keys [stock-item-id warehouse-id occurred-at]} (:error after)]
                                           [{:entry-id     (first order) :code        :negative-balance :stock-item-id stock-item-id
                                             :warehouse-id warehouse-id  :occurred-at occurred-at}]))))]
@@ -335,7 +397,8 @@
      :problems      problems
      :lines         usable
      :records       proposed
-     :fingerprint   (fingerprint facts input lines)}))
+     :item-events   (item-events facts usable changes)
+     :fingerprint   (fingerprint facts input lines (picked-changes picked))}))
 
 
 (defmethod runtime/coeffect ::now
@@ -363,7 +426,7 @@
    :policy ::records/workspace-member
    :cofx   (conj review-facts [:clock ::now (constantly {})])}
   [{:keys [clock] :as facts} input]
-  (dissoc (review (assoc (review-input facts) :now clock) input) :lines :records))
+  (dissoc (review (assoc (review-input facts) :now clock) input) :lines :records :item-events))
 
 
 ;; Accept
@@ -376,22 +439,22 @@
 
 (def rejection
   "Review problem code to the `Accept Reviewed Inventory Changes` rejection it raises."
-  {:entry-changed       [:review-outdated "The selection changed since the review. Review it again."]
-   :entry-incomplete    [:review-outdated "A selected entry is incomplete. Review it again."]
-   :future-occurrence   [:future-occurrence "An occurrence time is later than now."]
-   :negative-balance    [:negative-balance "Stock would go below zero."]
-   :second-opening      [:second-opening "This stock item already has an opening in this warehouse."]
-   :opening-not-first   [:second-opening "An opening must come first in its stock timeline."]
-   :uniqueness-conflict [:uniqueness-conflict "A barcode or article belongs to another product."]
-   :duplicate-variant   [:uniqueness-conflict "This product already has a stock item with this variant."]
-   :unknown-unit        [:validation "Choose a unit from the list."]
-   :archived-reference  [:archived-reference "Restore the archived product or warehouse first."]})
-
-
-(defn- present
-  {:malli/schema [:=> [:cat :map] :map]}
-  [m]
-  (into {} (remove (comp nil? val)) m))
+  {:entry-changed         [:review-outdated "The selection changed since the review. Review it again."]
+   :entry-incomplete      [:review-outdated "A selected entry is incomplete. Review it again."]
+   :future-occurrence     [:future-occurrence "An occurrence time is later than now."]
+   :negative-balance      [:negative-balance "Stock would go below zero."]
+   :second-opening        [:second-opening "This stock item already has an opening in this warehouse."]
+   :opening-not-first     [:second-opening "An opening must come first in its stock timeline."]
+   :uniqueness-conflict   [:uniqueness-conflict "A barcode or article belongs to another product."]
+   :duplicate-variant     [:uniqueness-conflict "This product already has a stock item with this variant."]
+   :unknown-unit          [:validation "Choose a unit from the list."]
+   :archived-reference    [:archived-reference "Restore the archived product or warehouse first."]
+   :count-without-history [:validation "This stock has no history here. Declare opening stock first."]
+   :unit-locked           [:unit-locked "The unit is fixed once the item has stock history."]
+   :field-conflict        [:field-conflict "Two selected entries change the same stock item field."]
+   :move-conflict         [:move-conflict "The move would make a value belong to two products."]
+   :restore-needs-product [:restore-needs-product "Restore the product first."]
+   :archive-blocked       [:archive-blocked "The item has stock or other pending work."]})
 
 
 (defn- registration-events
@@ -422,12 +485,14 @@
    :policy ::records/workspace-member
    :cofx   review-facts
    :emits  #{::inventory-changes-accepted ::inventory-record-accepted ::inventory-record-line-accepted
-             ::stock-items/stock-item-registered ::stock-items/stock-item-barcode-assigned
+             ::stock-items/stock-item-registered ::stock-items/stock-item-barcode-assigned ::stock-items/stock-item-updated
+             ::stock-items/stock-item-moved ::stock-items/stock-item-archived ::stock-items/stock-item-restored
+             ::stock-items/stock-item-barcode-removed
              :tover.catalogues.products.model/product-registered :tover.catalogues.warehouses.model/warehouse-registered
              :tover.inventory.entries.model/shared-inventory-entry-accepted}}
   [{:keys [scope actor now] :as facts} {:keys [acceptance-id fingerprint selection order] :as input}]
   (entries/check-workspace! scope input)
-  (let [{:keys [problems lines records] :as result} (review (assoc (review-input facts) :now now) (select-keys input [:selection :order]))
+  (let [{:keys [problems lines records item-events] :as result} (review (assoc (review-input facts) :now now) (select-keys input [:selection :order]))
         reasons (into {} (map (juxt :entry-id :reason)) (:entries facts))]
     (when (not= fingerprint (:fingerprint result))
       (records/fail! :review-outdated "Something the review saw changed. Review it again." {}))
@@ -440,6 +505,7 @@
                     [{:type ::inventory-changes-accepted
                       :data {:acceptance-id acceptance-id :actor actor :recorded-at now :record-count (count (:records records))}}]
                     (registration-events lines)
+                    item-events
                     (for [r (sort-by :sequence (:records records))]
                       {:type ::inventory-record-accepted
                        :data (present (-> r (dissoc :recorded-at) (assoc :acceptance-id acceptance-id :reason (reasons (:record-id r)))))})

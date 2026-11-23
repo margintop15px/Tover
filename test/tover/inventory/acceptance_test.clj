@@ -7,6 +7,7 @@
     [bel.runtime :as runtime]
     [clojure.test :refer [deftest is testing use-fixtures]]
     [tover.catalogues.products.model :as products]
+    [tover.catalogues.records :as records]
     [tover.catalogues.warehouses.model :as warehouses]
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
@@ -260,3 +261,101 @@
                                                   (merge selection {:workspace-id workspace             :acceptance-id "acc-2"
                                                                     :fingerprint  (:fingerprint review)}))))))
               (is (= 1 (:pending-count (runtime/read-model ctx ::acceptance/acceptance-result {:acceptance-id "acc-1"})))))))))))
+
+
+;; 15 · Accept the reviewed correction
+
+
+(def opened-5
+  {:records [{:record-revision-id "o#1" :record-id   "o"     :revision 1 :acceptance-id "a0" :kind "opening" :occurred-at (day 1) :sequence 0
+              :cancelled          false :recorded-at (day 1)}]
+   :lines   [{:record-line-id "o#1/0" :record-revision-id "o#1" :position 0 :stock-item-id "tee-m" :warehouse-id "main" :quantity-change 5}]})
+
+
+(defn- correction
+  {:malli/schema [:=> [:cat :string [:sequential :map] [:sequential :map]] :map]}
+  [id lines changes]
+  (cond-> {:entry-id id :kind "correction" :occurred-at (day 19) :status "pending" :revision 1
+           :lines    (vec (map-indexed #(merge {:line-id (str id "-" %1) :stock-item-id "tee-m" :warehouse-id "main"} %2) lines))}
+    (seq changes) (assoc :changes (vec changes))))
+
+
+(deftest accept-a-count
+  (let [f    (assoc (facts [(correction "c" [{:quantity 7}] [])]) :history opened-5)
+        plan (accept f (input f "c"))]
+    (is (= ["correction"] (map :kind (of-type plan ::acceptance/inventory-record-accepted))))
+    (is (= [{:record-line-id "c#1/0" :record-revision-id "c#1" :position 0 :stock-item-id "tee-m" :warehouse-id "main" :counted-quantity 7}]
+           (of-type plan ::acceptance/inventory-record-line-accepted)))))
+
+
+(deftest field-change-only
+  (let [f    (facts [(dissoc (correction "c" [] [{:stock-item-id "tee-m" :article "T-101"}]) :occurred-at)])
+        plan (accept f (input f "c"))]
+    (is (= [{:stock-item-id "tee-m" :variant-label "M" :article "T-101" :revision 2}] (of-type plan ::stock-items/stock-item-updated)))
+    (is (= [] (of-type plan ::acceptance/inventory-record-accepted)))
+    (is (= [{:entry-id "c" :status "accepted" :revision 2}] (of-type plan ::entries/shared-inventory-entry-accepted)))))
+
+
+(deftest barcodes-added-and-removed
+  (let [f    (-> (facts [(correction "c" [] [{:stock-item-id "tee-m" :barcodes-added ["4600000000024"] :barcodes-removed ["4600000000017"]}])])
+                 (assoc-in [:catalogue :barcodes] [{:barcode-id "tee-m|4600000000017" :stock-item-id "tee-m" :barcode "4600000000017"}]))
+        plan (accept f (input f "c"))]
+    (is (= [{:barcode-id "tee-m|4600000000017"}] (of-type plan ::stock-items/stock-item-barcode-removed)))
+    (is (= [{:barcode-id "tee-m|4600000000024" :stock-item-id "tee-m" :barcode "4600000000024"}]
+           (of-type plan ::stock-items/stock-item-barcode-assigned)))))
+
+
+(deftest archive-after-counting-to-zero
+  (let [f    (assoc (facts [(correction "c" [{:quantity 0}] [{:stock-item-id "tee-m" :archive true}])]) :history opened-5)
+        plan (accept f (input f "c"))]
+    (is (= 1 (count (of-type plan ::acceptance/inventory-record-accepted))))
+    (is (= [{:stock-item-id "tee-m" :status "archived" :revision 2}] (of-type plan ::stock-items/stock-item-archived)))))
+
+
+(deftest move-and-update-together
+  (let [f    (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug" :variant-label "red"}])])
+        plan (accept f (input f "c"))]
+    (is (= [{:stock-item-id "tee-m" :variant-label "red" :revision 2}] (of-type plan ::stock-items/stock-item-updated)))
+    (is (= [{:stock-item-id "tee-m" :previous-product-id "tee" :product-id "mug" :variant-label "red" :revision 3}]
+           (of-type plan ::stock-items/stock-item-moved)))))
+
+
+(deftest unit-locked-by-a-race
+  (let [f     (facts [(correction "c" [] [{:stock-item-id "tee-m" :unit "kg"}])])
+        input (input f "c")]
+    (is (= :unit-locked (:type (rejection #(accept (assoc f :history opened-5) input)))))))
+
+
+(deftest correction-through-the-store
+  (support/with-store
+    (fn [repo _]
+      (let [ctx    (context repo [{:workspace-id workspace :role :member}])
+            save   #(execute! ctx ::entries/save-shared-inventory-entry %1 (merge {:workspace-id workspace :occurred-at "2026-11-19T00:00:00Z"} %2))
+            submit (fn [id ids]
+                     (let [selection {:selection (mapv #(hash-map :entry-id % :revision 1) ids) :order ids}
+                           review    (runtime/read-model ctx ::acceptance/inventory-review selection)]
+                       (is (:valid? review) (pr-str (:problems review)))
+                       (execute! ctx ::acceptance/accept-reviewed-inventory-changes id
+                                 (merge selection {:workspace-id workspace :acceptance-id id :fingerprint (:fingerprint review)}))))
+            item   #(some (fn [i] (when (= "item:a-0" (:stock-item-id i)) i))
+                          (records/all-records ctx ::stock-items/stock-items :stock-item-id))]
+        (execute! ctx ::warehouses/register-warehouse "w1" {:warehouse-id "main" :name "Main"})
+        (execute! ctx ::products/register-product "p1" {:product-id "tee" :name "T-shirt"})
+        (save "s1" {:entry-id "a" :kind "opening"
+                    :lines    [{:line-id  "a-0" :product-id "tee" :variant-label "M" :article "T-1" :unit "pcs" :warehouse-id "main"
+                                :quantity "5"}]})
+        (submit "acc-1" ["a"])
+        (save "s2" {:entry-id "c" :kind "correction"
+                    :lines    [{:line-id "c-0" :stock-item-id "item:a-0" :warehouse-id "main" :quantity "0"}]
+                    :changes  [{:stock-item-id "item:a-0" :article "" :archive true :barcodes-added ["4600000000017" "0"]}]})
+        (testing "the pending change is read back as saved"
+          (is (= [{:stock-item-id "item:a-0" :article "" :archive true :barcodes-added ["4600000000017"]}]
+                 (:changes (first (:entries (runtime/read-model ctx ::entries/pending-entries {}))))))
+          (is (= [] (:blockers (first (:entries (runtime/read-model ctx ::entries/pending-entries {})))))))
+        (submit "acc-2" ["c"])
+        (is (= {:variant-label "M" :unit "pcs" :status "archived" :revision 3}
+               (select-keys (item) [:variant-label :article :unit :status :revision]))
+            "the article is cleared, the item archived")
+        (is (= [["item:a-0" "main" 0 nil]]
+               (map (juxt :stock-item-id :warehouse-id :quantity :value)
+                    (:balances (runtime/read-model ctx ::acceptance/acceptance-result {:acceptance-id "acc-2"})))))))))

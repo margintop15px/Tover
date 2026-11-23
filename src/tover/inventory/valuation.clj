@@ -58,6 +58,10 @@
   (let [by-record (group-by :record-revision-id lines)]
     (reduce (fn [{:keys [balances] :as state} [{:keys [occurred-at]} {:keys [stock-item-id warehouse-id] :as line}]]
               (let [pair    [stock-item-id warehouse-id]
+                    ;; A count (chapter 15) sets the balance: its change is derived here, never stored.
+                    line    (if-some [counted (:counted-quantity line)]
+                              (assoc line :quantity-change (- counted (get-in balances [pair :quantity] 0)))
+                              line)
                     balance (apply-line (get balances pair) line)]
                 (cond-> (-> state
                             (assoc-in [:balances pair] balance)

@@ -6,18 +6,21 @@
   (:require
     [clojure.string :as str]
     [com.brunobonacci.mulog :as mu]
-    [tover.catalogues.records :as records])
+    [tover.catalogues.records :as records]
+    [tover.inventory.changes :as changes])
   (:import
     [java.util.concurrent TimeUnit TimeoutException]))
 
 
 (def Finding
-  [:map [:entry-id :string] [:line-id :string] [:field :keyword] [:code :keyword] [:level [:enum :info :warning :error]]
-   [:related {:optional true} :map]])
+  "A line finding names its line; a stock item change finding has no line and names the stock item."
+  [:map [:entry-id :string] [:line-id [:maybe :string]] [:stock-item-id {:optional true} :string] [:field :keyword]
+   [:code :keyword] [:level [:enum :info :warning :error]] [:related {:optional true} :map]])
 
 
 (def ^:private direction
-  "Incoming or outgoing per kind. ponytail: Transfer, Production and Correction sides arrive with chapters 15 and 21–22."
+  "Incoming or outgoing per kind; a Correction's side depends on its count. ponytail: Transfer and Production sides
+  arrive with chapters 21–22."
   {"opening" :in  "purchase" :in  "customer-return" :in
    "sale"    :out "defect"   :out "write-off"       :out "supplier-return" :out})
 
@@ -102,9 +105,15 @@
   otherwise a warning on every contributor when the pending outgoing total does. Dates are ignored."
   {:malli/schema [:=> [:cat :map [:sequential :map]] [:sequential Finding]]}
   [{:keys [balances]} all]
-  (let [moving (filter #(and (:stock-item-id %) (:warehouse-id %) (pos-int? (:quantity %)) (direction (:kind %))) all)]
+  (let [side   (fn [{:keys [kind quantity stock-item-id warehouse-id] :as line}]
+                 (if (= "correction" kind)
+                   (let [change (- quantity (get-in balances [[stock-item-id warehouse-id] :quantity] 0))]
+                     (assoc line :side (if (neg? change) :out :in) :quantity (abs change)))
+                   (assoc line :side (direction kind))))
+        moving (filter #(and (:side %) (pos-int? (:quantity %)))
+                       (map side (filter #(and (:stock-item-id %) (:warehouse-id %) (int? (:quantity %))) all)))]
     (mapcat (fn [[pair pair-lines]]
-              (let [{in :in out :out} (group-by (comp direction :kind) pair-lines)
+              (let [{in :in out :out} (group-by :side pair-lines)
                     available         (+ (get-in balances [pair :quantity] 0) (reduce + 0 (map :quantity in)))
                     by-entry          (group-by :entry-id out)
                     over              (set (keep (fn [[id ls]] (when (> (reduce + (map :quantity ls)) available) id)) by-entry))]
@@ -134,6 +143,29 @@
         (finding line field code :error (when (= :id (first conflict)) {:id (second conflict) :name (get names (second conflict))}))))))
 
 
+(defn- item-changes
+  "Each entry's stock item changes checked as acceptance would, after that entry's own counts; field conflicts across
+  all pending entries."
+  {:malli/schema [:=> [:cat :map] [:sequential Finding]]}
+  [{:keys [entries balances] :as facts}]
+  (let [facts  (assoc facts :history {:lines (map (fn [[item warehouse]] {:stock-item-id item :warehouse-id warehouse}) (keys balances))})
+        tagged (fn [{:keys [entry-id] :as entry}] (map #(assoc % :entry-id entry-id) (:changes entry)))
+        found  (concat
+                 (for [{:keys [lines] :as entry} entries
+                       :when (seq (:changes entry))
+                       :let [counted (into {} (for [l lines :when (int? (:quantity l))]
+                                                [[(:stock-item-id l) (:warehouse-id l)] {:quantity (:quantity l)}]))]
+                       problem                   (changes/problems facts [] (tagged entry) {:balances (merge balances counted)})
+                       :when (not= :field-conflict (:code problem))]
+                   problem)
+                 (filter (comp #{:field-conflict} :code) (changes/problems facts [] (mapcat tagged entries) {:balances balances})))]
+    (for [{:keys [code field] :as p} found]
+      (cond-> {:entry-id (:entry-id p) :line-id nil :stock-item-id (:stock-item-id p) :field (or field :status)
+               :code     (if (= :uniqueness-conflict code) (if (= :barcodes field) :barcode-conflict :article-conflict) code)
+               :level    (if (= :field-conflict code) :warning :error)}
+        (seq (dissoc p :entry-id :line-id :stock-item-id :field :code)) (assoc :related (dissoc p :entry-id :line-id :stock-item-id :field :code))))))
+
+
 (defn derive
   "Findings for every line of every pending entry. `facts`: `:entries` (with `:lines`), `:products`, `:stock-items`,
   `:barcodes`, `:warehouses` rows and `:balances` keyed `[stock-item-id warehouse-id]`."
@@ -144,6 +176,7 @@
     (vec (concat (references facts all)
                  (duplicate-variants facts all)
                  (stock facts all)
+                 (item-changes facts)
                  (ownership facts all :barcodes :barcode-conflict (map (juxt :barcode (comp product :stock-item-id)) barcodes))
                  (ownership facts all :article :article-conflict
                             (keep #(when-let [k (text-key (:article %))] [k (:product-id %)]) stock-items))))))
