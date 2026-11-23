@@ -334,7 +334,7 @@
 (defn fingerprint
   "What the review saw: the selection and order, the selected entries, referenced and same-named catalogue records,
   owners of the barcodes and articles used, accepted record ids on the affected pairs, and the currency."
-  {:malli/schema [:=> [:cat :map Selection [:sequential :map]] :string]}
+  {:malli/schema [:=> [:cat :map Selection [:sequential :map] [:sequential :map]] :string]}
   [{:keys [products warehouses stock-items barcodes history currency entries]} selection lines changes]
   (let [ids      (fn [k] (set (concat (keep k lines) (keep k changes))))
         names    (set (keep (comp text-key :product-name) lines))

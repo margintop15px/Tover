@@ -51,6 +51,8 @@ class StockWorkbench extends HTMLElement {
     if (this.mode !== 'units') this.refreshTable();
     this.showMode();
 
+    const archived = this.querySelector('.stock-show-archived');
+    archived.addEventListener('click', () => { this.showArchived = !this.showArchived; archived.setAttribute('aria-pressed', String(this.showArchived)); this.refreshTable(); });
     const hide = this.querySelector('.stock-hide-empty');
     hide.addEventListener('click', () => { this.hideEmpty = !this.hideEmpty; hide.setAttribute('aria-pressed', String(this.hideEmpty)); this.refreshTable(); });
     for (const button of this.querySelectorAll('.stock-mode button')) {
@@ -76,6 +78,12 @@ class StockWorkbench extends HTMLElement {
       this.setScope({ ...this.scope, productName: undefined, addTo: event.detail.id, newRow: true }, this.scopeLabel, true);
     });
     this.addEventListener('item-history', event => this.toggleHistory(event.detail));
+    // Move, Archive and Restore propose a change on the row's correction like a cell edit.
+    this.addEventListener('stock-row-change', event => {
+      const value = event.detail.field === 'move-to' ? window.prompt(t('Move to which product? Type its name.')) : event.detail.value;
+      if (value === null || value === undefined) return;
+      this.edit({ ...event.detail, path: event.detail.field, value, target: null });
+    });
     // Rows are included unless unticked, so rows added during the preview are included too.
     this.addEventListener('review-selection', event => {
       this.excluded = [...new Set(this.model.pending.map(entry => entry.rowId))].filter(id => !event.detail.selected.includes(id));
@@ -186,7 +194,7 @@ class StockWorkbench extends HTMLElement {
   // Stock table
   refreshTable() {
     this.tableRequest = crypto.randomUUID();
-    this.emit('stock-query', { requestId: this.tableRequest, mode: this.mode, hideEmpty: this.hideEmpty, filter: this.scope });
+    this.emit('stock-query', { requestId: this.tableRequest, mode: this.mode, hideEmpty: this.hideEmpty, showArchived: Boolean(this.showArchived), filter: this.scope });
   }
   showModel(model) {
     this.model = model;
@@ -233,7 +241,8 @@ class StockWorkbench extends HTMLElement {
     this.cellEntries.set(key, id);
     // The line is the unit of an edit; other lines of its entry have their own.
     const slot = detail.values['line-id'] ?? `${id}-0`;
-    if (detail.entry && detail.field === 'quantity' && !detail.value.trim()) { this.discard({ id, line: slot, shared: detail.shared, values: detail.values, revision: Math.max(detail.revision, this.revisions.get(id) ?? 0) }); return; }
+    // A correction's entry id exists before its first save; clearing a count there saves nothing.
+    if (detail.entry && Math.max(detail.revision, this.revisions.get(id) ?? 0) > 0 && detail.field === 'quantity' && !detail.value.trim()) { this.discard({ id, line: slot, shared: detail.shared, values: detail.values, revision: Math.max(detail.revision, this.revisions.get(id) ?? 0) }); return; }
     // Build on the newest values this page holds: queued, then in flight, then its own last save, then the read.
     const inFlight = this.pending?.kind === 'save' && this.pending.slot === slot ? this.pending.values : null;
     const own = (this.revisions.get(id) ?? 0) >= detail.revision ? this.values.get(slot) : null;

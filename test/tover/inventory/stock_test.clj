@@ -53,8 +53,9 @@
     {:record {:record-revision-id rrid :record-id id    :revision    revision :acceptance-id "acc" :kind kind :occurred-at (day at)
               :sequence           0    :cancelled false :recorded-at (day at) :actor         #uuid "00000000-0000-0000-0000-000000000011"}
      :lines  (vec (map-indexed (fn [i [item warehouse quantity cost]]
-                                 (cond-> {:record-line-id (str rrid "/" i) :record-revision-id rrid     :position i :stock-item-id item
-                                          :warehouse-id   warehouse        :quantity-change    quantity}
+                                 (cond-> {:record-line-id (str rrid "/" i) :record-revision-id rrid :position i :stock-item-id item
+                                          :warehouse-id warehouse
+                                          (if (= "correction" kind) :counted-quantity :quantity-change) quantity}
                                    cost (assoc :unit-cost cost)))
                                lines))}))
 
@@ -126,7 +127,7 @@
 
 
 (deftest period-filters-rows-but-balance-is-true
-  (let [h    (history (record "a" 1 "opening" 1 [["tee-m" "main" 5 nil]]) (record "b" 1 "correction" 15 [["tee-m" "main" 2 nil]]))
+  (let [h    (history (record "a" 1 "opening" 1 [["tee-m" "main" 5 nil]]) (record "b" 1 "purchase" 15 [["tee-m" "main" 2 nil]]))
         rows (:rows (stock/history-rows (facts {:history h}) {:stock-item-id "tee-m" :from (day 10) :to (day 20)}))]
     (is (= [["b" 2 7]] (map (juxt :record-id :quantity-change :balance-after) rows)))
     (is (= #uuid "00000000-0000-0000-0000-000000000011" (:actor (first rows))))))
@@ -220,13 +221,49 @@
 ;; 14 · Read opening-stock facts and catalogue choices
 
 
-(deftest cells-know-their-effective-opening
+(deftest cells-know-their-history
   (let [row (item (stock/table (facts {:history (history (record "a" 1 "opening" 1 [["tee-m" "main" 0 nil]]))}) true) "tee-m")]
-    (is (true? (get-in row [:cells "main" :opened?])) "a zero opening still counts")
-    (is (false? (get-in row [:cells "shop" :opened?])))))
+    (is (true? (get-in row [:cells "main" :history?])) "a zero opening still counts: the cell takes a count")
+    (is (false? (get-in row [:cells "shop" :history?])) "an empty cell still takes an opening")))
 
 
 (deftest archived-warehouse-is-marked
   (let [archived (assoc-in catalogue [:warehouses 1 :status] "archived")
         table    (stock/table (facts {:catalogue archived :history (history (record "a" 1 "opening" 1 [["tee-m" "shop" 2 nil]]))}) true)]
     (is (= [["main" false] ["shop" true]] (map (juxt :id :archived?) (:warehouses table))))))
+
+
+;; 15 · Read the stock requiring correction; read corrected stock and preserved history
+
+
+(deftest archived-items-hidden-by-default
+  (let [archived (update catalogue :stock-items conj {:stock-item-id "tee-l" :product-id "tee" :variant-label "L" :status "archived"
+                                                      :revision      2})]
+    (is (nil? (item (stock/table (facts {:catalogue archived}) true) "tee-l")))
+    (is (true? (:archived? (item (stock/table (facts {:catalogue archived :show-archived? true}) true) "tee-l"))))))
+
+
+(deftest pending-item-changes-are-on-the-row
+  (let [pending [{:entry-id "c" :kind "correction" :revision 1 :lines [] :changes [{:stock-item-id "tee-m" :article "T-101"}]}]]
+    (is (= [{:entry-id "c" :revision 1 :stock-item-id "tee-m" :article "T-101"}]
+           (:changes (item (stock/table (facts {:pending pending}) true) "tee-m"))))
+    (is (= "T-100" (:article (item (stock/table (facts {:pending pending}) true) "tee-m"))) "the accepted value stays")))
+
+
+(deftest count-in-history
+  (let [h    (history (record "o" 1 "opening" 1 [["tee-m" "main" 5 nil]]) (record "c" 1 "correction" 5 [["tee-m" "main" 7 nil]]))
+        rows (:rows (stock/history-rows (facts {:history h}) {:stock-item-id "tee-m"}))]
+    (is (= [["opening" 5 5] ["correction" 2 7]] (map (juxt :kind :quantity-change :balance-after) rows)))
+    (is (= 7 (:counted-quantity (second rows))))))
+
+
+(deftest effect-re-derived-after-a-backdated-count
+  (let [h (history (record "o" 1 "opening" 1 [["tee-m" "main" 5 nil]]) (record "late" 1 "correction" 10 [["tee-m" "main" 7 nil]])
+                   (record "early" 1 "correction" 5 [["tee-m" "main" 9 nil]]))]
+    (is (= [["o" 5 5] ["early" 4 9] ["late" -2 7]]
+           (map (juxt :record-id :quantity-change :balance-after) (:rows (stock/history-rows (facts {:history h}) {:stock-item-id "tee-m"})))))))
+
+
+(deftest zero-count-keeps-the-item
+  (let [h (history (record "o" 1 "opening" 1 [["tee-m" "main" 3 nil]]) (record "c" 1 "correction" 5 [["tee-m" "main" 0 nil]]))]
+    (is (= 0 (get-in (item (stock/table (facts {:history h}) true) "tee-m") [:cells "main" :quantity])))))

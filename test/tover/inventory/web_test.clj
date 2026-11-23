@@ -159,7 +159,7 @@
 
 (deftest opening-is-offered-once-per-cell
   (let [table  (-> table
-                   (assoc-in [:products 0 :items 0 :cells "main" :opened?] true)
+                   (assoc-in [:products 0 :items 0 :cells "main" :history?] true)
                    (update :warehouses conj {:id "old" :name "Old" :archived? true})
                    (assoc-in [:products 0 :items 0 :cells "old"] {:quantity 2 :value nil :valued? false :pending? false}))
         model  (web/stock-grid table {:mode "units" :entries []})
@@ -167,9 +167,9 @@
     (testing "item without opening offers one"
       (is (= "quantity" (get-in (column "shop") [:editor :type])))
       (is (not (:readOnly (column "shop")))))
-    (testing "existing opening blocks another; correction is offered instead"
-      (is (:readOnly (column "main")))
-      (is (re-find #"correction" (:title (column "main")))))
+    (testing "a cell with history takes a count, not a second opening"
+      (is (= "correction" (get-in (column "main") [:target :values "kind"])))
+      (is (not (:readOnly (column "main")))))
     (testing "archived warehouse not offered"
       (is (:readOnly (column "old"))))))
 
@@ -194,3 +194,108 @@
 
 (deftest lookup-failure-is-not-no-match
   (is (= {:text "T-sh" :failed true :options []} (web/suggestions nil "T-sh"))))
+
+
+;; 15 · Read the stock requiring correction; propose a stock correction
+
+
+(def ^:private counted
+  (assoc-in table [:products 0 :items 0 :cells "main" :history?] true))
+
+
+(defn- column
+  {:malli/schema [:=> [:cat :map :string :string] :map]}
+  [model row k]
+  (nth (cells-of model row) (.indexOf ^java.util.List (mapv :key (:columns model)) k)))
+
+
+(def ^:private correction
+  {:entry-id "c" :revision 2 :kind "correction"
+   :lines    [{:line-id "c/main" :stock-item-id "tee-m" :warehouse-id "main" :quantity 7}]})
+
+
+(deftest count-offered-where-history-exists
+  (let [model (web/stock-grid counted {:mode "units" :entries []})
+        main  (column model "tee-m" "main")]
+    (is (= {"kind" "correction" "stock-item-id" "tee-m" "warehouse-id" "main"} (select-keys (get-in main [:target :values]) ["kind" "stock-item-id" "warehouse-id"])))
+    (is (= 0 (get-in main [:target :revision])))
+    (is (= (get-in main [:target :entry]) (get-in (column model "tee-m" "article") [:target :entry])) "one row, one entry")
+    (is (nil? (get-in (column model "tee-m" "shop") [:target :values "kind"])) "an empty cell still takes an opening")))
+
+
+(deftest pending-count-shows-accepted-and-counted
+  (let [model (web/stock-grid counted {:mode "units" :entries [correction]})
+        main  (column model "tee-m" "main")]
+    (is (= ["5 → " "7"] ((juxt :prefix :value) main)))
+    (is (= ["c" 2 false] ((juxt :entry :revision :shared) (:target main))))
+    (is (= "10" (:value (column model "tee-m" "total"))) "the total counts 7 instead of 5")
+    (is (= [{:entry-id "c" :revision 2 :rowId "tee-m"}] (:pending model)))))
+
+
+(deftest item-fields-propose-changes
+  (let [model (web/stock-grid counted {:mode "units" :entries [(assoc correction :changes [{:stock-item-id "tee-m" :article "T-101"}])]})]
+    (is (= ["T-100 → " "T-101"] ((juxt :prefix :value) (column model "tee-m" "article"))))
+    (is (= "article" (get-in (column model "tee-m" "article") [:target :field])))
+    (is (true? (get-in (column model "tee-m" "main") [:target :shared])) "the entry holds more than this count")
+    (is (= "variant" (get-in (column model "tee-m" "item") [:target :field])))))
+
+
+(deftest unit-cell-follows-the-lock
+  (let [locked   (column (web/stock-grid counted {:mode "units" :entries []}) "tee-m" "unit")
+        unlocked (column (web/stock-grid (assoc-in counted [:products 0 :items 0 :unit-locked?] false) {:mode "units" :entries []}) "tee-m" "unit")]
+    (is (:readOnly locked))
+    (is (re-find #"Production" (:title locked)))
+    (is (= ["" "pcs" "kg" "g" "l" "ml" "m" "pack"] (map :value (get-in unlocked [:editor :options]))))))
+
+
+(deftest row-actions-move-archive-restore
+  (let [labels (fn [model] (set (map :field (:actions (column model "tee-m" "item")))))]
+    (is (= #{"move-to" "archive"} (disj (labels (web/stock-grid counted {:mode "units" :entries []})) nil)))
+    (let [archived (web/stock-grid (assoc-in counted [:products 0 :items 0 :archived?] true) {:mode "units" :entries []})]
+      (is (= #{"restore"} (disj (labels archived) nil)))
+      (is (:readOnly (column archived "tee-m" "main")) "an archived item is read-only"))))
+
+
+(def ^:private item-catalogue
+  {:products    [{:product-id "tee" :name "T-shirt" :status "active"} {:product-id "mug" :name "Mug" :status "active"}]
+   :stock-items [{:stock-item-id "tee-m" :product-id "tee" :variant-label "M" :article "T-100" :unit "pcs" :status "active"}]
+   :barcodes    [{:stock-item-id "tee-m" :barcode "4600000000017"}]
+   :warehouses  [{:warehouse-id "main" :name "Main" :status "active"}]})
+
+
+(deftest correction-input-builds-one-entry-per-row
+  (let [input (fn [values saved] (web/correction-input item-catalogue workspace "c" 2 (merge {"kind" "correction" "stock-item-id" "tee-m"} values) saved))]
+    (is (= {:workspace-id workspace :entry-id "c" :kind "correction" :expected-revision 2 :occurred-at "2026-11-19T00:00:00Z"
+            :lines        [{:line-id "c/main" :stock-item-id "tee-m" :warehouse-id "main" :quantity "7"}] :changes []}
+           (input {"warehouse-id" "main" "line-id" "c/main" "quantity" "7" "occurred-at" "2026-11-19T00:00:00Z"} nil)))
+    (testing "a field change joins the saved count"
+      (is (= [{:stock-item-id "tee-m" :article "T-101"}]
+             (:changes (input {"line-id" "c/change" "article" "T-101"} {:lines (:lines correction)}))))
+      (is (= (:lines correction) (:lines (input {"line-id" "c/change" "article" "T-101"} {:lines (:lines correction)})))))
+    (testing "typing the accepted value back drops the change"
+      (is (nil? (input {"line-id" "c/change" "article" "T-100"} {:changes [{:stock-item-id "tee-m" :article "T-101"}]}))))
+    (testing "barcodes become additions and removals; 0 is dropped"
+      (is (= [{:stock-item-id "tee-m" :barcodes-added ["4600000000024"] :barcodes-removed ["4600000000017"]}]
+             (:changes (input {"barcodes" "4600000000024, 0"} nil)))))
+    (testing "move names an active product"
+      (is (= [{:stock-item-id "tee-m" :product-id "mug"}] (:changes (input {"move-to" " mug"} nil)))))
+    (testing "archive, and keeping it again"
+      (is (= [{:stock-item-id "tee-m" :archive true}] (:changes (input {"archive" "true"} nil))))
+      (is (nil? (input {"archive" ""} {:changes [{:stock-item-id "tee-m" :archive true}]}))))
+    (testing "clearing the count removes the line"
+      (is (nil? (input {"warehouse-id" "main" "line-id" "c/main" "quantity" ""} {:lines (:lines correction)}))))))
+
+
+(deftest emptied-correction-is-discarded
+  (with-redefs [runtime/read-model (fn [_ id _] (if (= id ::entries/pending-entries) {:entries [correction]} item-catalogue))]
+    (is (= ::entries/discard-inventory-draft
+           (:id (web/save-entry {} {:workspaceId workspace :entryId "c" :revision 2 :commandId "c1"
+                                    :values      {"kind" "correction" "stock-item-id" "tee-m" "warehouse-id" "main" "line-id" "c/main" "quantity" ""}}))))))
+
+
+(deftest submit-keeps-a-correction-whole
+  (let [entry (assoc correction :changes [{:stock-item-id "tee-m" :archive true}])]
+    (with-redefs [runtime/read-model (fn [& _] {:entries [entry]})]
+      (is (= {:kind "correction" :lines (:lines entry) :changes (:changes entry) :reason "Count"}
+             (select-keys (:input (web/describe-entry {} {:workspaceId workspace :entryId "c" :revision 2 :occurredAt "" :reason "Count" :commandId "d"}))
+                          [:kind :lines :changes :reason]))))))

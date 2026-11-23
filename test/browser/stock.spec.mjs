@@ -86,7 +86,10 @@ test('find a product, add a stock item with an opening in the one table, review 
   await page.locator('.stock-submit').click();
   await expect.poll(() => grid.evaluate(node => node.model.rows.map(row => row.id))).toContain(`new:${productId}:S`);
   await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
-  const row = grid.locator('tbody tr').filter({ has: page.locator('td[data-column-key="item"]', { hasText: /^\s*M\s*$/ }) });
+  const findM = () => grid.evaluate(node => node.model.rows.find(row => row.cells.some(c => c.target?.field === 'variant' && c.value === 'M'))?.id);
+  await expect.poll(findM).toBeTruthy();
+  const itemM = await findM();
+  const row = grid.locator(`tr[data-row-id="${itemM}"]`);
   await expect(row.locator(`td[data-column-key="${warehouse}"]`)).toHaveText('5');
   await page.locator('.stock-mode button[data-mode="money"]').click();
   await expect(row.locator(`td[data-column-key="${warehouse}"]`)).toHaveText('500.00');
@@ -153,5 +156,50 @@ test('creating a product opens it at the top of the preview with an editable cos
   await page.locator('.stock-submit').click();
   await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
   await expect.poll(() => grid.evaluate(node => node.model.rows.some(row => row.id.startsWith('new-row')))).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('count a stock item and change its article from its row, then submit both', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await signIn(page);
+  const suffix = Date.now();
+  await registerCatalogueRecord(page, '/catalogues/warehouses', `Main ${suffix}`);
+  await registerCatalogueRecord(page, '/catalogues', `Cup ${suffix}`);
+  await page.goto('/');
+  const workbench = page.locator('stock-workbench');
+  const grid = page.locator('#stock-grid');
+  await expect.poll(() => grid.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  await page.locator('.stock-search-input').fill(`Cup ${suffix}`);
+  await expect(page.locator('.stock-option-product')).toHaveCount(1);
+  await page.locator('.stock-search-input').press('Enter');
+  const productId = await workbench.evaluate(node => node.scope.productId);
+  const warehouse = await grid.evaluate((node, name) => node.model.columns.find(column => column.label === name).key, `Main ${suffix}`);
+  await cell(page, `new-row:${productId}`, 'item', 'blue');
+  await cell(page, `new-row:${productId}`, warehouse, '5');
+  await page.locator('.stock-pending-filter').click();
+  await page.locator('.stock-submit-time').fill(yesterday());
+  await page.locator('.stock-submit').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
+
+  // The accepted item's cell now takes a count, and its article a change: one Correction entry.
+  const findItem = () => grid.evaluate(node => node.model.rows.find(row => row.cells.some(c => c.target?.values?.kind === 'correction'))?.id);
+  await expect.poll(findItem).toBeTruthy();
+  const itemId = await findItem();
+  await cell(page, itemId, warehouse, '7');
+  await expect.poll(() => grid.evaluate((node, id) => node.model.rows.find(row => row.id === id).cells.some(c => c.prefix === '5 → ' && c.value === '7'), itemId)).toBe(true);
+  await cell(page, itemId, 'article', 'C-1');
+  expect(await grid.evaluate(node => new Set(node.model.pending.map(entry => entry['entry-id'])).size)).toBe(1);
+  await shot(page, '8-correction');
+
+  await page.locator('.stock-pending-filter').click();
+  await page.locator('.stock-submit-reason').fill('Recount');
+  await page.locator('.stock-submit').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
+  const row = grid.locator(`tr[data-row-id="${itemId}"]`);
+  await expect(row.locator(`td[data-column-key="${warehouse}"]`)).toHaveText('7');
+  await expect(row.locator('td[data-column-key="article"]')).toHaveText('C-1');
+  await row.getByRole('button', { name: 'History' }).click();
+  await expect(page.locator('.stock-history-rows')).toContainText('Correction');
+  await expect(page.locator('.stock-history-rows')).toContainText('Recount');
   expect(errors).toEqual([]);
 });

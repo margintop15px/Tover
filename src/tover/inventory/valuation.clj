@@ -66,7 +66,7 @@
                 (cond-> (-> state
                             (assoc-in [:balances pair] balance)
                             (update :steps conj (assoc (select-keys line [:record-revision-id :position :stock-item-id :warehouse-id
-                                                                          :quantity-change :unit-cost])
+                                                                          :quantity-change :counted-quantity :unit-cost])
                                                        :balance-after (:quantity balance))))
                   (and (neg? (:quantity balance)) (not (:error state)))
                   (assoc :error {:type :negative-balance :stock-item-id stock-item-id :warehouse-id warehouse-id :occurred-at occurred-at}))))

@@ -1,5 +1,5 @@
 (ns tover.inventory.stock.model
-  "Board chapter 13 · The stock table, an item's accepted history and its production lineage, derived from accepted
+  "Board chapters 13 and 15 · The stock table, an item's accepted history and its production lineage, derived from accepted
   records only. Valuation rules are in `tover.inventory.valuation`."
   (:require
     [bel.core :refer [defreadmodel]]
@@ -11,9 +11,9 @@
 
 (defn- cell
   {:malli/schema [:=> [:cat [:maybe valuation/Balance] :boolean :boolean] :map]}
-  [balance pending? opened?]
+  [balance pending? history?]
   {:quantity (:quantity balance 0) :value (if balance (valuation/value balance) 0M) :valued? (:valued? balance true) :pending? pending?
-   :opened?  opened?})
+   :history? history?})
 
 
 (defn- total
@@ -27,26 +27,29 @@
 
 
 (defn table
-  "Products with their stock items, one cell per warehouse. `hide-empty?` drops products without stock items."
+  "Products with their stock items, one cell per warehouse. `hide-empty?` drops products without stock items; archived
+  items show only with `:show-archived?`. A row carries its pending stock item changes; its fields stay accepted."
   {:malli/schema [:=> [:cat :map :boolean] :map]}
-  [{{:keys [products stock-items barcodes warehouses]} :catalogue :keys [history pending currency]} hide-empty?]
+  [{{:keys [products stock-items barcodes warehouses]} :catalogue :keys [history pending currency show-archived?]} hide-empty?]
   (let [balances (:balances (valuation/replay (:records history) (:lines history)))
         locked   (set (map :stock-item-id (:lines history)))
-        ;; Item and warehouse pairs with an effective opening: chapter 14 allows one, later counts are corrections.
-        openings (set (map :record-revision-id (filter #(= "opening" (:kind %)) (valuation/business-order (:records history)))))
-        opened   (set (for [l (:lines history) :when (openings (:record-revision-id l))] [(:stock-item-id l) (:warehouse-id l)]))
+        ;; A pair with any accepted record takes a count (chapter 15); without one, an opening (chapter 14).
+        recorded (set (map (juxt :stock-item-id :warehouse-id) (:lines history)))
+        changes  (group-by :stock-item-id (for [{:keys [entry-id revision] :as e} pending c (:changes e)]
+                                            (assoc c :entry-id entry-id :revision revision)))
         touched  (set (for [entry pending line (:lines entry)] [(:stock-item-id line) (:warehouse-id line)]))
         codes    (group-by :stock-item-id barcodes)
         columns  (->> warehouses
                       (filter #(or (= "active" (:status %)) (some (fn [[[_ w] b]] (and (= w (:warehouse-id %)) (pos? (:quantity b)))) balances)))
                       (sort-by (comp records/name-key :name)))
-        by-prod  (group-by :product-id stock-items)
+        by-prod  (group-by :product-id (if show-archived? stock-items (remove #(= "archived" (:status %)) stock-items)))
         row      (fn [{:keys [stock-item-id] :as i}]
                    (let [cells (into {} (for [{w :warehouse-id} columns]
-                                          [w (cell (balances [stock-item-id w]) (contains? touched [stock-item-id w]) (contains? opened [stock-item-id w]))]))]
+                                          [w (cell (balances [stock-item-id w]) (contains? touched [stock-item-id w]) (contains? recorded [stock-item-id w]))]))]
                      (merge (select-keys i [:stock-item-id :variant-label :article :unit])
                             {:barcodes  (mapv :barcode (codes stock-item-id)) :unit-locked? (contains? locked stock-item-id)
-                             :archived? (= "archived" (:status i))            :cells        cells :total (total (vals cells))})))]
+                             :archived? (= "archived" (:status i))            :cells        cells :total (total (vals cells))}
+                            (when-let [cs (changes stock-item-id)] {:changes (vec cs)}))))]
     {:currency   currency
      :warehouses (mapv #(hash-map :id (:warehouse-id %) :name (:name %) :archived? (= "archived" (:status %))) columns)
      :products   (vec (for [p     (sort-by (comp records/name-key :name) (remove #(= "deleted" (:status %)) products))
@@ -72,7 +75,7 @@
         row       (fn [line superseded?]
                     (let [r (record (:record-revision-id line))]
                       (merge (select-keys r [:record-id :revision :kind :occurred-at :sequence :actor :recorded-at :reason])
-                             (select-keys line [:warehouse-id :quantity-change :unit-cost :balance-after])
+                             (select-keys line [:warehouse-id :quantity-change :counted-quantity :unit-cost :balance-after])
                              {:superseded? superseded?})))
         mine?     #(and (= stock-item-id (:stock-item-id %)) (within? (:occurred-at (record (:record-revision-id %))) from to))]
     {:rows (vec (concat (for [step (:steps (valuation/replay (:records history) (:lines history))) :when (mine? step)] (row step false))
@@ -96,12 +99,12 @@
 
 
 (defreadmodel stock-table
-  {:input  [:map [:hide-empty? {:optional true} :boolean]]
+  {:input  [:map [:hide-empty? {:optional true} :boolean] [:show-archived? {:optional true} :boolean]]
    :output :map
    :policy ::records/workspace-member
    :cofx   facts}
-  [{:keys [currency-row] :as facts} {:keys [hide-empty?] :or {hide-empty? true}}]
-  (table (assoc facts :currency (currency/current currency-row)) hide-empty?))
+  [{:keys [currency-row] :as facts} {:keys [hide-empty? show-archived?] :or {hide-empty? true}}]
+  (table (assoc facts :currency (currency/current currency-row) :show-archived? (boolean show-archived?)) hide-empty?))
 
 
 (def Period
