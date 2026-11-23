@@ -12,6 +12,7 @@
     [tover.catalogues.records :as records]
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
+    [tover.inventory.movements :as movements]
     [tover.inventory.references :as references]
     [tover.inventory.stock-items.model :as stock-items]
     [tover.inventory.stock.model :as stock]
@@ -240,6 +241,25 @@
                         (and money? unvalued? (some true? parts)) (assoc :partial true :prefix "≥ " :title (i18n/t "Includes unvalued stock")))))}))
 
 
+(defn kind-label
+  "The member's name of an entry or record kind; a payment by its direction."
+  {:malli/schema [:=> [:cat [:maybe :string] [:maybe :string]] :string]}
+  [kind direction]
+  (case kind
+    "purchase" (i18n/t "Purchase")
+    "sale" (i18n/t "Sale")
+    "customer-return" (i18n/t "Customer return")
+    "supplier-return" (i18n/t "Supplier return")
+    "transfer" (i18n/t "Transfer")
+    "production" (i18n/t "Production")
+    "defect" (i18n/t "Defect")
+    "write-off" (i18n/t "Write-off")
+    "payment" (case direction "in" (i18n/t "Payment received") "out" (i18n/t "Payment made") (i18n/t "Payment"))
+    "opening" (i18n/t "Opening")
+    "correction" (i18n/t "Correction")
+    (or kind "")))
+
+
 (defn entry-names
   "A member-readable name per pending entry: kind, then the item, warehouse and quantity of its first line or change.
   The quantity tells apart tied entries on one item and warehouse."
@@ -247,7 +267,7 @@
   [entries item warehouse]
   (into {} (for [{:keys [entry-id kind lines changes]} entries
                  :let [{:keys [stock-item-id warehouse-id quantity]} (or (first lines) (first changes))]]
-             [entry-id (str/join " · " (remove str/blank? [(i18n/t (str/capitalize (or kind "opening")))
+             [entry-id (str/join " · " (remove str/blank? [(kind-label (or kind "opening") nil)
                                                            (some-> stock-item-id item) (some-> warehouse-id warehouse) (some-> quantity str)]))])))
 
 
@@ -327,16 +347,17 @@
   per warehouse, Total, Unit cost and Amount. Pending openings and corrections show in their cells; new items get
   their own rows. Draft `findings` mark the cells they concern."
   {:malli/schema [:=> [:cat :map [:map [:mode [:enum "units" "money"]]]] :map]}
-  [{:keys [warehouses products currency]} {:keys [mode scope entries findings]}]
+  [{:keys [warehouses products currency]} {:keys [mode scope entries findings stock-items]}]
   (let [{:keys [productId itemId productName newRow pending addTo]} scope
         lines (pending-lines (filter #(= "opening" (:kind % "opening")) entries))
         ;; ponytail: one Correction per row; a second member's correction of the same item only shows in Submit.
         corrections (filter #(= "correction" (:kind %)) entries)
         operations (group-by :stock-item-id
-                             (for [{:keys [kind lines]} entries :when (#{"purchase" "sale"} kind)
-                                   {:keys [stock-item-id warehouse-id quantity]} lines :when (and stock-item-id warehouse-id (int? quantity))]
-                               {:stock-item-id stock-item-id :warehouse-id warehouse-id :change (if (= "sale" kind) (- quantity) quantity)
-                                :label         (str (i18n/t (str/capitalize kind)) " " (if (= "sale" kind) "−" "+") quantity)}))
+                             (for [{:keys [kind stock-item-id warehouse-id change] :as line}
+                                   (movements/lines-of (or stock-items []) (remove (comp #{"opening" "correction"} :kind) entries))
+                                   :when (and stock-item-id warehouse-id (int? change) (not (:new-item? line)))]
+                               {:stock-item-id stock-item-id :warehouse-id warehouse-id :change change
+                                :label         (str (kind-label kind nil) " " (if (neg? change) "−" "+") (abs change))}))
         corrected (into {} (for [{:keys [lines changes] :as c} (reverse corrections)
                                  :let [item (or (:stock-item-id (first lines)) (:stock-item-id (first changes)))]
                                  :when item]
@@ -589,7 +610,7 @@
          work      (read-or-nil context ::entries/pending-entries {})
          catalogue (read-or-nil context ::references/draft-catalogue {})]
      (when (and table work catalogue)
-       (assoc (stock-grid table {:mode mode :scope scope :entries (:entries work) :findings (:findings work)})
+       (assoc (stock-grid table {:mode mode :scope scope :entries (:entries work) :findings (:findings work) :stock-items (:stock-items catalogue)})
               ;; Move offers every active product, also those the table hides for having no stock items.
               :moveTargets (vec (for [{:keys [product-id name status]} (sort-by (comp records/name-key :name) (:products catalogue))
                                       :when (= "active" status)]
@@ -690,7 +711,7 @@
                                       :status    (if (and rows lineage) "ok" "failed")
                                       :rows      (mapv #(-> % (update :occurred-at str) (update :recorded-at str)
                                                             (assoc :warehouse (name (:warehouse-id %) (:warehouse-id %))
-                                                                   :kind-label (i18n/t (str/capitalize (:kind %)))))
+                                                                   :kind-label (kind-label (:kind %) (:direction %))))
                                                        (:rows rows))
                                       :lineage   (:status lineage)})}}))
 

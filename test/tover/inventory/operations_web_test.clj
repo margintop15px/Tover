@@ -167,3 +167,58 @@
     (is (= "tee-m" (:stock-item-id (first (:lines (operations/operation-input with-code stocked workspace "p" 2 {"field" "item" "line-id" "p-0" "value" "4600000000017"} purchase)))))))
   (is (nil? (operations/warehouse-prefill (assoc-in catalogue [:products 0 :default-warehouse-id] nil) {"tee-m" ["main" "back"]} "sale" nil "tee-m"))
       "stock in two warehouses, no store, no product default"))
+
+
+;; 20–25 · Other operation kinds on the page
+
+
+(defn- pending-grid
+  {:malli/schema [:=> [:cat :map] :map]}
+  [entry]
+  (operations/operations-grid {:catalogue catalogue :pending [entry] :findings [] :accepted [] :currency "RUB" :preview? false}))
+
+
+(deftest transfer-and-defect-show-leaving-and-entering-rows
+  (let [model (pending-grid {:entry-id "t" :revision 1 :kind "transfer" :occurred-at at :from-warehouse-id "main" :to-warehouse-id "back"
+                             :lines    [{:line-id "t-0" :stock-item-id "tee-m" :quantity 4}]})]
+    (is (= [["t|t-0" "operations-pending operations-out" "Main" "4"] ["t|t-0|in" "operations-pending operations-in" "Back" "4"]]
+           (map (juxt :id :className #(column model (:id %) "warehouse") #(column model (:id %) "quantity")) (:rows model))))
+    (is (= "to-warehouse" (get-in (second (:rows model)) [:cells (.indexOf ^java.util.List (mapv :key (:columns model)) "warehouse") :target :field]))
+        "the green warehouse edits the destination"))
+  (let [model (pending-grid {:entry-id "d" :revision 1 :kind "defect" :occurred-at at :reason "torn" :lines [{:line-id "d-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 1}]})]
+    (is (= "T-shirt / M · defect (will be created)" (column model "d|d-0|in" "item")))))
+
+
+(deftest production-inputs-red-outputs-green
+  (let [model (pending-grid {:entry-id "m" :revision 1 :kind "production" :occurred-at at
+                             :lines    [{:line-id "m-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 2 :side "input"}
+                                        {:line-id "m-1" :product-name "Pack" :warehouse-id "main" :quantity 1 :side "output"}]})]
+    (is (= ["operations-pending operations-out" "operations-pending operations-in"] (map :className (:rows model))))
+    (is (= ["Add input" "Add output"] (map :label (:actions (first (:cells (first (:rows model)))))))))
+  (is (= ["n-0" "input"] ((juxt :line-id :side) (first (:lines (input {"kind" "production" "field" "create" "value" "2026-11-20T10:00:00Z"} nil))))))
+  (is (= "output" (:side (last (:lines (input {"field" "add-line" "value" "output"} {:entry-id "m" :revision 1 :kind "production" :lines []})))))))
+
+
+(deftest payment-is-one-row-with-amount
+  (let [model (pending-grid {:entry-id "pay" :revision 1 :kind "payment" :occurred-at at :direction "in" :store-id "web" :amount "500" :lines []})]
+    (is (= [["Payment received" "Web shop" "500"]] (map (fn [r] (map #(column model (:id r) %) ["kind" "party" "total"])) (:rows model)))))
+  (is (= ["store-id" "web"] (let [saved (input {"field" "counterparty" "value" "store:web"} {:entry-id "pay" :revision 1 :kind "payment" :supplier-id "tex" :lines []})]
+                              [(some #(when (% saved) (name %)) [:supplier-id :store-id]) (:store-id saved)])))
+  (is (= [] (:lines (input {"kind" "payment" "field" "create" "value" "2026-11-20T10:00:00Z"} nil)))))
+
+
+(deftest return-and-output-prefill
+  (is (= "main" (:warehouse-id (first (:lines (operations/operation-input catalogue {"tee-m" ["main" "back"]} workspace "r" 1 {"field" "item" "line-id" "r-0" "value" "tee-m"}
+                                                                          {:entry-id "r" :revision 1 :kind "customer-return" :store-id "web" :lines [{:line-id "r-0"}]})))))
+      "a customer return takes the store's default like a sale")
+  (is (= "back" (:warehouse-id (second (:lines (operations/operation-input catalogue {} workspace "m" 1 {"field" "item" "line-id" "m-1" "value" "tee-m"}
+                                                                           {:entry-id "m" :revision 1 :kind "production"
+                                                                            :lines    [{:line-id "m-0" :side "input" :warehouse-id "back"} {:line-id "m-1" :side "output"}]})))))
+      "an output takes the first input's warehouse")
+  (is (= "150" (:unit-price (first (:lines (input {"field" "price" "line-id" "p-0" "value" "150"} (assoc purchase :kind "supplier-return"))))))))
+
+
+(deftest accepted-payment-has-a-row
+  (let [model (operations/operations-grid {:catalogue catalogue :pending [] :findings [] :currency "RUB" :preview? false
+                                           :accepted  [{:record-id "pay" :kind "payment" :direction "out" :occurred-at at :supplier-id "tex" :total 1000M :partial? false :lines []}]})]
+    (is (= ["Payment made" "Textiles LLC" "1000.00"] (map #(column model "pay|" %) ["kind" "party" "total"])))))

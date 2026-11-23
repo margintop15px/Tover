@@ -122,7 +122,8 @@ class StockWorkbench extends InventoryWorkbench {
     // "add" offers a new operation, built on the operations page.
     const first = response.text.trim().toLowerCase().split(/\s+/)[0];
     if (first.length >= 2 && ['add', t('Add operation').toLowerCase().split(' ')[0]].some(word => word.startsWith(first))) {
-      options.unshift(...[['purchase', 'Purchase'], ['sale', 'Sale']].map(([op, name]) => ({ kind: 'operation', op, label: `${t('Add operation')}: ${t(name)}` })));
+      options.unshift(...[['purchase', 'Purchase'], ['sale', 'Sale'], ['customer-return', 'Customer return'], ['supplier-return', 'Supplier return'], ['transfer', 'Transfer'],
+        ['production', 'Production'], ['defect', 'Defect'], ['write-off', 'Write-off'], ['payment', 'Payment']].map(([op, name]) => ({ kind: 'operation', op, label: `${t('Add operation')}: ${t(name)}` })));
     }
     this.options = options; this.active = 0;
     this.list.replaceChildren(...options.map((option, index) => {

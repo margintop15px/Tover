@@ -691,7 +691,7 @@
         changes  (group-by :entry-id (records/all-records context ::entry-changes :entry-change-id))
         codes    (group-by :entry-change-id (records/all-records context ::entry-change-barcodes :entry-change-barcode-id))]
     (mapv (fn [{:keys [entry-id] :as entry}]
-            (let [rows    (get by-entry entry-id)
+            (let [rows    (get by-entry entry-id [])
                   changed (get changes entry-id)]
               (cond-> (assoc entry :lines (assemble rows (mapcat (comp barcodes :entry-line-id) rows)))
                 (seq changed) (assoc :changes (assemble-changes changed (mapcat (comp codes :entry-change-id) changed))))))

@@ -939,7 +939,18 @@
     "Add at least one output.": "Add at least one output.",
     "Choose input or output.": "Choose input or output.",
     "Choose received or paid.": "Choose received or paid.",
-    "Choose a supplier or store.": "Choose a supplier or store."
+    "Choose a supplier or store.": "Choose a supplier or store.",
+    "Customer return": "Customer return",
+    "Supplier return": "Supplier return",
+    "Payment received": "Payment received",
+    "Payment made": "Payment made",
+    "Add input": "Add input",
+    "Add output": "Add output",
+    "defect": "defect",
+    "(will be created)": "(will be created)",
+    "Received or paid": "Received or paid",
+    "From warehouse": "From warehouse",
+    "To warehouse": "To warehouse"
   },
   "ru": {
     "Stock": "Остатки",
@@ -1885,6 +1896,17 @@
     "Add at least one output.": "Добавьте хотя бы одну строку продукции.",
     "Choose input or output.": "Выберите: сырьё или продукция.",
     "Choose received or paid.": "Выберите: получено или оплачено.",
-    "Choose a supplier or store.": "Выберите поставщика или магазин."
+    "Choose a supplier or store.": "Выберите поставщика или магазин.",
+    "Customer return": "Возврат от покупателя",
+    "Supplier return": "Возврат поставщику",
+    "Payment received": "Платёж получен",
+    "Payment made": "Платёж отправлен",
+    "Add input": "Добавить сырьё",
+    "Add output": "Добавить продукцию",
+    "defect": "брак",
+    "(will be created)": "(будет создано)",
+    "Received or paid": "Получено или оплачено",
+    "From warehouse": "Со склада",
+    "To warehouse": "На склад"
   }
 }

@@ -398,3 +398,13 @@
     (is (= ["5 → " "8" true] ((juxt :prefix :value :readOnly) main)))
     (is (re-find #"Purchase \+4" (:title main)))
     (is (empty? (:pending model)) "they are not selectable in the stock preview")))
+
+
+(deftest pending-transfer-moves-both-cells
+  (let [model (web/stock-grid table {:mode    "units"
+                                     :entries [{:entry-id "t" :revision 1 :kind "transfer" :from-warehouse-id "main" :to-warehouse-id "shop"
+                                                :lines    [{:line-id "t-0" :stock-item-id "tee-m" :quantity 2}]}]})
+        cell  #(nth (cells-of model "tee-m") (.indexOf ^java.util.List (mapv :key (:columns model)) %))]
+    (is (= ["5 → " "3"] ((juxt :prefix :value) (cell "main"))))
+    (is (= ["3 → " "5"] ((juxt :prefix :value) (cell "shop"))))
+    (is (re-find #"Transfer \+2" (:title (cell "shop"))))))

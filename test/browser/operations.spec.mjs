@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { signIn } from './auth.fixture.mjs';
 
-// Board chapters 18 and 19: record a purchase and a sale on the operations page, preview, submit, see stock change.
+// Board chapters 18–25: record operations on the operations page, preview, submit, see stock change.
 
 async function registerCatalogueRecord(page, path, name) {
   await page.goto(path);
@@ -51,7 +51,7 @@ async function choose(page, id, path, label, selector = '.inventory-cell-editor 
 async function addOperation(page, kind) {
   const grid = page.locator('#operations-grid');
   const before = await grid.evaluate(node => node.model.pending.map(entry => entry['entry-id']));
-  await page.locator(`.operations-add[data-kind="${kind}"]`).click();
+  await page.locator('.operations-add').selectOption(kind);
   await idle(page, 'operations-workbench');
   const entry = await grid.evaluate((node, before) => node.model.pending.find(entry => !before.includes(entry['entry-id']))['entry-id'], before);
   const line = await grid.evaluate((node, entry) => node.model.rows.find(row => row.groupId === entry).id, entry);
@@ -72,6 +72,7 @@ test('record a purchase and a sale, preview, submit, and see stock change', asyn
   await signIn(page);
   const suffix = Date.now();
   await registerCatalogueRecord(page, '/catalogues/warehouses', `Main ${suffix}`);
+  await registerCatalogueRecord(page, '/catalogues/warehouses', `Back ${suffix}`);
   await registerCatalogueRecord(page, '/catalogues', `T-shirt ${suffix}`);
   await registerCatalogueRecord(page, '/catalogues/suppliers', `Textiles ${suffix}`);
   await registerCatalogueRecord(page, '/catalogues/stores', `Web shop ${suffix}`);
@@ -130,6 +131,26 @@ test('record a purchase and a sale, preview, submit, and see stock change', asyn
   await shot(page, 'operations-3-accepted');
   await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(0);
 
+  // Transfer 2 from Main to Back: a red leaving row and a green entering row; the cost moves with the units.
+  const transfer = await addOperation(page, 'transfer');
+  await choose(page, transfer.line, 'item', `T-shirt ${suffix} / M`, '.inventory-goods-choice');
+  await choose(page, transfer.line, 'from-warehouse', `Main ${suffix}`);
+  await choose(page, transfer.line, 'to-warehouse', `Back ${suffix}`);
+  await type(page, transfer.line, 'quantity', '2');
+  await expect(grid.locator(`tr[data-row-id="${transfer.line}|in"] td[data-column-key="quantity"]`)).toHaveText('2');
+  await shot(page, 'operations-5-transfer');
+  await submit(page);
+  await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(0);
+
+  // A payment made to the supplier: one row, no stock effect.
+  const payment = await addOperation(page, 'payment');
+  await choose(page, payment.group, 'direction', 'Payment made');
+  await choose(page, payment.group, 'counterparty', `Textiles ${suffix}`);
+  await type(page, payment.group, 'amount', '1000');
+  await submit(page);
+  await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(0);
+  await expect(grid).toContainText('Payment made');
+
   // Stock: 5 + 5 − 3 = 7, valued 7 × 150.00.
   await page.getByRole('link', { name: 'Stock' }).click();
   await expect.poll(() => stock.evaluate(node => Boolean(node.worksheet))).toBe(true);
@@ -138,6 +159,7 @@ test('record a purchase and a sale, preview, submit, and see stock change', asyn
   await page.locator('.stock-search-input').press('Escape');
   await page.locator('.stock-mode button[data-mode="money"]').click();
   await expect.poll(() => stock.evaluate((node, name) => node.model.rows.some(row => row.cells.some(cell => cell.value === '1050.00')), warehouse)).toBe(true);
+  expect(await stock.evaluate(node => node.model.rows.some(row => row.cells.some(cell => cell.value === '300.00')))).toBe(true);
   expect(errors).toEqual([]);
 });
 
@@ -170,6 +192,19 @@ test('smart input: add a purchase with Done, keep it across a reload, cancel wit
   await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(before + 1);
   await expect(grid).toContainText(`Tote ${suffix}`);
   await expect(grid).toContainText(`Cotton ${suffix}`);
+
+  // A write-off needs a reason before Done.
+  await page.locator('.operations-smart-input').fill('add write');
+  await page.locator('.operations-smart-input').press('Enter');
+  await expect(chips.locator('.operations-chip-kind')).toHaveText('Write-off');
+  await expect(chips.locator('.operations-chip-party')).toHaveCount(0);
+  await chips.locator('.operations-chip-item').fill(`Tote ${suffix}`);
+  await chips.locator('.operations-chip-quantity').fill('1');
+  await expect(page.locator('.operations-smart-done')).toBeDisabled();
+  await chips.locator('.operations-chip-reason').fill('Damaged');
+  await expect(page.locator('.operations-smart-done')).toBeEnabled();
+  await page.locator('.operations-smart-cancel').click();
+  await expect(chips).toBeHidden();
 
   // Cancel: Escape on an empty field drops the addition only.
   await page.locator('.operations-smart-input').fill('add s');

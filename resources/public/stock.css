@@ -190,3 +190,8 @@
 .operations-smart-chips[hidden] { display: none; }
 .operations-chip-kind { font-weight: 600; }
 .operations-add { white-space: nowrap; }
+/* Board chapters 21–23: leaving (red) and entering (green) rows of transfers, defects and production. */
+#operations-grid .jss_worksheet>tbody>tr.operations-out>td{box-shadow:inset 3px 0 0 var(--iw-red)}
+#operations-grid .jss_worksheet>tbody>tr.operations-in>td{box-shadow:inset 3px 0 0 var(--iw-green)}
+#operations-grid .jss_worksheet>tbody>tr.operations-in>td.readonly{color:var(--iw-green)}
+.operations-add{min-height:32px}
