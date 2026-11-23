@@ -132,6 +132,17 @@
     (is (= 1 (count (of-type plan ::acceptance/inventory-record-accepted))))))
 
 
+(deftest one-new-item-in-two-warehouses-is-registered-once
+  (let [f    (-> (facts [(entry "a" {:product-id "tee" :variant-label "XL" :barcodes ["4600000000031"]})
+                         (entry "b" {:product-id "tee" :variant-label "XL" :barcodes ["4600000000031"] :warehouse-id "back"})])
+                 (update-in [:catalogue :warehouses] conj {:warehouse-id "back" :name "Back" :status "active" :revision 1}))
+        plan (accept f (input f "a" "b"))]
+    (is (= ["item:a-0"] (map :stock-item-id (of-type plan ::stock-items/stock-item-registered))))
+    (is (= ["item:a-0|4600000000031"] (map :barcode-id (of-type plan ::stock-items/stock-item-barcode-assigned))))
+    (is (= [["item:a-0" "main"] ["item:a-0" "back"]]
+           (map (juxt :stock-item-id :warehouse-id) (of-type plan ::acceptance/inventory-record-line-accepted))))))
+
+
 (deftest new-product-and-warehouse-are-registered
   (let [f    (facts [(entry "e" {:product-name " Cup " :variant-label "Big" :warehouse-id nil :warehouse-name "Back"})])
         plan (accept f (input f "e"))]

@@ -394,14 +394,15 @@
            (for [l (sort-by :line-id (first :product-id :new-product?))]
              {:type :tover.catalogues.products.model/product-registered
               :data {:product-id (:product-id l) :name (trim (:product-name l)) :status "active" :revision 1}})
-           (for [l lines :when (:new-item? l)]
+           ;; Lines naming one new product and variant share one item: register it, and each of its barcodes, once.
+           (for [l (sort-by :line-id (first :stock-item-id :new-item?))]
              {:type ::stock-items/stock-item-registered
               :data (present {:stock-item-id (:stock-item-id l)  :product-id (:product-id l)  :variant-label (trim (:variant-label l))
                               :article       (trim (:article l)) :unit       (trim (:unit l)) :condition     "regular"                 :status "active"
                               :revision      1})})
-           (for [l lines :when (:new-item? l) code (:barcodes l)]
+           (for [[item code] (distinct (for [l lines :when (:new-item? l) code (:barcodes l)] [(:stock-item-id l) code]))]
              {:type ::stock-items/stock-item-barcode-assigned
-              :data {:barcode-id (stock-items/barcode-id (:stock-item-id l) code) :stock-item-id (:stock-item-id l) :barcode code}})))))
+              :data {:barcode-id (stock-items/barcode-id item code) :stock-item-id item :barcode code}})))))
 
 
 (defcommand accept-reviewed-inventory-changes
