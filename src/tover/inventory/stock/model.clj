@@ -4,6 +4,7 @@
   (:require
     [bel.core :refer [defreadmodel]]
     [bel.validation :as validation]
+    [clojure.string :as str]
     [tover.catalogues.records :as records :refer [Id]]
     [tover.inventory.valuation :as valuation]
     [tover.workspaces.currency.model :as currency]))
@@ -28,29 +29,28 @@
 
 (defn table
   "Products with their stock items, one cell per warehouse. `hide-empty?` drops products without stock items; archived
-  items show only with `:show-archived?` or a pending change, so a proposed Restore stays visible. A row carries its pending stock item changes; its fields stay accepted."
+  items show only with `:show-archived?` or a pending change, so a proposed Restore stays visible. Fields stay
+  accepted; pending changes are read from the entries."
   {:malli/schema [:=> [:cat :map :boolean] :map]}
   [{{:keys [products stock-items barcodes warehouses]} :catalogue :keys [history pending currency show-archived?]} hide-empty?]
   (let [balances (:balances (valuation/replay (:records history) (:lines history)))
         locked   (set (map :stock-item-id (:lines history)))
         ;; A pair with any accepted record takes a count (chapter 15); without one, an opening (chapter 14).
         recorded (set (map (juxt :stock-item-id :warehouse-id) (:lines history)))
-        changes  (group-by :stock-item-id (for [{:keys [entry-id revision] :as e} pending c (:changes e)]
-                                            (assoc c :entry-id entry-id :revision revision)))
+        changed  (set (for [e pending c (:changes e)] (:stock-item-id c)))
         touched  (set (for [entry pending line (:lines entry)] [(:stock-item-id line) (:warehouse-id line)]))
         codes    (group-by :stock-item-id barcodes)
         columns  (->> warehouses
                       (filter #(or (= "active" (:status %)) (some (fn [[[_ w] b]] (and (= w (:warehouse-id %)) (pos? (:quantity b)))) balances)))
                       (sort-by (comp records/name-key :name)))
         by-prod  (group-by :product-id (if show-archived? stock-items
-                                           (remove #(and (= "archived" (:status %)) (not (changes (:stock-item-id %)))) stock-items)))
+                                           (remove #(and (= "archived" (:status %)) (not (changed (:stock-item-id %)))) stock-items)))
         row      (fn [{:keys [stock-item-id] :as i}]
                    (let [cells (into {} (for [{w :warehouse-id} columns]
                                           [w (cell (balances [stock-item-id w]) (contains? touched [stock-item-id w]) (contains? recorded [stock-item-id w]))]))]
                      (merge (select-keys i [:stock-item-id :variant-label :article :unit])
-                            {:barcodes  (mapv :barcode (codes stock-item-id)) :unit-locked? (contains? locked stock-item-id)
-                             :archived? (= "archived" (:status i))            :cells        cells :total (total (vals cells))}
-                            (when-let [cs (changes stock-item-id)] {:changes (vec cs)}))))]
+                            {:barcodes  (mapv :barcode (codes stock-item-id)) :unit-locked? (boolean (and (contains? locked stock-item-id) (not (str/blank? (:unit i)))))
+                             :archived? (= "archived" (:status i))            :cells        cells :total (total (vals cells))})))]
     {:currency   currency
      :warehouses (mapv #(hash-map :id (:warehouse-id %) :name (:name %) :archived? (= "archived" (:status %))) columns)
      :products   (vec (for [p     (sort-by (comp records/name-key :name) (remove #(= "deleted" (:status %)) products))

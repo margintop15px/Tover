@@ -301,6 +301,7 @@
             save #(execute! ctx ::entries/save-shared-inventory-entry %1 (merge {:workspace-id workspace} %2))]
         (execute! ctx :tover.catalogues.warehouses.model/register-warehouse "w1" {:warehouse-id "main" :name "Main"})
         (execute! ctx :tover.catalogues.warehouses.model/register-warehouse "w2" {:warehouse-id "old" :name "Old"})
+        (execute! ctx :tover.catalogues.warehouses.model/register-warehouse "w3" {:warehouse-id "spare" :name "Spare"})
         (let [first-save (-> opening (assoc-in [:lines 0 :stock-item-id] nil) (assoc-in [:lines 0 :product-name] "T-shirt")
                              (assoc-in [:lines 0 :barcodes] ["4600000000017"]))]
           (save "s1" first-save)
@@ -311,10 +312,23 @@
         (execute! ctx :tover.catalogues.warehouses.model/archive-warehouse "a1" {:warehouse-id "old" :revision 1})
         (save "s2" {:entry-id "e2" :kind "opening" :lines [{:line-id "a" :product-name "Mug"}]})
         (testing "a shared pending entry blocks archiving the warehouse it names"
-          (save "s2b" {:entry-id "e3" :kind "opening" :lines [{:line-id "z" :warehouse-id "main"}]})
+          (save "s2b" {:entry-id "e3" :kind "opening" :lines [{:line-id "z" :warehouse-id "spare"}]})
           (is (= :pending-reference
-                 (:type (rejection #(execute! ctx :tover.catalogues.warehouses.model/archive-warehouse "a2" {:warehouse-id "main" :revision 1})))))
+                 (:type (rejection #(execute! ctx :tover.catalogues.warehouses.model/archive-warehouse "a2" {:warehouse-id "spare" :revision 1})))))
           (execute! ctx ::entries/discard-inventory-draft "d1" {:workspace-id workspace :entry-id "e3" :revision 1}))
+        (testing "a discard releases the archive block"
+          (is (nil? (rejection #(execute! ctx :tover.catalogues.warehouses.model/archive-warehouse "a3" {:warehouse-id "spare" :revision 1})))))
+        (testing "the remaining entries after a discard, unchanged"
+          (is (= ["e1" "e2"] (map :entry-id (:entries (runtime/read-model ctx ::entries/pending-entries {}))))))
+        (testing "another member of the workspace sees the same entries"
+          (is (= ["e1" "e2"] (map :entry-id (:entries (runtime/read-model (assoc ctx :user-id #uuid "00000000-0000-0000-0000-000000000012")
+                                                                          ::entries/pending-entries {}))))))
+        (testing "saving works when the rules cannot be evaluated"
+          (with-redefs [tover.inventory.findings/derive (fn [_] (throw (ex-info "rules down" {})))]
+            (save "s4" {:entry-id "e4" :kind "opening" :lines [{:line-id "q" :warehouse-id "main" :quantity "1"}]})
+            (is (empty? (:findings (runtime/read-model ctx ::entries/pending-entries {}))))
+            (is (some #{"e4"} (map :entry-id (:entries (runtime/read-model ctx ::entries/pending-entries {})))))))
+        (execute! ctx ::entries/discard-inventory-draft "d4" {:workspace-id workspace :entry-id "e4" :revision 1})
         (let [{[e1 e2] :entries} (runtime/read-model ctx ::entries/pending-entries {})]
           (testing "everyone sees shared work with its saved values"
             (is (= [{:line-id   "l1"     :product-name "T-shirt" :barcodes ["4600000000017"] :warehouse-id "main" :quantity 5

@@ -285,7 +285,16 @@
         plan (accept f (input f "c"))]
     (is (= ["correction"] (map :kind (of-type plan ::acceptance/inventory-record-accepted))))
     (is (= [{:record-line-id "c#1/0" :record-revision-id "c#1" :position 0 :stock-item-id "tee-m" :warehouse-id "main" :counted-quantity 7}]
-           (of-type plan ::acceptance/inventory-record-line-accepted)))))
+           (of-type plan ::acceptance/inventory-record-line-accepted)))
+    (is (= [{:entry-id "c" :status "accepted" :revision 2}] (of-type plan ::entries/shared-inventory-entry-accepted)) "the draft leaves the pending work")))
+
+
+(deftest barcode-owned-by-another-product-names-the-owner
+  (let [f (-> (facts [(correction "c" [] [{:stock-item-id "mug-1" :barcodes-added ["4600000000017"]}])])
+              (assoc-in [:catalogue :barcodes] [{:barcode-id "tee-m|4600000000017" :stock-item-id "tee-m" :barcode "4600000000017"}]))
+        r (rejection #(accept f (input f "c")))]
+    (is (= :uniqueness-conflict (:type r)))
+    (is (= "T-shirt" (get-in r [:problem :owner-product])))))
 
 
 (deftest field-change-only

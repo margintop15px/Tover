@@ -7,7 +7,7 @@
 
 (def catalogue
   {:products    [{:product-id "tee" :name "T-shirt" :status "active"} {:product-id "mug" :name "Mug" :status "active"}]
-   :stock-items [{:stock-item-id "tee-m" :product-id "tee" :variant-label "M" :article "T-100" :status "active"}]
+   :stock-items [{:stock-item-id "tee-m" :product-id "tee" :variant-label "M" :article "T-100" :unit "pcs" :status "active"}]
    :barcodes    [{:stock-item-id "tee-m" :barcode "4600000000017"}]
    :warehouses  [{:warehouse-id "main" :name "Main" :status "active"}]
    :balances    {}})
@@ -155,7 +155,31 @@
 
 (deftest move-conflict
   (is (= #{["c" "tee-m" :move-conflict :error]} (change-codes (run {} (correction "c" [] [{:stock-item-id "tee-m" :product-id "tee"}])))))
-  (is (empty? (run {} (correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}])))))
+  (is (empty? (run {} (correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}]))))
+  (testing "to an archived product"
+    (is (= #{["c" "tee-m" :move-conflict :error]}
+           (change-codes (run {:products [{:product-id "tee" :name "T-shirt" :status "active"} {:product-id "mug" :name "Mug" :status "archived"}]}
+                              (correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}]))))))
+  (testing "an article or barcode an item staying in the product keeps names the value and that item"
+    (let [staying {:stock-items (conj (:stock-items catalogue) {:stock-item-id "tee-l" :product-id "tee" :variant-label "L" :article "T-100" :status "active"})
+                   :barcodes    (conj (:barcodes catalogue) {:stock-item-id "tee-l" :barcode "4600000000017"})}
+          found   (run staying (correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}]))]
+      (is (= #{["c" "tee-m" :move-conflict :error]} (change-codes found)))
+      (is (= #{{:value "T-100" :other-item "tee-l"} {:value "4600000000017" :other-item "tee-l"}}
+             (set (map #(select-keys (:related %) [:value :other-item]) found))))
+      (is (empty? (run staying (correction "c" [] [{:stock-item-id "tee-m" :product-id "mug" :article "M-1" :barcodes-removed ["4600000000017"]}])))
+          "changing both in the same entry lets the move through"))))
+
+
+(deftest first-unit-on-an-item-with-history-is-not-locked
+  (is (empty? (run (assoc stocked :stock-items [(dissoc (first (:stock-items catalogue)) :unit)])
+                   (correction "c" [{:quantity 5}] [{:stock-item-id "tee-m" :unit "kg"}])))))
+
+
+(deftest silent-when-the-change-is-fine
+  (is (empty? (run {} (correction "c" [] [{:stock-item-id "tee-m" :restore true}]))) "restore with an active product")
+  (is (empty? (run {} (correction "a" [] [{:stock-item-id "tee-m" :article "A"}]) (correction "b" [] [{:stock-item-id "tee-m" :unit "kg"}])))
+      "two entries changing different fields"))
 
 
 (deftest field-conflict
@@ -181,8 +205,8 @@
                  {:stock-item-id "mug-2" :product-id "mug" :variant-label "2" :status "active"}]})
 
 
-(deftest moving-to-a-taken-variant-is-a-duplicate-variant
-  (is (= #{["c" "tee-m" :duplicate-variant :error]}
+(deftest moving-to-a-taken-variant-is-a-move-conflict
+  (is (= #{["c" "tee-m" :move-conflict :error]}
          (change-codes (run (update two-mugs :stock-items conj {:stock-item-id "mug-m" :product-id "mug" :variant-label "m" :status "active"})
                             (correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}]))))))
 

@@ -279,8 +279,10 @@
 (deftest move-to-the-current-parent-or-a-taken-variant
   (let [catalogue (update catalogue :stock-items conj {:stock-item-id "mug-m" :product-id "mug" :variant-label "M" :status "active" :revision 1})]
     (is (= #{:move-conflict} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "tee"}])] {}) "c"))))
-    (is (= #{:duplicate-variant} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}])] catalogue) "c")))
-        "a taken variant label is a duplicate variant (chapter 16)")
+    (is (= #{:move-conflict} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}])] catalogue) "c"))))
+    (is (= #{:move-conflict} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug"}])]
+                                                      (assoc-in catalogue [:products 1 :status] "archived")) "c")))
+        "an archived target")
     (is (:valid? (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :product-id "mug" :variant-label "M2"}])] catalogue) "c")))))
 
 
@@ -311,3 +313,25 @@
           "the member's order decides: b counts 4, then a counts 3"))
     (is (:valid? (review (facts [(correction "a" [["main" 3]] []) (assoc (correction "b" [["main" 4]] []) :occurred-at (day 18))] {:history history}) "a" "b"))
         "different seconds need no choice")))
+
+
+(deftest first-unit-set-with-a-count
+  (let [unitless (assoc-in catalogue [:stock-items 0 :unit] nil)]
+    (is (:valid? (review (facts [(correction "c" [["main" 3]] [{:stock-item-id "tee-m" :unit "kg"}])] (assoc unitless :history opened-5)) "c"))
+        "an item with history but no unit takes its first unit with the count")
+    (is (= #{:unit-locked} (problems (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :unit "kg"}])] {:history opened-5}) "c")))
+        "a set unit stays locked")))
+
+
+(deftest the-chosen-order-is-part-of-what-the-review-saw
+  (let [f     (facts [(correction "a" [["main" 3]] []) (correction "b" [["main" 4]] [])] {:history opened-5})
+        input {:selection [{:entry-id "a" :revision 1} {:entry-id "b" :revision 1}] :order ["a" "b"]}]
+    (is (not= (:fingerprint (acceptance/review f input)) (:fingerprint (acceptance/review f (assoc input :ordered? true)))))))
+
+
+(deftest an-opening-comes-first-at-the-same-second
+  (let [result (acceptance/review (facts [(correction "c" [["main" 3]] []) (entry "o" {:stock-item-id "tee-m"})] {})
+                                  {:selection [{:entry-id "c" :revision 1} {:entry-id "o" :revision 1}] :order ["c" "o"]})]
+    (is (:valid? result) (pr-str (:problems result)))
+    (is (= [["tee-m" "main" 0 3]] (map (juxt :stock-item-id :warehouse-id :quantity-before :quantity-after) (:effects result)))
+        "opening 5, then the count sets 3, whatever order was sent")))

@@ -102,7 +102,12 @@
     (is (= [500.0000M true] ((juxt :value :valued?) (get-in row [:cells "main"]))))
     (is (= [500.0000M "full"] ((juxt :value :valued) (:total row))))
     (is (:unit-locked? row) "a quantity-bearing record locks the unit")
-    (is (= ["4600000000017"] (:barcodes row)))))
+    (is (= ["4600000000017"] (:barcodes row)))
+    (is (false? (:unit-locked? (item (stock/table (facts {:catalogue (assoc-in catalogue [:stock-items 0 :unit] nil)
+                                                          :history   (history (record "a" 1 "opening" 1 [["tee-m" "main" 5 "100.00"]]))})
+                                                  true)
+                                     "tee-m")))
+        "an item without a unit can still take its first one")))
 
 
 (deftest unvalued-opening-marks-totals-partial
@@ -246,10 +251,8 @@
         (is (true? (:archived? (item (stock/table (facts {:catalogue archived :pending pending}) true) "tee-l"))))))))
 
 
-(deftest pending-item-changes-are-on-the-row
+(deftest pending-item-changes-leave-accepted-fields
   (let [pending [{:entry-id "c" :kind "correction" :revision 1 :lines [] :changes [{:stock-item-id "tee-m" :article "T-101"}]}]]
-    (is (= [{:entry-id "c" :revision 1 :stock-item-id "tee-m" :article "T-101"}]
-           (:changes (item (stock/table (facts {:pending pending}) true) "tee-m"))))
     (is (= "T-100" (:article (item (stock/table (facts {:pending pending}) true) "tee-m"))) "the accepted value stays")))
 
 
@@ -270,3 +273,11 @@
 (deftest zero-count-keeps-the-item
   (let [h (history (record "o" 1 "opening" 1 [["tee-m" "main" 3 nil]]) (record "c" 1 "correction" 5 [["tee-m" "main" 0 nil]]))]
     (is (= 0 (get-in (item (stock/table (facts {:history h}) true) "tee-m") [:cells "main" :quantity])))))
+
+
+(deftest archived-item-keeps-its-history
+  (let [archived (assoc-in catalogue [:stock-items 0 :status] "archived")
+        h        (history (record "o" 1 "opening" 1 [["tee-m" "main" 5 nil]]) (record "c" 1 "correction" 5 [["tee-m" "main" 7 nil]]))]
+    (is (= (stock/history-rows (facts {:history h}) {:stock-item-id "tee-m"})
+           (stock/history-rows (facts {:catalogue archived :history h}) {:stock-item-id "tee-m"})))
+    (is (= 7 (get-in (item (stock/table (facts {:catalogue archived :history h :show-archived? true}) true) "tee-m") [:cells "main" :quantity])))))

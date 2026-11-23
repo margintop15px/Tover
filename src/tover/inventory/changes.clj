@@ -83,19 +83,25 @@
             (concat
               (when (and unit (not= unit (:unit was)))
                 (cond (not (stock-items/unit? unit)) [(flag c :unknown-unit {:field :unit})]
-                      (locked stock-item-id) [(flag c :unit-locked {:field :unit :unit unit})]))
+                      ;; An item accepted before units were required takes its first unit; a set unit never changes.
+                      (and (locked stock-item-id) (not (str/blank? (:unit was)))) [(flag c :unit-locked {:field :unit :unit unit})]))
               (when moved?
                 (when (or (= (:product-id c) (:product-id was)) (not= "active" (:status (product (:product-id c)))))
                   [(flag c :move-conflict {:field :product-id :product-id (:product-id c)})]))
               (when (or moved? (contains? c :variant-label))
                 (when (seq (others #(= [(:product-id %) (text-key (:variant-label %))] [(:product-id now) (text-key (:variant-label now))])))
-                  [(flag c :duplicate-variant {:field :variant-label :variant-label (:variant-label now)})]))
+                  [(flag c (if moved? :move-conflict :duplicate-variant) {:field :variant-label :variant-label (:variant-label now)})]))
               (when-let [k (and (or moved? (contains? c :article)) (text-key (:article now)))]
                 (for [other (others #(and (= k (text-key (:article %))) (not= (:product-id now) (:product-id %))))]
                   (flag c clash {:field :article :value (:article now) :owner-product (names (:product-id other)) :other-item (:stock-item-id other)})))
-              (for [code  (if moved? (keep #(when (= stock-item-id (first %)) (second %)) codes) (:barcodes-added c))
-                    owner (owners (disj (carriers code) stock-item-id))]
-                (flag c clash {:field :barcodes :value code :owner-product (names owner)}))
+              ;; One problem per value and per item of another product that keeps it.
+              (distinct
+                (for [code  (if moved? (keep #(when (= stock-item-id (first %)) (second %)) codes) (:barcodes-added c))
+                      other (disj (carriers code) stock-item-id)
+                      :let  [owner (:product-id (items other))]
+                      :when (contains? (owners [other]) owner)]
+                  (flag c clash (cond-> {:field :barcodes :value code :owner-product (names owner)}
+                                  moved? (assoc :other-item other)))))
               (when (and restore (not= "active" (:status (product (:product-id now)))))
                 [(flag c :restore-needs-product {:field :status :product-id (:product-id now)})])
               (when archive

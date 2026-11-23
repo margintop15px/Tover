@@ -369,7 +369,7 @@
         picked   (set (map :entry-id (:selection selection)))]
     ;; Canonical text: `pr-str` of equal maps differs with key order, and of an Instant with its identity hash.
     (sha256 (pr-str (walk/postwalk #(cond (map? %) (into (sorted-map) %) (inst? %) (str %) :else %)
-                                   [(:selection selection) (:order selection)
+                                   [(:selection selection) (:order selection) (boolean (:ordered? selection))
                                     (sort-by :entry-id (filter (comp picked :entry-id) entries))
                                     (sort-by :product-id (filter #(or ((ids :product-id) (:product-id %)) (names (text-key (:name %)))) products))
                                     (sort-by :warehouse-id (filter #(or ((ids :warehouse-id) (:warehouse-id %)) (stores (text-key (:name %)))) warehouses))
