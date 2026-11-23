@@ -8,6 +8,7 @@
     [clojure.string :as str]
     [tover.catalogues.records :as records :refer [Id]]
     [tover.inventory.findings :as findings]
+    [tover.inventory.stock-items.model :as stock-items]
     [tover.inventory.valuation :as valuation])
   (:import
     [java.time OffsetDateTime]
@@ -237,6 +238,9 @@
       (try (records/check-related! id (get references kind) :validation)
            (catch clojure.lang.ExceptionInfo _
              (invalid! field "Choose an active record of this workspace." {:line-id line-id :attempted id}))))
+    (when-let [unit (:unit line)]
+      (when-not (or (= unit (:unit previous)) (stock-items/unit? unit))
+        (invalid! :unit "Choose a unit from the list." {:line-id line-id :attempted unit})))
     (try
       (cond-> line
         (:quantity line) (update :quantity parse-quantity)

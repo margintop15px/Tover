@@ -215,6 +215,16 @@
         (problem line :uniqueness-conflict {:owner-product code})))))
 
 
+(defn- unknown-units
+  "New items whose unit is not in the list; a draft saved before the list may hold one."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:sequential Problem]]}
+  [lines]
+  (for [{:keys [new-item? unit] :as line} lines
+        :let [unit (some-> unit str/trim not-empty)]
+        :when (and new-item? unit (not (stock-items/unit? unit)))]
+    (problem line :unknown-unit)))
+
+
 (defn- tentative
   "Selected entries as record revisions and lines, in reviewed order, recorded `now`."
   {:malli/schema [:=> [:cat [:sequential :map] [:sequential :string] :any] :map]}
@@ -311,6 +321,7 @@
         problems (vec (distinct (concat changed blocked future
                                         (when (seq usable) (openings history usable))
                                         (uniqueness facts usable)
+                                        (unknown-units usable)
                                         (when-let [{:keys [stock-item-id warehouse-id occurred-at]} (:error after)]
                                           [{:entry-id     (first order) :code        :negative-balance :stock-item-id stock-item-id
                                             :warehouse-id warehouse-id  :occurred-at occurred-at}]))))]
@@ -373,6 +384,7 @@
    :opening-not-first   [:second-opening "An opening must come first in its stock timeline."]
    :uniqueness-conflict [:uniqueness-conflict "A barcode or article belongs to another product."]
    :duplicate-variant   [:uniqueness-conflict "This product already has a stock item with this variant."]
+   :unknown-unit        [:validation "Choose a unit from the list."]
    :archived-reference  [:archived-reference "Restore the archived product or warehouse first."]})
 
 

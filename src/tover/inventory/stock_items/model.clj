@@ -5,6 +5,17 @@
     [tover.catalogues.records :as records :refer [Id]]))
 
 
+(def units
+  "The units a new stock item may have, in display order. Items registered earlier keep theirs."
+  ["pcs" "kg" "g" "l" "ml" "m" "pack"])
+
+
+(defn unit?
+  {:malli/schema [:=> [:cat :any] :boolean]}
+  [unit]
+  (boolean (some #{unit} units)))
+
+
 (def StockItem
   [:map
    [:stock-item-id Id]

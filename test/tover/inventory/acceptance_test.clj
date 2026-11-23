@@ -163,6 +163,11 @@
     (is (= :review-outdated (:type (rejection #(accept now (input reviewed "e"))))))))
 
 
+(deftest unknown-unit-registers-nothing
+  (let [f (facts [(entry "e" {:product-id "tee" :variant-label "XL" :unit "crate"})])]
+    (is (= :validation (:type (rejection #(accept f (input f "e"))))))))
+
+
 ;; 17 · Accept the exact reviewed selection
 
 

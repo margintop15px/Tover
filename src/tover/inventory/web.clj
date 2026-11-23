@@ -13,6 +13,7 @@
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
     [tover.inventory.references :as references]
+    [tover.inventory.stock-items.model :as stock-items]
     [tover.inventory.stock.model :as stock]
     [tover.inventory.valuation :as valuation]
     [tover.shared.i18n :as i18n]
@@ -67,11 +68,6 @@
   (try (some-> value str str/trim not-empty bigdec) (catch NumberFormatException _ nil)))
 
 
-(def ^:private units
-  ;; ponytail: fixed spike list; the board's unit vocabulary replaces it.
-  ["pcs" "kg" "g" "l" "ml" "m" "pack"])
-
-
 (def ^:private item-fields
   [["article" "Article" 120] ["barcodes" "Barcodes" 160] ["unit" "Unit" 70]])
 
@@ -109,7 +105,7 @@
         unvalued? (some false? parts)
         editor    (fn [path]
                     (if (= "unit" path)
-                      {:type "select" :allowEmpty true :options (into [{:value "" :label ""}] (map #(hash-map :value % :label (i18n/unit-label %))) units)}
+                      {:type "select" :allowEmpty true :options (into [{:value "" :label ""}] (map #(hash-map :value % :label (i18n/unit-label %))) stock-items/units)}
                       {:type "text"}))
         field     (fn [path value]
                     (cond-> {:value (or value "")}

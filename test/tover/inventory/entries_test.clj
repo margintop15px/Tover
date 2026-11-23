@@ -102,6 +102,16 @@
 ;; 16 · Save a shared pending entry
 
 
+(deftest unit-comes-from-the-fixed-list
+  (let [new-item (fn [unit] (assoc opening :lines [{:line-id "l1" :product-id "tee" :variant-label "L" :unit unit}]))
+        save     (fn [facts input] (decide ::entries/save-shared-inventory-entry facts input))]
+    (is (= "kg" (get-in (save {} (new-item "kg")) [:events 1 :data :unit])))
+    (is (= [:validation :unit] ((juxt :type :field) (rejection #(save {} (new-item "crate"))))))
+    (is (some? (save {:entry (assoc saved :revision 1) :lines [{:line-id "l1" :product-id "tee" :variant-label "L" :unit "crate"}]}
+                     (assoc (new-item "crate") :expected-revision 1)))
+        "a unit saved before the list stays while other cells are edited")))
+
+
 (deftest cell-edit-saves-at-the-next-revision
   (let [plan (decide ::entries/save-shared-inventory-entry {:entry saved :lines saved-lines}
                      (-> opening (assoc :expected-revision 3) (assoc-in [:lines 0 :quantity] "6")))]

@@ -155,6 +155,13 @@
       (is (= ["tee-m"] (map :stock-item-id (:effects result)))))))
 
 
+(deftest unknown-unit-blocks-a-new-item
+  (let [codes (fn [line] (problems (review (facts [(entry "e" line)] {}) "e")))]
+    (is (contains? (codes {:product-id "tee" :variant-label "L" :unit "crate"}) :unknown-unit))
+    (is (not (contains? (codes {:product-id "tee" :variant-label "L" :unit "pack"}) :unknown-unit)))
+    (is (not (contains? (codes {:stock-item-id "tee-m" :unit "crate"}) :unknown-unit)) "registered items keep theirs")))
+
+
 (deftest archived-reference-blocks
   (is (contains? (problems (review (facts [(entry "e" {:stock-item-id "tee-m" :warehouse-id "old"})] {}) "e")) :archived-reference)))
 
