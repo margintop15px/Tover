@@ -232,11 +232,74 @@
                         (and money? unvalued? (some true? parts)) (assoc :partial true :prefix "≥ " :title (i18n/t "Includes unvalued stock")))))}))
 
 
+(defn- finding-text
+  "The member's message for one draft finding (chapter 16), naming related records where the rule gives them."
+  {:malli/schema [:=> [:cat :map :map] :string]}
+  [{:keys [code related]} {:keys [warehouse product]}]
+  (case code
+    :new-reference (i18n/t "Will be created on acceptance.")
+    :similar-reference (i18n/t "Did you mean {p0}?" {:p0 (or (:name related) (i18n/t "the record proposed in another pending entry"))})
+    :duplicate-variant (i18n/t "This variant already exists.")
+    :insufficient-stock (i18n/t "Exceeds available stock.")
+    :barcode-conflict (i18n/t "This barcode belongs to {p0}." {:p0 (or (:name related) (:owner-product related) (i18n/t "another product"))})
+    :article-conflict (i18n/t "This article belongs to {p0}." {:p0 (or (:name related) (:owner-product related) (i18n/t "another product"))})
+    :unit-locked (i18n/t "The unit is locked by stock history.")
+    :archive-blocked (if-let [w (:warehouse-id related)]
+                       (i18n/t "Cannot archive: stock in {p0}." {:p0 (warehouse w w)})
+                       (i18n/t "Cannot archive: another pending entry names this item."))
+    :restore-needs-product (i18n/t "Restore the product first.")
+    :move-conflict (i18n/t "The move conflicts with {p0}."
+                           {:p0 (or (:value related) (:variant-label related) (some-> (:product-id related) (#(product % %))) "")})
+    :field-conflict (i18n/t "Another pending entry changes this field.")
+    (i18n/t "Check this value.")))
+
+
+(def ^:private finding-column
+  "The column a finding's field shows in; `:warehouse` is the line's warehouse column."
+  {:quantity      :warehouse  :warehouse-id :warehouse :warehouse-name :warehouse :product-name "product"  :product-id "item"
+   :variant-label "item"      :status       "item"     :article        "article"  :barcodes     "barcodes" :unit       "unit"
+   :unit-cost     "unit-cost"})
+
+
+(def ^:private levels
+  {:info 0 :warning 1 :error 2})
+
+
+(defn- mark-findings
+  "Every finding as a marker and message on its cell; the row's item cell carries the row's highest level."
+  {:malli/schema [:=> [:cat [:vector :map] [:sequential :string] [:sequential :map] :map :map] [:vector :map]]}
+  [rows column-keys findings row-of names]
+  (let [known (set column-keys)
+        place (fn [{:keys [entry-id line-id stock-item-id field]}]
+                (let [{:keys [row warehouse]} (if line-id (row-of [entry-id line-id]) {:row stock-item-id})
+                      column                  (finding-column field "item")]
+                  (when row [row (if (= :warehouse column) (if (known warehouse) warehouse no-warehouse) column)])))
+        found (group-by place findings)
+        mark  (fn [cell fs extra]
+                (let [level (name (apply max-key levels (map :level fs)))]
+                  (-> cell
+                      (update :className #(str/join " " (remove str/blank? [% "stock-finding" (str "stock-finding-" level) extra])))
+                      (assoc :title (str/join "\n" (remove str/blank? (cons (:title cell) (distinct (map #(finding-text % names) fs)))))))))]
+    (mapv (fn [{:keys [id cells] :as row}]
+            (let [all (mapcat #(get found [id %]) column-keys)]
+              (if (empty? all)
+                row
+                (let [top (name (apply max-key levels (map :level all)))]
+                  (assoc row :cells (mapv (fn [k cell]
+                                            (let [fs (get found [id k])]
+                                              (cond (seq fs) (mark cell fs (when (= "item" k) (str "stock-row-" top)))
+                                                    (= "item" k) (update cell :className #(str/trim (str % " stock-row-" top)))
+                                                    :else cell)))
+                                          column-keys cells))))))
+          rows)))
+
+
 (defn stock-grid
   "The stock table as one editable grid: a row per stock item under its product (merged), the item's details, a column
-  per warehouse, Total, Unit cost and Amount. Pending openings show in their cells; new items get their own rows."
+  per warehouse, Total, Unit cost and Amount. Pending openings and corrections show in their cells; new items get
+  their own rows. Draft `findings` mark the cells they concern."
   {:malli/schema [:=> [:cat :map [:map [:mode [:enum "units" "money"]]]] :map]}
-  [{:keys [warehouses products currency]} {:keys [mode scope entries]}]
+  [{:keys [warehouses products currency]} {:keys [mode scope entries findings]}]
   (let [{:keys [productId itemId productName newRow pending addTo]} scope
         lines (pending-lines (filter #(= "opening" (:kind % "opening")) entries))
         ;; ponytail: one Correction per row; a second member's correction of the same item only shows in Submit.
@@ -306,7 +369,22 @@
                                                    [cell rows]))))
         built (for [[cell rows] groups]
                 (map-indexed #(item-row ctx (cond-> %2 (zero? %1) (assoc :product-cell cell))) rows))
-        rows (vec (map-indexed #(assoc %2 :rowIndex %1 :groupIndex %1 :groupId (:id %2)) (apply concat built)))
+        columns (-> (if pending [{:key "select" :label "" :width 40}] [])
+                    (into [{:key "product" :label (i18n/t "Product") :width 200} {:key "item" :label (i18n/t "Stock item") :width 160}])
+                    (into (map (fn [[k label width]] {:key k :label (i18n/t label) :width width})) item-fields)
+                    (conj {:key "unit-cost" :label (i18n/t "Unit cost") :width 110})
+                    (into (map #(hash-map :key (:id %) :label (:name %) :width 100)) warehouses)
+                    (conj {:key "total" :label (i18n/t "Total") :width 110}))
+        row-of (into {} (for [{:keys [entry-id kind] :as entry} entries
+                              {:keys [line-id stock-item-id variant-label warehouse-id] :as line} (:lines entry)]
+                          [[entry-id line-id]
+                           {:row       (if (or stock-item-id (= "correction" kind))
+                                         stock-item-id
+                                         (str "new:" (group-of line) ":" (or (some-> variant-label str/trim) "")))
+                            :warehouse warehouse-id}]))
+        names {:warehouse (into {} (map (juxt :id :name)) warehouses) :product (into {} (map (juxt :product-id :name)) products)}
+        rows (mark-findings (vec (map-indexed #(assoc %2 :rowIndex %1 :groupIndex %1 :groupId (:id %2)) (apply concat built)))
+                            (mapv :key columns) (or findings []) row-of names)
         merges (second (reduce (fn [[start acc] group] [(+ start (count group)) (cond-> acc (< 1 (count group)) (conj {:row start :col (if pending 1 0) :rowspan (count group)}))])
                                [0 []] built))
         ;; Every pending opening with its row, shown or filtered out.
@@ -317,14 +395,9 @@
                                     (blocked? line) (assoc :blocked true))))
                       (for [{:keys [entry-id revision lines changes]} corrections]
                         {:entry-id entry-id :revision revision :rowId (or (:stock-item-id (first lines)) (:stock-item-id (first changes)))}))]
-    {:id      "stock" :editable true :rowHeaders false :merges merges :editStates [] :showPrevious false
+    {:id      "stock"           :editable true :rowHeaders false :merges merges :editStates [] :showPrevious false
      :pending (vec all-pending)
-     :columns (-> (if pending [{:key "select" :label "" :width 40}] [])
-                  (into [{:key "product" :label (i18n/t "Product") :width 200} {:key "item" :label (i18n/t "Stock item") :width 160}])
-                  (into (map (fn [[k label width]] {:key k :label (i18n/t label) :width width})) item-fields)
-                  (conj {:key "unit-cost" :label (i18n/t "Unit cost") :width 110})
-                  (into (map #(hash-map :key (:id %) :label (:name %) :width 100)) warehouses)
-                  (conj {:key "total" :label (i18n/t "Total") :width 110}))
+     :columns columns
      :rows    rows}))
 
 
@@ -464,7 +537,7 @@
    (let [table (read-or-nil context ::stock/stock-table (cond-> {:hide-empty? hide-empty?} show-archived? (assoc :show-archived? true)))
          work  (read-or-nil context ::entries/pending-entries {})]
      (when (and table work)
-       (stock-grid table {:mode mode :scope scope :entries (:entries work)})))))
+       (stock-grid table {:mode mode :scope scope :entries (:entries work) :findings (:findings work)})))))
 
 
 (defview table

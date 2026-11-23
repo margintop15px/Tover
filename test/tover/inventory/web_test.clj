@@ -299,3 +299,37 @@
       (is (= {:kind "correction" :lines (:lines entry) :changes (:changes entry) :reason "Count"}
              (select-keys (:input (web/describe-entry {} {:workspaceId workspace :entryId "c" :revision 2 :occurredAt "" :reason "Count" :commandId "d"}))
                           [:kind :lines :changes :reason]))))))
+
+
+;; 16 · Read draft findings on the stock table
+
+
+(defn- marked
+  {:malli/schema [:=> [:cat :map] [:maybe :string]]}
+  [cell]
+  (some->> (:className cell) (re-find #"stock-finding-\w+")))
+
+
+(deftest findings-mark-the-affected-cells
+  (let [sale  [{:entry-id "o" :revision 1 :kind "opening" :lines [{:line-id "l" :stock-item-id "tee-m" :warehouse-id "shop" :quantity 2}]}]
+        model (web/stock-grid counted {:mode     "units" :entries (conj sale (assoc correction :changes [{:stock-item-id "tee-m" :unit "kg" :archive true}]))
+                                       :findings [{:entry-id "o" :line-id "l" :field :quantity :code :insufficient-stock :level :warning}
+                                                  {:entry-id "c" :line-id nil :stock-item-id "tee-m" :field :unit :code :unit-locked :level :error}
+                                                  {:entry-id "c"                    :line-id nil :stock-item-id "tee-m" :field :status :code :archive-blocked :level :error
+                                                   :related  {:warehouse-id "main"}}]})]
+    (is (= "stock-finding-warning" (marked (column model "tee-m" "shop"))))
+    (is (re-find #"Exceeds available stock" (:title (column model "tee-m" "shop"))))
+    (is (= "stock-finding-error" (marked (column model "tee-m" "unit"))))
+    (is (re-find #"Cannot archive: stock in Main" (:title (column model "tee-m" "item"))))
+    (is (re-find #"stock-row-error" (:className (column model "tee-m" "item"))) "the row shows its highest level")
+    (is (nil? (marked (column model "tee-m" "article"))) "unaffected cells stay plain")))
+
+
+(deftest findings-on-new-rows-name-the-related-record
+  (let [entry [{:entry-id "e" :revision 1 :kind "opening" :lines [{:line-id "l" :product-id "tee" :variant-label "L" :warehouse-id "shop" :quantity 1}]}]
+        model (web/stock-grid table {:mode     "units" :entries entry
+                                     :findings [{:entry-id "e" :line-id "l" :field :variant-label :code :new-reference :level :info}
+                                                {:entry-id "e" :line-id "l" :field :barcodes :code :barcode-conflict :level :error
+                                                 :related  {:id "mug" :name "Mug"}}]})]
+    (is (= "stock-finding-info" (marked (column model "new:tee:L" "item"))))
+    (is (re-find #"belongs to Mug" (:title (column model "new:tee:L" "barcodes"))))))

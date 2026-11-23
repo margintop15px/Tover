@@ -189,7 +189,14 @@ test('count a stock item and change its article from its row, then submit both',
   await expect.poll(() => grid.evaluate((node, id) => node.model.rows.find(row => row.id === id).cells.some(c => c.prefix === '5 → ' && c.value === '7'), itemId)).toBe(true);
   await cell(page, itemId, 'article', 'C-1');
   expect(await grid.evaluate(node => new Set(node.model.pending.map(entry => entry['entry-id'])).size)).toBe(1);
+  // Archiving an item that keeps stock shows the blocker on its cell before Submit; Keep withdraws it.
+  const itemCell = id => grid.evaluate((node, id) => node.model.rows.find(row => row.id === id).cells.find(c => c.target?.field === 'variant'), id);
+  await grid.locator(`tr[data-row-id="${itemId}"]`).getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect.poll(async () => (await itemCell(itemId))?.className ?? '').toContain('stock-finding-error');
+  expect((await itemCell(itemId)).title).toContain(`Cannot archive: stock in Main ${suffix}.`);
   await shot(page, '8-correction');
+  await grid.locator(`tr[data-row-id="${itemId}"]`).getByRole('button', { name: 'Keep', exact: true }).click();
+  await expect.poll(async () => (await itemCell(itemId))?.className ?? '').not.toContain('stock-finding');
 
   await page.locator('.stock-pending-filter').click();
   await page.locator('.stock-submit-reason').fill('Recount');

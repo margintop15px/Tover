@@ -869,7 +869,19 @@
     "Two selected entries change the same stock item field.": "Two selected entries change the same stock item field.",
     "The move would make a value belong to two products.": "The move would make a value belong to two products.",
     "Restore the product first.": "Restore the product first.",
-    "The item has stock or other pending work.": "The item has stock or other pending work."
+    "The item has stock or other pending work.": "The item has stock or other pending work.",
+    "Did you mean {p0}?": "Did you mean {p0}?",
+    "the record proposed in another pending entry": "the record proposed in another pending entry",
+    "This variant already exists.": "This variant already exists.",
+    "Exceeds available stock.": "Exceeds available stock.",
+    "This barcode belongs to {p0}.": "This barcode belongs to {p0}.",
+    "This article belongs to {p0}.": "This article belongs to {p0}.",
+    "another product": "another product",
+    "The unit is locked by stock history.": "The unit is locked by stock history.",
+    "Cannot archive: stock in {p0}.": "Cannot archive: stock in {p0}.",
+    "Cannot archive: another pending entry names this item.": "Cannot archive: another pending entry names this item.",
+    "The move conflicts with {p0}.": "The move conflicts with {p0}.",
+    "Another pending entry changes this field.": "Another pending entry changes this field."
   },
   "ru": {
     "Stock": "Остатки",
@@ -1745,6 +1757,18 @@
     "Two selected entries change the same stock item field.": "Два выбранных черновика меняют одно и то же поле позиции.",
     "The move would make a value belong to two products.": "После переноса значение принадлежало бы двум товарам.",
     "Restore the product first.": "Сначала восстановите товар.",
-    "The item has stock or other pending work.": "У позиции есть остатки или другие ожидающие изменения."
+    "The item has stock or other pending work.": "У позиции есть остатки или другие ожидающие изменения.",
+    "Did you mean {p0}?": "Возможно, имелось в виду {p0}?",
+    "the record proposed in another pending entry": "запись из другого ожидающего черновика",
+    "This variant already exists.": "Такой вариант уже есть.",
+    "Exceeds available stock.": "Больше доступного остатка.",
+    "This barcode belongs to {p0}.": "Этот штрихкод принадлежит товару {p0}.",
+    "This article belongs to {p0}.": "Этот артикул принадлежит товару {p0}.",
+    "another product": "другой товар",
+    "The unit is locked by stock history.": "Единица измерения зафиксирована историей остатков.",
+    "Cannot archive: stock in {p0}.": "Нельзя архивировать: есть остаток на складе {p0}.",
+    "Cannot archive: another pending entry names this item.": "Нельзя архивировать: позиция есть в другом ожидающем черновике.",
+    "The move conflicts with {p0}.": "Перенос конфликтует с {p0}.",
+    "Another pending entry changes this field.": "Другой ожидающий черновик меняет это поле."
   }
 }
