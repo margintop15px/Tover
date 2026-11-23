@@ -547,3 +547,21 @@
     (is (= [] (get-in result [:records :lines])))
     (is (= #{:direction-missing :counterparty-missing :amount-missing}
            (problems (review (facts [(assoc payment :direction nil :supplier-id nil :amount nil)] more) "pay"))))))
+
+
+(deftest backdated-transfer-or-write-off-breaks-a-later-sale
+  (let [history (-> opened-5
+                    (update :records conj {:record-revision-id "s#1"    :record-id "s" :revision  1     :acceptance-id "a"      :kind "sale"
+                                           :occurred-at        (day 10) :sequence  0   :cancelled false :recorded-at   (day 10)})
+                    (update :lines conj {:record-line-id "s#1/0" :record-revision-id "s#1" :position 0 :stock-item-id "tee-m"
+                                         :warehouse-id   "main"  :quantity-change    -4}))
+        f       #(facts [%] (assoc more :history history))]
+    (is (= #{:negative-balance}
+           (problems (review (f (operation "transfer" "t" {:occurred-at (day 5) :from-warehouse-id "main" :to-warehouse-id "back"} {:stock-item-id "tee-m" :warehouse-id nil :quantity 2})) "t"))))
+    (is (= #{:negative-balance}
+           (problems (review (f (operation "write-off" "w" {:occurred-at (day 5) :reason "lost"} {:stock-item-id "tee-m" :quantity 2})) "w"))))))
+
+
+(deftest archived-transfer-warehouse-blocks
+  (is (= #{:archived-reference}
+         (problems (review (facts [(operation "transfer" "t" {:from-warehouse-id "main" :to-warehouse-id "old"} {:stock-item-id "tee-m" :warehouse-id nil :quantity 1})] more) "t")))))
