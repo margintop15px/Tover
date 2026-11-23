@@ -84,6 +84,8 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .invitation-details dd span { color: var(--iw-muted); font-size: 12px; }
 .management-form input, .management-form select { width: 100%; min-height: 32px; padding: 5px 8px; border: 1px solid var(--iw-line); border-radius: 3px; background: var(--iw-bg); color: var(--iw-ink); }
 .management-form input { min-width: 240px; }
+.management-form select { min-width: 160px; }
+.management-form > form + .management-secondary { margin: 8px 0 0; }
 .management-form button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--iw-ink); border-radius: 3px; background: var(--iw-ink); color: var(--iw-bg); }
 .profile-latest { width: 100%; margin: 0; color: var(--iw-muted); font-size: 12px; }
 .management-section { margin: 0 0 24px; }

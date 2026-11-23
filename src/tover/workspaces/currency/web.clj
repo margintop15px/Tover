@@ -35,19 +35,20 @@
   {:malli/schema [:=> [:cat :map] schema/Hiccup]}
   [{:keys [request] {:keys [currency can-change?]} :setting}]
   (if can-change?
-    [:form.management-form {:method "post" :action (bel/action-url ::save)}
-     (csrf-field request)
-     (hidden "_tover-context" (get-in request [:tover/identity :auth-version]))
-     (hidden "command-id" (str (random-uuid)))
-     (hidden "workspace-id" (get-in request [:tover/identity :workspace-id]))
-     [:label (i18n/t "Currency")
-      [:select {:name "currency"}
-       (for [code @model/codes]
-         [:option {:value code :selected (= code currency)} code])]
-      [:span.management-secondary (i18n/t "All money amounts are in this currency. Changing it relabels them; nothing is converted.")]]
-     [:button {:type "submit"} (i18n/t "Save")]]
-    [:dl.management-form
-     [:dt (i18n/t "Currency")] [:dd {:data-currency currency} currency]]))
+    [:div.management-form
+     [:form {:method "post" :action (bel/action-url ::save)}
+      (csrf-field request)
+      (hidden "_tover-context" (get-in request [:tover/identity :auth-version]))
+      (hidden "command-id" (str (random-uuid)))
+      (hidden "workspace-id" (get-in request [:tover/identity :workspace-id]))
+      [:label (i18n/t "Currency")
+       [:select {:name "currency"}
+        (for [code @model/codes]
+          [:option {:value code :selected (= code currency)} code])]]
+      [:button {:type "submit"} (i18n/t "Save")]]
+     [:p.management-secondary (i18n/t "All money amounts are in this currency. Changing it relabels them; nothing is converted.")]]
+    [:div.management-form
+     [:dl [:dt (i18n/t "Currency")] [:dd {:data-currency currency} currency]]]))
 
 
 (defpage settings

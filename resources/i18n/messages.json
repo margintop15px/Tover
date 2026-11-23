@@ -808,6 +808,7 @@
     "This product already has a stock item with this variant.": "This product already has a stock item with this variant.",
     "Restore the archived product or warehouse first.": "Restore the archived product or warehouse first.",
     "Review it again.": "Review it again.",
+    "Settings · Tover": "Settings · Tover",
     "Settings · Tover": "Settings · Tover"
   },
   "ru": {
@@ -1623,6 +1624,7 @@
     "This product already has a stock item with this variant.": "У этого товара уже есть позиция с таким вариантом.",
     "Restore the archived product or warehouse first.": "Сначала восстановите архивный товар или склад.",
     "Review it again.": "Проверьте ещё раз.",
+    "Settings · Tover": "Настройки · Tover",
     "Settings · Tover": "Настройки · Tover"
   }
 }
