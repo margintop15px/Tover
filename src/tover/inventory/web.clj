@@ -200,7 +200,7 @@
                                              (and item archived?) (conj (if (:restore change)
                                                                           (row-change (i18n/t "Keep archived") "×" "restore" "")
                                                                           (row-change (i18n/t "Restore") "↺" "restore" "true")))
-                                             (and item (not archived?)) (conj (row-change (i18n/t "Move to another product") "⇄" "move-to" nil)
+                                             (and item (not archived?)) (conj (assoc (row-change (i18n/t "Move to another product") "⇄" "move-to" nil) :current (:product-id item))
                                                                               (if (:archive change)
                                                                                 (row-change (i18n/t "Keep") "×" "archive" "")
                                                                                 (row-change (i18n/t "Archive") "−" "archive" "true")))
@@ -234,10 +234,22 @@
                         (and money? unvalued? (some true? parts)) (assoc :partial true :prefix "≥ " :title (i18n/t "Includes unvalued stock")))))}))
 
 
-(defn- finding-text
-  "The member's message for one draft finding (chapter 16), naming related records where the rule gives them."
+(defn entry-names
+  "A member-readable name per pending entry: kind, then the item, warehouse and quantity of its first line or change.
+  The quantity tells apart tied entries on one item and warehouse."
+  {:malli/schema [:=> [:cat [:sequential :map] :map :map] :map]}
+  [entries item warehouse]
+  (into {} (for [{:keys [entry-id kind lines changes]} entries
+                 :let [{:keys [stock-item-id warehouse-id quantity]} (or (first lines) (first changes))]]
+             [entry-id (str/join " · " (remove str/blank? [(i18n/t (str/capitalize (or kind "opening")))
+                                                           (some-> stock-item-id item) (some-> warehouse-id warehouse) (some-> quantity str)]))])))
+
+
+(defn finding-text
+  "The member's message for one draft finding (chapter 16), naming related records where the rule gives them.
+  `names` maps ids to names under `:warehouse`, `:product`, `:item` and `:entry`."
   {:malli/schema [:=> [:cat :map :map] :string]}
-  [{:keys [code related]} {:keys [warehouse product]}]
+  [{:keys [code related]} {:keys [warehouse product item entry]}]
   (case code
     :new-reference (i18n/t "Will be created on acceptance.")
     :similar-reference (i18n/t "Did you mean {p0}?" {:p0 (or (:name related) (i18n/t "the record proposed in another pending entry"))})
@@ -248,12 +260,20 @@
     :unit-locked (i18n/t "The unit is locked by stock history.")
     :archive-blocked (if-let [w (:warehouse-id related)]
                        (i18n/t "Cannot archive: stock in {p0}." {:p0 (warehouse w w)})
-                       (i18n/t "Cannot archive: another pending entry names this item."))
+                       (if-let [e (get entry (:other-entry-id related))]
+                         (i18n/t "Cannot archive: pending {p0}." {:p0 e})
+                         (i18n/t "Cannot archive: another pending entry names this item.")))
     :restore-needs-product (i18n/t "Restore the product first.")
-    :move-conflict (i18n/t "The move conflicts with {p0}."
-                           {:p0 (or (:value related) (:variant-label related) (some-> (:product-id related) (#(product % %))) "")})
+    :move-conflict (let [what (or (:value related) (:variant-label related) (some-> (:product-id related) (#(product % %))) "")]
+                     (if-let [other (:other-item related)]
+                       (i18n/t "The move conflicts with {p0}, kept by {p1}." {:p0 what :p1 (get item other other)})
+                       (i18n/t "The move conflicts with {p0}." {:p0 what})))
     :field-conflict (i18n/t "Another pending entry changes this field.")
     (i18n/t "Check this value.")))
+
+
+(def ^:private change-codes
+  #{:unit-locked :archive-blocked :restore-needs-product :move-conflict :field-conflict :duplicate-variant :uniqueness-conflict})
 
 
 (def ^:private finding-column
@@ -345,9 +365,9 @@
                                                 :let [correction (corrected stock-item-id)]]
                                             {:id            stock-item-id :label (or (not-empty variant-label) name)
                                              :details       {"article" article "barcodes" (str/join ", " barcodes) "unit" unit}
-                                             :base          {"stock-item-id" stock-item-id} :accepted {:cells (:cells item) :total (:total item)}
+                                             :base          {"stock-item-id" stock-item-id} :accepted       {:cells (:cells item) :total (:total item)}
                                              :lines         (at-item stock-item-id)
-                                             :item          item :correction correction
+                                             :item          (assoc item :product-id product-id) :correction correction
                                              :correction-id (or (:entry-id correction) (str "correction-" (random-uuid)))
                                              :actions       [{:type "item-history" :id stock-item-id :label (i18n/t "History")}]})
                                           (when-not itemId (new-rows product-id #(hash-map "product-id" product-id "variant" %)))
@@ -384,7 +404,11 @@
                                          stock-item-id
                                          (str "new:" (group-of line) ":" (or (some-> variant-label str/trim) "")))
                             :warehouse warehouse-id}]))
-        names {:warehouse (into {} (map (juxt :id :name)) warehouses) :product (into {} (map (juxt :product-id :name)) products)}
+        item-names (into {} (for [{:keys [name items]} products {:keys [stock-item-id variant-label]} items]
+                              [stock-item-id (str name (when (not-empty variant-label) (str " / " variant-label)))]))
+        warehouse-names (into {} (map (juxt :id :name)) warehouses)
+        names {:warehouse warehouse-names :product (into {} (map (juxt :product-id :name)) products) :item item-names
+               :entry     (entry-names entries item-names warehouse-names)}
         rows (mark-findings (vec (map-indexed #(assoc %2 :rowIndex %1 :groupIndex %1 :groupId (:id %2)) (apply concat built)))
                             (mapv :key columns) (or findings []) row-of names)
         merges (second (reduce (fn [[start acc] group] [(+ start (count group)) (cond-> acc (< 1 (count group)) (conj {:row start :col (if pending 1 0) :rowspan (count group)}))])
@@ -410,6 +434,17 @@
    :similar-reference   "A record with a similar name exists."     :duplicate-variant "This product already has this variant."
    :insufficient-stock  "Not enough stock." :barcode-conflict "This barcode belongs to another product."
    :article-conflict    "This article belongs to another product."})
+
+
+(defn problem-message
+  "Submit's message for one review problem: change problems in the words of their findings, others from the rejection."
+  {:malli/schema [:=> [:cat :map :map] :string]}
+  [{:keys [code field line-id] :as p} names]
+  (if (and (nil? line-id) (change-codes code))
+    (finding-text {:code    (if (= :uniqueness-conflict code) (if (= :barcodes field) :barcode-conflict :article-conflict) code)
+                   :related (dissoc p :entry-id :line-id :stock-item-id :field :code)}
+                  names)
+    (i18n/t (or (problem-text code) (second (acceptance/rejection code)) "Check this value."))))
 
 
 (defn- same-name?
@@ -469,7 +504,7 @@
 
 (defn correction-input
   "The `Save Shared Inventory Entry` input of a row's Correction. `values` carry one edit over the `saved` entry: a
-  count for a warehouse (blank removes it), or stock item fields, barcodes, `move-to` (a product name), `archive` or
+  count for a warehouse (blank removes it), or stock item fields, barcodes, `move-to` (a product id or name), `archive` or
   `restore`. A value equal to the accepted one drops that change; nil when nothing is left to save."
   {:malli/schema [:=> [:cat :map :uuid :string :int :map [:maybe :map]] [:maybe :map]]}
   [{:keys [products stock-items barcodes]} workspace-id entry-id revision values saved]
@@ -487,8 +522,10 @@
                    lines)
         accepted (set (keep #(when (= item-id (:stock-item-id %)) (:barcode %)) barcodes))
         typed    (when (contains? values "barcodes") (set (some->> (v "barcodes") (re-seq #"[^,\s]+") (remove #{"0"}))))
-        product  (when-let [name (not-empty (v "move-to"))]
-                   (some #(when (and (= "active" (:status %)) (same-name? name (:name %))) %) products))
+        ;; Move names a product by id (the dialog) or by name.
+        product  (when-let [target (not-empty (v "move-to"))]
+                   (let [active (filter #(= "active" (:status %)) products)]
+                     (or (some #(when (= target (:product-id %)) %) active) (some #(when (same-name? target (:name %)) %) active))))
         put      (fn [change k value unchanged?] (if unchanged? (dissoc change k) (assoc change k value)))
         change   (as-> (or (some #(when (= item-id (:stock-item-id %)) %) (:changes saved)) {:stock-item-id item-id}) change
                    (reduce (fn [change [key field]]
@@ -536,10 +573,15 @@
                   [:=> [:cat :map :string :boolean [:maybe :map] :boolean] [:maybe :map]]]}
   ([context mode hide-empty? scope] (table-model context mode hide-empty? scope false))
   ([context mode hide-empty? scope show-archived?]
-   (let [table (read-or-nil context ::stock/stock-table (cond-> {:hide-empty? hide-empty?} show-archived? (assoc :show-archived? true)))
-         work  (read-or-nil context ::entries/pending-entries {})]
-     (when (and table work)
-       (stock-grid table {:mode mode :scope scope :entries (:entries work) :findings (:findings work)})))))
+   (let [table     (read-or-nil context ::stock/stock-table (cond-> {:hide-empty? hide-empty?} show-archived? (assoc :show-archived? true)))
+         work      (read-or-nil context ::entries/pending-entries {})
+         catalogue (read-or-nil context ::references/draft-catalogue {})]
+     (when (and table work catalogue)
+       (assoc (stock-grid table {:mode mode :scope scope :entries (:entries work) :findings (:findings work)})
+              ;; Move offers every active product, also those the table hides for having no stock items.
+              :moveTargets (vec (for [{:keys [product-id name status]} (sort-by (comp records/name-key :name) (:products catalogue))
+                                      :when (= "active" status)]
+                                  {:id product-id :name name})))))))
 
 
 (defview table
@@ -601,22 +643,25 @@
   [{:keys [context] {:keys [requestId selection order ordered]} :input}]
   (let [result    (read-or-nil context ::acceptance/inventory-review {:selection selection :order order :ordered? (boolean ordered)})
         catalogue (read-or-nil context ::references/draft-catalogue {})
+        work      (read-or-nil context ::entries/pending-entries {})
         label     (when (and result catalogue) (labels catalogue (:registrations result)))
         currency  (or (:currency (read-or-nil context ::currency/workspace-currency {})) "EUR")]
     {:type :signals
      :data {:_stockReviewJson
-            (json {:requestId requestId :selection selection :order order :ordered (boolean ordered)
-                   :review    (when label
-                                (-> result
-                                    (update :effects (partial mapv #(assoc % :item (label (:stock-item-id %)) :warehouse (label (:warehouse-id %))
-                                                                           :valueBefore (some-> (:value-before %) (amount currency))
-                                                                           :valueAfter (some-> (:value-after %) (amount currency)))))
-                                    (update :registrations (partial mapv #(update % :type (fn [t] (i18n/t (str/capitalize (str/replace (name t) "-" " ")))))))
-                                    (update :problems (partial mapv #(assoc % :message
-                                                                            (if (= :order-required (:code %))
-                                                                              (i18n/t "{p0} in {p1}: changes at the same second need an order."
-                                                                                      {:p0 (label (:stock-item-id %)) :p1 (label (:warehouse-id %))})
-                                                                              (i18n/t (or (problem-text (:code %)) (second (acceptance/rejection (:code %))) "Check this value."))))))))})}}))
+            (json {:requestId  requestId :selection selection :order order :ordered (boolean ordered)
+                   :entryNames (when (and label work) (entry-names (:entries work) label label))
+                   :review     (when label
+                                 (-> result
+                                     (update :effects (partial mapv #(assoc % :item (label (:stock-item-id %)) :warehouse (label (:warehouse-id %))
+                                                                            :valueBefore (some-> (:value-before %) (amount currency))
+                                                                            :valueAfter (some-> (:value-after %) (amount currency)))))
+                                     (update :registrations (partial mapv #(update % :type (fn [t] (i18n/t (str/capitalize (str/replace (name t) "-" " ")))))))
+                                     (update :problems (partial mapv #(assoc % :message
+                                                                             (if (= :order-required (:code %))
+                                                                               (i18n/t "{p0} in {p1}: changes at the same second need an order."
+                                                                                       {:p0 (label (:stock-item-id %)) :p1 (label (:warehouse-id %))})
+                                                                               (problem-message % {:warehouse label :product label :item label
+                                                                                                   :entry     (entry-names (:entries work) label label)})))))))})}}))
 
 
 (defview history

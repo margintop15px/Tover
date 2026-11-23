@@ -291,3 +291,132 @@ test('a failed suggestion lookup offers Retry by mouse and keyboard, never "no m
   await page.locator('.stock-pending-filter').focus();
   await expect(page.locator('#stock-suggestions')).toBeHidden();
 });
+
+test('correct an item: bad counts refused, findings read on focus, move dialog, discard text, tie order, restore and retry', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const dialogs = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); dialog.accept(); });
+  await signIn(page);
+  const suffix = Date.now();
+  await registerCatalogueRecord(page, '/catalogues/warehouses', `Main ${suffix}`);
+  const pen = await registerCatalogueRecord(page, '/catalogues', `Pen ${suffix}`);
+  await chooseInCatalogue(page, pen, 'default-warehouse-id', `Main ${suffix}`);
+  await registerCatalogueRecord(page, '/catalogues', `Box ${suffix}`);
+  await page.goto('/');
+  const workbench = page.locator('stock-workbench');
+  const grid = page.locator('#stock-grid');
+  await expect.poll(() => grid.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  await page.locator('.stock-search-input').fill(`Pen ${suffix}`);
+  await expect(page.locator('.stock-option-product')).toHaveCount(1);
+  await page.locator('.stock-search-input').press('Enter');
+  const productId = await workbench.evaluate(node => node.scope.productId);
+  const warehouse = await grid.evaluate((node, name) => node.model.columns.find(column => column.label === name).key, `Main ${suffix}`);
+  await cell(page, `new-row:${productId}`, 'item', 'red');
+  await cell(page, `new-row:${productId}`, warehouse, '5');
+  await chooseCell(page, `new:${productId}:red`, 'unit', 'pcs');
+  await page.locator('.stock-pending-filter').click();
+  await page.locator('.stock-submit-time').fill(yesterday());
+  await page.locator('.stock-submit').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
+  const findItem = () => grid.evaluate(node => node.model.rows.find(row => row.cells.some(c => c.target?.values?.kind === 'correction'))?.id);
+  await expect.poll(findItem).toBeTruthy();
+  const itemId = await findItem();
+  const row = grid.locator(`tr[data-row-id="${itemId}"]`);
+  const count = row.locator(`td[data-column-key="${warehouse}"]`);
+
+  // A count the rules refuse stays in its cell with the reason; the accepted balance is not shown instead.
+  // Wait for the table reads the acceptance set off; a read rebuilds the grid under an open editor.
+  await expect.poll(async () => {
+    const before = await workbench.evaluate(node => node.tableRequest);
+    await page.waitForTimeout(400);
+    return workbench.evaluate((node, before) => !node.pending && node.tableRequest === before && node.handled.has(before), before);
+  }).toBe(true);
+  // A count the rules refuse is refused while typing, with the reason; nothing is saved.
+  await workbench.evaluate(node => { node.saveCount = 0; node.addEventListener('stock-save', () => { node.saveCount += 1; }); });
+  for (const bad of ['-1', 'abc']) {
+    await editCell(page, grid, itemId, warehouse, bad);
+    await expect(grid.locator('.inventory-grid-notice, [role=status], [role=alert]').filter({ hasText: 'Enter a whole-unit quantity' }).first()).toBeVisible();
+  }
+  // The next edit starts without the old refusal.
+  await grid.evaluate((node, { itemId, warehouse }) => node.focusField(itemId, warehouse), { itemId, warehouse });
+  await expect(grid.locator('.inventory-grid-notice').first()).toHaveText('');
+  await count.locator('.inventory-cell-editor > input').press('Escape');
+  expect(await workbench.evaluate(node => node.saveCount)).toBe(0);
+  await expect(count).toHaveText('5');
+
+  // Archive is blocked by stock: selecting the item cell reads the finding out, no mouse needed.
+  await row.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect.poll(() => grid.evaluate((node, id) => node.model.rows.find(row => row.id === id).cells.find(c => c.target?.field === 'variant')?.className ?? '', itemId)).toContain('stock-finding-error');
+  // Select the cell as arrow keys do; a click would open its editor.
+  await row.locator('td[data-column-key="item"]').evaluate(td => document.querySelector('#stock-grid').worksheet
+    .updateSelectionFromCoords(Number(td.dataset.x), Number(td.dataset.y), Number(td.dataset.x), Number(td.dataset.y)));
+  await expect(page.locator('.stock-finding-note')).toContainText(`Cannot archive: stock in Main ${suffix}.`);
+  await row.getByRole('button', { name: 'Keep', exact: true }).click();
+  await expect.poll(() => grid.evaluate((node, id) => node.model.rows.find(row => row.id === id).cells.find(c => c.target?.field === 'variant')?.className ?? '', itemId)).not.toContain('stock-finding');
+
+  // Move: a dialog lists the other active products and takes an optional new label.
+  await row.getByRole('button', { name: 'Move to another product', exact: true }).click();
+  const dialog = page.locator('.stock-move-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.stock-move-product option', { hasText: `Pen ${suffix}` })).toHaveCount(0);
+  await dialog.locator('.stock-move-product').selectOption({ label: `Box ${suffix}` });
+  await dialog.locator('.stock-move-variant').fill('red-2');
+  await shot(page, '9-move');
+  await dialog.locator('.stock-move-confirm').click();
+  await expect(dialog).toHaveCount(0);
+  // The row stays under Pen, marked.
+  await expect(row.locator('td[data-column-key="item"]')).toContainText('move pending');
+  // Discarding names the item and what is lost.
+  await page.locator('.stock-pending-filter').click();
+  await row.getByRole('button', { name: 'Discard pending changes' }).click();
+  await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(0);
+  expect(dialogs.at(-1)).toContain(`«Pen ${suffix} / red`);
+  await page.locator('.stock-pending-filter').click();
+
+  // Two counts of one item at one second: the member puts them in order, then both are accepted.
+  await cell(page, itemId, warehouse, '4');
+  await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(1);
+  await workbench.evaluate((node, { itemId, warehouse }) => node.emit('stock-save', {
+    workspaceId: node.workspaceId, entryId: crypto.randomUUID(), revision: 0, commandId: crypto.randomUUID(),
+    values: { kind: 'correction', 'stock-item-id': itemId, 'warehouse-id': warehouse, quantity: '3', 'occurred-at': new Date().toISOString() },
+  }), { itemId, warehouse });
+  await expect.poll(async () => { await workbench.evaluate(node => node.refreshTable()); return grid.evaluate(node => new Set(node.model.pending.map(entry => entry['entry-id'])).size); }).toBe(2);
+  await page.locator('.stock-pending-filter').click();
+  await page.locator('.stock-submit-time').fill(yesterday());
+  await page.locator('.stock-submit').click();
+  const order = page.locator('.stock-order li');
+  await expect(order).toHaveCount(2);
+  const last = (await order.nth(1).textContent()).includes('· 4') ? '4' : '3';
+  await shot(page, '10-order');
+  await order.nth(1).getByRole('button', { name: /Move up/ }).click();
+  await page.locator('.stock-order-accept').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
+  // The entry moved up is accepted first, so the other one sets the balance.
+  await expect(count).toHaveText(last === '4' ? '3' : '4');
+
+  // Count to zero and archive in one correction; then a pending Restore stays visible without "Show archived items".
+  await cell(page, itemId, warehouse, '0');
+  await row.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect(row.locator('td[data-column-key="item"]')).toContainText('archive pending');
+  await page.locator('.stock-pending-filter').click();
+  await page.locator('.stock-submit').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
+  await expect.poll(() => grid.evaluate((node, id) => node.model.rows.some(row => row.id === id), itemId)).toBe(false);
+  await page.locator('.stock-show-archived').click();
+  await row.getByRole('button', { name: 'Restore', exact: true }).click();
+  await page.locator('.stock-show-archived').click();
+  await expect(row.locator('td[data-column-key="item"]')).toContainText('restore pending');
+
+  // A failed table read after a discard offers Retry.
+  await page.locator('.stock-pending-filter').click();
+  await expect(row.getByRole('button', { name: 'Discard pending changes' })).toBeVisible();
+  const table = url => /table/.test(url.pathname);
+  await page.route(table, route => route.abort());
+  await row.getByRole('button', { name: 'Discard pending changes' }).click();
+  const retry = page.getByRole('button', { name: 'Retry', exact: true });
+  await expect(retry).toBeVisible();
+  await page.unroute(table);
+  await retry.click();
+  await expect(retry).toBeHidden();
+  await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(0);
+  expect(errors).toEqual([]);
+});

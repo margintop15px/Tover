@@ -34,6 +34,8 @@ class StockWorkbench extends HTMLElement {
     this.scope = {};
     this.grid = this.querySelector('.stock-grid');
     this.notice = this.querySelector('.stock-notice');
+    this.findingNote = element('p', { className: 'stock-finding-note', role: 'status' });
+    this.grid.after(this.findingNote);
     this.status = this.querySelector('.stock-save-status');
     this.submitButton = this.querySelector('.stock-submit');
     this.submitDetails = this.querySelector('.stock-submit-details');
@@ -89,9 +91,8 @@ class StockWorkbench extends HTMLElement {
     this.addEventListener('item-history', event => this.toggleHistory(event.detail));
     // Move, Archive and Restore propose a change on the row's correction like a cell edit.
     this.addEventListener('stock-row-change', event => {
-      const value = event.detail.field === 'move-to' ? window.prompt(t('Move to which product? Type its name.')) : event.detail.value;
-      if (value === null || value === undefined) return;
-      this.edit({ ...event.detail, path: event.detail.field, value, target: null });
+      if (event.detail.field === 'move-to') { this.moveItem(event.detail); return; }
+      this.edit({ ...event.detail, path: event.detail.field, value: event.detail.value, target: null });
     });
     // Rows are included unless unticked, so rows added during the preview are included too.
     this.addEventListener('review-selection', event => {
@@ -99,8 +100,13 @@ class StockWorkbench extends HTMLElement {
       this.grid.selectedEntries = event.detail.selected;
       this.selected = event.detail.selected; this.showSubmit();
     });
+    // A selected cell's findings are read out below the table, so they need no mouse.
+    this.addEventListener('grid-cell-selected', event => {
+      const { cell } = event.detail;
+      this.findingNote.textContent = /\bstock-finding\b/.test(cell.className ?? '') ? cell.title ?? '' : '';
+    });
     this.addEventListener('stock-discard-row', event => {
-      if (this.pending || !window.confirm(t('Discard the pending changes of this row? This cannot be undone.'))) return;
+      if (this.pending || !window.confirm(this.discardText(event.detail))) return;
       this.discards = event.detail.entries.map(({ entry, revision, line, shared, values }) => ({ id: entry, line, shared, values, revision: Math.max(revision, this.revisions.get(entry) ?? 0) }));
       this.discard(this.discards.shift());
     });
@@ -263,7 +269,7 @@ class StockWorkbench extends HTMLElement {
     // A new row's details live in the filter; typing can outrun the table read that carries them.
     const typed = detail.id.startsWith('new-row:') ? Object.fromEntries(['variant', 'article', 'barcodes', 'unit', 'unit-cost']
       .filter(key => this.scope[key] !== undefined).map(key => [key, this.scope[key]])) : {};
-    const values = { 'occurred-at': now(), ...base, ...typed, [detail.field]: detail.value };
+    const values = { 'occurred-at': now(), ...base, ...typed, ...detail.extra, [detail.field]: detail.value };
     const request = { id, values, revision: detail.revision, target: 'target' in detail ? detail.target : detail };
     if (this.pending) { this.queued.set(slot, request); return; }
     this.save(slot, request);
@@ -304,6 +310,42 @@ class StockWorkbench extends HTMLElement {
     if (id && request.kind === 'save' && response.status === 'ok') { this.queued.delete(id); this.save(id, queued); return; }
     if (request.kind.startsWith('discard') && response.status === 'ok' && this.discards?.length) { this.discard(this.discards.shift()); return; }
     this.refreshTable();
+  }
+
+  // Move: an active product other than the current one, and a new variant label when the old one is taken there.
+  moveItem(detail) {
+    const select = element('select', { className: 'stock-move-product', required: true },
+      element('option', { value: '', textContent: t('Choose a product…') }),
+      ...(this.model.moveTargets ?? []).filter(product => product.id !== detail.current).map(product => element('option', { value: product.id, textContent: product.name })));
+    const variant = element('input', { className: 'stock-move-variant', type: 'text', placeholder: t('Keep the variant label') });
+    const dialog = element('dialog', { className: 'stock-move-dialog' },
+      element('form', { method: 'dialog' },
+        element('h2', { textContent: t('Move to another product') }),
+        element('label', {}, element('span', { textContent: t('Product') }), select),
+        element('label', {}, element('span', { textContent: t('New variant label (optional)') }), variant),
+        element('div', { className: 'sheet-actions' },
+          element('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') }),
+          element('button', { type: 'submit', value: 'move', className: 'stock-move-confirm', textContent: t('Move') }))));
+    dialog.addEventListener('close', () => {
+      dialog.remove();
+      if (dialog.returnValue !== 'move' || !select.value) return;
+      this.edit({ ...detail, path: 'move-to', value: select.value, extra: variant.value.trim() ? { variant: variant.value.trim() } : {}, target: null });
+    });
+    this.append(dialog);
+    dialog.showModal();
+    select.focus();
+  }
+  // The confirmation names the row's item and everything its pending entries would lose.
+  discardText({ id }) {
+    const { rows, columns } = this.model;
+    const at = key => columns.findIndex(column => column.key === key);
+    const index = rows.findIndex(row => row.id === id);
+    const product = rows.slice(0, index + 1).reverse().map(row => row.cells[at('product')]?.value).find(Boolean);
+    const item = rows[index]?.cells[at('item')];
+    const label = [product, item?.display ?? item?.value].filter(Boolean).join(' / ') || id;
+    const changes = (rows[index]?.cells ?? []).map((cell, x) => (cell.className?.includes('stock-cell-pending') && columns[x]?.key !== 'total'
+      ? `${columns[x].label}: ${cell.prefix ?? ''}${cell.display ?? cell.value}` : null)).filter(Boolean);
+    return [t('Discard the pending changes of «{p0}»? This cannot be undone.', { p0: label }), ...changes].join('\n');
   }
 
   // Review and accept
@@ -352,20 +394,29 @@ class StockWorkbench extends HTMLElement {
     this.setStatus('Saving');
     this.emit('stock-accept', { workspaceId: this.workspaceId, selection: response.selection, order: response.order, ordered: response.ordered, fingerprint: review.fingerprint, commandId: this.pending.commandId });
   }
-  // Entries on one stock at the same second need the member's order (chapter 17); the review then runs again with it.
-  // ponytail: table order or its reverse, which covers two tied entries; a free reorder when three or more tie.
+  // Entries on one stock at the same second need the member's order (chapter 17): they are listed in the order
+  // they would be accepted, each can move up, and the review runs again with the chosen order.
   chooseOrder(response, ties) {
     this.setStatus('Failed', [...new Set(ties.map(tie => tie.message))].join(' '));
-    const choice = (label, order) => {
-      const button = element('button', { type: 'button', className: 'stock-order-choice', textContent: t(label) });
-      button.addEventListener('click', () => {
-        this.notice.replaceChildren();
-        this.reviewRequest = crypto.randomUUID();
-        this.emit('stock-review', { requestId: this.reviewRequest, selection: response.selection, order, ordered: true });
-      });
-      return button;
-    };
-    this.notice.append(' ', choice('Table order', response.order), ' ', choice('Reverse order', [...response.order].reverse()));
+    const tied = new Set(ties.flatMap(tie => tie.tied));
+    const chosen = response.order.filter(id => tied.has(id));
+    const list = element('ol', { className: 'stock-order' });
+    const render = () => list.replaceChildren(...chosen.map((id, index) => {
+      const up = element('button', { type: 'button', className: 'stock-order-up', textContent: t('Move up'), disabled: index === 0 });
+      up.setAttribute('aria-label', `${t('Move up')}: ${response.entryNames?.[id] ?? id}`);
+      up.addEventListener('click', () => { [chosen[index - 1], chosen[index]] = [chosen[index], chosen[index - 1]]; render(); list.querySelectorAll('button')[Math.max(0, index - 1)]?.focus(); });
+      return element('li', {}, element('span', { textContent: response.entryNames?.[id] ?? id }), ' ', up);
+    }));
+    render();
+    const accept = element('button', { type: 'button', className: 'stock-order-accept', textContent: t('Accept in this order') });
+    accept.addEventListener('click', () => {
+      let next = 0;
+      const order = response.order.map(id => (tied.has(id) ? chosen[next++] : id));
+      this.notice.replaceChildren();
+      this.reviewRequest = crypto.randomUUID();
+      this.emit('stock-review', { requestId: this.reviewRequest, selection: response.selection, order, ordered: true });
+    });
+    this.notice.append(list, accept);
   }
 
   // History below the item's row

@@ -268,9 +268,17 @@
     (is (= ["" "pcs" "kg" "g" "l" "ml" "m" "pack"] (map :value (get-in unlocked [:editor :options]))))))
 
 
+(deftest a-move-stays-under-its-old-product-marked-pending
+  (let [model (web/stock-grid counted {:mode "units" :entries [{:entry-id "c" :revision 1 :kind "correction" :lines [] :changes [{:stock-item-id "tee-m" :product-id "mug"}]}]})]
+    (is (some #(= "tee-m" (:id %)) (:rows model)))
+    (is (re-find #"move pending" (str (:value (column model "tee-m" "item")) (:display (column model "tee-m" "item")))))))
+
+
 (deftest row-actions-move-archive-restore
   (let [labels (fn [model] (set (map :field (:actions (column model "tee-m" "item")))))]
     (is (= #{"move-to" "archive"} (disj (labels (web/stock-grid counted {:mode "units" :entries []})) nil)))
+    (is (= "tee" (:current (some #(when (= "move-to" (:field %)) %) (:actions (column (web/stock-grid counted {:mode "units" :entries []}) "tee-m" "item")))))
+        "Move knows the current product so the dialog leaves it out")
     (let [archived (web/stock-grid (assoc-in counted [:products 0 :items 0 :archived?] true) {:mode "units" :entries []})]
       (is (= #{"restore"} (disj (labels archived) nil)))
       (is (:readOnly (column archived "tee-m" "main")) "an archived item is read-only"))))
@@ -298,7 +306,9 @@
       (is (= [{:stock-item-id "tee-m" :barcodes-added ["4600000000024"] :barcodes-removed ["4600000000017"]}]
              (:changes (input {"barcodes" "4600000000024, 0"} nil)))))
     (testing "move names an active product"
-      (is (= [{:stock-item-id "tee-m" :product-id "mug"}] (:changes (input {"move-to" " mug"} nil)))))
+      (is (= [{:stock-item-id "tee-m" :product-id "mug"}] (:changes (input {"move-to" " mug"} nil))))
+      (is (= [{:stock-item-id "tee-m" :product-id "mug" :variant-label "M2"}] (:changes (input {"move-to" "mug" "variant" "M2"} nil)))
+          "the dialog sends the product id and a new label in one edit"))
     (testing "archive, and keeping it again"
       (is (= [{:stock-item-id "tee-m" :archive true}] (:changes (input {"archive" "true"} nil))))
       (is (nil? (input {"archive" ""} {:changes [{:stock-item-id "tee-m" :archive true}]}))))
@@ -353,3 +363,25 @@
                                                  :related  {:id "mug" :name "Mug"}}]})]
     (is (= "stock-finding-info" (marked (column model "new:tee:L" "item"))))
     (is (re-find #"belongs to Mug" (:title (column model "new:tee:L" "barcodes"))))))
+
+
+(deftest messages-name-the-values-items-and-entries
+  (let [names {:warehouse {"main" "Main"} :product {"mug" "Mug"} :item {"tee-l" "T-shirt / L"}
+               :entry     {"o" "Opening · T-shirt / M · Main"}}]
+    (is (= "The move conflicts with T-100, kept by T-shirt / L."
+           (web/finding-text {:code :move-conflict :related {:value "T-100" :other-item "tee-l"}} names)))
+    (is (= "Cannot archive: pending Opening · T-shirt / M · Main."
+           (web/finding-text {:code :archive-blocked :related {:other-entry-id "o"}} names)))
+    (testing "Submit uses the same words for a change problem"
+      (is (= "The move conflicts with T-100, kept by T-shirt / L."
+             (web/problem-message {:entry-id "c" :line-id nil :code :move-conflict :stock-item-id "tee-m" :field :article :value "T-100" :other-item "tee-l"} names)))
+      (is (= "This barcode belongs to T-shirt."
+             (web/problem-message {:entry-id "c" :line-id nil :code :uniqueness-conflict :stock-item-id "mug-1" :field :barcodes :value "4600000000017" :owner-product "T-shirt"} names)))
+      (is (= "Set the stock item's unit first." (web/problem-message {:entry-id "c" :line-id "l" :code :unit-required} names))))))
+
+
+(deftest entry-names-describe-pending-work
+  (is (= {"o" "Opening · T-shirt / M · Main · 5" "c" "Correction · T-shirt / M"}
+         (web/entry-names [{:entry-id "o" :kind "opening" :lines [{:stock-item-id "tee-m" :warehouse-id "main" :quantity 5}]}
+                           {:entry-id "c" :kind "correction" :lines [] :changes [{:stock-item-id "tee-m" :archive true}]}]
+                          {"tee-m" "T-shirt / M"} {"main" "Main"}))))

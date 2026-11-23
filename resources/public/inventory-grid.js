@@ -739,6 +739,7 @@ export class InventoryGrid extends HTMLElement {
       onselection(instance, x, y) {
         const cell = owner._cell(Number(x), Number(y));
         owner._lastSelection = cell.target ? { target: pathKey(cell.target) } : { rowId: owner._rows[y]?.id, column: owner._model.columns[x]?.key };
+        owner._emit('grid-cell-selected', { cell });
       },
       onresizecolumn(instance, column, width, previous) {
         if (owner._fittingWidth) return;
@@ -1039,6 +1040,8 @@ export class InventoryGrid extends HTMLElement {
     if (!this._editable(cell)) { worksheet.edition = null; return; }
     const attempt = this._attempts.get(pathKey(cell.target));
     if (attempt?.state === 'conflict' || attempt?.state === 'saving' || (attempt?.item && attempt.state === 'failed')) { worksheet.edition = null; return; }
+    // A refusal from an earlier edit does not carry over to this one.
+    if (this._refusal && this._notice.textContent === this._refusal) this._notice.textContent = '';
     this._active = { td, x: Number(x), y: Number(y), target: { ...cell.target }, original: cell.value, worksheet,
       fieldLabel: this._model.columns[x]?.label, editorType: cell.editor?.type };
     this._attemptsChanged();
@@ -1060,7 +1063,7 @@ export class InventoryGrid extends HTMLElement {
     }
     input.setAttribute('aria-label', t("{p0} for {p1}", {p0: this._model.columns[x]?.label || t('Value'), p1: this._rows[y]?.label || t('operation')}));
     if (type !== 'select') {
-      constrainInput(input, () => cell.editor, message => { this._notice.textContent = message; })();
+      constrainInput(input, () => cell.editor, message => { this._notice.textContent = this._refusal = message; })();
       if (type !== 'date' && event?.type === 'keydown' && event.key?.length === 1) {
         input.value = event.key; input.dispatchEvent(new InputEvent('input'));
       }
@@ -1083,7 +1086,7 @@ export class InventoryGrid extends HTMLElement {
         const error = input.validity.badInput ? t('Enter an occurrence date or an ISO timestamp.')
           : fieldError(type === 'operation-reference' ? { ...cell.editor, options: [{ value: '', label: t('None') }, ...this._active.referenceOptions.options] }
             : cell.editor, type === 'operation-reference' ? this._active.referenceOptions.chosenValue : type === 'date' ? inputDateValue(input) : input.value);
-        if (error) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); this._notice.textContent = error; return; }
+        if (error) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); this._notice.textContent = this._refusal = error; return; }
         this._nextSelection = { x: Number(x), y: Number(y), backwards: e.shiftKey, vertical: e.key === 'Enter' };
         worksheet.closeEditor(td, true);
       }

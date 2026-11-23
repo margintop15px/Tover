@@ -179,3 +179,8 @@
 #stock-grid .jss_worksheet>tbody>tr>td.stock-row-error{box-shadow:inset 3px 0 0 var(--iw-red)}
 /* 32a: a product picked from search brings its default warehouse; that cell of the new row is outlined. */
 #stock-grid .jss_worksheet>tbody>tr>td.stock-default-warehouse{box-shadow:inset 0 0 0 2px var(--iw-blue-fill);background:var(--iw-blue-fill)}
+.stock-finding-note:empty { display: none; }
+.stock-finding-note { margin: 4px 16px; white-space: pre-line; }
+.stock-order { margin: 4px 0; padding-left: 20px; }
+.stock-move-dialog label { display: grid; gap: 4px; margin-bottom: 12px; }
+.stock-move-dialog h2 { margin-top: 0; font-size: 1rem; }
