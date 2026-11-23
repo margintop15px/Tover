@@ -192,6 +192,26 @@
   (is (true? (:exact (web/suggestions catalogue "mug")))))
 
 
+(deftest matched-barcode-is-shown
+  (let [coded (assoc catalogue :barcodes [{:stock-item-id "tee-m" :barcode "4600000000017"} {:stock-item-id "tee-m" :barcode "4600000000024"}])]
+    (is (= [["T-shirt / M · T-100" "4600000000017"]] (map (juxt :label :hint) (:options (web/suggestions coded "460000000001")))))
+    (is (nil? (:hint (first (:options (web/suggestions coded "T-sh"))))) "no barcode matched, no hint")))
+
+
+(deftest product-brings-its-default-warehouse
+  (let [stocked (-> catalogue
+                    (assoc :warehouses [{:warehouse-id "main" :name "Main" :status "active"} {:warehouse-id "old" :name "Old" :status "archived"}])
+                    (assoc-in [:products 1 :default-warehouse-id] "main"))]
+    (is (= "main" (:warehouseId (first (:options (web/suggestions stocked "Mug"))))))
+    (is (nil? (:warehouseId (first (:options (web/suggestions (assoc-in stocked [:products 1 :default-warehouse-id] "old") "Mug")))))
+        "an archived default is not filled"))
+  (testing "the new row marks the default warehouse cell"
+    (let [model  (web/stock-grid table {:mode "units" :entries [] :scope {:productId "tee" :newRow true :warehouseId "shop"}})
+          column (fn [model row k] (nth (cells-of model row) (.indexOf ^java.util.List (mapv :key (:columns model)) k)))]
+      (is (re-find #"stock-default-warehouse" (:className (column model "new-row:tee" "shop"))))
+      (is (not (re-find #"stock-default-warehouse" (str (:className (column model "new-row:tee" "main")))))))))
+
+
 (deftest lookup-failure-is-not-no-match
   (is (= {:text "T-sh" :failed true :options []} (web/suggestions nil "T-sh"))))
 

@@ -27,6 +27,29 @@ async function registerCatalogueRecord(page, path, name) {
   await page.locator('.catalogue-save-new').click();
   await expect(page.locator('.catalogue-save-new')).toBeHidden();
   await expect(grid).toContainText(name);
+  return id;
+}
+
+// A response that arrives while an editor is open rebuilds the grid, so wait until the workbench is idle.
+async function catalogueSaved(page) {
+  await expect(page.locator('.catalogue-save-status')).toHaveText('');
+  await expect.poll(() => page.locator('catalogue-workbench').evaluate(node => !node.pending && node.grid._attempts.size === 0
+    && (!node.requestId || node.requestId === node.lastResponseId))).toBe(true);
+}
+
+async function chooseInCatalogue(page, id, path, label) {
+  const grid = page.locator('.catalogue-grid');
+  const select = grid.locator('.inventory-goods-choice');
+  await catalogueSaved(page);
+  await expect(async () => {
+    if (!(await select.isVisible())) await grid.evaluate((node, { id, path }) => node.focusField(id, path), { id, path });
+    await expect(select).toBeVisible({ timeout: 250 });
+  }).toPass({ timeout: 5000 });
+  await expect(select).toHaveAttribute('aria-busy', 'false');
+  await expect(select.locator('option').filter({ hasText: label })).toHaveCount(1);
+  await select.selectOption({ label });
+  await catalogueSaved(page);
+  await expect(grid.locator(`td[data-entry-id="${id}"][data-path="${path}"]`)).toContainText(label);
 }
 
 const shot = (page, name) => process.env.STOCK_SHOTS && page.screenshot({ path: `${process.env.STOCK_SHOTS}/${name}.png`, fullPage: true });
@@ -164,7 +187,8 @@ test('count a stock item and change its article from its row, then submit both',
   await signIn(page);
   const suffix = Date.now();
   await registerCatalogueRecord(page, '/catalogues/warehouses', `Main ${suffix}`);
-  await registerCatalogueRecord(page, '/catalogues', `Cup ${suffix}`);
+  const cup = await registerCatalogueRecord(page, '/catalogues', `Cup ${suffix}`);
+  await chooseInCatalogue(page, cup, 'default-warehouse-id', `Main ${suffix}`);
   await page.goto('/');
   const workbench = page.locator('stock-workbench');
   const grid = page.locator('#stock-grid');
@@ -174,7 +198,11 @@ test('count a stock item and change its article from its row, then submit both',
   await page.locator('.stock-search-input').press('Enter');
   const productId = await workbench.evaluate(node => node.scope.productId);
   const warehouse = await grid.evaluate((node, name) => node.model.columns.find(column => column.label === name).key, `Main ${suffix}`);
+  // The product's default warehouse is marked on the new row and takes focus once the variant is typed.
+  expect(await workbench.evaluate(node => node.scope.warehouseId)).toBe(warehouse);
+  await expect(grid.locator(`td[data-entry-id="new-row:${productId}"][data-path="${warehouse}"]`)).toHaveClass(/stock-default-warehouse/);
   await cell(page, `new-row:${productId}`, 'item', 'blue');
+  await expect.poll(() => page.evaluate(() => document.activeElement?.closest('td')?.dataset.path ?? document.querySelector('#stock-grid td.highlight, #stock-grid td.jss_cursor')?.dataset.path)).toBe(warehouse);
   await cell(page, `new-row:${productId}`, warehouse, '5');
   await page.locator('.stock-pending-filter').click();
   await page.locator('.stock-submit-time').fill(yesterday());
@@ -209,4 +237,40 @@ test('count a stock item and change its article from its row, then submit both',
   await expect(page.locator('.stock-history-rows')).toContainText('Correction');
   await expect(page.locator('.stock-history-rows')).toContainText('Recount');
   expect(errors).toEqual([]);
+});
+
+test('a failed suggestion lookup offers Retry by mouse and keyboard, never "no match"', async ({ page }) => {
+  await signIn(page);
+  const suffix = Date.now();
+  await registerCatalogueRecord(page, '/catalogues', `Lamp ${suffix}`);
+  await page.goto('/');
+  const grid = page.locator('#stock-grid');
+  await expect.poll(() => grid.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  let failing = true; let aborted = 0;
+  await page.route(url => /suggest/.test(url.href), route => {
+    if (!failing) return route.continue();
+    aborted += 1; return route.abort();
+  });
+  const search = page.locator('.stock-search-input');
+  const retry = page.locator('.stock-option-failed button');
+  await search.fill(`Lamp ${suffix}`);
+  await expect(retry).toBeVisible();
+  await expect(page.locator('.stock-option-create')).toHaveCount(0);
+  // A slow press outlasts the blur timer and must still reach the button.
+  const before = aborted;
+  await retry.click({ delay: 400 });
+  await expect.poll(() => aborted).toBeGreaterThan(before);
+  await expect(retry).toBeVisible();
+  // Keyboard: the button stays while it has focus.
+  failing = false;
+  await search.press('Tab');
+  await expect.poll(() => page.evaluate(() => Boolean(document.activeElement.closest('.stock-option-failed')))).toBe(true);
+  await page.waitForTimeout(300);
+  await expect(retry).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.stock-option-product')).toHaveCount(1);
+  await expect(search).toBeFocused();
+  // Focus that leaves the search and its list closes the list.
+  await page.locator('.stock-pending-filter').focus();
+  await expect(page.locator('#stock-suggestions')).toBeHidden();
 });

@@ -63,10 +63,19 @@ class StockWorkbench extends HTMLElement {
     this.chip.addEventListener('click', () => { this.setScope({}, ''); this.search.focus(); });
     this.search.addEventListener('input', () => { clearTimeout(this.typing); this.typing = setTimeout(() => this.suggest(), 120); });
     this.search.addEventListener('keydown', event => this.searchKey(event));
-    this.search.addEventListener('blur', () => setTimeout(() => this.closeSuggestions(), 150));
+    // Focus may move into the list (Retry), by Tab or by a press that outlasts the timer.
+    const leave = () => setTimeout(() => { if (!this.search.matches(':focus') && !this.list.contains(document.activeElement)) this.closeSuggestions(); }, 150);
+    this.search.addEventListener('blur', leave);
+    this.list.addEventListener('focusout', leave);
+    this.list.addEventListener('mousedown', event => event.preventDefault());
     this.addEventListener('stock-cell', event => this.edit(event.detail));
     // A new row's details wait in the filter until its first quantity saves them with the opening.
-    this.addEventListener('stock-new-field', event => { this.grid.acknowledgeSave(event.detail); this.scope = { ...this.scope, [event.detail.path === 'item' ? 'variant' : event.detail.path]: event.detail.value.trim() }; this.refreshTable(); });
+    this.addEventListener('stock-new-field', event => {
+      this.grid.acknowledgeSave(event.detail);
+      this.scope = { ...this.scope, [event.detail.path === 'item' ? 'variant' : event.detail.path]: event.detail.value.trim() };
+      this.focusWarehouse = event.detail.path === 'item' && Boolean(this.scope.warehouseId && event.detail.value.trim());
+      this.refreshTable();
+    });
     // Unit cost and a new item's details apply to every pending opening of the row.
     this.addEventListener('stock-item-field', event => {
       const { entries, field, value } = event.detail;
@@ -150,7 +159,7 @@ class StockWorkbench extends HTMLElement {
     if (!this.list) return;
     this.options = [];
     const item = element('li', { className: 'stock-option stock-option-failed' });
-    this.retryNotice(item, () => this.suggest());
+    this.retryNotice(item, () => { this.search.focus(); this.suggest(); });
     this.list.replaceChildren(item);
     this.list.hidden = false;
     this.search.setAttribute('aria-expanded', 'true');
@@ -171,7 +180,8 @@ class StockWorkbench extends HTMLElement {
   closeSuggestions() { this.list.hidden = true; this.search.setAttribute('aria-expanded', 'false'); }
   choose(option) {
     this.closeSuggestions(); this.search.value = '';
-    if (option.kind === 'product') this.setScope({ productId: option.id, newRow: true, pending: this.scope.pending }, option.label, true);
+    // A product brings its default warehouse: the new row marks that cell and focus moves there once the variant is typed.
+    if (option.kind === 'product') this.setScope({ productId: option.id, newRow: true, pending: this.scope.pending, warehouseId: option.warehouseId }, option.label, true);
     else if (option.kind === 'item') this.setScope({ itemId: option.id, pending: this.scope.pending }, option.label);
     // A new product opens at the top of the preview; the table is not filtered.
     else this.setScope({ productName: option.label, newRow: true, pending: true }, '', true);
@@ -210,6 +220,9 @@ class StockWorkbench extends HTMLElement {
     const row = this.focusNew && model.rows.find(candidate => candidate.className === 'stock-new-row');
     this.focusNew = false;
     if (row) this.grid.whenReady.then(() => this.grid.focusField(row.id, 'item'));
+    const typed = this.focusWarehouse && model.rows.find(candidate => candidate.className === 'stock-new-row');
+    this.focusWarehouse = false;
+    if (typed) this.grid.whenReady.then(() => this.grid.focusField(typed.id, this.scope.warehouseId));
   }
   showSubmit() {
     const count = this.scope.pending ? (this.selected ?? []).length : 0;
@@ -394,6 +407,7 @@ class StockWorkbench extends HTMLElement {
   requestFailed(kind) {
     if (kind === 'save') { this.pending = null; this.setStatus('Failed', t('Could not save. Your edit is retained; retry when connected.')); }
     else if (kind === 'table') this.retryNotice(this.notice, () => this.refreshTable());
+    else if (kind === 'suggest') { if (this.search.value.trim()) this.suggestFailed(); }
     else if (kind === 'review') this.setStatus('Failed', t('Could not check the pending changes. Try again.'));
     else if (kind === 'history' && this.historyNode) this.retryNotice(this.historyNode.querySelector('.stock-history-body'), () => this.loadHistory(this.historyItem));
   }

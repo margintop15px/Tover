@@ -177,3 +177,5 @@
 #stock-grid .jss_worksheet>tbody>tr>td.stock-row-info{box-shadow:inset 3px 0 0 var(--iw-blue)}
 #stock-grid .jss_worksheet>tbody>tr>td.stock-row-warning{box-shadow:inset 3px 0 0 var(--iw-amber)}
 #stock-grid .jss_worksheet>tbody>tr>td.stock-row-error{box-shadow:inset 3px 0 0 var(--iw-red)}
+/* 32a: a product picked from search brings its default warehouse; that cell of the new row is outlined. */
+#stock-grid .jss_worksheet>tbody>tr>td.stock-default-warehouse{box-shadow:inset 0 0 0 2px var(--iw-blue-fill);background:var(--iw-blue-fill)}

@@ -88,7 +88,8 @@
   "One stock item row: product, item, its details and unit cost, a cell per warehouse and Total (units or amount)."
   {:malli/schema [:=> [:cat :map :map] :map]}
   [{:keys [mode currency warehouses preview?]}
-   {:keys [id className product-cell label label-cell details details-editable? base locked? accepted lines actions item correction correction-id]}]
+   {:keys [id className product-cell label label-cell details details-editable? base locked? accepted lines actions item correction correction-id
+           default-warehouse]}]
   (let [money?    (= "money" mode)
         archived? (:archived? item)
         ;; An existing row's counts and stock item changes go to its one Correction entry (chapter 15).
@@ -161,7 +162,7 @@
                                  :target (ctarget w "quantity" {"warehouse-id" w "line-id" (or (:line-id count) (str correction-id "/" w))}
                                                   (or change (seq (dissoc counts w))))}
                           count (assoc :value (str (:quantity count)) :prefix (str shown " → ") :className "inventory-cell-number stock-cell-pending"))
-                        (cond-> {:value shown :className "inventory-cell-number"}
+                        (cond-> {:value shown :className (if (= w default-warehouse) "inventory-cell-number stock-default-warehouse" "inventory-cell-number")}
                           (and (not money?) (or (= no-warehouse w) (next ls))) (assoc :readOnly true)
                           (not (or money? (= no-warehouse w) (next ls)))
                           (assoc :editor {:type "quantity"}
@@ -169,6 +170,7 @@
                                           :entry  (:entry-id line) :revision (or (:revision line) 0) :shared (< 1 (:line-count line 1))
                                           :values (merge base {"warehouse-id" w} (line-values line))})
                           (and (not money?) (or locked? archived?)) (assoc :readOnly true)
+                          (and (= w default-warehouse) (nil? line)) (assoc :title (i18n/t "This product's default warehouse"))
                           (and (not money?) (nil? line) gone?)
                           (assoc :readOnly true :title (i18n/t "This warehouse is archived. Restore it to add stock."))
                           line (assoc :value (if money?
@@ -328,8 +330,8 @@
                     (let [typed (when-not (contains? taken (key (:variant scope))) (not-empty (:variant scope)))
                           id    (str "new-row:" group)
                           ready (or typed (contains? base "product"))]
-                      {:id                id :className "stock-new-row" :label (or typed "") :details (select-keys (update-keys scope name) ["article" "barcodes" "unit" "unit-cost"])
-                       :details-editable? :blank
+                      {:id                id :className             "stock-new-row"      :label (or typed "") :details (select-keys (update-keys scope name) ["article" "barcodes" "unit" "unit-cost"])
+                       :details-editable? :blank :default-warehouse (:warehouseId scope)
                        :base              (merge base (select-keys (update-keys scope name) ["article" "barcodes" "unit" "unit-cost"]) {"variant" (or typed "")})
                        :locked?           (not ready)
                        :label-cell        {:value   (or typed "") :editor {:type "text"} :className (if typed "stock-variant-cell" "stock-variant-cell stock-variant-empty")
@@ -563,8 +565,12 @@
      :exact   (boolean (some #(and (= "active" (:status %)) (same-name? text (:name %))) (:products catalogue)))
      :options (vec (for [{:keys [kind id label fill]} (take 12 (when-not (str/blank? text) (references/suggest text catalogue)))]
                      (if (= "product" kind)
-                       {:kind "product" :id id :label label}
-                       {:kind "item" :id id :productId (:product-id fill) :label label})))}))
+                       (cond-> {:kind "product" :id id :label label}
+                         (:warehouse-id fill) (assoc :warehouseId (:warehouse-id fill)))
+                       ;; A barcode match is shown, so the member sees why the item was found.
+                       (let [matched (filter #(str/includes? % (str/trim text)) (:barcodes fill))]
+                         (cond-> {:kind "item" :id id :productId (:product-id fill) :label label}
+                           (seq matched) (assoc :hint (str/join ", " matched)))))))}))
 
 
 (defview suggest
@@ -733,7 +739,7 @@
      {:data-workspace-id       (str workspace-id)
       :data-model              (json model)
       :data-on:stock-query     (->expr (.catch (@view ::table evt.detail ~options) (fn [_] (.requestFailed el "table"))))
-      :data-on:stock-suggest   (->expr (.catch (@view ::suggest evt.detail ~options) (fn [_] nil)))
+      :data-on:stock-suggest   (->expr (.catch (@view ::suggest evt.detail ~options) (fn [_] (.requestFailed el "suggest"))))
       :data-on:stock-review    (->expr (.catch (@view ::review evt.detail ~options) (fn [_] (.requestFailed el "review"))))
       :data-on:stock-history   (->expr (.catch (@view ::history evt.detail ~options) (fn [_] (.requestFailed el "history"))))
       :data-on:stock-save      (->expr (.catch (@action ::save-entry evt.detail ~options) (fn [_] (.requestFailed el "save"))))

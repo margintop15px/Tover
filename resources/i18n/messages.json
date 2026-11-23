@@ -881,7 +881,8 @@
     "Cannot archive: stock in {p0}.": "Cannot archive: stock in {p0}.",
     "Cannot archive: another pending entry names this item.": "Cannot archive: another pending entry names this item.",
     "The move conflicts with {p0}.": "The move conflicts with {p0}.",
-    "Another pending entry changes this field.": "Another pending entry changes this field."
+    "Another pending entry changes this field.": "Another pending entry changes this field.",
+    "This product's default warehouse": "This product's default warehouse"
   },
   "ru": {
     "Stock": "Остатки",
@@ -1769,6 +1770,7 @@
     "Cannot archive: stock in {p0}.": "Нельзя архивировать: есть остаток на складе {p0}.",
     "Cannot archive: another pending entry names this item.": "Нельзя архивировать: позиция есть в другом ожидающем черновике.",
     "The move conflicts with {p0}.": "Перенос конфликтует с {p0}.",
-    "Another pending entry changes this field.": "Другой ожидающий черновик меняет это поле."
+    "Another pending entry changes this field.": "Другой ожидающий черновик меняет это поле.",
+    "This product's default warehouse": "Склад товара по умолчанию"
   }
 }
