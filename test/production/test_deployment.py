@@ -353,6 +353,22 @@ if sys.argv[1] == 'check' and os.environ.get('MISSING_BUNDLE_IMAGE'):
         self.assertEqual(len(psql), 2 + len(migrations))
         self.assertIn("--single-transaction", psql[2])
 
+    def test_legacy_import_refuses_same_project_and_running_legacy_writers(self):
+        legacy = self.directory / "legacy.env"
+        legacy.write_bytes(self.environment.read_bytes())
+        result = subprocess.run([str(PROFILE / "import-legacy.sh"), str(legacy)],
+                                env=self.docker_stub(), capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must differ", result.stderr)
+        self.assertFalse((self.directory / "calls").exists())
+        legacy.write_text(legacy.read_text().replace("TOVER_DEPLOYMENT_NAME=tover-production", "TOVER_DEPLOYMENT_NAME=tover-legacy"))
+        result = subprocess.run([str(PROFILE / "import-legacy.sh"), str(legacy)],
+                                env=self.docker_stub(), capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Stop legacy writers", result.stderr)
+        calls = [json.loads(line) for line in (self.directory / "calls").read_text().splitlines()]
+        self.assertFalse([call for call in calls if "exec" in call])
+
     def test_fresh_install_preserves_existing_project_containers_and_volumes(self):
         cases = [{"existing_container": True}] + [
             {"volume_names": ["tover-production_" + volume]}
@@ -477,7 +493,8 @@ if sys.argv[1] == 'check' and os.environ.get('MISSING_BUNDLE_IMAGE'):
                     ["docker", "compose", "--project-directory", str(profile),
                      "--env-file", str(self.environment), "-f", str(profile / "compose.yaml"),
                      "config", "--format", "json"],
-                    env={**os.environ, "TO_DEV_APP_PASSWORD": "synthetic-app-password"},
+                    env={**os.environ, "TO_DEV_APP_PASSWORD": "synthetic-app-password",
+                     "TO_DEV_JOURNAL_PASSWORD": "synthetic-journal-password"},
                     capture_output=True, check=True)
                 auth = json.loads(result.stdout)["services"]["auth"]["environment"]
                 self.assertEqual(auth["GOTRUE_DB_MAX_POOL_SIZE"], "8")

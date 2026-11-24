@@ -33,7 +33,7 @@ tar -czf /tmp/tover-20261025.tar.gz -C /tmp/tover-20261025 .
 scp /tmp/tover-20261025.tar.gz root@YOUR_SERVER:/tmp/
 ```
 
-The bundle contains all five runtime images, Compose configuration, scripts, email templates, migrations 033/034, documentation and checksums. It excludes real `.env` files, API tokens, stores and Git metadata. Runtime images use bundle-local tags verified against their recorded image IDs, so loading does not depend on registry digest metadata surviving `docker save`/`load`.
+The bundle contains all five runtime images, Compose configuration, scripts, email templates, `supabase/migrate.sh` with its migrations, the legacy import helper, documentation and checksums. It excludes real `.env` files, API tokens, stores and Git metadata. Runtime images use bundle-local tags verified against their recorded image IDs, so loading does not depend on registry digest metadata surviving `docker save`/`load`.
 
 For the first installation, run as root on the VM. Use a new empty release directory and an unused `/srv/tover` path:
 
@@ -69,7 +69,7 @@ deployment/production/production.sh install-fresh
 deployment/production/production.sh status
 ```
 
-`install-fresh` refuses existing project containers or data/TLS volumes. It initializes Auth, applies 033 then 034 and starts the loaded images with builds and pulls disabled. Missing, changed or wrong-architecture images fail the preflight. A partial failed installation retains its data; inspect the failure and use `install` to resume that same installation. Do not reset it. Subsequent starts use `up`. Export `TOVER_ENV_FILE=/etc/tover/app.env` in each administration shell; the backup service reads this path from its environment file.
+`install-fresh` refuses existing project containers or data/TLS volumes. It initializes Auth, applies pending migrations (a fresh target gets `001_baseline.sql`) and starts the loaded images with builds and pulls disabled. Missing, changed or wrong-architecture images fail the preflight. A partial failed installation retains its data; inspect the failure and use `install` to resume that same installation. Do not reset it. Subsequent starts use `up`. Export `TOVER_ENV_FILE=/etc/tover/app.env` in each administration shell; the backup service reads this path from its environment file.
 
 The app has a 4 GiB container limit and 2 GiB maximum Java heap. The remaining container memory accommodates native/mapped data, and the rest of the 8 GiB host accommodates Postgres, Auth and the OS. Each of the five services retains at most three 10 MiB Docker log files. These limits are a starting budget, not a workload capacity guarantee.
 

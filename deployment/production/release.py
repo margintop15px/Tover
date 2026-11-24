@@ -17,7 +17,7 @@ PROFILE = Path("deployment/production")
 PLATFORM = "linux/amd64"
 SERVICES = {"app", "db", "auth", "rest", "proxy"}
 RUNTIME_FILES = (
-    "production.sh", "config.py", "selectel-backup.py", "scheduled-backup.py", "Caddyfile",
+    "production.sh", "import-legacy.sh", "config.py", "selectel-backup.py", "scheduled-backup.py", "Caddyfile",
     ".env.example", "backup.env.example", "release.py", "systemd/tover-backup.service",
     "systemd/tover-backup.timer", "templates/confirmation.html", "templates/invite.html",
     "templates/recovery.html", "templates/magic-link.html")

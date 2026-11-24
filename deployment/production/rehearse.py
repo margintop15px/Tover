@@ -5,6 +5,7 @@ Leaves its projects stopped and data intact. Publishes only ephemeral loopback
 ports, captures email and disables public TLS. Never reads local identity config.
 """
 import html
+import http.client
 import importlib.util
 import ipaddress
 import json
@@ -127,10 +128,8 @@ networks:
             raise RuntimeError("Rehearsal refused a non-loopback service endpoint")
         return "http://" + address
 
-    def request(base, path, *, body=None, token=None):
+    def request(base, path, *, body=None):
         headers = {"Content-Type": "application/json", "apikey": private["ANON_KEY"]}
-        if token:
-            headers["Authorization"] = "Bearer " + token
         message = urllib.request.Request(base + path, headers=headers,
                                          data=json.dumps(body).encode() if body is not None else None)
         try:
@@ -146,66 +145,90 @@ networks:
             with urllib.request.urlopen(base + path, timeout=10) as response:
                 assert response.status == 200
 
-    def inventory(mode, workspace, actor, target):
+    def inventory(mode, identity, target):
         # The application is closed before the offline verifier opens its own store.
         compose("stop", "--timeout", "30", "app", target=target)
-        program = """
-(require '[tover.shared.rdf :as rdf] '[tover.inventory.store :as store])
-(let [repo (rdf/native-store (System/getenv "TOVER_INVENTORY_PATH"))
-      scope {:workspace-id (java.util.UUID/fromString "WORKSPACE")}
-      actor "ACTOR"
-      request {:selected [{:id "rehearsal-opening" :revision 1}]
-               :expected-ledger-revision 0 :actor actor :command-id "rehearsal-submit"}]
+        fingerprint = json.dumps(identity.get("fingerprint"))
+        program = (SOURCE_PROFILE / "rehearsal_inventory.clj").read_text() + f"""
+(ns user (:require [integrant.core :as ig] [tover.app :as app] [rehearsal-inventory :as rehearsal]))
+(let [config (app/config)
+      _      (ig/load-namespaces config)
+      system (ig/init config [:tover.app/bel-system])
+      part   #(val (ig/find-derived-1 system %))]
   (try
-    (when (= "MODE" "seed")
-      (store/save-entry! repo scope
-        {:id "rehearsal-opening" :actor actor
-         :entry {:kind :opening :occurred-at "2026-10-20" :reason "Restore rehearsal"
-                 :lines [{:item-id "rehearsal-item" :name "Rehearsal item" :unit "pcs"
-                          :location "Rehearsal warehouse" :quantity 17}]}})
-      (assert (:valid? (store/preview repo scope request)))
-      (store/submit! repo scope request)
-      (store/save-entry! repo scope
-        {:id "rehearsal-pending" :actor actor
-         :entry {:kind :operation :type :production :reason "Incomplete shared draft"}}))
-    (let [snapshot (store/snapshot repo scope)
-          receipt (store/submit! repo scope request)]
-      (assert (= 1 (:ledger-revision snapshot)))
-      (assert (= 17 (get-in snapshot [:rows 0 :quantity])))
-      (assert (= 1 (count (:history snapshot))))
-      (assert (= "rehearsal-pending" (get-in snapshot [:drafts 0 :id])))
-      (assert (= 1 (count (:drafts snapshot))))
-      (assert (= :production (get-in snapshot [:drafts 0 :entry :type])))
-      (assert (= "rehearsal-submit" (:command-id receipt)))
-      (assert (= snapshot (store/rebuild! repo scope)))
-      (assert (= 1 (count (:records (store/item-history repo scope "rehearsal-item" {})))))
-      (println "PASS: accepted quantity17, immutable history, incomplete shared draft, receipt retry and rebuild"))
-    (finally (rdf/close! repo))))
-""".replace("WORKSPACE", workspace).replace("ACTOR", actor).replace("MODE", mode)
-        compose("run", "--rm", "-T", "--no-deps", "--entrypoint", "sh", "app", "-c",
-                'exec java --enable-native-access=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED '
-                '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED -cp "$(cat /app/classpath)" clojure.main -',
-                target=target, data=program)
+    (let [out (rehearsal/rehearse! "{mode}" (part :tover.app/bel-system) (part :tover.app/repo)
+                                   (parse-uuid "{identity['workspace']}") (parse-uuid "{identity['actor']}")
+                                   {"nil" if fingerprint == "null" else fingerprint})]
+      (println (if (= "{mode}" "seed") (str "FINGERPRINT=" out) out)))
+    (finally (ig/halt! system) (shutdown-agents))))
+"""
+        output = compose("run", "--rm", "-T", "--no-deps", "--entrypoint", "sh", "app", "-c",
+                         'exec java --enable-native-access=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED '
+                         '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED -cp "$(cat /app/classpath)" clojure.main -',
+                         target=target, data=program)
         compose("up", "-d", "--wait", "--wait-timeout", "180", "app", target=target)
         ready(target)
+        if mode == "seed":
+            identity["fingerprint"] = re.search(r"^FINGERPRINT=(\S+)$", output, re.M).group(1)
+        else:
+            assert "PASS: accepted purchase of 17" in output
+
+    class Browser:
+        """Form posts to the app as a browser would, behind the configured HTTPS origin."""
+        def __init__(self, target):
+            self.address = endpoint("app", 3030, target).removeprefix("http://")
+            self.headers = {"Host": values["TOVER_DOMAIN"], "Origin": values["TOVER_ORIGIN"]}
+            self.cookies = {}
+
+        def send(self, method, path, form=None):
+            connection = http.client.HTTPConnection(self.address, timeout=20)
+            headers = dict(self.headers, Cookie="; ".join(f"{k}={v}" for k, v in self.cookies.items()))
+            body = urllib.parse.urlencode(form) if form is not None else None
+            if body is not None:
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+            connection.request(method, path, body, headers)
+            response = connection.getresponse()
+            # Session cookies are Secure; the loopback hop stands in for the HTTPS proxy.
+            for cookie in response.headers.get_all("Set-Cookie") or []:
+                name, value = cookie.split(";", 1)[0].split("=", 1)
+                self.cookies[name] = value
+            page = response.read().decode()
+            if response.status >= 400:
+                raise RuntimeError(f"Rehearsal app request returned {response.status} at {path}")
+            return response.headers.get("Location"), page
+
+        def form(self, page, action, **fields):
+            match = re.search(r'<form[^>]*action="%s"[^>]*>(.*?)</form>' % re.escape(action), page, re.S)
+            assert match, f"Rehearsal page has no {action} form"
+            data = {name: html.unescape(value) for name, value in
+                    re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', match.group(1))}
+            return self.send("POST", action, {**data, **fields})
+
+        def sign_in(self, email, password):
+            location, _ = self.form(self.send("GET", "/auth/login")[1], "/action/tover.identity.sign-in.web/sign-in",
+                                    email=email, password=password)
+            assert location == "/workspace", "Rehearsal sign-in did not reach the workspace page"
+
+        def workspace_ids(self):
+            page = self.send("GET", "/workspace")[1]
+            forms = re.findall(r'<form[^>]*action="/action/tover.workspaces.select.web/select"[^>]*>(.*?)</form>', page, re.S)
+            return [re.search(r'name="workspace-id" value="([0-9a-f-]{36})"', form).group(1) for form in forms], page
+
+        def select(self, workspace):
+            ids, page = self.workspace_ids()
+            assert ids == [workspace], f"Rehearsal expected one workspace, saw {len(ids)}"
+            self.form(page, "/action/tover.workspaces.select.web/select")
+            team = self.send("GET", "/team")[1]
+            assert "Tester" in team, "Rehearsal team page lacks the owner's display name"
 
     def verify_restored(identity):
         ready(restored)
-        auth, rest = endpoint("auth", 9999, restored), endpoint("rest", 3000, restored)
-        session = request(auth, "/token?grant_type=password",
-                          body={"email": identity["email"], "password": identity["password"]})
-        workspaces = request(rest, "/rpc/my_workspaces", body={}, token=session["access_token"])
-        assert session["user"]["id"] == identity["actor"]
-        assert len(workspaces) == 1 and workspaces[0]["organization_id"] == identity["workspace"]
-        assert workspaces[0]["role_id"] == "owner"
-        labels = request(rest, "/rpc/workspace_actor_labels",
-                         body={"p_workspace_id": identity["workspace"], "p_actor_ids": [identity["actor"]]},
-                         token=session["access_token"])
-        assert labels == [{"userId": identity["actor"], "label": "Tester"}]
-        checks["restored_actor_display_label"] = True
-        checks["restored_identity_login_and_membership"] = True
-        inventory("verify", identity["workspace"], identity["actor"], restored)
-        checks["restored_inventory_draft_receipt_history_and_rebuild"] = True
+        browser = Browser(restored)
+        browser.sign_in(identity["email"], identity["password"])
+        browser.select(identity["workspace"])
+        checks["restored_identity_login_membership_and_display_name"] = True
+        inventory("verify", identity, restored)
+        checks["restored_inventory_draft_receipt_and_history"] = True
         checks["restored_readiness"] = True
 
     try:
@@ -219,7 +242,7 @@ networks:
             checks["backup_and_fresh_target_restore"] = True
             production("up", target=restored)
             verify_restored(identity)
-            print("PASS: fresh restore, original identity login/membership, inventory, draft, receipt and rebuild", flush=True)
+            print("PASS: fresh restore, original identity login/membership, inventory, draft and receipt", flush=True)
             return
         print("Building/installing isolated production-shaped project", flush=True)
         if resume:
@@ -227,11 +250,10 @@ networks:
         production("install" if resume else "install-fresh")
         ready(project)
         checks["initial_readiness"] = True
-        auth, rest, mail = endpoint("auth", 9999), endpoint("rest", 3000), endpoint("mail", 8025)
+        auth, mail = endpoint("auth", 9999), endpoint("mail", 8025)
         email = f"restore-{secrets.token_hex(6)}@example.test"
         password = secrets.token_urlsafe(24)
-        request(auth, "/signup", body={"email": email, "password": password,
-                                       "data": {"organization_name": "Restore rehearsal", "name": "Tester"}})
+        request(auth, "/signup", body={"email": email, "password": password, "data": {"name": "Tester"}})
         deadline = time.monotonic() + 30
         token_hash = None
         while time.monotonic() < deadline and not token_hash:
@@ -248,18 +270,19 @@ networks:
         assert token_hash, "Captured signup confirmation was not delivered"
         confirmed = request(auth, "/verify", body={"token_hash": token_hash, "type": "email"})
         assert confirmed["user"].get("email_confirmed_at")
-        session = request(auth, "/token?grant_type=password", body={"email": email, "password": password})
-        workspaces = request(rest, "/rpc/my_workspaces", body={}, token=session["access_token"])
-        assert len(workspaces) == 1 and workspaces[0]["role_id"] == "owner"
-        workspace, actor = workspaces[0]["organization_id"], confirmed["user"]["id"]
-        labels = request(rest, "/rpc/workspace_actor_labels",
-                         body={"p_workspace_id": workspace, "p_actor_ids": [actor]}, token=session["access_token"])
-        assert labels == [{"userId": actor, "label": "Tester"}]
-        checks["actor_display_label"] = True
-        (evidence / "identity.json").write_text(json.dumps(
-            {"email": email, "password": password, "workspace": workspace, "actor": actor}) + "\n")
-        checks["captured_confirmation_and_signup_workspace"] = True
-        inventory("seed", workspace, actor, project)
+        browser = Browser(project)
+        browser.sign_in(email, password)
+        assert browser.workspace_ids()[0] == [], "Signup metadata must not create a workspace"
+        browser.form(browser.send("GET", "/workspace")[1], "/action/tover.workspaces.create.web/create",
+                     name="Restore rehearsal")
+        ids, _ = browser.workspace_ids()
+        assert len(ids) == 1, "Rehearsal workspace creation failed"
+        browser.select(ids[0])
+        identity = {"email": email, "password": password, "workspace": ids[0], "actor": confirmed["user"]["id"]}
+        checks["captured_confirmation_sign_in_and_workspace_creation"] = True
+        inventory("seed", identity, project)
+        inventory("verify", identity, project)
+        (evidence / "identity.json").write_text(json.dumps(identity) + "\n")
         checks["accepted_inventory_pending_draft_and_receipt"] = True
         backup = evidence / "backup"
         print("Backing up both closed stores and restoring into a second unused project", flush=True)
@@ -268,7 +291,7 @@ networks:
         production("restore-new", str(backup), restored, target=restored)
         checks["backup_and_fresh_target_restore"] = True
         production("up", target=restored)
-        verify_restored({"email": email, "password": password, "workspace": workspace, "actor": actor})
+        verify_restored(identity)
         print("PASS: production image, captured confirmation, identity/workspace and complete inventory backup/restore", flush=True)
     finally:
         for target in (project, restored):
