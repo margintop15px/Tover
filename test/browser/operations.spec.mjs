@@ -272,3 +272,147 @@ test('production: blank rows add inputs and outputs in Preview', async ({ page }
   await expect(grid).toContainText('Choose an input');
   await shot(page, 'operations-6-production');
 });
+
+test('edit, copy and cancel an accepted operation', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  page.on('dialog', dialog => dialog.accept());
+  await signIn(page);
+  const suffix = Date.now();
+  await registerCatalogueRecord(page, '/catalogues/warehouses', `Depot ${suffix}`);
+  await registerCatalogueRecord(page, '/catalogues', `Mug ${suffix}`);
+
+  // Opening stock: 1 at 100.00, through the stock page.
+  await page.goto('/');
+  const stock = page.locator('#stock-grid');
+  await expect.poll(() => stock.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  await page.locator('.stock-search-input').fill(`Mug ${suffix}`);
+  await expect(page.locator('.stock-option-product')).toHaveCount(1);
+  await page.locator('.stock-search-input').press('Enter');
+  const productId = await page.locator('stock-workbench').evaluate(node => node.scope.productId);
+  const warehouse = await stock.evaluate((node, name) => node.model.columns.find(column => column.label === name).key, `Depot ${suffix}`);
+  const stockCell = async (rowId, column, value) => {
+    const input = await editor(stock, rowId, column, '.inventory-cell-editor > input');
+    await input.fill(value); await input.press('Enter');
+    await expect.poll(() => page.locator('stock-workbench').evaluate(node => !node.pending && node.queued.size === 0)).toBe(true);
+  };
+  await stockCell(`new-row:${productId}`, 'item', 'M');
+  await stockCell(`new-row:${productId}`, warehouse, '1');
+  await stockCell(`new:${productId}:M`, 'unit-cost', '100');
+  const unit = await editor(stock, `new:${productId}:M`, 'unit', '.inventory-cell-editor > select');
+  await unit.selectOption({ label: 'pcs' }); await unit.press('Enter');
+  await expect.poll(() => page.locator('stock-workbench').evaluate(node => !node.pending && node.queued.size === 0)).toBe(true);
+  // The opening takes its own time, before the operations below.
+  const opened = new Date(Date.now() - 2 * 86_400_000);
+  const pad = value => String(value).padStart(2, '0');
+  await stockCell(`new:${productId}:M`, 'occurred-at', `${opened.getFullYear()}-${pad(opened.getMonth() + 1)}-${pad(opened.getDate())}T10:00`);
+  await page.locator('.stock-submit').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
+
+  await page.goto('/operations');
+  const grid = page.locator('#operations-grid');
+  await expect.poll(() => grid.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  const rowsOf = entry => grid.evaluate((node, entry) => node.model.rows.filter(row => row.entry === entry).map(row => row.id), entry);
+  const pendingEntries = () => page.locator('operations-workbench').evaluate(node => node.model.pending.map(entry => entry['entry-id']));
+  const cell = (row, key) => grid.locator(`tr[data-row-id="${row}"] td[data-column-key="${key}"]`);
+  // Leaves what other tests left pending out of the submission.
+  const submitOnly = async entries => {
+    for (const id of (await pendingEntries()).filter(id => !entries.includes(id))) await grid.locator(`input[data-review-entry="${id}"]`).uncheck();
+    await page.locator('.stock-submit').click();
+    await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
+    await idle(page, 'operations-workbench');
+    await expect.poll(async () => (await pendingEntries()).filter(id => entries.includes(id))).toEqual([]);
+  };
+  const newEntry = async action => {
+    const before = await pendingEntries();
+    const added = async () => (await pendingEntries()).filter(id => !before.includes(id));
+    await action();
+    await expect.poll(async () => (await added()).length).toBe(1);
+    await idle(page, 'operations-workbench');
+    return (await added())[0];
+  };
+  const press = (row, name) => cell(row, 'actions').getByRole('button', { name, exact: true }).click();
+  const acceptedRow = id => grid.evaluate((node, id) => node.model.rows.find(row => row.groupId === id).id, id);
+
+  const quantity = row => cell(row, 'quantity');
+
+  // A purchase of 10 at 60.00.
+  const { group: g, line } = await addOperation(page, 'purchase');
+  const purchase = g.slice(0, -1);
+  const supplier = await editor(grid, g, 'supplier', '.inventory-cell-editor > input');
+  await supplier.fill(`Acme ${suffix}`); await supplier.press('Enter');
+  await idle(page, 'operations-workbench');
+  await choose(page, line, 'item', `Mug ${suffix} / M`, '.inventory-goods-choice');
+  await type(page, line, 'quantity', '10');
+  await type(page, line, 'price', '60');
+  await expect(cell(line, 'warehouse')).toHaveText(`Depot ${suffix}`);
+  await submitOnly([purchase]);
+  const row = `${purchase}|${purchase}#1-0`;
+
+  // 26: Edit opens the accepted operation in Preview; the first changed cell makes a pending revision, a second edit lands in it.
+  const edit = async () => { await press(await acceptedRow(purchase), 'Edit'); await idle(page, 'operations-workbench'); };
+  await edit();
+  expect(await grid.evaluate((node, id) => node.model.rows.filter(row => row.groupId === id).length, purchase)).toBe(2);
+  expect(await page.locator('operations-workbench').evaluate(node => node.model.pending.filter(entry => entry['entry-id'] === node.scope.editing[0]).length)).toBe(0);
+  const revision = await newEntry(() => type(page, row, 'quantity', '8'));
+  await expect(quantity(row)).toHaveText('10 → 8');
+  await type(page, row, 'price', '55');
+  await expect(cell(row, 'price')).toContainText('→ 55');
+  expect((await rowsOf(revision))[0]).toBe(row);
+  await shot(page, 'operations-6-amended');
+
+  // Discarding it restores the accepted values; editing again makes a new one.
+  await press(row, 'Discard pending changes');
+  await expect(quantity(row)).toHaveText('10');
+  await idle(page, 'operations-workbench');
+  const again = await newEntry(() => type(page, row, 'quantity', '8'));
+  // Outside Preview the change shows in the operation's place, read-only.
+  await page.locator('.stock-pending-filter').click();
+  await idle(page, 'operations-workbench');
+  await expect(quantity(row)).toHaveText('10 → 8');
+  expect(await grid.evaluate(node => node.model.rows.every(row => row.cells.every(cell => !cell.editor)))).toBe(true);
+  await edit();
+  await submitOnly([again]);
+  const amended = await acceptedRow(purchase);
+  await expect(quantity(amended)).toHaveText('8');
+  await press(amended, 'Revisions');
+  await expect(page.locator('#history-panel tbody tr')).toHaveCount(2);
+  await expect(page.locator('#history-panel')).toContainText('+10 × 60.00');
+  await shot(page, 'operations-7-revisions');
+  await press(amended, 'Revisions');
+  await expect(grid.locator('.jss_worksheet #history-panel')).toHaveCount(0);
+
+  // 28: a copy opens in Preview as a new pending operation; outside it, it is right below its source.
+  const copy = await newEntry(() => press(amended, 'Copy'));
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'true');
+  const copied = (await rowsOf(copy))[0];
+  await expect(quantity(copied)).toHaveText('8');
+  await type(page, copied, 'quantity', '3');
+  await page.locator('.stock-pending-filter').click();
+  await idle(page, 'operations-workbench');
+  const order = await grid.evaluate(node => [...new Set(node.model.rows.map(row => row.groupId))]);
+  expect(order.indexOf(copy)).toBe(order.indexOf(purchase) + 1);
+  await expect(quantity(amended)).toHaveText('8');
+  await page.locator('.stock-pending-filter').click();
+  await idle(page, 'operations-workbench');
+  await submitOnly([copy]);
+
+  // 27: Cancel opens the operation struck through in Preview; after Submit only Revisions and Copy remain.
+  const cancellation = await newEntry(() => press(amended, 'Cancel operation'));
+  const struck = (await rowsOf(cancellation))[0];
+  await expect(cell(struck, 'kind')).toContainText('(will be cancelled)');
+  await type(page, `${purchase}|`, 'reason', 'Entered twice');
+  await shot(page, 'operations-8-cancelling');
+  await submitOnly([cancellation]);
+  expect(await grid.evaluate((node, id) => node.model.rows.find(row => row.groupId === id).cells.at(-1).actions.map(action => action.label), purchase))
+    .toEqual(['Revisions', 'Copy']);
+  await shot(page, 'operations-9-cancelled');
+
+  // The stock counts the opening and the copy.
+  await page.goto('/');
+  await expect.poll(() => stock.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  await page.locator('.stock-search-input').fill(`Mug ${suffix}`);
+  await expect(page.locator('.stock-option-product')).toHaveCount(1);
+  await page.locator('.stock-search-input').press('Enter');
+  await expect.poll(() => stock.evaluate((node, key) => node.model.rows.map(row => String(row.cells[node.model.columns.findIndex(column => column.key === key)]?.value)), warehouse)).toContain('4');
+  expect(errors).toEqual([]);
+});

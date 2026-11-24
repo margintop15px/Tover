@@ -1,7 +1,8 @@
 import { t } from './i18n.js';
+import { formatDate } from './dates.js';
 import './inventory-grid.js';
 import './smart-entry.js';
-import { InventoryWorkbench, prefs } from './inventory-submit.js';
+import { InventoryWorkbench, element, prefs } from './inventory-submit.js';
 
 const now = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
 
@@ -26,19 +27,28 @@ class OperationsWorkbench extends InventoryWorkbench {
     this.queued = new Map();
     this.revisions = new Map();
     this.values = new Map();
+    this.amending = new Map();
+    this.below = [];
     this.smart = this.querySelector('smart-entry');
     this.showModel(JSON.parse(this.dataset.model));
     if (this.mode !== 'units') this.refreshTable();
     this.showMode();
 
     this.pendingButton.addEventListener('click', () => { if (this.scope.pending) this.leavePreview(); else this.enterPreview(); });
-    this.addEventListener('stock-edit', event => { this.focusRow = event.detail.id; this.enterPreview(); });
+    this.addEventListener('stock-edit', event => this.open(event.detail.id));
     this.submitButton.addEventListener('click', () => this.review());
     const menu = this.querySelector('.operations-add');
     menu.addEventListener('change', () => { if (menu.value) this.add(menu.value); menu.value = ''; });
     this.addEventListener('operation-cell', event => this.edit(event.detail));
+    this.addEventListener('operation-cancel', event => {
+      this.open(event.detail.group);
+      this.edit({ ...event.detail, field: 'cancel', value: 'true', target: null });
+    });
+    this.addEventListener('operation-copy', event => this.copy(event.detail));
+    this.addEventListener('item-history', event => this.toggleRevisions(event.detail));
     this.addEventListener('operation-discard', event => {
-      if (this.pending || !window.confirm(t('Discard this pending operation? This cannot be undone.'))) return;
+      if (this.pending || !window.confirm(event.detail.amends ? t('Discard the pending changes to this operation? The accepted operation stays.')
+        : t('Discard this pending operation? This cannot be undone.'))) return;
       this.discard({ id: event.detail.entry, revision: Math.max(event.detail.revision, this.revisions.get(event.detail.entry) ?? 0) });
     });
     this.addEventListener('inventory-item-options', event => {
@@ -62,11 +72,30 @@ class OperationsWorkbench extends InventoryWorkbench {
   // A new operation opens in Preview and saves at once with the current time and one empty line.
   add(kind) {
     if (!this.scope.pending) { this.scope = { pending: true }; this.showPreview(); }
-    this.edit({ entry: crypto.randomUUID(), revision: 0, kind, field: 'create', value: new Date().toISOString().replace(/\.\d+Z$/, 'Z'), target: null });
+    this.edit({ entry: crypto.randomUUID(), revision: 0, kind, field: 'create', value: now(), target: null });
+  }
+  // Chapter 28: a new operation with the source's values and the current time, opened in Preview; right below its
+  // source wherever both show.
+  copy({ kind, group, source }) {
+    const entry = crypto.randomUUID();
+    this.below.push({ entry, group });
+    this.focusRow = entry;
+    if (!this.scope.pending) { this.scope = { pending: true }; this.showPreview(); }
+    this.edit({ entry, revision: 0, kind, field: 'copy', value: now(), copies: source, target: null });
+  }
+  // Edit opens the operation in Preview: an accepted one is there without pending changes yet.
+  open(id) {
+    this.focusRow = id;
+    this.scope = { pending: true, editing: [...new Set([...(this.scope.editing ?? []), id])] };
+    this.showPreview();
+    this.refreshTable();
   }
   edit(detail) {
-    const id = detail.entry;
+    // The first edit of an accepted operation starts a pending revision; more edits before the table returns join it.
+    if (!detail.entry && detail.amends && !this.amending.has(detail.amends)) this.amending.set(detail.amends, crypto.randomUUID());
+    const id = detail.entry ?? this.amending.get(detail.amends);
     const values = { kind: detail.kind, field: detail.field, value: detail.value ?? '', 'line-id': detail.line ?? '',
+      ...(detail.amends ? { amends: detail.amends } : {}), ...(detail.copies ? { copies: detail.copies } : {}),
       ...(detail.side ? { side: detail.side } : {}), ...(detail.referenceName ? { referenceName: detail.referenceName } : {}) };
     const request = { id, values, revision: detail.revision, target: 'target' in detail ? detail.target : detail };
     const slot = `${id}|${detail.line ?? ''}|${detail.field}`;
@@ -74,6 +103,7 @@ class OperationsWorkbench extends InventoryWorkbench {
     this.save(slot, request);
   }
   showPreview() {
+    this.grid.rowDetail = null;
     this.pendingButton.setAttribute('aria-pressed', String(Boolean(this.scope.pending)));
     this.showMode();
   }
@@ -90,10 +120,13 @@ class OperationsWorkbench extends InventoryWorkbench {
   refreshTable() {
     this.tableRequest = crypto.randomUUID();
     this.emit('operations-query', { requestId: this.tableRequest, preview: Boolean(this.scope.pending),
-      mode: this.scope.pending ? 'units' : this.mode, sort: this.order.sort, direction: this.order.direction, filters: this.order.filters });
+      mode: this.scope.pending ? 'units' : this.mode, sort: this.order.sort, direction: this.order.direction, filters: this.order.filters,
+      editing: this.scope.editing ?? [], below: this.below });
   }
   showModel(model) {
     this.model = model;
+    if (!this.pending && !this.queued.size) this.amending.clear();
+    if (this.grid.rowDetail && !(model.rows.some(row => row.id === this.grid.rowDetail.rowId) && this.showRevisions())) this.grid.rowDetail = null;
     const focus = this.focusRow ? model.rows.findIndex(row => row.groupId === this.focusRow) : -1;
     this.presentModel(Math.max(0, focus - 66));
     if (focus >= 0 && this.scope.pending) { this.grid.selectRow(model.rows[focus].id); this.focusRow = null; }
@@ -103,6 +136,27 @@ class OperationsWorkbench extends InventoryWorkbench {
     this.selected = this.scope.pending ? model.pending.map(entry => entry.rowId).filter(id => !(this.excluded ?? []).includes(id)) : null;
     this.grid.selectedEntries = this.selected ?? [];
     this.showSubmit();
+  }
+  // Revisions of an accepted operation, below its rows.
+  toggleRevisions({ id, row, expanded }) {
+    if (expanded) { this.grid.rowDetail = null; return; }
+    this.revisionsOf = id;
+    this.revisionsNode = element('div', { className: 'stock-history', id: 'history-panel' });
+    if (this.showRevisions()) this.grid.rowDetail = { rowId: row, node: this.revisionsNode };
+  }
+  showRevisions() {
+    const revisions = this.model.revisions[this.revisionsOf];
+    if (!revisions) return false;
+    this.revisionsNode.replaceChildren(element('table', { className: 'stock-history-rows operations-revisions' },
+      element('thead', {}, element('tr', {}, ...['Revision', 'Recorded at', 'Member', 'Occurred at', 'Facts', 'Reason'].map(label => element('th', { textContent: t(label) })))),
+      element('tbody', {}, ...revisions.map(revision => element('tr', {},
+        element('td', { textContent: `${revision.revision}${revision.cancelled ? ` ${t('(cancelled)')}` : ''}` }),
+        element('td', { textContent: formatDate(revision.recordedAt) }),
+        element('td', { textContent: revision.actor }),
+        element('td', { textContent: formatDate(revision.occurredAt) }),
+        element('td', {}, ...revision.facts.map(fact => element('div', { textContent: fact }))),
+        element('td', { textContent: revision.reason }))))));
+    return true;
   }
   set itemsResponse(response) {
     if (!this.grid || !response || !this.fresh(response)) return;

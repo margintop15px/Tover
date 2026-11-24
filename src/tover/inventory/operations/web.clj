@@ -2,8 +2,9 @@
   "Board chapters 18–25 · The operations page: every operation kind as one editable table, a group of rows per
   operation. A transfer or defect line shows as a red leaving row and a green entering row; production inputs are red
   and outputs green. Pending operations are shared drafts saved on each cell commit; Preview ticks the ones to submit, and
-  Submit reviews and accepts them through the stock page's review and accept. Accepted operations are read-only
-  until chapter 26. The browser side is `operations-workbench` in `operations.js`."
+  Submit reviews and accepts them through the stock page's review and accept. Outside Preview the table is
+  read-only. Chapters 26–28: an edit of an accepted operation saves a pending revision, Cancel a pending cancellation
+  and Copy a new operation. The browser side is `operations-workbench` in `operations.js`."
   (:require
     [bel.core :refer [defaction defpage defview]]
     [bel.expressions :refer [->expr]]
@@ -12,6 +13,7 @@
     [clojure.string :as str]
     [tover.catalogues.records :as records]
     [tover.inventory.acceptance.model :as acceptance]
+    [tover.inventory.actors :as actors]
     [tover.inventory.entries.model :as entries]
     [tover.inventory.movements :as movements]
     [tover.inventory.references :as references]
@@ -74,7 +76,8 @@
   the `line-id` of a line field and, for a typed supplier, `referenceName`. The saved entry keeps the rest.
   Fields: create, occurred-at, reason, supplier, store, counterparty (`supplier:<id>` or `store:<id>`),
   from-warehouse, to-warehouse, direction, amount, add-line (`value` is a production side), remove, item, warehouse,
-  quantity, price. A `line-id` the entry does not have starts a line, on the given `side` of a production."
+  quantity, price; cancel (of the accepted operation `saved` amends); copy (`value` is the time, `saved` the operation
+  copied and `copies` its id). A `line-id` the entry does not have starts a line, on the given `side` of a production."
   {:malli/schema [:=> [:cat :map :map :uuid :string :int :map [:maybe :map]] :map]}
   [{:keys [stock-items suppliers] :as catalogue} stocked workspace-id entry-id revision values saved]
   (let [v       #(some-> (get values %) str/trim not-empty)
@@ -87,7 +90,7 @@
         line    (or (some #(when (mine? %) %) lines) (put {:line-id line-id} :side (v "side")))
         change  (fn [f] (let [l (f line)] (if (some mine? lines) (mapv #(if (mine? %) l %) lines) (conj lines l))))
         entry   (cond-> (merge {:workspace-id workspace-id :entry-id entry-id :kind kind}
-                               (select-keys saved [:reason :supplier-id :supplier-name :store-id :from-warehouse-id :to-warehouse-id :direction :amount]))
+                               (select-keys saved [:reason :supplier-id :supplier-name :store-id :from-warehouse-id :to-warehouse-id :direction :amount :amends :cancel]))
                   (:occurred-at saved) (assoc :occurred-at (str (:occurred-at saved)))
                   (pos? revision) (assoc :expected-revision revision))
         item    (fn [l]
@@ -107,6 +110,9 @@
                                "payment" []
                                "production" [{:line-id (str entry-id "-0") :side "input"} {:line-id (str entry-id "-1") :side "output"}]
                                [{:line-id (str entry-id "-0")}]))
+      "cancel" (assoc (select-keys entry [:workspace-id :entry-id :kind :amends :expected-revision]) :cancel true)
+      "copy" (-> (dissoc entry :amends :cancel)
+                 (assoc :occurred-at value :copies (v "copies") :lines (vec (map-indexed #(assoc %2 :line-id (str entry-id "-" %1)) lines))))
       "occurred-at" (put (assoc entry :lines lines) :occurred-at value)
       "reason" (put (assoc entry :lines lines) :reason value)
       "supplier" (let [typed (v "referenceName")
@@ -146,7 +152,7 @@
   {:supplier-id       "supplier"  :supplier-name   "supplier"  :store-id   "store" :occurred-at   "occurred-at" :lines        "kind"
    :stock-item-id     "item"      :product-name    "item"      :product-id "item"  :variant-label "item"        :warehouse-id "warehouse"
    :warehouse-name    "warehouse" :quantity        "quantity"  :unit-cost  "price" :unit-price    "price"       :reason       "reason"
-   :from-warehouse-id "warehouse" :to-warehouse-id "warehouse" :direction  "kind"  :side          "kind"        :amount       "quantity"})
+   :from-warehouse-id "warehouse" :to-warehouse-id "warehouse" :direction  "kind"  :side          "kind"        :amount       "quantity"  :amends "kind"})
 
 
 (def operation-kinds
@@ -223,15 +229,22 @@
   (if amount (str (money amount currency) " " currency) ""))
 
 
-(defn- pending-group
-  "Rows of one pending operation: shared cells on the first row, merged over its lines; every cell edits the draft in Preview.
+(defn- add-class
+  {:malli/schema [:=> [:cat :map [:maybe :string]] :map]}
+  [m class]
+  (update m :className #(not-empty (str/join " " (remove str/blank? [% class])))))
+
+
+(defn- group-rows
+  "Rows of one operation's `facts`: shared cells on the first row, merged over its lines; every cell edits the draft in Preview.
+  `source` says what an edit saves: the entry and its revision (0 before the first save), and the accepted revision it `:amends`.
   A transfer or defect line adds a read-only green row for its entering half. Once every line (of a production side)
   has an item, a blank row follows in Preview; choosing its item adds the line."
-  {:malli/schema [:=> [:cat :map :map :boolean :boolean] [:vector :map]]}
-  [{:keys [catalogue currency label] :as ctx} {:keys [entry-id revision kind occurred-at reason direction amount from-warehouse-id to-warehouse-id lines] :as entry} preview? money?]
+  {:malli/schema [:=> [:cat :map :string :map :map :boolean :boolean] [:vector :map]]}
+  [{:keys [catalogue currency label] :as ctx} gid {:keys [kind occurred-at reason direction amount from-warehouse-id to-warehouse-id lines] :as facts}
+   {:keys [entry revision] :as source} preview? money?]
   (let [item      (by :stock-item-id (:stock-items catalogue))
-        target    (fn [field & [line]] (cond-> {:type  "operation-cell" :id       (str entry-id "|" (or (:line-id line) "")) :path field
-                                                :entry entry-id         :revision revision :kind kind :field field}
+        target    (fn [field & [line]] (cond-> (merge source {:type "operation-cell" :id (str gid "|" (or (:line-id line) "")) :path field :kind kind :field field})
                                          line (assoc :line (:line-id line))
                                          (:side line) (assoc :side (:side line))))
         price     (get-in entries/operation-rules [kind :price])
@@ -240,7 +253,7 @@
         ro        {:value "" :readOnly true}
         wh        (fn [id field t] {:value  (or id "") :display (get-in label [:warehouse id] "")
                                     :editor {:type "select" :allowEmpty true :options (options (:warehouses catalogue) :warehouse-id id)} :target (t field)})
-        shared    (into (if preview? [{:selection {:id entry-id :label (i18n/t "Include in submit")}}] [])
+        shared    (into (if preview? [(if entry {:selection {:id entry :label (i18n/t "Include in submit")}} {:value ""})] [])
                         [(if payment?
                            {:value  (or direction "") :display (web/kind-label kind direction) :className "operations-kind"
                             :editor {:type "select" :allowEmpty true :options [{:value "" :label ""} {:value "in" :label (i18n/t "Payment received")}
@@ -248,16 +261,17 @@
                             :target (target "direction")}
                            {:value (web/kind-label kind nil) :className "operations-kind"})
                          {:value (or (some-> occurred-at str) "") :editor {:type "date"} :target (target "occurred-at")}
-                         (supplier-cell ctx entry target)
-                         (store-cell ctx entry target)
+                         (supplier-cell ctx facts target)
+                         (store-cell ctx facts target)
                          {:value (or reason "") :editor {:type "text"} :target (target "reason")}])
-        discard   {:type "operation-discard" :entry entry-id :revision revision :label (i18n/t "Discard pending changes") :icon "🗑"}
-        line-row  (fn [line class cells] {:id (str entry-id "|" line) :groupId entry-id :className (str "operations-pending" (some->> class (str " "))) :cells cells})
+        line-row  (fn [line class cells]
+                    (-> {:id (str gid "|" line) :groupId gid :entry entry :line (not-empty line) :cells cells}
+                        (add-class (when entry "operations-pending")) (add-class class)))
         item-row  (fn [line]
                     (let [i           (item (:stock-item-id line))
                           q           (decimal (:quantity line))
                           p           (when price (decimal (get line price)))
-                          t           #(assoc (target % line) :id (str entry-id "|" (:line-id line)))
+                          t           #(assoc (target % line) :id (str gid "|" (:line-id line)))
                           out?        (or pair? (= "input" (:side line)))
                           in?         (= "output" (:side line))
                           about       [{:value (or (:article i) "") :readOnly true}
@@ -290,8 +304,8 @@
                         pair? (conj (line-row (str (:line-id line) "|in") "operations-in" entering)))))
         side-rows (fn [side]
                     (let [lines (filter #(= side (:side %)) lines)
-                          blank {:line-id (str entry-id "-r" revision (some->> side (str "-"))) :side side}
-                          t     #(assoc (target % blank) :id (str entry-id "|" (:line-id blank)))]
+                          blank {:line-id (str gid "-r" revision (some->> side (str "-"))) :side side}
+                          t     #(assoc (target % blank) :id (str gid "|" (:line-id blank)))]
                       (cond-> (vec (mapcat item-row lines))
                         (and preview? (every? #(some % [:stock-item-id :product-id :product-name]) lines))
                         (conj (assoc (line-row (:line-id blank) (str "operations-new-line" (case side "input" " operations-out" "output" " operations-in" ""))
@@ -305,16 +319,7 @@
                                                     ro ro])]
                         (= "production" kind) (into (side-rows "input") (side-rows "output"))
                         :else (side-rows nil))]
-    ;; As on the stock table: read-only outside Preview, with Edit on the operation's first row.
-    (vec (map-indexed (fn [index row]
-                        (let [row (update row :cells #(into (if (zero? index) shared (if preview? (assoc shared 0 {:value ""}) shared)) %))]
-                          (cond-> (if preview? row (update row :cells (partial mapv #(-> % (dissoc :editor :target :itemTarget :itemValue :placeholder :actions) (assoc :readOnly true :date (= "date" (get-in % [:editor :type])))))))
-                            (zero? index) (update :cells (fn [cells]
-                                                           (update cells (dec (count cells))
-                                                                   (fn [c] {:value   ""
-                                                                            :actions (if preview?
-                                                                                       (conj (vec (:actions c)) discard)
-                                                                                       [{:type "stock-edit" :id entry-id :label (i18n/t "Edit") :icon "✎"}])})))))))
+    (vec (map-indexed (fn [index row] (update row :cells #(into (if (and preview? (pos? index)) (assoc shared 0 {:value ""}) shared) %)))
                       (or (seq rows) [(line-row "" nil (repeat (count line-columns) ro))])))))
 
 
@@ -349,6 +354,119 @@
                               {:value ""}])}))))
 
 
+(defn- lock
+  "A cell without its editor and actions."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [{:keys [editor] :as cell}]
+  (cond-> (assoc (dissoc cell :editor :target :itemTarget :itemValue :placeholder :actions) :readOnly true)
+    (= "date" (:type editor)) (assoc :date true)))
+
+
+(defn- compared
+  "Rows of a pending revision against the accepted `base` rows: a changed cell keeps its accepted text as `:before`, a
+  new line is marked whole and a removed one stays, struck through. `shared` cells are the operation's, of which the
+  first `fixed` are not compared."
+  {:malli/schema [:=> [:cat [:vector :map] [:vector :map] :int :int] [:vector :map]]}
+  [rows base shared fixed]
+  (let [base  (vec (remove :new-line? base))
+        was   (by :id base)
+        last? #(= (dec (+ shared (count line-columns))) %)
+        same? (fn [a b] (or (= a b) (let [x (decimal a) y (decimal b)] (boolean (and x y (zero? (compare x y)))))))
+        gone  (remove (comp (set (map :id rows)) :id) base)]
+    (-> (mapv (fn [{:keys [id new-line?] :as row}]
+                (cond-> row
+                  (not new-line?)
+                  (update :cells
+                          #(vec (map-indexed (fn [x cell]
+                                               (let [old (some-> (get-in (if (< x shared) (first base) (was id)) [:cells x]) web/cell-text)]
+                                                 (cond (or (< x fixed) (last? x)) cell
+                                                       (nil? old) (add-class cell "stock-cell-pending")
+                                                       (same? old (web/cell-text cell)) cell
+                                                       :else (add-class (assoc cell :before old) "stock-cell-pending"))))
+                                             %)))))
+              rows)
+        ;; ponytail: removed lines go to the end of the group.
+        (into (map #(-> % (dissoc :entry :line) (update :id str "|removed") (add-class "operations-cancelled")
+                        (update :cells (partial mapv (fn [cell] (dissoc (lock cell) :selection))))))
+              gone))))
+
+
+(defn- group
+  "Rows of one operation, `{:gid :entry :op}`: a pending one, an accepted one, both (accepted → pending), a pending
+  cancellation (struck through, only its reason editable) or a cancelled one. As on the stock table, cells edit in
+  Preview only; outside it the first row offers Edit, Copy and Cancel."
+  {:malli/schema [:=> [:cat :map :map :boolean :boolean] [:vector :map]]}
+  [ctx {:keys [gid entry op]} preview? money?]
+  (let [base       (when op (movements/collapse op (:lines op)))
+        amends     (when op (or (:amends entry) (:record-revision-id op)))
+        entry-id   (:entry-id entry)
+        source     (cond-> {:entry entry-id :revision (:revision entry 0)} amends (assoc :amends amends))
+        cancelled? (boolean (and (:cancelled op) (not entry)))
+        struck?    (or cancelled? (boolean (:cancel entry)))
+        kind       (:kind (or entry op))
+        facts      (cond (:cancel entry) (assoc base :reason (:reason entry)) entry entry :else base)
+        render     (fn [facts] (group-rows ctx gid facts source preview? money?))
+        fixed      (if preview? 1 0)
+        shared     (+ fixed (dec (count group-columns)))
+        rows       (cond->> (if (or entry (and preview? (not struck?))) (render facts) (accepted-group ctx op money?))
+                     struck? (into [] (remove :new-line?))
+                     (and entry op (not struck?)) (#(compared % (render base) shared (cond-> fixed (not= "payment" kind) inc))))
+        do-action  (fn [type label icon & [more]] (merge source {:type type :kind kind :group gid :label label :icon icon} more))
+        actions    (cond-> []
+                     op (conj {:type "item-history" :id gid :row (:id (peek rows)) :label (i18n/t "Revisions")})
+                     (and preview? entry) (conj (do-action "operation-discard" (i18n/t "Discard pending changes") "🗑"))
+                     (not (or preview? cancelled?)) (conj {:type "stock-edit" :id gid :label (i18n/t "Edit") :icon "✎"})
+                     (not preview?) (conj (do-action "operation-copy" (i18n/t "Copy") "⧉" {:source (if (and entry (not struck?)) entry-id (:record-revision-id op))}))
+                     (and op (not (or preview? struck?))) (conj (do-action "operation-cancel" (i18n/t "Cancel operation") "⊘")))
+        suffix     (cond cancelled? (i18n/t "(cancelled)") struck? (i18n/t "(will be cancelled)"))
+        open?      (fn [x] (and preview? (or (< x fixed) (not struck?) (= (dec shared) x))))]
+    (vec (map-indexed
+           (fn [index {:keys [cells] :as row}]
+             (let [end (dec (count cells))]
+               (cond-> (assoc row :cells (vec (map-indexed #(if (open? %1) %2 (lock %2)) cells)))
+                 struck? (add-class "operations-cancelled")
+                 (and entry op) (update-in [:cells fixed] add-class "stock-cell-pending")
+                 suffix (update-in [:cells fixed] #(assoc % :display (str (web/cell-text %) " " suffix)))
+                 (zero? index) (update-in [:cells end] #(-> % (assoc :actions (into (vec (:actions %)) actions)) (dissoc :readOnly))))))
+           rows))))
+
+
+(defn- groups
+  "Operations in page order: new pending ones oldest first, then accepted ones newest first, each with the pending
+  entry that amends it; in preview only pending ones and the accepted ones in `editing`. A copy in `below` follows its
+  source, or comes first when the source is not there."
+  {:malli/schema [:=> [:cat [:sequential :map] [:sequential :map] [:maybe [:sequential :map]] [:maybe [:sequential :string]] :boolean] [:vector :map]]}
+  [pending accepted below editing preview?]
+  (let [op-of    (into {} (for [op accepted r (cons op (:revisions op))] [(:record-revision-id r) (:record-id op)]))
+        amending (into {} (for [e pending :let [id (op-of (:amends e))] :when id] [id e]))
+        all      (into (vec (for [e (sort-by (juxt (comp str :occurred-at) :entry-id) pending) :when (not (op-of (:amends e)))] {:gid (:entry-id e) :entry e}))
+                       (for [op    accepted
+                             :let  [gid (:record-id op) entry (amending gid)]
+                             :when (or (not preview?) entry (and (some #{gid} editing) (not (:cancelled op))))]
+                         {:gid gid :op op :entry entry}))]
+    (reduce (fn [gs {:keys [entry group]}]
+              (let [copy (some #(when (= entry (:gid %)) %) gs)]
+                (cond (or (nil? copy) (= entry group)) gs
+                      (some #(= group (:gid %)) gs) (vec (mapcat #(condp = (:gid %) entry nil group [% copy] [%]) gs))
+                      :else (into [copy] (remove #(= entry (:gid %))) gs))))
+            all below)))
+
+
+(defn- revisions
+  "What each revision of an operation said, first to last."
+  {:malli/schema [:=> [:cat :map :map] [:vector :map]]}
+  [{:keys [label actors currency]} {:keys [kind revisions]}]
+  (vec (for [{:keys [revision recorded-at occurred-at actor reason cancelled supplier-id store-id amount lines]} revisions]
+         {:revision revision :recordedAt (str recorded-at) :occurredAt (str occurred-at) :reason (or reason "") :cancelled (boolean cancelled)
+          :actor    (get actors (str actor) (i18n/t "Unavailable user"))
+          :facts    (into (vec (remove str/blank? [(or (get-in label [:supplier supplier-id]) (get-in label [:store store-id])) (money (decimal amount) currency)]))
+                          (for [{:keys [stock-item-id warehouse-id quantity-change] :as line} lines
+                                :let [price (get line (get-in entries/operation-rules [kind :price]))]]
+                            (str (get-in label [:item stock-item-id] "") " · " (get-in label [:warehouse warehouse-id] "") " · "
+                                 (if (pos? quantity-change) (str "+" quantity-change) quantity-change)
+                                 (when price (str " × " (money (decimal price) currency))))))})))
+
+
 (defn- arrange
   "Operations sorted and filtered by column. An operation stays whole: it is kept when one of its rows matches every
   condition. Quantity sums the operation's rows; other columns compare its first row."
@@ -373,23 +491,22 @@
 
 
 (def ^:private column-widths
-  {"select"   40  "actions" 70  "kind" 150 "occurred-at" 180 "supplier" 150 "store" 140 "reason" 150 "item" 220 "article" 110 "unit" 90 "warehouse" 140
+  {"select"   40  "actions" 130 "kind" 150 "occurred-at" 180 "supplier" 150 "store" 140 "reason" 150 "item" 220 "article" 110 "unit" 90 "warehouse" 140
    "quantity" 130 "price"   140})
 
 
 (defn operations-grid
-  "Pending operations first (oldest first), then accepted ones newest first; in preview only pending ones, each with
-  \"Include in submit\". Quantities, or amounts in money mode (never in preview). Draft findings and blockers mark the
+  "New pending operations first (oldest first), then accepted ones newest first, with their pending revisions and
+  cancellations in place; in preview only pending ones, each with \"Include in submit\", and the accepted ones in
+  `:editing`. Quantities, or amounts in money mode (never in preview). Draft findings and blockers mark the
   cells they concern; `:sort`, `:direction` and `:filters` order and narrow the operations."
   {:malli/schema [:=> [:cat :map] :map]}
-  [{:keys [catalogue pending findings accepted currency preview? mode] :as view}]
-  (let [ctx    {:catalogue catalogue :currency currency :label (names catalogue)}
+  [{:keys [catalogue pending findings accepted currency preview? mode below editing actors] :as view}]
+  (let [ctx    {:catalogue catalogue :currency currency :label (names catalogue) :actors actors}
         money? (and (= "money" mode) (not preview?))
         mine   (filter (comp (set operation-kinds) :kind) pending)
         keys   (vec (concat (if preview? group-columns (rest group-columns)) line-columns))
-        groups (arrange (concat (for [e (sort-by (juxt (comp str :occurred-at) :entry-id) mine)] (pending-group ctx e (boolean preview?) money?))
-                                (when-not preview? (for [r accepted] (accepted-group ctx r money?))))
-                        keys view)
+        groups (arrange (for [g (groups mine accepted below editing (boolean preview?))] (group ctx g (boolean preview?) money?)) keys view)
         offset (if preview? 0 1)
         marks  (group-by (fn [{:keys [entry-id line-id field]}] [entry-id line-id (finding-column field "item")])
                          (concat findings
@@ -397,30 +514,30 @@
                                        :when (or (nil? (:line-id b)) (= :archived-reference (:code b)))]
                                    (assoc b :entry-id entry-id :level :error :blocker? true))))
         text   (fn [f] (if (:blocker? f) (web/problem-message f {}) (web/finding-text f {})))
-        mark   (fn [row]
-                 (let [[entry line] (str/split (:id row) #"\|" 2)]
-                   (update row :cells
-                           (fn [cells]
-                             (mapv (fn [k cell]
-                                     (let [fs (concat (get marks [entry (not-empty line) k])
-                                                      (when ((if (:new-line? row) #{"kind" "occurred-at" "supplier" "store" "reason"}
-                                                                 #{"kind" "occurred-at" "supplier" "store" "reason" "warehouse" "quantity"}) k)
-                                                        (get marks [entry nil k])))]
-                                       (if (seq fs)
-                                         (-> cell
-                                             (update :className #(str/join " " (remove str/blank? [% "stock-finding" (str "stock-finding-" (name (or (some (comp #{:error} :level) fs) (:level (first fs)) :error)))])))
-                                             (assoc :title (str/join "\n" (distinct (map text fs)))))
-                                         cell)))
-                                   keys cells)))))
+        mark   (fn [{:keys [entry line new-line?] :as row}]
+                 (cond-> row
+                   entry (update :cells
+                                 (fn [cells]
+                                   (mapv (fn [k cell]
+                                           (let [fs (concat (get marks [entry line k])
+                                                            (when ((cond-> #{"kind" "occurred-at" "supplier" "store" "reason"} (not new-line?) (conj "warehouse" "quantity")) k)
+                                                              (get marks [entry nil k])))]
+                                             (if (seq fs)
+                                               (-> cell
+                                                   (add-class (str "stock-finding stock-finding-" (name (or (some (comp #{:error} :level) fs) (:level (first fs)) :error))))
+                                                   (assoc :title (str/join "\n" (distinct (map text fs)))))
+                                               cell)))
+                                         keys cells)))))
         rows   (vec (map mark (apply concat (map-indexed (fn [g rows] (map #(assoc % :groupIndex g) rows)) groups))))
         merges (second (reduce (fn [[start acc] group]
                                  [(+ start (count group))
                                   (into acc (when (< 1 (count group))
                                               (for [col (range (- (count group-columns) offset))] {:row start :col col :rowspan (count group)})))])
                                [0 []] groups))]
-    {:id          "operations" :editable true :rowHeaders false :merges merges :editStates [] :showPrevious false
+    {:id          "operations" :editable true :rowHeaders false :merges merges :editStates []
      :layoutScope "operations"
      :pending     (vec (for [{:keys [entry-id revision]} mine] {:entry-id entry-id :revision revision :rowId entry-id}))
+     :revisions   (into {} (for [op accepted] [(:record-id op) (revisions ctx op)]))
      :columns     (mapv (fn [k] (cond-> {:key k :label (i18n/t (if (and money? (= "quantity" k)) "Amount" (column-labels k))) :width (column-widths k)}
                                   (not (#{"select" "actions"} k)) (assoc :sortKey k :filterKey k)
                                   (#{"kind" "item"} k) (assoc :required true)
@@ -455,18 +572,20 @@
         accepted  (web/read-or-nil context ::acceptance/accepted-operations {})
         currency  (or (:currency (web/read-or-nil context ::currency/workspace-currency {})) "EUR")]
     (when (and work catalogue accepted)
-      (operations-grid (assoc view :catalogue catalogue :pending (:entries work) :findings (:findings work) :accepted accepted :currency currency)))))
+      (operations-grid (assoc view :catalogue catalogue :pending (:entries work) :findings (:findings work) :accepted accepted :currency currency
+                              :actors (actors/labels context (mapcat :revisions accepted)))))))
 
 
 (defview table
   {:route-data access :schema [:map [:requestId :string] [:preview :boolean] [:mode {:optional true} [:maybe [:enum "units" "money"]]]
                                [:sort {:optional true} [:maybe :string]] [:direction {:optional true} [:maybe [:enum "asc" "desc"]]]
-                               [:filters {:optional true} [:maybe :map]]]
+                               [:filters {:optional true} [:maybe :map]] [:editing {:optional true} [:vector :string]]
+                               [:below {:optional true} [:vector [:map [:entry :string] [:group :string]]]]]
    :query      (fn [context input] {:context context :input input})}
   [{:keys [context] {:keys [requestId preview] :as input} :input}]
   {:type :signals
    :data {:_operationsTableJson (json {:requestId requestId
-                                       :model     (table-model context (assoc (select-keys input [:mode :sort :direction :filters]) :preview? preview))})}})
+                                       :model     (table-model context (assoc (select-keys input [:mode :sort :direction :filters :editing :below]) :preview? preview))})}})
 
 
 (defn item-options
@@ -511,13 +630,20 @@
                 [:values [:map-of [:or :string :keyword] [:string {:max 1000}]]] [:commandId [:string {:min 1 :max 100}]]]}
   [context {:keys [workspaceId entryId revision values commandId]}]
   ;; Reads the saved entry to keep the rest of it, the catalogue to resolve names and the stock table for the
-  ;; warehouse prefill; the command rechecks everything.
-  (let [catalogue (runtime/read-model context ::references/draft-catalogue {})
-        table     (runtime/read-model context ::stock/stock-table {:hide-empty? true})
-        saved     (when (pos? revision)
-                    (some #(when (= entryId (:entry-id %)) %) (:entries (runtime/read-model context ::entries/pending-entries {}))))]
+  ;; warehouse prefill; the first edit of an accepted operation starts from it, and a copy from its source. The
+  ;; command rechecks everything.
+  (let [catalogue               (runtime/read-model context ::references/draft-catalogue {})
+        table                   (runtime/read-model context ::stock/stock-table {:hide-empty? true})
+        values                  (update-keys values name)
+        {:strs [amends copies]} (update-vals values not-empty)
+        pending                 (fn [id] (some #(when (= id (:entry-id %)) %) (:entries (runtime/read-model context ::entries/pending-entries {}))))
+        accepted                (fn [id] (some #(when (some (comp #{id} :record-revision-id) (cons % (:revisions %))) (movements/collapse % (:lines %)))
+                                               (runtime/read-model context ::acceptance/accepted-operations {})))
+        saved                   (cond copies (or (pending copies) (accepted copies))
+                                      (pos? revision) (pending entryId)
+                                      amends (some-> (accepted amends) (assoc :amends amends)))]
     (web/descriptor ::entries/save-shared-inventory-entry commandId
-                    (operation-input catalogue (stocked table) workspaceId entryId revision (update-keys values name) saved))))
+                    (operation-input catalogue (stocked table) workspaceId entryId revision values saved))))
 
 
 ;; Page

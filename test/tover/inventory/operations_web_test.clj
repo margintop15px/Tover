@@ -58,9 +58,9 @@
            (for [row ["p|p-0" "p|p-1"]] (map #(column model row %) ["item" "warehouse" "quantity" "price"]))))
     (is (= ["Textiles LLC" ""] (map #(column model "p|p-0" %) ["supplier" "store"])))
     (is (= #{0} (set (map :row (:merges model)))) "the purchase's shared cells span its two lines")
-    (testing "normal mode is read-only; a pending operation offers Edit"
+    (testing "normal mode is read-only; every operation offers Edit and Copy, an accepted one Cancel and its revisions"
       (is (not-any? #(or (:editor %) (:target %)) (mapcat :cells (:rows model))))
-      (is (= [["stock-edit"] nil nil] (map #(some->> % :actions (map :type)) (map (comp last :cells) (:rows model)))))
+      (is (= [["stock-edit" "operation-copy"] nil ["item-history" "stock-edit" "operation-copy" "operation-cancel"]] (map #(some->> % :actions seq (map :type)) (map (comp last :cells) (:rows model)))))
       (is (= ["Sale" "Web shop" "3"] (map #(column model "s|0" %) ["kind" "store" "quantity"]))))))
 
 
@@ -263,3 +263,157 @@
   (let [model (operations/operations-grid {:catalogue catalogue :pending [] :findings [] :currency "RUB" :preview? false
                                            :accepted  [{:record-id "pay" :kind "payment" :direction "out" :occurred-at at :supplier-id "tex" :total 1000M :partial? false :lines []}]})]
     (is (= ["Payment made" "Textiles LLC" "1000.00 RUB"] (map #(column model "pay|" %) ["kind" "supplier" "quantity"])))))
+
+
+;; 26–28 · Accepted operations change through pending revisions, cancellations and copies
+
+
+(defn- amended
+  {:malli/schema [:=> [:cat [:maybe :map] :map [:* :any]] :map]}
+  [entry op & {:as more}]
+  (shown (merge {:pending (if entry [entry] []) :accepted [op]} more)))
+
+
+(defn- cell
+  {:malli/schema [:=> [:cat :map :string :string] :map]}
+  [model row key]
+  (get (:cells (some #(when (= row (:id %)) %) (:rows model))) (.indexOf ^java.util.List (mapv :key (:columns model)) key)))
+
+
+(defn- labels
+  {:malli/schema [:=> [:cat :map] [:sequential :any]]}
+  [model]
+  (map :label (:actions (last (:cells (first (:rows model)))))))
+
+
+(def sale (first accepted))
+
+
+(def edited
+  {:entry-id "e" :revision 1 :kind "sale" :amends "s#1" :occurred-at at :store-id "web" :status "pending"
+   :lines    [{:line-id "s#1-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 2 :unit-price "150"}
+              {:line-id "e-1" :stock-item-id "tee-m" :warehouse-id "back" :quantity 1 :unit-price "150.00"}]})
+
+
+(deftest accepted-cells-save-a-revision-of-it
+  (is (= ["Revisions" "Edit" "Copy" "Cancel operation"] (labels (amended nil sale))))
+  (let [model (amended nil sale :preview? true :editing ["s"])]
+    (is (= {:entry nil :revision 0 :amends "s#1" :line "s#1-0" :field "quantity" :kind "sale"}
+           (select-keys (:target (cell model "s|s#1-0" "quantity")) [:entry :revision :amends :line :field :kind])))
+    (is (= ["s|s#1-0" "s|s-r0"] (map :id (:rows model))) "with a blank row for another line")
+    (is (= ["Revisions"] (labels model)))
+    (is (nil? (:selection (cell model "s|s#1-0" "select"))) "nothing to submit yet")))
+
+
+(deftest a-pending-revision-shows-what-changes
+  (let [model (amended edited sale :preview? true
+                       :findings [{:entry-id "e" :line-id "s#1-0" :field :quantity :code :insufficient-stock :level :warning}])]
+    (is (= [["s|s#1-0" "e"] ["s|e-1" "e"] ["s|s-r1" "e"]] (map (juxt :id :entry) (:rows model))))
+    (is (= ["3" "2"] ((juxt :before :value) (cell model "s|s#1-0" "quantity"))))
+    (is (nil? (:before (cell model "s|s#1-0" "price"))) "150 is 150.00")
+    (is (re-find #"stock-cell-pending" (:className (cell model "s|e-1" "item"))) "an added line")
+    (is (re-find #"stock-finding" (:className (cell model "s|s#1-0" "quantity"))))
+    (is (= ["Remove line" "Revisions" "Discard pending changes"] (labels model)))
+    (is (= "e" (get-in model [:rows 0 :cells 0 :selection :id]))))
+  (testing "outside Preview it is in the operation's place, read-only"
+    (let [model (amended edited sale)]
+      (is (= ["3" "2"] ((juxt :before :value) (cell model "s|s#1-0" "quantity"))))
+      (is (not-any? #(or (:editor %) (:target %)) (mapcat :cells (:rows model))))
+      (is (= ["Revisions" "Edit" "Copy" "Cancel operation"] (labels model)))
+      (is (= ["450.00" "300.00"] ((juxt :before :value) (cell (amended edited sale :mode "money") "s|s#1-0" "quantity"))))))
+  (testing "a changed transfer keeps its signs"
+    (let [op    {:record-id "t" :record-revision-id "t#1" :kind "transfer" :occurred-at at
+                 :lines     [{:position 0 :stock-item-id "tee-m" :warehouse-id "main" :quantity-change -3}
+                             {:position 1 :stock-item-id "tee-m" :warehouse-id "back" :quantity-change 3}]}
+          model (amended {:entry-id "e" :revision 1 :kind "transfer" :amends "t#1" :occurred-at at :from-warehouse-id "main" :to-warehouse-id "back"
+                          :lines    [{:line-id "t#1-0" :stock-item-id "tee-m" :quantity 2}]} op)]
+      (is (= [["−3" "−" "2"] ["+3" "+" "2"]]
+             (map #((juxt :before :prefix :value) (cell model % "quantity")) ["t|t#1-0" "t|t#1-0|in"])))))
+  (testing "a removed line stays struck through"
+    (let [model (amended (update edited :lines subvec 1) sale :preview? true)]
+      (is (= [["s|e-1" "operations-pending"] ["s|s-r1" "operations-pending operations-new-line"] ["s|s#1-0|removed" "operations-pending operations-cancelled"]]
+             (map (juxt :id :className) (:rows model))))
+      (is (nil? (:editor (cell model "s|s#1-0|removed" "quantity"))))))
+  (testing "Preview shows only pending ones"
+    (is (= [] (:rows (amended nil sale :preview? true))))))
+
+
+(deftest a-stale-revision-is-marked-in-place
+  (let [op    (assoc sale :record-revision-id "s#2" :revisions [sale (assoc sale :record-revision-id "s#2")])
+        model (amended (assoc edited :blockers [{:line-id nil :field :amends :code :target-not-current}]) op)]
+    (is (= "This operation changed since it was loaded. Review the latest values." (:title (cell model "s|s#1-0" "kind"))))))
+
+
+(def cancelling {:entry-id "e" :revision 1 :kind "sale" :amends "s#1" :cancel true :reason "entered twice" :status "pending" :lines []})
+
+
+(deftest a-pending-cancellation-is-struck-through
+  (let [model (amended cancelling sale :preview? true)]
+    (is (= [["s|s#1-0" "operations-pending operations-cancelled"]] (map (juxt :id :className) (:rows model))))
+    (is (= ["Sale (will be cancelled)" "3" "entered twice"] (map #(column model "s|s#1-0" %) ["kind" "quantity" "reason"])))
+    (is (= [["reason" "e"]] (keep #(when-let [t (:target %)] [(:field t) (:entry t)]) (:cells (first (:rows model))))) "only the reason is editable")
+    (is (= "e" (get-in model [:rows 0 :cells 0 :selection :id])))
+    (is (= ["Revisions" "Discard pending changes"] (labels model))))
+  (let [model (amended cancelling sale)]
+    (is (= ["Revisions" "Edit" "Copy"] (labels model)))
+    (is (not-any? :target (mapcat :cells (:rows model))))
+    (is (= "s#1" (:source (last (:actions (last (:cells (first (:rows model)))))))) "Copy takes the accepted facts")))
+
+
+(deftest a-cancelled-operation-is-read-only
+  (let [op    (assoc sale :cancelled true :record-revision-id "s#2")
+        model (amended nil op)]
+    (is (not-any? :target (mapcat :cells (:rows model))))
+    (is (= ["Sale (cancelled)" "3"] (map #(column model "s|0" %) ["kind" "quantity"])))
+    (is (= ["Revisions" "Copy"] (labels model)))
+    (is (= [] (:rows (amended nil op :preview? true :editing ["s"]))))))
+
+
+(deftest revisions-tell-who-and-why
+  (let [revision {:revision 1 :record-revision-id "s#1" :recorded-at at :occurred-at at :actor workspace :store-id "web" :cancelled false :lines (:lines sale)}
+        model    (amended nil (assoc sale :revisions [revision (assoc revision :revision 2 :record-revision-id "s#2" :reason "miscounted")]) :actors {(str workspace) "Ann"})]
+    (is (= [[1 "Ann" "" ["Web shop" "T-shirt / M · Main · -3 × 150.00"]] [2 "Ann" "miscounted" ["Web shop" "T-shirt / M · Main · -3 × 150.00"]]]
+           (map (juxt :revision :actor :reason :facts) (get-in model [:revisions "s"]))))))
+
+
+(deftest a-copy-is-below-its-source
+  (let [copy {:entry-id "c" :revision 1 :kind "sale" :occurred-at at :lines [{:line-id "c-0"}]}]
+    (is (= ["c|c-0" "s|0"] (map :id (:rows (amended copy sale)))))
+    (is (= ["s|0" "c|c-0"] (map :id (:rows (amended copy sale :below [{:entry "c" :group "s"}])))))
+    (is (= ["c|c-0" "s|0"] (map :id (:rows (amended copy sale :below [{:entry "c" :group "s"}] :sort "quantity" :direction "asc")))) "a chosen order wins")
+    (is (= ["c" "p"] (distinct (map :groupId (:rows (shown {:pending [(assoc purchase :occurred-at (.minusSeconds at 60)) copy] :preview? true :below [{:entry "c" :group "s"}]})))))
+        "first in Preview, where its source is not shown")))
+
+
+(defn- saved-input
+  {:malli/schema [:=> [:cat [:vector :map] [:vector :map] :int :map] :map]}
+  [pending accepted revision values]
+  (with-redefs [runtime/execute!   (fn [& _] (throw (Exception. "Action must be pure")))
+                runtime/read-model (fn [_ id _] (case (name id) "pending-entries" {:entries pending} "accepted-operations" accepted catalogue))]
+    (:input (operations/save-operation {} {:workspaceId workspace :entryId "e" :revision revision :values values :commandId "c1"}))))
+
+
+(deftest first-edit-starts-from-the-accepted-operation
+  (is (= {:workspace-id workspace :entry-id "e" :kind "sale" :amends "s#1" :occurred-at "2026-11-19T10:00:00Z" :store-id "web"
+          :lines        [{:line-id "s#1-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity "2" :unit-price "150.00"}]}
+         (saved-input [] accepted 0 {"kind" "sale" "field" "quantity" "line-id" "s#1-0" "value" "2" "amends" "s#1"})))
+  (is (= ["s#1" 1] ((juxt :amends :expected-revision) (saved-input [edited] accepted 1 {"field" "reason" "value" "x" "amends" "s#1"}))) "later edits keep it"))
+
+
+(deftest cancel-carries-only-its-target
+  (is (= {:workspace-id workspace :entry-id "e" :kind "sale" :amends "s#1" :cancel true}
+         (saved-input [] accepted 0 {"kind" "sale" "field" "cancel" "value" "true" "amends" "s#1"})))
+  (is (= {:workspace-id workspace :entry-id "e" :kind "sale" :amends "s#1" :cancel true :expected-revision 1}
+         (saved-input [edited] accepted 1 {"kind" "sale" "field" "cancel" "value" "true" "amends" "s#1"}))
+      "pending edits become the cancellation")
+  (is (= ["s#1" true "twice" []] ((juxt :amends :cancel :reason :lines) (saved-input [cancelling] accepted 1 {"field" "reason" "value" "twice" "amends" "s#1"})))))
+
+
+(deftest copy-is-a-new-operation-with-the-sources-values
+  (let [values {"kind" "sale" "field" "copy" "value" "2026-11-24T10:00:00Z"}]
+    (is (= {:workspace-id workspace :entry-id "e" :kind "sale" :occurred-at "2026-11-24T10:00:00Z" :store-id "web" :copies "s#1"
+            :lines        [{:line-id "e-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity "3" :unit-price "150.00"}]}
+           (saved-input [] accepted 0 (assoc values "copies" "s#1"))))
+    (let [copy (saved-input [(assoc edited :entry-id "x")] accepted 0 (assoc values "copies" "x"))]
+      (is (= [["e-0" "2"] ["e-1" "1"]] (map (juxt :line-id :quantity) (:lines copy))) "a pending revision is copied as edited")
+      (is (nil? (:amends copy))))))

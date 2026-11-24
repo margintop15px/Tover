@@ -601,14 +601,17 @@
 
 
 (defn latest-revision
-  "The latest revision of the record that `revision-id` is a revision of, with its collapsed `:facts`, or nil."
+  "The latest revision of the record that `revision-id` is a revision of, or nil. Its `:facts` are collapsed from the
+  last revision that is not a cancellation."
   {:malli/schema [:=> [:cat [:maybe :map] [:maybe :string]] [:maybe :map]]}
   [{:keys [records lines]} revision-id]
   (when-let [record-id (some #(when (= revision-id (:record-revision-id %)) (:record-id %)) records)]
-    (let [{:keys [record-revision-id kind] :as record} (apply max-key :revision (filter #(= record-id (:record-id %)) records))
-          own (filterv #(= record-revision-id (:record-revision-id %)) lines)]
-      (cond-> (assoc record :lines own)
-        (operation-rules kind) (assoc :facts (movements/collapse record own))))))
+    (let [revisions (sort-by :revision (filter #(= record-id (:record-id %)) records))
+          latest    (last revisions)
+          factual   (last (remove :cancelled revisions))
+          own       (fn [{:keys [record-revision-id]}] (filterv #(= record-revision-id (:record-revision-id %)) lines))]
+      (cond-> (assoc latest :lines (own latest))
+        (operation-rules (:kind latest)) (assoc :facts (movements/collapse factual (own factual)))))))
 
 
 (defn without-records

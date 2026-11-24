@@ -221,7 +221,7 @@ export class InventoryWorkbench extends HTMLElement {
     const left = new Set(this.model.pending.filter(entry => entry.blocked || !this.selected.includes(entry.rowId)).map(entry => entry['entry-id']));
     const rows = [...new Map(this.model.pending.filter(entry => !left.has(entry['entry-id'])).map(entry => [entry['entry-id'], entry])).values()];
     if (!rows.length) { this.setStatus('Failed', t('Select the changes to submit')); return; }
-    const shown = new Set(this.model.rows.map(row => row.id));
+    const shown = new Set(this.model.rows.flatMap(row => [row.id, row.entry]));
     const hidden = this.selected.filter(id => !shown.has(id)).length;
     if (hidden && !window.confirm(t('The filter hides {p0} selected rows. Submit them too?', { p0: hidden }))) return;
     this.reviewed = rows.map(row => ({ 'entry-id': row['entry-id'], revision: row.revision }));

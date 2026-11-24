@@ -67,12 +67,12 @@ function gridIcon(name) {
     filter: 'M4 6h16 M7 12h10 M10 18h4', right: 'm9 6 6 6-6 6', down: 'm6 9 6 6 6-6',
     edit: 'M12 20h9 M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z', trash: 'M3 6h18 M8 6V4h8v2 M19 6l-1 14H6L5 6 M10 11v6 M14 11v6',
     archive: 'M3 4h18v4H3z M5 8v12h14V8 M10 12h4', restore: 'M3 12a9 9 0 1 0 3-6.7 M3 4v5h5',
-    move: 'M7 7h13 m-4-4 4 4-4 4 M17 17H4 m4 4-4-4 4-4', close: 'M6 6l12 12 M18 6 6 18', plus: 'M12 5v14 M5 12h14',
+    move: 'M7 7h13 m-4-4 4 4-4 4 M17 17H4 m4 4-4-4 4-4', close: 'M6 6l12 12 M18 6 6 18', copy: 'M9 9h11v11H9z M5 15H4V4h11v1', cancel: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M6 6l12 12', plus: 'M12 5v14 M5 12h14',
   }[name]);
   svg.append(path); return svg;
 }
 // Server actions name their icon by glyph; draw each as the toolbar's stroke icon.
-const actionIcons = { '✎': 'edit', '🗑': 'trash', '−': 'archive', '↺': 'restore', '⇄': 'move', '×': 'close', '+': 'plus' };
+const actionIcons = { '✎': 'edit', '🗑': 'trash', '−': 'archive', '↺': 'restore', '⇄': 'move', '×': 'close', '+': 'plus', '⧉': 'copy', '⊘': 'cancel' };
 function coordinateName(column, row) {
   let label = '';
   for (let index = column + 1; index > 0; index = Math.floor((index - 1) / 26)) label = String.fromCharCode(65 + (index - 1) % 26) + label;
@@ -1015,7 +1015,7 @@ export class InventoryGrid extends HTMLElement {
     }
     if (cell.before !== undefined && !sameValue(cell.before, cell.value) && this._model.showPrevious !== false) {
       const before = document.createElement('span'); before.className = 'inventory-cell-before';
-      before.textContent = String(cell.before === '' || cell.before == null ? '—' : cell.before); td.append(before, document.createTextNode(' → '));
+      before.textContent = cell.before === '' || cell.before == null ? '—' : cell.editor?.type === 'date' || cell.date ? formatDate(cell.before) : String(cell.before); td.append(before, document.createTextNode(' → '));
     }
     const label = document.createElement('span'); label.className = 'inventory-cell-value';
     label.textContent = `${cell.prefix || ''}${cell.editor?.type === 'date' || cell.date ? formatDate(value) : String(attempt ? value : (cell.display ?? value))}`;
@@ -1032,7 +1032,7 @@ export class InventoryGrid extends HTMLElement {
     const contents = expansion ? document.createElement('span') : td;
     if (expansion) { contents.className = 'inventory-cell-with-action'; contents.append(label); td.append(contents); }
     for (const action of actions) {
-      const expanded = action.type === 'item-history' && this._rowDetail?.rowId === row?.id;
+      const expanded = action.type === 'item-history' && this._rowDetail?.rowId === (action.row ?? row?.id);
       const actionButton = button(action.label || action.command, `inventory-cell-action ${action.className || ''}`, (expanded ? '⌄' : action.icon) || (action.command?.startsWith('remove') || action.command === 'discard' ? '×' : '+'), () => { if (!this.busy) this._emit(action.type || 'draft-command', action.type === 'item-history' ? { ...action, expanded } : { ...action }); });
       if (['item-history', 'operation-details'].includes(action.type)) actionButton.replaceChildren(gridIcon(expanded || action.icon === '⌄' ? 'down' : 'right'));
       else { const glyph = actionButton.textContent; const name = actionIcons[glyph]; if (name) { actionButton.replaceChildren(gridIcon(name)); actionButton.dataset.icon = glyph; } }

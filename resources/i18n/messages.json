@@ -1015,7 +1015,21 @@
     "You are the only active Owner. Grant or transfer ownership first.": "You are the only active Owner. Grant or transfer ownership first.",
     "Only an active Owner can do this.": "Only an active Owner can do this.",
     "Choose another member.": "Choose another member.",
-    "This member is already an Owner.": "This member is already an Owner."
+    "This member is already an Owner.": "This member is already an Owner.",
+    "This operation changed since it was loaded. Review the latest values.": "This operation changed since it was loaded. Review the latest values.",
+    "This operation is already cancelled.": "This operation is already cancelled.",
+    "{p0} in {p1} would go below zero on {p2}.": "{p0} in {p1} would go below zero on {p2}.",
+    "(cancelled)": "(cancelled)",
+    "(will be cancelled)": "(will be cancelled)",
+    "Cancel operation": "Cancel operation",
+    "Revisions": "Revisions",
+    "Discard the pending changes to this operation? The accepted operation stays.": "Discard the pending changes to this operation? The accepted operation stays.",
+    "Facts": "Facts",
+    "A pending entry keeps the operation it amends.": "A pending entry keeps the operation it amends.",
+    "Choose the accepted operation to cancel.": "Choose the accepted operation to cancel.",
+    "Choose an accepted operation.": "Choose an accepted operation.",
+    "An accepted operation keeps its kind.": "An accepted operation keeps its kind.",
+    "A cancellation carries no other changes.": "A cancellation carries no other changes."
   },
   "ru": {
     "Stock": "Остатки",
@@ -2037,6 +2051,20 @@
     "You are the only active Owner. Grant or transfer ownership first.": "Вы единственный активный владелец. Сначала выдайте или передайте права владельца.",
     "Only an active Owner can do this.": "Это может сделать только активный владелец.",
     "Choose another member.": "Выберите другого участника.",
-    "This member is already an Owner.": "Этот участник уже владелец."
+    "This member is already an Owner.": "Этот участник уже владелец.",
+    "This operation changed since it was loaded. Review the latest values.": "Операция изменилась после загрузки. Проверьте последние значения.",
+    "This operation is already cancelled.": "Операция уже отменена.",
+    "{p0} in {p1} would go below zero on {p2}.": "{p0} на складе {p1}: остаток станет отрицательным на {p2}.",
+    "(cancelled)": "(отменена)",
+    "(will be cancelled)": "(будет отменена)",
+    "Cancel operation": "Отменить операцию",
+    "Revisions": "Версии",
+    "Discard the pending changes to this operation? The accepted operation stays.": "Отменить ожидающие изменения операции? Принятая операция останется.",
+    "Facts": "Данные",
+    "A pending entry keeps the operation it amends.": "Черновик всегда относится к одной и той же операции.",
+    "Choose the accepted operation to cancel.": "Выберите принятую операцию для отмены.",
+    "Choose an accepted operation.": "Выберите принятую операцию.",
+    "An accepted operation keeps its kind.": "Вид принятой операции нельзя изменить.",
+    "A cancellation carries no other changes.": "Отмена не содержит других изменений."
   }
 }

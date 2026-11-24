@@ -248,6 +248,12 @@
 ;; 28 · Copy
 
 
+(deftest copying-a-cancelled-operation-keeps-its-references
+  (is (= "acme" (get-in (save {:history (history purchase (record "p" 2 "purchase" 1 {:amends "p#1" :cancelled true}))}
+                              (-> edit (dissoc :amends) (assoc :copies "p#2")))
+                        [:events 0 :data :supplier-id]))))
+
+
 (deftest copy-keeps-an-archived-reference
   (let [copy (-> edit (dissoc :amends) (assoc-in [:lines 0 :line-id] "x-0"))]
     (is (= [:validation :supplier-id] (rejected {} copy)) "an ordinary new purchase cannot choose it")
