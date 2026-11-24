@@ -23,11 +23,20 @@
                  {:warehouse-id "old" :name "Old" :status "archived" :revision 2}]})
 
 
+(defn- priced
+  "Units enter stock only at a cost: opening and purchase lines default to one. An explicit nil unit cost leaves it out."
+  {:malli/schema [:=> [:cat :string :map] :map]}
+  [kind line]
+  (cond-> line
+    (and (#{"opening" "purchase"} kind) (not (contains? line :unit-cost))) (assoc :unit-cost "10.00")
+    (contains? line :unit-cost) (->> (into {} (remove (comp nil? val))))))
+
+
 (defn- entry
   {:malli/schema [:=> [:cat :string [:* :map]] :map]}
   [id & lines]
   {:entry-id id :kind "opening" :occurred-at (day 19) :status "pending" :revision 1
-   :lines    (vec (map-indexed #(merge {:line-id (str id "-" %1) :warehouse-id "main" :quantity 5 :unit "pcs"} %2) lines))})
+   :lines    (vec (map-indexed #(priced "opening" (merge {:line-id (str id "-" %1) :warehouse-id "main" :quantity 5 :unit "pcs"} %2)) lines))})
 
 
 (defn- facts
@@ -350,7 +359,10 @@
 (defn- operation
   {:malli/schema [:=> [:cat :string :string :map [:* :map]] :map]}
   [kind id fields & lines]
-  (merge (apply entry id lines) {:kind kind} fields))
+  (-> (apply entry id lines)
+      (assoc :kind kind)
+      (update :lines #(mapv (fn [line given] (priced kind (merge (dissoc line :unit-cost) (select-keys given [:unit-cost])))) % lines))
+      (merge fields)))
 
 
 (defn- values
@@ -363,8 +375,8 @@
   (let [purchase #(operation "purchase" "p" {:supplier-id "tex"} (merge {:stock-item-id "tee-m"} %))]
     (is (= [[10 1500M]] (values (review (facts [(purchase {:unit-cost "200.00"})] (assoc suppliers :history opened-5)) "p")))
         "5 at 100.00 plus 5 at 200.00")
-    (is (= [[10 1000M]] (values (review (facts [(purchase {})] (assoc suppliers :history opened-5)) "p")))
-        "an unpriced line enters at the average")))
+    (is (= #{:entry-incomplete} (problems (review (facts [(purchase {:unit-cost nil})] (assoc suppliers :history opened-5)) "p")))
+        "units enter stock only at a cost")))
 
 
 (deftest purchase-needs-a-supplier-and-a-line
@@ -433,7 +445,7 @@
 
 
 (deftest purchase-covers-a-pending-sale
-  (let [result (review (facts [(operation "purchase" "p" {:supplier-id "tex" :occurred-at (day 18)} {:stock-item-id "tee-m"})
+  (let [result (review (facts [(operation "purchase" "p" {:supplier-id "tex" :occurred-at (day 18)} {:stock-item-id "tee-m" :unit-cost "100.00"})
                                (operation "sale" "s" {} {:stock-item-id "tee-m" :quantity 3})]
                               (assoc suppliers :history (assoc-in opened-5 [:lines 0 :quantity-change] 0)))
                        "p" "s")]

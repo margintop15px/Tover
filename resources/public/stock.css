@@ -146,7 +146,7 @@
 #stock-grid .jss_worksheet>tbody>tr>td.stock-product-cell{vertical-align:top;padding-top:7px;font-weight:600}
 /* One baseline across a row: actions and checkboxes sit on the text line */
 #stock-grid .jss_worksheet>tbody>tr>td{line-height:20px}
-#stock-grid .jss_worksheet>tbody>tr>td :is(.inventory-cell-action,input[type=checkbox]){vertical-align:middle;margin-top:-2px}
+#stock-grid .jss_worksheet>tbody>tr>td input[type=checkbox]{vertical-align:middle;margin-top:-2px}
 #stock-grid .jss_worksheet>tbody>tr>td.stock-cell-pending{background:var(--iw-green-fill);color:var(--iw-green);font-weight:600}
 #stock-grid .jss_worksheet>tbody>tr.stock-new-row>td.stock-variant-cell{box-shadow:inset 2px 0 0 var(--iw-blue)}
 #stock-grid .jss_worksheet>tbody>tr>td.stock-variant-empty{color:var(--iw-muted);font-style:italic}
@@ -157,7 +157,7 @@
 #stock-grid .stock-history-tabs button{height:26px;padding:0 10px;border:0;background:var(--iw-bg);color:var(--iw-muted);font-size:12px;cursor:pointer}
 #stock-grid .stock-history-tabs button+button{border-left:1px solid var(--iw-line)}
 #stock-grid .stock-history-tabs button[aria-selected=true]{background:var(--iw-blue-fill);color:var(--iw-blue)}
-#stock-grid .stock-history-period{margin-left:auto;height:26px;padding:0 6px;border:1px solid var(--iw-line);border-radius:5px;background:var(--iw-bg);color:var(--iw-ink);font-size:12px}
+#stock-grid .stock-history-period{min-height:28px;font-size:12px}
 #stock-grid .stock-history-body{max-width:100%;overflow-x:auto}
 #stock-grid .stock-history-body p{margin:4px 0;color:var(--iw-muted)}
 #stock-grid .stock-history-rows{border-collapse:collapse;font-size:11px;line-height:1.35}
@@ -195,3 +195,19 @@
 #operations-grid .jss_worksheet>tbody>tr.operations-in>td{box-shadow:inset 3px 0 0 var(--iw-green)}
 #operations-grid .jss_worksheet>tbody>tr.operations-in>td.readonly{color:var(--iw-green)}
 .operations-add{min-height:32px}
+
+#stock-grid .stock-timeline{min-width:640px;max-width:1100px;border:1px solid var(--iw-line);border-bottom:0}
+#stock-grid .stock-timeline-axis{position:relative;height:28px;margin-left:150px;border-bottom:1px solid var(--iw-line)}
+#stock-grid .stock-timeline-axis span{position:absolute;top:7px;padding-left:5px;color:var(--iw-muted);font-size:10px;white-space:nowrap}
+#stock-grid .stock-timeline-axis .is-last{transform:translateX(-100%);padding:0 5px 0 0}
+#stock-grid .stock-timeline-lane{display:grid;grid-template-columns:150px minmax(0,1fr);height:48px;border-bottom:1px solid var(--iw-line)}
+#stock-grid .stock-timeline-label{display:flex;flex-direction:column;justify-content:center;padding:0 9px;border-right:1px solid var(--iw-line);overflow:hidden;white-space:nowrap}
+#stock-grid .stock-timeline-label strong{font-weight:500}
+#stock-grid .stock-timeline-label span{color:var(--iw-muted);font-size:11px}
+#stock-grid .stock-timeline-plot{position:relative}
+#stock-grid .stock-timeline-line{position:absolute;top:0;bottom:0;width:1px;background:var(--iw-line);opacity:.6}
+#stock-grid .stock-timeline-bar{position:absolute;top:13px;height:22px;padding:0 7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid var(--iw-line);border-radius:3px;background:var(--iw-blue-fill);font-size:11px;line-height:20px}
+#stock-grid .stock-timeline-bar.is-current{background:var(--iw-green-fill)}
+#stock-grid .stock-timeline-bar.is-empty{background:var(--iw-soft);border-style:dashed;color:var(--iw-muted)}
+#stock-grid .stock-timeline-mark{position:absolute;top:9px;width:2px;height:30px;margin-left:-1px;background:var(--iw-green)}
+#stock-grid .stock-timeline-mark.is-out{background:var(--iw-red)}

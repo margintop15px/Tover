@@ -97,7 +97,10 @@ test('record a purchase and a sale, preview, submit, and see stock change', asyn
   const unit = await editor(stock, `new:${productId}:M`, 'unit', '.inventory-cell-editor > select');
   await unit.selectOption({ label: 'pcs' }); await unit.press('Enter');
   await expect.poll(() => page.locator('stock-workbench').evaluate(node => !node.pending && node.queued.size === 0)).toBe(true);
-  await page.locator('.stock-pending-filter').click();
+  // The opening takes its own time, before the operations below.
+  const opened = new Date(Date.now() - 2 * 86_400_000);
+  const pad = value => String(value).padStart(2, '0');
+  await stockCell(`new:${productId}:M`, 'occurred-at', `${opened.getFullYear()}-${pad(opened.getMonth() + 1)}-${pad(opened.getDate())}T10:00`);
   await page.locator('.stock-submit').click();
   await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
 

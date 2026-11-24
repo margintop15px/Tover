@@ -343,7 +343,7 @@
                            ["a" :new-reference])))
           (testing "incomplete entry shows blockers"
             (is (= #{[nil :occurred-at :occurred-at-missing] ["a" :quantity :quantity-missing]
-                     ["a" :warehouse-id :warehouse-missing]}
+                     ["a" :warehouse-id :warehouse-missing] ["a" :unit-cost :unit-cost-missing]}
                    (set (map (juxt :line-id :field :code) (:blockers e2)))))))
         (testing "stale save through the store keeps the attempt out"
           (is (= :stale-draft (:type (rejection #(save "s3" (assoc opening :expected-revision 7)))))))
@@ -392,6 +392,14 @@
     (is (= {:type :validation :field :quantity} (save-rejection (assoc-in op [:lines 0 :quantity] bad))) (str (:kind op) " " bad))))
 
 
+(deftest a-new-stock-item-takes-a-store
+  (is (= "web" (:store-id (get-in (decide ::entries/save-shared-inventory-entry {}
+                                          (update-in purchase [:lines 0] #(-> % (dissoc :stock-item-id) (assoc :product-id "tee" :variant-label "XL" :unit "pcs" :store-id "web"))))
+                                  [:events 1 :data]))))
+  (is (= {:type :validation :field :store-id} (save-rejection (assoc-in purchase [:lines 0 :store-id] "web")))
+      "an existing item changes its store by a correction"))
+
+
 (deftest negative-prices-are-rejected
   (is (= {:type :validation :field :unit-cost} (save-rejection (assoc-in purchase [:lines 0 :unit-cost] "-1"))))
   (is (= {:type :validation :field :unit-price} (save-rejection (assoc-in sale [:lines 0 :unit-price] "-1")))))
@@ -415,9 +423,12 @@
   (let [status {:warehouses {"main" "active"} :stock-items {"tee-m" "active"} :suppliers {"gone" "archived"} :stores {"closed" "archived"}}
         line   {:line-id "l1" :stock-item-id "tee-m" :warehouse-id "main" :quantity 1}
         codes  #(set (map (juxt :field :code) (entries/blockers %1 %2 status)))]
-    (is (= #{[:supplier-id :supplier-missing]} (codes {:kind "purchase" :occurred-at at} [line])))
+    (is (= #{[:supplier-id :supplier-missing]} (codes {:kind "purchase" :occurred-at at} [(assoc line :unit-cost "5")])))
+    (is (= #{[:unit-cost :unit-cost-missing]} (codes {:kind "purchase" :occurred-at at :supplier-name "Textiles"} [line]))
+        "units enter stock only at a cost")
+    (is (= #{[:unit-cost :unit-cost-missing]} (codes {:kind "opening" :occurred-at at} [line])))
     (is (= #{[:lines :lines-missing]} (codes {:kind "sale" :occurred-at at} [])))
-    (is (= #{[:supplier-id :archived-reference]} (codes {:kind "purchase" :occurred-at at :supplier-id "gone"} [line])))
+    (is (= #{[:supplier-id :archived-reference]} (codes {:kind "purchase" :occurred-at at :supplier-id "gone"} [(assoc line :unit-cost "5")])))
     (is (= #{[:store-id :archived-reference]} (codes {:kind "sale" :occurred-at at :store-id "closed"} [line])))))
 
 

@@ -24,9 +24,6 @@ class OperationsWorkbench extends InventoryWorkbench {
     this.notice = this.querySelector('.stock-notice');
     this.status = this.querySelector('.stock-save-status');
     this.submitButton = this.querySelector('.stock-submit');
-    this.submitDetails = this.querySelector('.stock-submit-details');
-    this.submitTime = this.querySelector('.stock-submit-time');
-    this.submitReason = this.querySelector('.stock-submit-reason');
     this.pendingButton = this.querySelector('.stock-pending-filter');
     this.queued = new Map();
     this.revisions = new Map();
@@ -75,7 +72,6 @@ class OperationsWorkbench extends InventoryWorkbench {
     this.save(slot, request);
   }
   leavePreview() {
-    this.submitTime.value = ''; this.submitReason.value = '';
     this.scope = {};
     this.pendingButton.setAttribute('aria-pressed', 'false');
     this.refreshTable();

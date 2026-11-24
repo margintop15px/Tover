@@ -53,11 +53,20 @@
    :warehouses  [{:warehouse-id "main" :name "Main" :status "active" :revision 1}]})
 
 
+(defn- priced
+  "Units enter stock only at a cost: opening and purchase lines default to one. An explicit nil unit cost leaves it out."
+  {:malli/schema [:=> [:cat :string :map] :map]}
+  [kind line]
+  (cond-> line
+    (and (#{"opening" "purchase"} kind) (not (contains? line :unit-cost))) (assoc :unit-cost "10.00")
+    (contains? line :unit-cost) (->> (into {} (remove (comp nil? val))))))
+
+
 (defn- entry
   {:malli/schema [:=> [:cat :string [:* :map]] :map]}
   [id & lines]
   {:entry-id id :kind "opening" :occurred-at (day 19) :status "pending" :revision 1
-   :lines    (vec (map-indexed #(merge {:line-id (str id "-" %1) :warehouse-id "main" :quantity 5 :unit "pcs"} %2) lines))})
+   :lines    (vec (map-indexed #(priced "opening" (merge {:line-id (str id "-" %1) :warehouse-id "main" :quantity 5 :unit "pcs"} %2)) lines))})
 
 
 (defn- facts
@@ -117,6 +126,13 @@
     (is (= [{:stock-item-id "item:e-0" :product-id "tee" :variant-label "L" :unit "pcs" :condition "regular" :status "active" :revision 1}]
            (of-type plan ::stock-items/stock-item-registered)))
     (is (= ["item:e-0"] (map :stock-item-id (of-type plan ::acceptance/inventory-record-line-accepted))))))
+
+
+(deftest a-new-stock-item-registers-its-store
+  (let [f    (-> (facts [(entry "e" {:product-id "tee" :variant-label "L" :store-id "web"})])
+                 (assoc-in [:catalogue :stores] [{:store-id "web" :name "Web shop" :status "active" :revision 1}]))
+        plan (accept f (input f "e"))]
+    (is (= ["web"] (map :store-id (of-type plan ::stock-items/stock-item-registered))))))
 
 
 (deftest future-time-rejected
@@ -238,7 +254,7 @@
         (execute! ctx ::products/register-product "p1" {:product-id "tee" :name "T-shirt"})
         (save "s1" {:entry-id "a" :lines [{:line-id   "a-0"    :product-id "tee" :variant-label "M" :unit "pcs" :warehouse-id "main" :quantity "5"
                                            :unit-cost "100.00"}]})
-        (save "s2" {:entry-id "b" :lines [{:line-id "b-0" :product-id "tee" :variant-label "L" :unit "pcs" :warehouse-id "main" :quantity "2"}]})
+        (save "s2" {:entry-id "b" :lines [{:line-id "b-0" :product-id "tee" :variant-label "L" :unit "pcs" :warehouse-id "main" :quantity "2" :unit-cost "40.00"}]})
         (save "s3" {:entry-id "c" :lines [{:line-id "c-0" :product-id "tee" :variant-label "S" :warehouse-id "main"}]})
         (let [selection {:selection [{:entry-id "a" :revision 1} {:entry-id "b" :revision 1}] :order ["a" "b"]}
               review    (runtime/read-model ctx ::acceptance/inventory-review selection)
@@ -249,7 +265,7 @@
             (is (= :accepted (:status (execute! ctx ::acceptance/accept-reviewed-inventory-changes "acc-1" accept))))
             (let [{:keys [records balances pending-count]} (runtime/read-model ctx ::acceptance/acceptance-result {:acceptance-id "acc-1"})]
               (is (= [["a" 0] ["b" 1]] (map (juxt :record-id :sequence) records)))
-              (is (= #{["item:a-0" "main" 5 500.0000M] ["item:b-0" "main" 2 nil]}
+              (is (= #{["item:a-0" "main" 5 500.0000M] ["item:b-0" "main" 2 80.0000M]}
                      (set (map (juxt :stock-item-id :warehouse-id :quantity :value) balances))))
               (is (= 1 pending-count) "the unselected entry stays pending")))
           (testing "access lost before commit rejects and changes nothing"
@@ -308,6 +324,13 @@
     (is (= [{:entry-id "c" :status "accepted" :revision 2}] (of-type plan ::entries/shared-inventory-entry-accepted)))))
 
 
+(deftest a-correction-changes-the-store
+  (let [f    (facts [(dissoc (correction "c" [] [{:stock-item-id "tee-m" :store-id "web"}]) :occurred-at)])
+        plan (accept f (input f "c"))]
+    (is (= [{:stock-item-id "tee-m" :variant-label "M" :unit "pcs" :store-id "web" :revision 2}]
+           (of-type plan ::stock-items/stock-item-updated)))))
+
+
 (deftest barcodes-added-and-removed
   (let [f    (-> (facts [(correction "c" [] [{:stock-item-id "tee-m" :barcodes-added ["4600000000024"] :barcodes-removed ["4600000000017"]}])])
                  (assoc-in [:catalogue :barcodes] [{:barcode-id "tee-m|4600000000017" :stock-item-id "tee-m" :barcode "4600000000017"}]))
@@ -354,8 +377,8 @@
         (execute! ctx ::warehouses/register-warehouse "w1" {:warehouse-id "main" :name "Main"})
         (execute! ctx ::products/register-product "p1" {:product-id "tee" :name "T-shirt"})
         (save "s1" {:entry-id "a" :kind "opening"
-                    :lines    [{:line-id  "a-0" :product-id "tee" :variant-label "M" :article "T-1" :unit "pcs" :warehouse-id "main"
-                                :quantity "5"}]})
+                    :lines    [{:line-id  "a-0" :product-id "tee"    :variant-label "M" :article "T-1" :unit "pcs" :warehouse-id "main"
+                                :quantity "5"   :unit-cost  "100.00"}]})
         (submit "acc-1" ["a"])
         (save "s2" {:entry-id "c" :kind "correction"
                     :lines    [{:line-id "c-0" :stock-item-id "item:a-0" :warehouse-id "main" :quantity "0"}]
@@ -368,7 +391,7 @@
         (is (= {:variant-label "M" :unit "pcs" :status "archived" :revision 3}
                (select-keys (item) [:variant-label :article :unit :status :revision]))
             "the article is cleared, the item archived")
-        (is (= [["item:a-0" "main" 0 nil]]
+        (is (= [["item:a-0" "main" 0 0M]]
                (map (juxt :stock-item-id :warehouse-id :quantity :value)
                     (:balances (runtime/read-model ctx ::acceptance/acceptance-result {:acceptance-id "acc-2"})))))))))
 
@@ -384,7 +407,10 @@
 (defn- operation
   {:malli/schema [:=> [:cat :string :string :map [:* :map]] :map]}
   [kind id fields & lines]
-  (merge (apply entry id lines) {:kind kind} fields))
+  (-> (apply entry id lines)
+      (assoc :kind kind)
+      (update :lines #(mapv (fn [line given] (priced kind (merge (dissoc line :unit-cost) (select-keys given [:unit-cost])))) % lines))
+      (merge fields)))
 
 
 (defn- trade-facts

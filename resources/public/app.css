@@ -20,6 +20,10 @@ body { margin: 0; background: var(--iw-bg); color: var(--iw-ink); font: 13px/1.5
 a { color: var(--iw-blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
 button, input, select, textarea { font: inherit; color: inherit; }
+/* One select look everywhere: a themed caret drawn with gradients, so it follows light and dark. */
+select:not([multiple]) { appearance: none; min-height: 30px; padding: 4px 28px 4px 9px; color: var(--iw-ink); background-color: var(--iw-bg); background-image: linear-gradient(45deg, transparent 50%, var(--iw-muted) 50%), linear-gradient(135deg, var(--iw-muted) 50%, transparent 50%); background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%; background-size: 5px 5px; background-repeat: no-repeat; border: 1px solid var(--iw-line); border-radius: 5px; cursor: pointer; }
+select:not([multiple]):hover { border-color: var(--iw-muted); }
+select:not([multiple]):disabled { cursor: default; opacity: .55; }
 button { cursor: pointer; }
 button:disabled { cursor: default; opacity: .45; }
 :focus-visible { outline: 2px solid var(--iw-blue); outline-offset: 2px; }
@@ -27,7 +31,7 @@ button:disabled { cursor: default; opacity: .45; }
 .app-nav { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--iw-line); padding: 8px 16px; }
 .app-nav-pages { display: flex; align-items: stretch; gap: 8px; }
 .app-nav-pages a { display: flex; align-items: center; padding: 8px 12px; color: var(--iw-muted); }
-.app-nav-pages a[aria-current=page] { color: var(--iw-ink); box-shadow: inset 0 -2px var(--iw-ink); }
+.app-nav-pages a[aria-current=page] { color: var(--iw-ink); }
 .app-nav-tools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .nav-icon, .theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 5px; border: 0; border-radius: 4px; background: transparent; }
 .nav-icon { color: var(--iw-muted); }
@@ -48,7 +52,7 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .identity h2 { font-size: 14px; font-weight: 600; margin: 24px 0 12px; }
 .identity form:not(.language-switch) { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 16px 0; }
 .identity label { display: flex; flex-direction: column; gap: 5px; color: var(--iw-muted); }
-.identity input, .identity select, .identity textarea { min-height: 34px; max-width: 100%; padding: 6px 9px; color: var(--iw-ink); background: var(--iw-bg); border: 1px solid var(--iw-line); border-radius: 3px; }
+.identity input, .identity select, .identity textarea { min-height: 34px; max-width: 100%; padding: 6px 9px; color: var(--iw-ink); background-color: var(--iw-bg); border: 1px solid var(--iw-line); border-radius: 3px; }
 .identity button:not(.theme-toggle):not(.language-toggle), .navigation-notice button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--iw-line); border-radius: 3px; background: var(--iw-soft); }
 .identity button[type=submit]:not(.language-toggle) { background: var(--iw-ink); color: var(--iw-bg); border-color: var(--iw-ink); }
 .identity ul { padding: 0; list-style: none; }
@@ -82,9 +86,10 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .invitation-details dt { color: var(--iw-muted); font-size: 12px; line-height: 20px; }
 .invitation-details dd { margin: 0; line-height: 20px; }
 .invitation-details dd span { color: var(--iw-muted); font-size: 12px; }
-.management-form input, .management-form select { width: 100%; min-height: 32px; padding: 5px 8px; border: 1px solid var(--iw-line); border-radius: 3px; background: var(--iw-bg); color: var(--iw-ink); }
+.management-form input, .management-form select { width: 100%; min-height: 32px; padding: 5px 8px; border: 1px solid var(--iw-line); border-radius: 3px; background-color: var(--iw-bg); color: var(--iw-ink); }
 .management-form input { min-width: 240px; }
 .management-form select { min-width: 160px; }
+.identity select, .management-form select { padding-right: 28px; }
 .management-form > form + .management-secondary { margin: 8px 0 0; }
 .management-form button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--iw-ink); border-radius: 3px; background: var(--iw-ink); color: var(--iw-bg); }
 .profile-latest { width: 100%; margin: 0; color: var(--iw-muted); font-size: 12px; }

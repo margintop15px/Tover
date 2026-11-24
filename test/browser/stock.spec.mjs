@@ -2,9 +2,9 @@ import { expect, test } from '@playwright/test';
 import { signIn } from './auth.fixture.mjs';
 
 const pad = value => String(value).padStart(2, '0');
-const yesterday = () => {
+const yesterday = (hour = 10) => {
   const date = new Date(Date.now() - 86_400_000);
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T10:00`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(hour)}:00`;
 };
 
 async function editCell(page, grid, id, path, value) {
@@ -107,24 +107,19 @@ test('find a product, add a stock item with an opening in the one table, review 
   await chooseCell(page, `new:${productId}:S`, 'unit', 'pcs');
   await shot(page, '4-pending');
 
-  await expect(page.locator('.stock-submit')).toBeDisabled();
-  await page.locator('.stock-pending-filter').click();
-  await expect(page.locator('.stock-submit')).toBeEnabled();
-  // Money previews the same pending rows.
-  await page.locator('.stock-mode button[data-mode="money"]').click();
-  await expect.poll(() => grid.evaluate(node => node.model.rows.some(row => row.cells.some(cell => cell.prefix === '+' && cell.value === '500.00')))).toBe(true);
-  await expect(page.locator('.stock-submit')).toBeEnabled();
-  await page.locator('.stock-mode button[data-mode="units"]').click();
+  // Picking a product opens Preview, which is always in units.
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.stock-mode button[data-mode="money"]')).toBeDisabled();
   await expect.poll(() => grid.evaluate(node => node.model.rows.some(row => row.cells.some(cell => cell.prefix === '+' && cell.value === '5')))).toBe(true);
-  // Leave S for a later round: only M is submitted.
+  // Each row takes its own time and reason. Leave S for a later round: only M is submitted.
+  await cell(page, `new:${productId}:M`, 'occurred-at', yesterday());
+  await cell(page, `new:${productId}:M`, 'reason', 'Stocktake');
   await grid.locator(`input[data-review-entry="new:${productId}:S"]`).uncheck();
-  await page.locator('.stock-submit-time').fill(yesterday());
-  await page.locator('.stock-submit-reason').fill('Stocktake');
   await shot(page, '5-preview');
   await page.locator('.stock-submit').click();
   await expect.poll(() => grid.evaluate(node => node.model.rows.map(row => row.id))).toContain(`new:${productId}:S`);
   await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
-  const findM = () => grid.evaluate(node => node.model.rows.find(row => row.cells.some(c => c.target?.field === 'variant' && c.value === 'M'))?.id);
+  const findM = () => grid.evaluate(node => node.model.rows.find(row => row.label === 'M' && !row.id.startsWith('new'))?.id);
   await expect.poll(findM).toBeTruthy();
   const itemM = await findM();
   const row = grid.locator(`tr[data-row-id="${itemM}"]`);
@@ -144,17 +139,12 @@ test('find a product, add a stock item with an opening in the one table, review 
   await expect(page.locator('.stock-history-rows')).toContainText('Stocktake');
   await shot(page, '7-history');
 
-  // "+" opens a new row under the product without filtering the table.
+  // Normal mode is read-only; Edit opens the row in Preview.
   await page.locator('.stock-filter-chip').click();
-  await page.locator('.stock-hide-empty').click();
-  // Unfiltered: no new row, and other products besides this one.
-  await expect.poll(() => grid.evaluate((node, id) => !node.model.rows.some(row => row.id.startsWith('new-row'))
-    && node.model.rows.some(row => row.cells.some(cell => cell.actions?.some(action => action.type === 'stock-add-item' && action.id !== id))), productId)).toBe(true);
-  const before = await grid.evaluate(node => node.model.rows.length);
-  const productRow = await grid.evaluate((node, id) => node.model.rows.find(row => row.cells.some(cell => cell.actions?.some(action => action.type === 'stock-add-item' && action.id === id))).id, productId);
-  await grid.locator(`tr[data-row-id="${productRow}"]`).getByRole('button', { name: 'Add stock item' }).click();
-  await expect.poll(() => grid.evaluate((node, id) => node.model.rows.some(row => row.id === `new-row:${id}`), productId)).toBe(true);
-  expect(await grid.evaluate(node => node.model.rows.length)).toBe(before + 1);
+  await expect.poll(() => grid.evaluate(node => node.model.rows.every(row => row.cells.every(cell => !cell.editor)))).toBe(true);
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => grid.evaluate((node, id) => node.model.rows.some(row => row.id === id && row.cells.some(cell => cell.editor)), itemM)).toBe(true);
   expect(errors).toEqual([]);
 });
 
@@ -185,13 +175,12 @@ test('creating a product opens it at the top of the preview with an editable cos
   await expect(grid.locator(`input[data-review-entry="${key}"]`)).toBeChecked();
   await expect(grid.locator('tr[data-row-id="new-row:' + key.split(':').slice(1, 3).join(':') + '"] td[data-column-key="unit-cost"]')).toHaveText('');
   await shot(page, '8-created');
-  // Back in preview later, "+" on the new product opens another new row under it.
+  // Back in Preview later, the new product keeps a blank row for another stock item.
   await page.locator('.stock-pending-filter').click();
   await page.locator('.stock-pending-filter').click();
   const blank = `new-row:${key.split(':').slice(1, 3).join(':')}`;
-  await expect.poll(() => grid.evaluate((node, id) => node.model.rows.some(row => row.id === id), blank)).toBe(false);
-  await grid.locator(`tr[data-row-id="${key}"]`).getByRole('button', { name: 'Add stock item' }).click();
   await expect.poll(() => grid.evaluate((node, id) => node.model.rows.some(row => row.id === id), blank)).toBe(true);
+  await cell(page, key, 'occurred-at', yesterday());
   await page.locator('.stock-submit').click();
   await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
   await expect.poll(() => grid.evaluate(node => node.model.rows.some(row => row.id.startsWith('new-row')))).toBe(false);
@@ -221,15 +210,22 @@ test('count a stock item and change its article from its row, then submit both',
   await expect.poll(() => page.evaluate(() => document.activeElement?.closest('td')?.dataset.path ?? document.querySelector('#stock-grid td.highlight, #stock-grid td.jss_cursor')?.dataset.path)).toBe(warehouse);
   await cell(page, `new-row:${productId}`, warehouse, '5');
   await chooseCell(page, `new:${productId}:blue`, 'unit', 'pcs');
-  await page.locator('.stock-pending-filter').click();
-  await page.locator('.stock-submit-time').fill(yesterday());
+  await cell(page, `new:${productId}:blue`, 'unit-cost', '10');
+  await cell(page, `new:${productId}:blue`, 'occurred-at', yesterday());
   await page.locator('.stock-submit').click();
   await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
 
-  // The accepted item's cell now takes a count, and its article a change: one Correction entry.
-  const findItem = () => grid.evaluate(node => node.model.rows.find(row => row.cells.some(c => c.target?.values?.kind === 'correction'))?.id);
+  // Edit opens the accepted item in Preview: its cell takes a count, and its article a change: one Correction entry.
+  const findItem = () => grid.evaluate(node => node.model.rows.find(row => row.label === 'blue' && !row.id.startsWith('new'))?.id);
   await expect.poll(findItem).toBeTruthy();
   const itemId = await findItem();
+  await grid.locator(`tr[data-row-id="${itemId}"]`).getByRole('button', { name: 'Edit' }).click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'true');
+  // Clearing a count withdraws it without a conflict, and a later count saves again.
+  await cell(page, itemId, warehouse, '7');
+  await cell(page, itemId, warehouse, '');
+  await expect.poll(() => grid.evaluate((node, id) => node.model.rows.find(row => row.id === id).cells.some(c => c.value === '5' && !c.prefix && c.cleared === '5'), itemId)).toBe(true);
+  await expect.poll(() => grid.evaluate((node, id) => [...node._attempts.keys()].filter(key => key.startsWith(id)).length, itemId)).toBe(0);
   await cell(page, itemId, warehouse, '7');
   await expect.poll(() => grid.evaluate((node, id) => node.model.rows.find(row => row.id === id).cells.some(c => c.prefix === '5 → ' && c.value === '7'), itemId)).toBe(true);
   await cell(page, itemId, 'article', 'C-1');
@@ -243,8 +239,8 @@ test('count a stock item and change its article from its row, then submit both',
   await grid.locator(`tr[data-row-id="${itemId}"]`).getByRole('button', { name: 'Keep', exact: true }).click();
   await expect.poll(async () => (await itemCell(itemId))?.className ?? '').not.toContain('stock-finding');
 
-  await page.locator('.stock-pending-filter').click();
-  await page.locator('.stock-submit-reason').fill('Recount');
+  await cell(page, itemId, 'occurred-at', yesterday(11));
+  await cell(page, itemId, 'reason', 'Recount');
   await page.locator('.stock-submit').click();
   await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
   const row = grid.locator(`tr[data-row-id="${itemId}"]`);
@@ -313,14 +309,19 @@ test('correct an item: bad counts refused, findings read on focus, move dialog, 
   await cell(page, `new-row:${productId}`, 'item', 'red');
   await cell(page, `new-row:${productId}`, warehouse, '5');
   await chooseCell(page, `new:${productId}:red`, 'unit', 'pcs');
-  await page.locator('.stock-pending-filter').click();
-  await page.locator('.stock-submit-time').fill(yesterday());
+  await cell(page, `new:${productId}:red`, 'unit-cost', '10');
+  await cell(page, `new:${productId}:red`, 'occurred-at', yesterday());
   await page.locator('.stock-submit').click();
   await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
-  const findItem = () => grid.evaluate(node => node.model.rows.find(row => row.cells.some(c => c.target?.values?.kind === 'correction'))?.id);
+  const findItem = () => grid.evaluate(node => node.model.rows.find(row => row.label === 'red' && !row.id.startsWith('new'))?.id);
   await expect.poll(findItem).toBeTruthy();
   const itemId = await findItem();
   const row = grid.locator(`tr[data-row-id="${itemId}"]`);
+  const edit = async () => {
+    await row.getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'true');
+  };
+  await edit();
   const count = row.locator(`td[data-column-key="${warehouse}"]`);
 
   // A count the rules refuse stays in its cell with the reason; the accepted balance is not shown instead.
@@ -365,23 +366,20 @@ test('correct an item: bad counts refused, findings read on focus, move dialog, 
   await expect(dialog).toHaveCount(0);
   // The row stays under Pen, marked.
   await expect(row.locator('td[data-column-key="item"]')).toContainText('move pending');
-  // Discarding names the item and what is lost.
-  await page.locator('.stock-pending-filter').click();
+  // Discarding names the item and what is lost; the row stays open for editing.
   await row.getByRole('button', { name: 'Discard pending changes' }).click();
   await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(0);
   expect(dialogs.at(-1)).toContain(`«Pen ${suffix} / red`);
-  await page.locator('.stock-pending-filter').click();
 
   // Two counts of one item at one second: the member puts them in order, then both are accepted.
   await cell(page, itemId, warehouse, '4');
   await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(1);
-  await workbench.evaluate((node, { itemId, warehouse }) => node.emit('stock-save', {
+  await cell(page, itemId, 'occurred-at', yesterday(11));
+  await workbench.evaluate((node, { itemId, warehouse, at }) => node.emit('stock-save', {
     workspaceId: node.workspaceId, entryId: crypto.randomUUID(), revision: 0, commandId: crypto.randomUUID(),
-    values: { kind: 'correction', 'stock-item-id': itemId, 'warehouse-id': warehouse, quantity: '3', 'occurred-at': new Date().toISOString() },
-  }), { itemId, warehouse });
+    values: { kind: 'correction', 'stock-item-id': itemId, 'warehouse-id': warehouse, quantity: '3', 'occurred-at': new Date(at).toISOString() },
+  }), { itemId, warehouse, at: yesterday(11) });
   await expect.poll(async () => { await workbench.evaluate(node => node.refreshTable()); return grid.evaluate(node => new Set(node.model.pending.map(entry => entry['entry-id'])).size); }).toBe(2);
-  await page.locator('.stock-pending-filter').click();
-  await page.locator('.stock-submit-time').fill(yesterday());
   await page.locator('.stock-submit').click();
   const order = page.locator('.stock-order li');
   await expect(order).toHaveCount(2);
@@ -394,20 +392,21 @@ test('correct an item: bad counts refused, findings read on focus, move dialog, 
   await expect(count).toHaveText(last === '4' ? '3' : '4');
 
   // Count to zero and archive in one correction; then a pending Restore stays visible without "Show archived items".
+  await edit();
   await cell(page, itemId, warehouse, '0');
   await row.getByRole('button', { name: 'Archive', exact: true }).click();
   await expect(row.locator('td[data-column-key="item"]')).toContainText('archive pending');
-  await page.locator('.stock-pending-filter').click();
+  await cell(page, itemId, 'occurred-at', yesterday(12));
   await page.locator('.stock-submit').click();
   await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
   await expect.poll(() => grid.evaluate((node, id) => node.model.rows.some(row => row.id === id), itemId)).toBe(false);
   await page.locator('.stock-show-archived').click();
+  await edit();
   await row.getByRole('button', { name: 'Restore', exact: true }).click();
   await page.locator('.stock-show-archived').click();
   await expect(row.locator('td[data-column-key="item"]')).toContainText('restore pending');
 
   // A failed table read after a discard offers Retry.
-  await page.locator('.stock-pending-filter').click();
   await expect(row.getByRole('button', { name: 'Discard pending changes' })).toBeVisible();
   const table = url => /table/.test(url.pathname);
   await page.route(table, route => route.abort());

@@ -21,15 +21,13 @@ class StockWorkbench extends InventoryWorkbench {
     this.days = prefs.get('period', '30');
     this.hideEmpty = true;
     this.scope = {};
+    this.order = { sort: null, direction: 'asc', filters: {} };
     this.grid = this.querySelector('.stock-grid');
     this.notice = this.querySelector('.stock-notice');
     this.findingNote = element('p', { className: 'stock-finding-note', role: 'status' });
     this.grid.after(this.findingNote);
     this.status = this.querySelector('.stock-save-status');
     this.submitButton = this.querySelector('.stock-submit');
-    this.submitDetails = this.querySelector('.stock-submit-details');
-    this.submitTime = this.querySelector('.stock-submit-time');
-    this.submitReason = this.querySelector('.stock-submit-reason');
     this.pendingButton = this.querySelector('.stock-pending-filter');
     this.search = this.querySelector('.stock-search-input');
     this.chip = this.querySelector('.stock-filter-chip');
@@ -47,8 +45,36 @@ class StockWorkbench extends InventoryWorkbench {
     const hide = this.querySelector('.stock-hide-empty');
     hide.addEventListener('click', () => { this.hideEmpty = !this.hideEmpty; hide.setAttribute('aria-pressed', String(this.hideEmpty)); this.refreshTable(); });
     for (const button of this.querySelectorAll('.stock-mode button')) {
-      button.addEventListener('click', () => { this.mode = button.dataset.mode; prefs.set('mode', this.mode); this.showMode(); this.refreshTable(); });
+      button.addEventListener('click', () => { if (this.scope.pending) return; this.mode = button.dataset.mode; prefs.set('mode', this.mode); this.showMode(); this.refreshTable(); });
     }
+    this.addEventListener('inventory-sort', event => { this.order = { ...this.order, sort: event.detail.column, direction: event.detail.direction }; this.refreshTable(); });
+    this.addEventListener('inventory-filter', event => { this.order = { ...this.order, filters: event.detail.filters }; this.refreshTable(); });
+    // Column order and widths are kept per browser (chapter 30 moves them to the member).
+    this.addEventListener('inventory-layout', event => {
+      const saved = this.layout();
+      const layout = { order: event.detail.order ?? saved.order ?? [], widths: { ...(saved.widths ?? {}), ...(event.detail.widths ?? {}) }, version: (saved.version ?? 0) + 1,
+        lastColumn: Object.keys(event.detail.widths ?? {}).at(-1) ?? saved.lastColumn };
+      prefs.set('stock-layout', JSON.stringify(layout));
+      this.grid.columnLayout = layout;
+      this.grid.layoutStatus = 'Saved';
+    });
+    // Edit opens the row in Preview, or focuses it there.
+    this.addEventListener('stock-edit', event => {
+      const { id } = event.detail;
+      this.focusRow = id;
+      this.setScope({ ...this.scope, pending: true, editing: [...new Set([...(this.scope.editing ?? []), id])] }, this.scopeLabel);
+    });
+    this.addEventListener('stock-describe-row', event => this.describeRow(event.detail));
+    // The grid renders a window of rows; windows are cut here from the whole table.
+    this.addEventListener('inventory-window', event => {
+      const { requestId, queryId, start, anchorId } = event.detail;
+      queueMicrotask(() => {
+        this.grid.windowResponse = queryId === this.queryId
+          ? { requestId, queryId, status: 'ok', model: this.windowModel(start, anchorId) }
+          : { requestId, queryId, status: 'expired' };
+      });
+    });
+    this.addEventListener('inventory-resnapshot', () => this.refreshTable());
     this.pendingButton.addEventListener('click', () => (this.scope.pending ? this.leavePreview() : this.setScope({ ...this.scope, pending: true }, this.scopeLabel)));
     this.submitButton.addEventListener('click', () => this.review());
     this.chip.addEventListener('click', () => { this.setScope({}, ''); this.search.focus(); });
@@ -63,7 +89,8 @@ class StockWorkbench extends InventoryWorkbench {
     // A new row's details wait in the filter until its first quantity saves them with the opening.
     this.addEventListener('stock-new-field', event => {
       this.grid.acknowledgeSave(event.detail);
-      this.scope = { ...this.scope, [event.detail.path === 'item' ? 'variant' : event.detail.path]: event.detail.value.trim() };
+      if (this.scope.newRowId !== event.detail.rowId) for (const key of ['variant', 'article', 'barcodes', 'unit', 'unit-cost', 'category-id', 'store-id']) delete this.scope[key];
+      this.scope = { ...this.scope, newRowId: event.detail.rowId, [event.detail.path === 'item' ? 'variant' : event.detail.path]: event.detail.value.trim() };
       this.focusWarehouse = event.detail.path === 'item' && Boolean(this.scope.warehouseId && event.detail.value.trim());
       this.refreshTable();
     });
@@ -71,11 +98,6 @@ class StockWorkbench extends InventoryWorkbench {
     this.addEventListener('stock-item-field', event => {
       const { entries, field, value } = event.detail;
       entries.forEach((entry, index) => this.edit({ ...entry, id: event.detail.id, path: `${field}:${index}`, field, value, target: index ? null : event.detail }));
-    });
-    this.addEventListener('stock-add-item', event => {
-      if (event.detail.name) { this.setScope({ productName: event.detail.name, newRow: true, pending: true }, '', true); return; }
-      // "+" adds a row under the product in place; the table keeps its filter.
-      this.setScope({ ...this.scope, productName: undefined, addTo: event.detail.id, newRow: true }, this.scopeLabel, true);
     });
     this.addEventListener('item-history', event => this.toggleHistory(event.detail));
     // Move, Archive and Restore propose a change on the row's correction like a cell edit.
@@ -103,8 +125,17 @@ class StockWorkbench extends InventoryWorkbench {
       if (Object.prototype.hasOwnProperty.call(this, property)) { const value = this[property]; delete this[property]; this[property] = value; }
     }
   }
+  // Preview is always in units.
   showMode() {
-    for (const button of this.querySelectorAll('.stock-mode button')) button.setAttribute('aria-pressed', String(button.dataset.mode === this.mode));
+    const mode = this.scope.pending ? 'units' : this.mode;
+    for (const button of this.querySelectorAll('.stock-mode button')) {
+      button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+      button.disabled = Boolean(this.scope.pending) && button.dataset.mode === 'money';
+      if (button.dataset.mode === 'money') button.title = this.scope.pending ? t('Money is not shown in Preview') : t('Money');
+    }
+  }
+  layout() {
+    try { return JSON.parse(prefs.get('stock-layout', '{}')) || {}; } catch { return {}; }
   }
 
   // Search: suggestions filter the one table; picking a product opens a new stock item row under it.
@@ -165,15 +196,16 @@ class StockWorkbench extends InventoryWorkbench {
     this.closeSuggestions(); this.search.value = '';
     if (option.kind === 'operation') { location.assign(`/operations#add=${option.op}`); return; }
     // A product brings its default warehouse: the new row marks that cell and focus moves there once the variant is typed.
-    if (option.kind === 'product') this.setScope({ productId: option.id, newRow: true, pending: this.scope.pending, warehouseId: option.warehouseId }, option.label, true);
+    if (option.kind === 'product') this.setScope({ productId: option.id, newRow: true, pending: true, newRowId: `new-row:${option.id}`, warehouseId: option.warehouseId }, option.label, true);
     else if (option.kind === 'item') this.setScope({ itemId: option.id, pending: this.scope.pending }, option.label);
     // A new product opens at the top of the preview; the table is not filtered.
-    else this.setScope({ productName: option.label, newRow: true, pending: true }, '', true);
+    else this.setScope({ productName: option.label, newRow: true, pending: true, newRowId: 'new-row:new' }, '', true);
   }
   // Leaving the preview keeps a product filter; a product being created only lived in the preview.
+  // Leaving it also ends editing: the rows opened with Edit go back to read-only.
   leavePreview() {
-    this.submitTime.value = ''; this.submitReason.value = '';
-    this.setScope(this.scope.productName ? {} : { ...this.scope, pending: false }, this.scope.productName ? '' : this.scopeLabel);
+    const { productName, editing, newRowId, newRow, warehouseId, ...rest } = this.scope;
+    this.setScope(productName ? {} : { ...rest, pending: false }, productName ? '' : this.scopeLabel);
   }
   setScope(scope, label, focus = false) {
     this.scope = Object.fromEntries(Object.entries(scope).filter(([, value]) => value !== false));
@@ -182,17 +214,28 @@ class StockWorkbench extends InventoryWorkbench {
     this.chip.hidden = !label;
     this.chip.textContent = label ? `${label} ×` : '';
     this.pendingButton.setAttribute('aria-pressed', String(Boolean(scope.pending)));
+    this.showMode();
     this.refreshTable();
   }
 
   // Stock table
   refreshTable() {
     this.tableRequest = crypto.randomUUID();
-    this.emit('stock-query', { requestId: this.tableRequest, mode: this.mode, hideEmpty: this.hideEmpty, showArchived: Boolean(this.showArchived), filter: this.scope });
+    this.emit('stock-query', { requestId: this.tableRequest, mode: this.scope.pending ? 'units' : this.mode, hideEmpty: this.hideEmpty, showArchived: Boolean(this.showArchived),
+      filter: this.scope, sort: this.order.sort, direction: this.order.direction, filters: this.order.filters });
   }
   showModel(model) {
     this.model = model;
-    this.grid.model = model;
+    // History opens in read mode only.
+    if (this.scope.pending && this.grid.rowDetail) this.grid.rowDetail = null;
+    const layout = this.layout();
+    this.queryId = crypto.randomUUID();
+    this.queryKey = JSON.stringify([this.scope.pending ? 'units' : this.mode, this.hideEmpty, Boolean(this.showArchived), this.scope, this.order]);
+    this.layoutFields = { savedWidths: layout.widths ?? {}, columnOrder: layout.order ?? [], layoutVersion: layout.version ?? 0, lastColumn: layout.lastColumn };
+    const focus = this.focusRow ? model.rows.findIndex(row => row.id === this.focusRow) : -1;
+    this.grid.model = this.windowModel(Math.max(0, focus - 66));
+    this.grid.acceptedSort = this.order.sort ? { column: this.order.sort, direction: this.order.direction } : {};
+    this.grid.acceptedFilters = this.order.filters;
     // A dot says there is something to preview; in preview the table itself shows it.
     this.pendingButton.classList.toggle('has-pending', Boolean(model.pending.length) && !this.scope.pending);
     // Preview starts with every row included; unticked rows wait for a later submit.
@@ -201,12 +244,31 @@ class StockWorkbench extends InventoryWorkbench {
     this.selected = this.scope.pending ? rows.filter(id => !(this.excluded ?? []).includes(id)) : null;
     this.grid.selectedEntries = this.selected ?? [];
     this.showSubmit();
-    const row = this.focusNew && model.rows.find(candidate => candidate.className === 'stock-new-row');
+    const newRow = candidate => candidate.className === 'stock-new-row' && (!this.scope.newRowId || candidate.id === this.scope.newRowId);
+    const row = this.focusNew && model.rows.find(newRow);
     this.focusNew = false;
     if (row) this.grid.whenReady.then(() => this.grid.focusField(row.id, 'item'));
-    const typed = this.focusWarehouse && model.rows.find(candidate => candidate.className === 'stock-new-row');
+    // An edited row is focused; a product without stock items focuses its new stock item row.
+    const edited = this.focusRow && (model.rows.find(candidate => candidate.id === this.focusRow) ?? model.rows.find(candidate => candidate.id === `new-row:${this.focusRow.replace(/^product:/, '')}`));
+    this.focusRow = null;
+    if (edited) this.grid.selectRow(edited.id);
+    const typed = this.focusWarehouse && model.rows.find(newRow);
     this.focusWarehouse = false;
     if (typed) this.grid.whenReady.then(() => this.grid.focusField(typed.id, this.scope.warehouseId));
+  }
+  // Rows [start, start + 200), widened so a product's rows are never split.
+  windowModel(start = 0, anchorId = null) {
+    const { rows, merges = [] } = this.model, size = 200, total = rows.length;
+    if (anchorId) { const index = rows.findIndex(row => row.id === anchorId); if (index >= 0) start = Math.max(0, index - 66); }
+    const spans = new Map();
+    for (const merge of merges) for (let y = merge.row; y < merge.row + (merge.rowspan || 1); y++) spans.set(y, [merge.row, merge.row + (merge.rowspan || 1)]);
+    let from = Math.max(0, Math.min(start, total - 1));
+    if (spans.has(from)) [from] = spans.get(from);
+    let to = Math.min(total, from + size);
+    if (to < total && spans.has(to - 1)) [, to] = spans.get(to - 1);
+    return { ...this.model, ...this.layoutFields, rows: rows.slice(from, to),
+      merges: merges.filter(merge => merge.row >= from && merge.row < to).map(merge => ({ ...merge, row: merge.row - from })),
+      viewport: { queryId: this.queryId, queryKey: this.queryKey, start: from, end: to, totalRows: total, windowSize: size } };
   }
   // A cell commit saves a one-line opening for that item and warehouse.
   edit(detail) {
@@ -216,13 +278,14 @@ class StockWorkbench extends InventoryWorkbench {
     // The line is the unit of an edit; other lines of its entry have their own.
     const slot = detail.values['line-id'] ?? `${id}-0`;
     // A correction's entry id exists before its first save; clearing a count there saves nothing.
-    if (detail.entry && Math.max(detail.revision, this.revisions.get(id) ?? 0) > 0 && detail.field === 'quantity' && !detail.value.trim()) { this.discard({ id, line: slot, shared: detail.shared, values: detail.values, revision: Math.max(detail.revision, this.revisions.get(id) ?? 0) }); return; }
+    if (detail.entry && Math.max(detail.revision, this.revisions.get(id) ?? 0) > 0 && detail.field === 'quantity' && !detail.value.trim()) { this.discard({ id, line: slot, shared: detail.shared, values: detail.values, revision: Math.max(detail.revision, this.revisions.get(id) ?? 0), target: 'target' in detail ? detail.target : detail }); return; }
     // Build on the newest values this page holds: queued, then in flight, then its own last save, then the read.
     const inFlight = this.pending?.kind === 'save' && this.pending.slot === slot ? this.pending.values : null;
     const own = (this.revisions.get(id) ?? 0) >= detail.revision ? this.values.get(slot) : null;
-    const base = this.queued.get(slot)?.values ?? inFlight ?? own ?? detail.values;
+    // A cleared line saved `remove`; a new value brings the line back.
+    const { remove: _removed, ...base } = this.queued.get(slot)?.values ?? inFlight ?? own ?? detail.values;
     // A new row's details live in the filter; typing can outrun the table read that carries them.
-    const typed = detail.id.startsWith('new-row:') ? Object.fromEntries(['variant', 'article', 'barcodes', 'unit', 'unit-cost']
+    const typed = detail.id.startsWith('new-row:') ? Object.fromEntries(['variant', 'article', 'barcodes', 'unit', 'unit-cost', 'category-id', 'store-id']
       .filter(key => this.scope[key] !== undefined).map(key => [key, this.scope[key]])) : {};
     const values = { 'occurred-at': now(), ...base, ...typed, ...detail.extra, [detail.field]: detail.value };
     const request = { id, values, revision: detail.revision, target: 'target' in detail ? detail.target : detail };
@@ -304,7 +367,7 @@ class StockWorkbench extends InventoryWorkbench {
     if (!response) return;
     if (response.status !== 'ok') { this.retryNotice(body, () => this.loadHistory(this.historyItem)); return; }
     const tab = this.historyNode.querySelector('[aria-selected="true"]').dataset.tab;
-    if (tab === 'lineage') { body.replaceChildren(element('p', { textContent: t('No production is recorded for this item in this period.') })); return; }
+    if (tab === 'lineage' && response.rows.length) { body.replaceChildren(this.timeline(response.rows)); return; }
     if (!response.rows.length) { body.replaceChildren(element('p', { textContent: t('No accepted records in this period.') })); return; }
     body.replaceChildren(element('table', { className: 'stock-history-rows' },
       element('thead', {}, element('tr', {}, ...['Occurred at', 'Kind', 'Warehouse', 'Change', 'Balance', 'Unit cost', 'Reason'].map(label => element('th', { textContent: t(label) })))),
@@ -316,6 +379,36 @@ class StockWorkbench extends InventoryWorkbench {
         element('td', { textContent: row['balance-after'] ?? '—' }),
         element('td', { textContent: row['unit-cost'] ?? '' }),
         element('td', { textContent: row.reason ?? '' }))))));
+  }
+
+  // Every accepted operation of the item on a time axis: a lane per warehouse, a bar per balance, a mark per operation.
+  timeline(rows) {
+    const at = row => Date.parse(row['occurred-at']);
+    const live = rows.filter(row => !row['superseded?']);
+    const start = Math.min(...live.map(at));
+    const end = Math.max(Date.now(), ...live.map(row => at(row) + 1));
+    const percent = time => 100 * (time - start) / (end - start);
+    const ticks = [0, 1 / 3, 2 / 3, 1];
+    const lanes = new Map();
+    for (const row of live) lanes.set(row.warehouse, [...(lanes.get(row.warehouse) ?? []), row]);
+    const lines = () => ticks.map(tick => element('span', { className: 'stock-timeline-line', style: `left:${100 * tick}%` }));
+    return element('div', { className: 'stock-timeline', role: 'group', ariaLabel: t('Operations over time by warehouse') },
+      element('div', { className: 'stock-timeline-axis' }, ...ticks.map(tick => element('span', {
+        className: tick === 1 ? 'is-last' : '', style: `left:${100 * tick}%`, textContent: new Date(start + tick * (end - start)).toLocaleString(document.documentElement.lang || undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }))),
+      ...[...lanes].sort(([a], [b]) => a.localeCompare(b)).map(([warehouse, events]) => element('div', { className: 'stock-timeline-lane' },
+        element('div', { className: 'stock-timeline-label' }, element('strong', { textContent: warehouse }),
+          element('span', { textContent: String(events.at(-1)['balance-after'] ?? '') })),
+        element('div', { className: 'stock-timeline-plot' }, ...lines(),
+          ...events.map((row, index) => {
+            const until = index + 1 < events.length ? at(events[index + 1]) : end;
+            const text = `${row['kind-label']} · ${formatDate(row['occurred-at'])} · ${row['quantity-change'] > 0 ? '+' : ''}${row['quantity-change']} → ${row['balance-after'] ?? '—'}`;
+            return until > at(row) ? element('span', {
+              className: `stock-timeline-bar${index === events.length - 1 ? ' is-current' : ''}${Number(row['balance-after']) === 0 ? ' is-empty' : ''}`,
+              style: `left:${percent(at(row))}%;width:${percent(until) - percent(at(row))}%`, title: text, textContent: `${row['kind-label']} · ${row['balance-after'] ?? ''}` }) : null;
+          }).filter(Boolean),
+          ...events.map(row => element('span', {
+            className: `stock-timeline-mark ${row['quantity-change'] < 0 ? 'is-out' : 'is-in'}`, style: `left:${percent(at(row))}%`,
+            title: `${row['kind-label']} · ${formatDate(row['occurred-at'])} · ${row['quantity-change']}` }))))));
   }
 
   requestFailed(kind) {
