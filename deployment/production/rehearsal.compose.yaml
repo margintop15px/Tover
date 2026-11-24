@@ -15,8 +15,14 @@ services:
     networks: [identity, outbound]
     ports: [127.0.0.1::3000]
   app:
-    networks: [identity, outbound]
     ports: [127.0.0.1::3030]
+    environment:
+      TOVER_SMTP_HOST: mail
+      TOVER_SMTP_PORT: 1025
+      TOVER_SMTP_USER: ''
+      TOVER_SMTP_PASSWORD: ''
+      TOVER_SMTP_FROM: auth@tover.test
+      TOVER_SMTP_STARTTLS: 'false'
   proxy:
     ports: !reset []
     volumes:

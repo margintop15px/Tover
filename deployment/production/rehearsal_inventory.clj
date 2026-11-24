@@ -2,15 +2,17 @@
 ;; `seed` registers a warehouse, supplier and product, accepts one purchase of 17 and leaves an incomplete
 ;; shared draft and prints the review fingerprint; `verify` (after seeding and after restore) reads them back and
 ;; retries the identical acceptance request, which must return the durable receipt.
-;; It runs the production Bel commands on the production stores. Membership policy is supplied from the
-;; context, as in the store tests; rehearse.py checks the real sign-in and membership over HTTP.
+;; It runs the production Bel commands on the production stores as the user rehearse.py signed in, under the real
+;; session authority and row policies.
 (ns rehearsal-inventory
   (:require
     [bel.core :as bel]
+    [bel.delivery :as delivery]
     [bel.runtime :as runtime]
     [tover.catalogues.products.model :as products]
     [tover.catalogues.suppliers.model :as suppliers]
     [tover.catalogues.warehouses.model :as warehouses]
+    [tover.identity.access :as access]
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
     [tover.inventory.stock.model :as stock]))
@@ -69,13 +71,16 @@
 
 
 (defn rehearse!
-  "`seed` returns the review fingerprint; `verify` needs it and returns a pass line."
-  [mode bel-system repo workspace actor fingerprint]
+  "`seed` returns the review fingerprint; `verify` needs it and returns a pass line. `services` holds the provider
+  and session store; `session-key` is the signed-in rehearsal user's session with the workspace selected."
+  [mode bel-system repo services session-key workspace fingerprint]
   (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename]})
-  (with-redefs [runtime/with-authority (fn [context _touched _isolation read]
-                                         (read (assoc context :principal (select-keys context [:user-id :memberships]))))]
-    (let [ctx (runtime/prepare-context {:bel/system  bel-system :repo repo :workspace-id workspace :user-id actor
-                                        :memberships [{:workspace-id workspace :role :owner}]})]
-      (case mode
-        "seed" (seed! ctx workspace)
-        "verify" (verify! ctx workspace fingerprint)))))
+  (let [identity (access/current-identity services session-key)
+        _        (assert (= workspace (:workspace-id identity)) "The rehearsal session has no selected workspace")
+        ctx      (runtime/prepare-context (merge {:bel/system bel-system :repo repo} identity))]
+    (case mode
+      "seed" (seed! ctx workspace)
+      "verify" (do
+                 ;; The running app's journal worker has moved every accepted command out of the RDF outbox.
+                 (assert (empty? (delivery/pending bel-system)) "The journal worker left accepted commands undelivered")
+                 (verify! ctx workspace fingerprint)))))

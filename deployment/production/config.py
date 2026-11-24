@@ -43,7 +43,8 @@ def generate(path, template):
         return body + "." + b64(hmac.new(jwt_secret.encode(), body.encode(), hashlib.sha256).digest())
 
     generated = {"POSTGRES_PASSWORD": secrets.token_urlsafe(32),
-                 "TOVER_DB_PASSWORD": secrets.token_urlsafe(32), "JWT_SECRET": jwt_secret,
+                 "TOVER_DB_PASSWORD": secrets.token_urlsafe(32),
+                 "TOVER_JOURNAL_DB_PASSWORD": secrets.token_urlsafe(32), "JWT_SECRET": jwt_secret,
                  "ANON_KEY": jwt("anon"), "SERVICE_ROLE_KEY": jwt("service_role"),
                  "SESSION_ENCRYPTION_KEY": base64.b64encode(secrets.token_bytes(32)).decode()}
     contents = Path(template).read_text()
@@ -60,7 +61,8 @@ def validate(path):
     values.update({key: os.environ[key] for key in values if key in os.environ})
     required = ("TOVER_APP_IMAGE", "TOVER_DOMAIN", "TOVER_ORIGIN", "ACME_EMAIL", "SMTP_HOST",
                 "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_ADMIN_EMAIL", "POSTGRES_PASSWORD",
-                "TOVER_DB_PASSWORD", "JWT_SECRET", "ANON_KEY", "SERVICE_ROLE_KEY", "SESSION_ENCRYPTION_KEY")
+                "TOVER_DB_PASSWORD", "TOVER_JOURNAL_DB_PASSWORD", "JWT_SECRET", "ANON_KEY", "SERVICE_ROLE_KEY",
+                "SESSION_ENCRYPTION_KEY")
     missing = [key for key in required if not values.get(key) or values[key] == "GENERATE"]
     if missing:
         raise ValueError("Configure: " + ", ".join(missing))
@@ -81,7 +83,8 @@ def validate(path):
         raise ValueError("Production requires an external SMTP provider")
     if ":" not in values["TOVER_APP_IMAGE"] or values["TOVER_APP_IMAGE"].endswith(":latest"):
         raise ValueError("TOVER_APP_IMAGE must name a release-specific tag or digest")
-    if min(len(values[key]) for key in ("POSTGRES_PASSWORD", "TOVER_DB_PASSWORD", "JWT_SECRET")) < 32:
+    if min(len(values[key]) for key in ("POSTGRES_PASSWORD", "TOVER_DB_PASSWORD", "TOVER_JOURNAL_DB_PASSWORD",
+                                        "JWT_SECRET")) < 32:
         raise ValueError("Generated database/JWT secrets must have at least 32 characters")
     # These passwords are embedded in internal connection URLs.
     if not re.fullmatch(r"[A-Za-z0-9_-]+", values["POSTGRES_PASSWORD"]):
@@ -106,7 +109,7 @@ def validate(path):
 
 def compare_restore(current, backup):
     current_values, backup_values = read_env(current), read_env(backup)
-    keys = ("POSTGRES_PASSWORD", "TOVER_DB_PASSWORD", "JWT_SECRET", "ANON_KEY",
+    keys = ("POSTGRES_PASSWORD", "TOVER_DB_PASSWORD", "TOVER_JOURNAL_DB_PASSWORD", "JWT_SECRET", "ANON_KEY",
             "SERVICE_ROLE_KEY", "SESSION_ENCRYPTION_KEY")
     if any(current_values.get(key) != backup_values.get(key) for key in keys):
         raise ValueError("Restore requires the original database, JWT and session encryption secrets")

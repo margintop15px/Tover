@@ -145,7 +145,7 @@ networks:
             with urllib.request.urlopen(base + path, timeout=10) as response:
                 assert response.status == 200
 
-    def inventory(mode, identity, target):
+    def inventory(mode, identity, browser, target):
         # The application is closed before the offline verifier opens its own store.
         compose("stop", "--timeout", "30", "app", target=target)
         fingerprint = json.dumps(identity.get("fingerprint"))
@@ -157,7 +157,8 @@ networks:
       part   #(val (ig/find-derived-1 system %))]
   (try
     (let [out (rehearsal/rehearse! "{mode}" (part :tover.app/bel-system) (part :tover.app/repo)
-                                   (parse-uuid "{identity['workspace']}") (parse-uuid "{identity['actor']}")
+                                   {{:provider (part :tover.app/provider) :session-store (part :tover.app/session-store)}}
+                                   {json.dumps(browser.cookies["tover-session"])} (parse-uuid "{identity['workspace']}")
                                    {"nil" if fingerprint == "null" else fingerprint})]
       (println (if (= "{mode}" "seed") (str "FINGERPRINT=" out) out)))
     (finally (ig/halt! system) (shutdown-agents))))
@@ -227,7 +228,7 @@ networks:
         browser.sign_in(identity["email"], identity["password"])
         browser.select(identity["workspace"])
         checks["restored_identity_login_membership_and_display_name"] = True
-        inventory("verify", identity, restored)
+        inventory("verify", identity, browser, restored)
         checks["restored_inventory_draft_receipt_and_history"] = True
         checks["restored_readiness"] = True
 
@@ -278,10 +279,24 @@ networks:
         ids, _ = browser.workspace_ids()
         assert len(ids) == 1, "Rehearsal workspace creation failed"
         browser.select(ids[0])
+        invitee = f"invitee-{secrets.token_hex(6)}@example.test"
+        browser.form(browser.send("GET", "/team")[1], "/action/tover.invitations.issue.web/invite",
+                     email=invitee, role="member")
+        invitation_link = re.compile(re.escape(values["TOVER_ORIGIN"]) + r"/invitations/[0-9a-f-]{36}")
+        deadline = time.monotonic() + 60
+        delivered = False
+        while time.monotonic() < deadline and not delivered:
+            for message in request(mail, "/api/v1/messages").get("messages", []):
+                if any(recipient.get("Address") == invitee for recipient in message.get("To", [])):
+                    delivered = bool(invitation_link.search(request(mail, "/api/v1/message/" + message["ID"])["Text"]))
+            if not delivered:
+                time.sleep(0.5)
+        assert delivered, "The journal worker did not deliver the invitation email"
+        checks["journal_worker_invitation_email"] = True
         identity = {"email": email, "password": password, "workspace": ids[0], "actor": confirmed["user"]["id"]}
         checks["captured_confirmation_sign_in_and_workspace_creation"] = True
-        inventory("seed", identity, project)
-        inventory("verify", identity, project)
+        inventory("seed", identity, browser, project)
+        inventory("verify", identity, browser, project)
         (evidence / "identity.json").write_text(json.dumps(identity) + "\n")
         checks["accepted_inventory_pending_draft_and_receipt"] = True
         backup = evidence / "backup"

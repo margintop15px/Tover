@@ -476,6 +476,15 @@ if sys.argv[1] == 'check' and os.environ.get('MISSING_BUNDLE_IMAGE'):
         self.assertEqual(configuration["services"]["app"]["environment"]["TOVER_INVENTORY_PATH"],
                          "/var/lib/tover/inventory")
         self.assertEqual(configuration["services"]["app"]["tmpfs"], ["/tmp:rw,nosuid,size=128m"])
+        # The journal worker sends invitation email: its own login, the deployment's SMTP and a way out.
+        values, app = CONFIG.validate(self.environment), configuration["services"]["app"]
+        self.assertEqual(set(app["networks"]), {"identity", "outbound"})
+        self.assertEqual(app["environment"]["TOVER_JOURNAL_DB_USER"], "tover_journal")
+        for key, source in (("TOVER_JOURNAL_DB_PASSWORD", "TOVER_JOURNAL_DB_PASSWORD"), ("TOVER_SMTP_HOST", "SMTP_HOST"),
+                            ("TOVER_SMTP_PORT", "SMTP_PORT"), ("TOVER_SMTP_USER", "SMTP_USER"),
+                            ("TOVER_SMTP_PASSWORD", "SMTP_PASS"), ("TOVER_SMTP_FROM", "SMTP_ADMIN_EMAIL")):
+            self.assertEqual(app["environment"][key], values[source].replace("$", "$$"), key)
+        self.assertIn("ALTER ROLE tover_journal WITH LOGIN PASSWORD", (PROFILE / "production.sh").read_text())
         for name, service in configuration["services"].items():
             self.assertIn(":", service["image"])
             self.assertNotIn(":latest", service["image"])

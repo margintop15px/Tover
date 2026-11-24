@@ -37,8 +37,9 @@ migrate() {
   # Each migration runs once; the ledger in app_private.schema_migrations records it.
   "$repo_dir/supabase/migrate.sh" "${compose[@]}" exec -T db psql -U postgres -d postgres
   "${compose[@]}" exec -T db sh -c \
-    'psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 --set=app_password="$TOVER_DB_PASSWORD"' <<'SQL'
+    'psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 --set=app_password="$TOVER_DB_PASSWORD" --set=journal_password="$TOVER_JOURNAL_DB_PASSWORD"' <<'SQL'
 ALTER ROLE tover_app WITH PASSWORD :'app_password';
+ALTER ROLE tover_journal WITH LOGIN PASSWORD :'journal_password';
 SQL
 }
 

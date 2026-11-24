@@ -20,7 +20,8 @@ old_project=$(env -u TOVER_DEPLOYMENT_NAME python3 "$profile_dir/config.py" proj
 new=(docker compose --project-name "$new_project" --project-directory "$profile_dir" --env-file "$new_env" -f "$profile_dir/compose.yaml")
 if [[ -n "${TOVER_COMPOSE_OVERRIDE:-}" ]]; then new+=(-f "$TOVER_COMPOSE_OVERRIDE"); fi
 # ponytail: only `ps` and `exec db` run against the legacy project, so the current compose file is enough.
-old=(docker compose --project-name "$old_project" --project-directory "$profile_dir" --env-file "$old_env" -f "$profile_dir/compose.yaml")
+# Legacy environments predate the journal worker; the placeholder only satisfies interpolation.
+old=(env TOVER_JOURNAL_DB_PASSWORD=unused docker compose --project-name "$old_project" --project-directory "$profile_dir" --env-file "$old_env" -f "$profile_dir/compose.yaml")
 old_sql() { "${old[@]}" exec -T db psql -X -q -At -v ON_ERROR_STOP=1 -U supabase_admin -d postgres "$@"; }
 new_sql() { "${new[@]}" exec -T db psql -X -q -At -v ON_ERROR_STOP=1 -U supabase_admin -d postgres "$@"; }
 

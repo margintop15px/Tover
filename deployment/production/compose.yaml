@@ -17,6 +17,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Configure private .env}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       TOVER_DB_PASSWORD: ${TOVER_DB_PASSWORD:?Configure private .env}
+      TOVER_JOURNAL_DB_PASSWORD: ${TOVER_JOURNAL_DB_PASSWORD:?Configure private .env}
       JWT_EXP: 3600
     volumes:
       - identity-data:/var/lib/postgresql/data
@@ -110,7 +111,8 @@ services:
     depends_on:
       db: {condition: service_healthy}
       auth: {condition: service_healthy}
-    networks: [identity]
+    # Outbound only: the journal worker submits invitation email over SMTP.
+    networks: [identity, outbound]
     environment:
       TOVER_AUTH_URL: http://auth:9999
       TOVER_API_KEY: ${ANON_KEY:?Configure private .env}
@@ -119,6 +121,14 @@ services:
       TOVER_JDBC_URL: jdbc:postgresql://db:5432/postgres
       TOVER_DB_USER: tover_app
       TOVER_DB_PASSWORD: ${TOVER_DB_PASSWORD}
+      TOVER_JOURNAL_DB_USER: tover_journal
+      TOVER_JOURNAL_DB_PASSWORD: ${TOVER_JOURNAL_DB_PASSWORD}
+      TOVER_SMTP_HOST: ${SMTP_HOST}
+      TOVER_SMTP_PORT: ${SMTP_PORT:-587}
+      TOVER_SMTP_USER: ${SMTP_USER}
+      TOVER_SMTP_PASSWORD: ${SMTP_PASS}
+      TOVER_SMTP_FROM: ${SMTP_ADMIN_EMAIL}
+      TOVER_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-Tover}
       TOVER_SESSION_KEY: ${SESSION_ENCRYPTION_KEY:?Configure private .env}
       TOVER_PORT: 3030
       TOVER_INVENTORY_PATH: /var/lib/tover/inventory
