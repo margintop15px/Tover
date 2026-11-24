@@ -63,6 +63,9 @@
   [[:stock-item-id {:optional true :bel/ref :tover.inventory.stock-items.model/stock-items} Id]
    [:product-id {:optional true :bel/ref :tover.catalogues.products.model/products} Id]
    [:product-name {:optional true} :string]
+   ;; A new product's category and a new stock item's store, registered with them.
+   [:category-id {:optional true :bel/ref :tover.catalogues.categories.model/categories} Id]
+   [:store-id {:optional true :bel/ref :tover.catalogues.stores.model/stores} Id]
    [:variant-label {:optional true} :string]
    [:article {:optional true} :string]
    [:unit {:optional true} :string]
@@ -97,6 +100,8 @@
    [:variant-label {:optional true} :string]
    [:article {:optional true} :string]
    [:unit {:optional true} :string]
+   ;; An empty string clears the store.
+   [:store-id {:optional true} :string]
    [:product-id {:optional true :bel/ref :tover.catalogues.products.model/products} Id]
    [:archive {:optional true} :boolean]
    [:restore {:optional true} :boolean]])
@@ -374,7 +379,7 @@
 
 
 (def ^:private reference-fields
-  {:stock-item-id :stock-items :product-id :products :warehouse-id :warehouses})
+  {:stock-item-id :stock-items :product-id :products :warehouse-id :warehouses :category-id :categories :store-id :stores})
 
 
 (defn- parse-line
@@ -388,6 +393,10 @@
       (try (records/check-related! id (get references kind) :validation)
            (catch clojure.lang.ExceptionInfo _
              (invalid! field "Choose an active record of this workspace." {:line-id line-id :attempted id}))))
+    (when (and (:category-id line) (not (:product-name line)))
+      (invalid! :category-id "Only a new product takes a category here." {:line-id line-id}))
+    (when (and (:store-id line) (:stock-item-id line))
+      (invalid! :store-id "Only a new stock item takes a store here." {:line-id line-id}))
     (when-let [unit (:unit line)]
       (when-not (or (= unit (:unit previous)) (stock-items/unit? unit))
         (invalid! :unit "Choose a unit from the list." {:line-id line-id :attempted unit})))
@@ -402,7 +411,7 @@
 
 
 (def ^:private new-item-fields
-  [:product-id :product-name :variant-label :article :unit :barcodes])
+  [:product-id :product-name :category-id :store-id :variant-label :article :unit :barcodes])
 
 
 (defn- check-correction-line!
@@ -511,6 +520,10 @@
     (when-let [unit (:unit change)]
       (when-not (or (= unit (:unit previous)) (stock-items/unit? unit))
         (fail! :unit "Choose a unit from the list." unit)))
+    (when-let [store-id (not-empty (:store-id change))]
+      (when (not= store-id (:store-id previous))
+        (try (records/check-related! store-id (:stores references) :validation)
+             (catch clojure.lang.ExceptionInfo _ (fail! :store-id "Choose an active record of this workspace." store-id)))))
     (when (and (:archive change) (:restore change))
       (fail! :archive "Archive or restore, not both." true))
     change))
@@ -569,7 +582,8 @@
    :products    (choices (records/all-records context :tover.catalogues.products.model/products :product-id) :product-id)
    :stock-items (choices (records/all-records context :tover.inventory.stock-items.model/stock-items :stock-item-id) :stock-item-id)
    :suppliers   (choices (records/all-records context :tover.catalogues.suppliers.model/suppliers :supplier-id) :supplier-id)
-   :stores      (choices (records/all-records context :tover.catalogues.stores.model/stores :store-id) :store-id)})
+   :stores      (choices (records/all-records context :tover.catalogues.stores.model/stores :store-id) :store-id)
+   :categories  (choices (records/all-records context :tover.catalogues.categories.model/categories :category-id) :category-id)})
 
 
 (def ^:private draft-facts
@@ -636,7 +650,8 @@
 
 
 (defn blockers
-  "What keeps a pending entry from review: missing facts and archived references, per line and field. An entry
+  "What keeps a pending entry from review: missing facts and archived references, per line and field. Units enter
+  stock only at a cost, so an opening or purchase line needs its unit cost. An entry
   with only stock item changes needs no occurrence time; a transfer's lines take its warehouses; a payment has no lines."
   {:malli/schema [:=> [:cat :map [:sequential Line] :map] [:vector :map]]}
   [{:keys [kind] :as entry} lines status]
@@ -677,6 +692,8 @@
                         [{:line-id line-id :field :warehouse-id :code :warehouse-missing}])
                       (when-not (some line [:stock-item-id :product-id :product-name]) [{:line-id line-id :field :stock-item-id :code :item-missing}])
                       (when (and (= "production" kind) (not (:side line))) [{:line-id line-id :field :side :code :side-missing}])
+                      (when (and (#{"opening" "purchase"} kind) (not (:unit-cost line)))
+                        [{:line-id line-id :field :unit-cost :code :unit-cost-missing}])
                       (for [[field index] reference-fields
                             :when         (archived? index (get line field))]
                         {:line-id line-id :field field :code :archived-reference}))))
@@ -705,7 +722,8 @@
    :stock-items (records/all-records context :tover.inventory.stock-items.model/stock-items :stock-item-id)
    :barcodes    (records/all-records context :tover.inventory.stock-items.model/stock-item-barcodes :barcode-id)
    :suppliers   (records/all-records context :tover.catalogues.suppliers.model/suppliers :supplier-id)
-   :stores      (records/all-records context :tover.catalogues.stores.model/stores :store-id)})
+   :stores      (records/all-records context :tover.catalogues.stores.model/stores :store-id)
+   :categories  (records/all-records context :tover.catalogues.categories.model/categories :category-id)})
 
 
 (defn status-index

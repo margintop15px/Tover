@@ -32,12 +32,16 @@ function loadRuntime() {
 const pathKey = target => `${target?.id || ''}:${target?.path || ''}`;
 const sameValue = (left, right) => String(left ?? '') === String(right ?? '');
 const versionKey = target => JSON.stringify([target?.revision, target?.ledgerRevision, target?.draftId, target?.draftRevision]);
-const utilityColumn = key => ['select', 'actions'].includes(key);
+const utilityColumn = key => ['select', 'expand', 'actions'].includes(key);
+// A fixed column keeps its place; the others can be reordered among themselves.
+const movableColumn = column => !utilityColumn(column.key) && !column.fixed;
 function projectColumnLayout(model, layout) {
   if (!layout) return model;
   const keys = model.columns.map(column => column.key);
-  const content = [...new Set([...(layout.order || []), ...keys])].filter(key => keys.includes(key) && !utilityColumn(key));
-  const order = [...keys.filter(key => key === 'select'), ...content, ...keys.filter(key => key === 'actions')];
+  const free = model.columns.filter(movableColumn).map(column => column.key);
+  const content = [...new Set([...(layout.order || []), ...free])].filter(key => free.includes(key));
+  let next = 0;
+  const order = model.columns.map(column => (movableColumn(column) ? content[next++] : column.key));
   const indexes = order.map(key => keys.indexOf(key)), positions = new Map(indexes.map((index, position) => [index, position]));
   const rows = model.rows.map(row => ({ ...row, cells: indexes.map(index => row.cells[index]) }));
   const merges = (model.merges || []).map(merge => {
@@ -58,9 +62,14 @@ function gridIcon(name) {
   path.setAttribute('d', {
     ascending: 'm7 10 5-5 5 5 M12 5v14', descending: 'm7 14 5 5 5-5 M12 19V5',
     filter: 'M4 6h16 M7 12h10 M10 18h4', right: 'm9 6 6 6-6 6', down: 'm6 9 6 6 6-6',
+    edit: 'M12 20h9 M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z', trash: 'M3 6h18 M8 6V4h8v2 M19 6l-1 14H6L5 6 M10 11v6 M14 11v6',
+    archive: 'M3 4h18v4H3z M5 8v12h14V8 M10 12h4', restore: 'M3 12a9 9 0 1 0 3-6.7 M3 4v5h5',
+    move: 'M7 7h13 m-4-4 4 4-4 4 M17 17H4 m4 4-4-4 4-4', close: 'M6 6l12 12 M18 6 6 18', plus: 'M12 5v14 M5 12h14',
   }[name]);
   svg.append(path); return svg;
 }
+// Server actions name their icon by glyph; draw each as the toolbar's stroke icon.
+const actionIcons = { '✎': 'edit', '🗑': 'trash', '−': 'archive', '↺': 'restore', '⇄': 'move', '×': 'close', '+': 'plus' };
 function coordinateName(column, row) {
   let label = '';
   for (let index = column + 1; index > 0; index = Math.floor((index - 1) / 26)) label = String.fromCharCode(65 + (index - 1) % 26) + label;
@@ -553,6 +562,18 @@ export class InventoryGrid extends HTMLElement {
       if (td) this.focusField(id, td.dataset.path);
     }
   }
+  // Selects the row's first editable cell after the next render and scrolls it into view.
+  selectRow(id) { this._pendingRowSelect = id; this._scheduleRender(); }
+  _selectPendingRow() {
+    const id = this._pendingRowSelect; if (!id || !this.worksheet) return;
+    this._pendingRowSelect = null;
+    const y = this._rows.findIndex(row => row.id === id); if (y < 0) return;
+    const x = this._model.columns.findIndex((column, index) => this._editable(this._cell(index, y)));
+    if (x < 0) return;
+    this.worksheet.updateSelectionFromCoords(x, y, x, y);
+    this.worksheet.getCellFromCoords(x, y)?.scrollIntoView({ block: 'center', inline: 'nearest' });
+    this.focus({ preventScroll: true });
+  }
   _emit(name, detail) { this.dispatchEvent(new CustomEvent(name, { bubbles: true, detail })); }
   _cell(x, y) { return this._rows[y]?.cells[x] || {}; }
   _writable(cell) { return this._model.editable !== false && !!cell.target && cell.readOnly !== true; }
@@ -584,6 +605,7 @@ export class InventoryGrid extends HTMLElement {
       }
       if (versionKey(cell.target) !== versionKey(attempt.target)) {
         if (sameValue(attempt.item ? cell.itemValue : cell.value, attempt.value) ||
+            (attempt.value === '' && cell.cleared !== undefined && sameValue(cell.value, cell.cleared)) ||
             (attempt.editorType === 'catalogue-reference' && cell.aliases?.includes(attempt.value))) { this._attempts.delete(key); this._acknowledgedWrite = attempt.target; }
         else { attempt.state = 'conflict'; attempt.saved = cell.value; attempt.currentTarget = attempt.item ? cell.itemTarget : cell.target; }
       } else if (attempt.state === 'orphan') attempt.state = 'failed';
@@ -828,6 +850,7 @@ export class InventoryGrid extends HTMLElement {
         this.focus({ preventScroll: true });
       }
     }
+    this._selectPendingRow();
     this._emit('inventory-grid-ready', { id: this.id });
     if (this._model.viewport) this._windowScrolled();
   }
@@ -901,7 +924,8 @@ export class InventoryGrid extends HTMLElement {
       const column = this._model.columns[Number(td.dataset.x)]; if (!column) continue;
       td.replaceChildren(); td.dataset.columnKey = column.key; td.setAttribute('role', 'columnheader');
       const label = document.createElement(column.sortKey ? 'button' : 'span');
-      label.className = 'inventory-column-label'; label.textContent = column.label || '\u00a0';
+      label.className = 'inventory-column-label'; label.title = column.label || '';
+      const text = document.createElement('span'); text.className = 'inventory-column-text'; text.textContent = column.label || '\u00a0'; label.append(text);
       if (column.sortKey) {
         label.type = 'button'; label.setAttribute('aria-label', t("Sort by {p0}", {p0: column.label}));
         label.addEventListener('mousedown', event => { this._suppressSortUntil = 0; event.stopPropagation(); });
@@ -913,12 +937,12 @@ export class InventoryGrid extends HTMLElement {
         if (active) { const order = document.createElement('span'); order.className = 'inventory-column-order'; order.append(gridIcon(this._acceptedSort.direction === 'desc' ? 'descending' : 'ascending')); label.append(order); }
         td.setAttribute('aria-sort', active ? this._acceptedSort.direction === 'desc' ? 'descending' : 'ascending' : 'none');
       }
-      if (!utilityColumn(column.key)) {
+      if (movableColumn(column)) {
         label.draggable = !this.busy && !this._active && !this._layoutBlocked();
         label.title = t("Drag to reorder {p0}", {p0: column.label});
         label.addEventListener('dragstart', event => {
           if ((this.busy || this._active || this._resizing || this._layoutBlocked()) && this._columnPress?.label !== label) { event.preventDefault(); return; }
-          this._dragging = { key: column.key, keys: this._renderedColumns.filter(item => !utilityColumn(item.key)).map(item => item.key) };
+          this._dragging = { key: column.key, keys: this._renderedColumns.filter(movableColumn).map(item => item.key) };
           this._lastSelection = this._selectionKey();
           event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', column.key);
           td.classList.add('inventory-column-dragging');
@@ -1007,11 +1031,15 @@ export class InventoryGrid extends HTMLElement {
       const expanded = action.type === 'item-history' && this._rowDetail?.rowId === row?.id;
       const actionButton = button(action.label || action.command, `inventory-cell-action ${action.className || ''}`, (expanded ? '⌄' : action.icon) || (action.command?.startsWith('remove') || action.command === 'discard' ? '×' : '+'), () => { if (!this.busy) this._emit(action.type || 'draft-command', action.type === 'item-history' ? { ...action, expanded } : { ...action }); });
       if (['item-history', 'operation-details'].includes(action.type)) actionButton.replaceChildren(gridIcon(expanded || action.icon === '⌄' ? 'down' : 'right'));
+      else { const glyph = actionButton.textContent; const name = actionIcons[glyph]; if (name) { actionButton.replaceChildren(gridIcon(name)); actionButton.dataset.icon = glyph; } }
       if (action.type === 'item-history') actionButton.setAttribute('aria-expanded', String(expanded));
       if (['item-history', 'operation-details', 'operation-revise'].includes(action.type)) contents.prepend(actionButton); else contents.append(actionButton);
     }
     if (attempt?.state === 'conflict' || attempt?.state === 'failed') {
       td.classList.add('inventory-cell-conflict');
+      // The newest problem keeps its choice open; others open it when selected or hovered.
+      const problems = [...this._attempts].filter(([, other]) => ['conflict', 'failed'].includes(other.state));
+      if (problems.at(-1)?.[1] === attempt) td.classList.add('inventory-cell-latest-problem');
       td.title = attempt.state === 'conflict' ? t("Your value: {p0}. Saved value: {p1}. Choose a value to continue.", {p0: cell.editor?.type === 'date' ? formatDate(attempt.value) : (attempt.display ?? attempt.value), p1: cell.editor?.type === 'date' ? formatDate(attempt.saved) : (attempt.saved ?? '')}) : t('This edit has not been saved. Retry or use the saved value.');
       const controls = document.createElement('span'); controls.className = 'inventory-cell-resolution';
       if (attempt.state === 'conflict') {
@@ -1087,7 +1115,7 @@ export class InventoryGrid extends HTMLElement {
           : fieldError(type === 'operation-reference' ? { ...cell.editor, options: [{ value: '', label: t('None') }, ...this._active.referenceOptions.options] }
             : cell.editor, type === 'operation-reference' ? this._active.referenceOptions.chosenValue : type === 'date' ? inputDateValue(input) : input.value);
         if (error) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); this._notice.textContent = this._refusal = error; return; }
-        this._nextSelection = { x: Number(x), y: Number(y), backwards: e.shiftKey, vertical: e.key === 'Enter' };
+        this._nextSelection = { x: Number(x), y: Number(y), backwards: e.shiftKey, vertical: false };
         worksheet.closeEditor(td, true);
       }
     });
@@ -1129,7 +1157,7 @@ export class InventoryGrid extends HTMLElement {
         }
         if (e.key === 'Enter' || e.key === 'Tab') {
           e.preventDefault();
-          this._nextSelection = { x: Number(x), y: Number(y), backwards: e.shiftKey, vertical: e.key === 'Enter' };
+          this._nextSelection = { x: Number(x), y: Number(y), backwards: e.shiftKey, vertical: false };
           if (choices.selectedIndex === 0) worksheet.closeEditor(td, true); else choose();
         }
       });

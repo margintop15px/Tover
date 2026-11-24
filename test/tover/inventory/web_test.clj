@@ -18,9 +18,9 @@
    :products   [{:product-id "tee" :name "T-shirt" :archived? false
                  :items      [{:stock-item-id "tee-m" :variant-label "M" :article "T-100" :barcodes [] :unit-locked? true :archived? false
                                :cells         {"main" {:quantity 5 :value 500.0000M :valued? true :pending? false}
-                                               "shop" {:quantity 3 :value nil :valued? false :pending? true}}
-                               :total         {:quantity 8 :value 500.0000M :valued "partial"}}]
-                 :total      {:quantity 8 :value 500.0000M :valued "partial"}}]})
+                                               "shop" {:quantity 3 :value 300.0000M :valued? true :pending? true}}
+                               :total         {:quantity 8 :value 800.0000M :valued "all"}}]
+                 :total      {:quantity 8 :value 800.0000M :valued "all"}}]})
 
 
 (defn- cells-of
@@ -35,19 +35,33 @@
   (mapv #(or (:display %) (:value %)) (:cells (some #(when (= id (:id %)) %) (:rows model)))))
 
 
+(defn- column
+  {:malli/schema [:=> [:cat :map :string :string] :map]}
+  [model row k]
+  (nth (cells-of model row) (.indexOf ^java.util.List (mapv :key (:columns model)) k)))
+
+
 (def ^:private opening
   [{:entry-id "e" :revision 1 :kind "opening" :lines [{:product-id "tee" :variant-label "L" :warehouse-id "shop" :quantity 2 :unit-cost "10"}]}])
 
 
 (deftest stock-grid-is-one-table-with-pending-openings
   (let [model (web/stock-grid table {:mode "units" :entries opening})]
-    (is (= ["product" "item" "article" "barcodes" "unit" "unit-cost" "main" "shop" "total"] (map :key (:columns model))))
+    (is (= ["expand" "product" "category" "store" "item" "article" "barcodes" "unit" "unit-cost" "main" "shop" "total" "actions"] (map :key (:columns model))))
     (is (= ["tee-m" "new:tee:L"] (map :id (:rows model))) "a row per stock item; a new item has its own row")
-    (is (= [{:row 0 :col 0 :rowspan 2}] (:merges model)) "the product spans its items")
-    (is (= ["T-shirt" "M" "T-100" "" "" "100.00" "5" "3" "8"] (cells model "tee-m")))
-    (is (= ["" "L" "" "" "" "10" "" "2" "2"] (cells model "new:tee:L")) "the pending opening and its total")
+    (is (= [{:row 0 :col 1 :rowspan 2} {:row 0 :col 2 :rowspan 2}] (:merges model))
+        "the product and its category span its items; the store is per item")
+    (is (= ["" "T-shirt" "" "" "M" "T-100" "" "" "100.00" "5" "3" "8" ""] (cells model "tee-m")))
+    (is (= ["" "" "" "" "L" "" "" "" "10" "" "2" "2" ""] (cells model "new:tee:L")) "the pending opening and its total")
     (is (= [{:entry-id "e" :revision 1 :rowId "new:tee:L"}] (:pending model)))
-    (is (= "quantity" (get-in (cells-of model "tee-m") [6 :editor :type])) "warehouse cells take whole quantities")))
+    (testing "outside Preview the table is read-only; Edit opens a row in Preview"
+      (is (not-any? :editor (cells-of model "tee-m")))
+      (is (= ["stock-edit"] (map :type (:actions (peek (cells-of model "tee-m"))))))
+      (is (= ["item-history"] (map :type (:actions (first (cells-of model "tee-m"))))) "history opens from the first column")
+      (is (empty? (:actions (first (cells-of model "new:tee:L")))) "a pending new item has no history yet"))
+    (let [preview (web/stock-grid table {:mode "units" :entries opening :scope {:pending true :editing ["tee-m"]}})]
+      (is (= ["tee-m" "new:tee:L" "new-row:tee"] (map :id (:rows preview))) "an edited row joins Preview with a new stock item row")
+      (is (= "quantity" (get-in (column preview "tee-m" "main") [:editor :type])) "warehouse cells take whole quantities"))))
 
 
 (deftest pending-covers-every-opening
@@ -90,12 +104,10 @@
 
 (deftest money-mode-shows-amounts
   (let [model (web/stock-grid table {:mode "money" :entries opening})]
-    (is (= ["500.00" "—" "500.00"] (subvec (cells model "tee-m") 6)))
-    (is (= ["" "20.00" "20.00"] (subvec (cells model "new:tee:L") 6)))
-    (is (:partial (peek (cells-of model "tee-m"))) "the total includes unvalued stock")
-    (is (not (:partial (peek (cells-of model "new:tee:L")))))
-    (is (= "—" (peek (cells (web/stock-grid table {:mode "money" :entries (update-in opening [0 :lines 0] dissoc :unit-cost)}) "new:tee:L")))
-        "a wholly unvalued total is not zero")))
+    (is (= ["500.00" "300.00" "800.00"] (subvec (cells model "tee-m") 9 12)))
+    (is (= ["" "20.00" "20.00"] (subvec (cells model "new:tee:L") 9 12))))
+  (is (= "3" (:value (column (web/stock-grid table {:mode "money" :entries opening :scope {:pending true :editing ["tee-m"]}}) "tee-m" "shop")))
+      "Preview is always in units"))
 
 
 (deftest submit-sets-time-and-reason
@@ -107,9 +119,19 @@
     (is (= {:workspace-id workspace              :entry-id "e"         :kind "opening" :expected-revision 3 :lines lines
             :occurred-at  "2026-11-01T00:00:00Z" :reason   "Stocktake"}
            (input {:occurredAt "2026-11-01T00:00:00Z" :reason "Stocktake"})))
-    (testing "an unset value keeps the opening's own"
+    (testing "an unset time or reason keeps the entry's own; a blank reason clears it"
       (is (= ["2026-11-19T10:00:00Z" "Stocktake"] ((juxt :occurred-at :reason) (input {:occurredAt "" :reason "Stocktake"}))))
-      (is (= "Count" (:reason (input {:occurredAt "2026-11-01T00:00:00Z" :reason " "})))))))
+      (is (= "Count" (:reason (input {:occurredAt "2026-11-01T00:00:00Z"}))))
+      (is (nil? (:reason (input {:reason " "})))))))
+
+
+(deftest preview-rows-take-their-own-time-and-reason
+  (let [model (web/stock-grid table {:mode    "units" :scope {:pending true}
+                                     :entries (assoc-in opening [0 :lines 0 :line-id] "e-0")})
+        at    (column model "new:tee:L" "occurred-at")]
+    (is (= ["occurred-at" "reason" "actions"] (take-last 3 (map :key (:columns model)))))
+    (is (= {:type "stock-describe-row" :field "occurred-at" :entries [{:entry "e" :revision 1}]} (select-keys (:target at) [:type :field :entries])))
+    (is (= "date" (get-in at [:editor :type])))))
 
 
 (deftest stock-page-hides-products-without-items-by-default
@@ -162,7 +184,7 @@
                    (assoc-in [:products 0 :items 0 :cells "main" :history?] true)
                    (update :warehouses conj {:id "old" :name "Old" :archived? true})
                    (assoc-in [:products 0 :items 0 :cells "old"] {:quantity 2 :value nil :valued? false :pending? false}))
-        model  (web/stock-grid table {:mode "units" :entries []})
+        model  (web/stock-grid table {:mode "units" :entries [] :scope {:pending true :editing ["tee-m"]}})
         column (fn [k] (nth (cells-of model "tee-m") (.indexOf ^java.util.List (mapv :key (:columns model)) k)))]
     (testing "item without opening offers one"
       (is (= "quantity" (get-in (column "shop") [:editor :type])))
@@ -206,7 +228,7 @@
     (is (nil? (:warehouseId (first (:options (web/suggestions (assoc-in stocked [:products 1 :default-warehouse-id] "old") "Mug")))))
         "an archived default is not filled"))
   (testing "the new row marks the default warehouse cell"
-    (let [model  (web/stock-grid table {:mode "units" :entries [] :scope {:productId "tee" :newRow true :warehouseId "shop"}})
+    (let [model  (web/stock-grid table {:mode "units" :entries [] :scope {:productId "tee" :newRow true :newRowId "new-row:tee" :warehouseId "shop"}})
           column (fn [model row k] (nth (cells-of model row) (.indexOf ^java.util.List (mapv :key (:columns model)) k)))]
       (is (re-find #"stock-default-warehouse" (:className (column model "new-row:tee" "shop"))))
       (is (not (re-find #"stock-default-warehouse" (str (:className (column model "new-row:tee" "main")))))))))
@@ -223,19 +245,13 @@
   (assoc-in table [:products 0 :items 0 :cells "main" :history?] true))
 
 
-(defn- column
-  {:malli/schema [:=> [:cat :map :string :string] :map]}
-  [model row k]
-  (nth (cells-of model row) (.indexOf ^java.util.List (mapv :key (:columns model)) k)))
-
-
 (def ^:private correction
   {:entry-id "c" :revision 2 :kind "correction"
    :lines    [{:line-id "c/main" :stock-item-id "tee-m" :warehouse-id "main" :quantity 7}]})
 
 
 (deftest count-offered-where-history-exists
-  (let [model (web/stock-grid counted {:mode "units" :entries []})
+  (let [model (web/stock-grid counted {:mode "units" :entries [] :scope {:pending true :editing ["tee-m"]}})
         main  (column model "tee-m" "main")]
     (is (= {"kind" "correction" "stock-item-id" "tee-m" "warehouse-id" "main"} (select-keys (get-in main [:target :values]) ["kind" "stock-item-id" "warehouse-id"])))
     (is (= 0 (get-in main [:target :revision])))
@@ -244,7 +260,7 @@
 
 
 (deftest pending-count-shows-accepted-and-counted
-  (let [model (web/stock-grid counted {:mode "units" :entries [correction]})
+  (let [model (web/stock-grid counted {:mode "units" :entries [correction] :scope {:pending true}})
         main  (column model "tee-m" "main")]
     (is (= ["5 → " "7"] ((juxt :prefix :value) main)))
     (is (= ["c" 2 false] ((juxt :entry :revision :shared) (:target main))))
@@ -253,7 +269,7 @@
 
 
 (deftest item-fields-propose-changes
-  (let [model (web/stock-grid counted {:mode "units" :entries [(assoc correction :changes [{:stock-item-id "tee-m" :article "T-101"}])]})]
+  (let [model (web/stock-grid counted {:mode "units" :entries [(assoc correction :changes [{:stock-item-id "tee-m" :article "T-101"}])] :scope {:pending true}})]
     (is (= ["T-100 → " "T-101"] ((juxt :prefix :value) (column model "tee-m" "article"))))
     (is (= "article" (get-in (column model "tee-m" "article") [:target :field])))
     (is (true? (get-in (column model "tee-m" "main") [:target :shared])) "the entry holds more than this count")
@@ -261,8 +277,8 @@
 
 
 (deftest unit-cell-follows-the-lock
-  (let [locked   (column (web/stock-grid counted {:mode "units" :entries []}) "tee-m" "unit")
-        unlocked (column (web/stock-grid (assoc-in counted [:products 0 :items 0 :unit-locked?] false) {:mode "units" :entries []}) "tee-m" "unit")]
+  (let [locked   (column (web/stock-grid counted {:mode "units" :entries [] :scope {:pending true :editing ["tee-m"]}}) "tee-m" "unit")
+        unlocked (column (web/stock-grid (assoc-in counted [:products 0 :items 0 :unit-locked?] false) {:mode "units" :entries [] :scope {:pending true :editing ["tee-m"]}}) "tee-m" "unit")]
     (is (:readOnly locked))
     (is (re-find #"Production" (:title locked)))
     (is (= ["" "pcs" "kg" "g" "l" "ml" "m" "pack"] (map :value (get-in unlocked [:editor :options]))))))
@@ -275,11 +291,11 @@
 
 
 (deftest row-actions-move-archive-restore
-  (let [labels (fn [model] (set (map :field (:actions (column model "tee-m" "item")))))]
-    (is (= #{"move-to" "archive"} (disj (labels (web/stock-grid counted {:mode "units" :entries []})) nil)))
-    (is (= "tee" (:current (some #(when (= "move-to" (:field %)) %) (:actions (column (web/stock-grid counted {:mode "units" :entries []}) "tee-m" "item")))))
+  (let [labels (fn [model] (set (map :field (:actions (column model "tee-m" "actions")))))]
+    (is (= #{"move-to" "archive"} (disj (labels (web/stock-grid counted {:mode "units" :entries [] :scope {:pending true :editing ["tee-m"]}})) nil)))
+    (is (= "tee" (:current (some #(when (= "move-to" (:field %)) %) (:actions (column (web/stock-grid counted {:mode "units" :entries [] :scope {:pending true :editing ["tee-m"]}}) "tee-m" "actions")))))
         "Move knows the current product so the dialog leaves it out")
-    (let [archived (web/stock-grid (assoc-in counted [:products 0 :items 0 :archived?] true) {:mode "units" :entries []})]
+    (let [archived (web/stock-grid (assoc-in counted [:products 0 :items 0 :archived?] true) {:mode "units" :entries [] :scope {:pending true :editing ["tee-m"]}})]
       (is (= #{"restore"} (disj (labels archived) nil)))
       (is (:readOnly (column archived "tee-m" "main")) "an archived item is read-only"))))
 
@@ -312,6 +328,11 @@
     (testing "archive, and keeping it again"
       (is (= [{:stock-item-id "tee-m" :archive true}] (:changes (input {"archive" "true"} nil))))
       (is (nil? (input {"archive" ""} {:changes [{:stock-item-id "tee-m" :archive true}]}))))
+    (testing "a store change, and clearing it"
+      (is (= [{:stock-item-id "tee-m" :store-id "web"}] (:changes (input {"store-id" "web"} nil))))
+      (is (= [{:stock-item-id "tee-m" :store-id ""}]
+             (:changes (web/correction-input (assoc-in item-catalogue [:stock-items 0 :store-id] "web") workspace "c" 2
+                                             {"kind" "correction" "stock-item-id" "tee-m" "store-id" ""} nil)))))
     (testing "clearing the count removes the line"
       (is (nil? (input {"warehouse-id" "main" "line-id" "c/main" "quantity" ""} {:lines (:lines correction)}))))))
 
@@ -408,3 +429,39 @@
     (is (= ["5 → " "3"] ((juxt :prefix :value) (cell "main"))))
     (is (= ["3 → " "5"] ((juxt :prefix :value) (cell "shop"))))
     (is (re-find #"Transfer \+2" (:title (cell "shop"))))))
+
+
+(deftest picked-product-opens-in-preview
+  (is (= ["new-row:tee"]
+         (map :id (:rows (web/stock-grid table {:mode "units" :entries [] :scope {:pending true :productId "tee" :newRow true :newRowId "new-row:tee"}}))))
+      "a product picked from search keeps its new row in Preview"))
+
+
+(deftest store-is-per-stock-item
+  (let [stores [{:store-id "web" :name "Web shop" :status "active"} {:store-id "old" :name "Old" :status "archived"}]
+        table  (assoc-in table [:products 0 :items 0 :store-id] "web")
+        model  (web/stock-grid table {:mode "units" :entries opening :stores stores})
+        store  (column model "tee-m" "store")]
+    (is (= ["web" "Web shop"] ((juxt :value :display) store)))
+    (is (= "" (:value (column model "new:tee:L" "store"))) "a new item has its own store")
+    (let [preview (web/stock-grid table {:mode "units" :entries opening :stores stores :scope {:pending true :editing ["tee-m"]}})
+          store   (column preview "tee-m" "store")]
+      (is (= ["" "web"] (map :value (get-in store [:editor :options]))) "only active stores are offered")
+      (is (= "store-id" (get-in store [:target :field]))))
+    (let [changed (web/stock-grid table {:mode    "units" :stores stores :scope {:pending true}
+                                         :entries [{:entry-id "c" :revision 1 :kind "correction" :lines []
+                                                    :changes  [{:stock-item-id "tee-m" :store-id ""}]}]})]
+      (is (= ["Web shop → " ""] ((juxt :prefix :value) (column changed "tee-m" "store"))) "a pending clear shows the old store"))
+    (is (= "web" (get-in (web/entry-input item-catalogue workspace "e" 0 {"product-id" "tee" "variant" "XL" "store-id" "web"}) [:lines 0 :store-id]))
+        "a new stock item of an existing product takes a store")))
+
+
+(deftest a-blocker-marks-its-cell-and-names-itself
+  (let [entries [{:entry-id "e" :revision 1 :kind "opening" :lines [{:line-id "e-0" :product-id "tee" :variant-label "L" :warehouse-id "shop" :quantity 2}]
+                  :blockers [{:line-id "e-0" :field :unit-cost :code :unit-cost-missing}]}]
+        cost    (column (web/stock-grid table {:mode "units" :entries entries}) "new:tee:L" "unit-cost")]
+    (is (re-find #"stock-finding-error" (:className cost)))
+    (is (re-find #"Unit cost is missing" (:title cost))))
+  (is (= "Opening: Unit cost is missing."
+         (web/problem-message {:entry-id "e" :line-id "e-0" :code :entry-incomplete :cause :unit-cost-missing} {:entry {"e" "Opening"}}))))
+

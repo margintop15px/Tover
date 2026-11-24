@@ -375,9 +375,10 @@
            (fn [item]
              (let [was    (current item)
                    now    (items item)
-                   fields (present {:variant-label (value (:variant-label now)) :article (value (:article now)) :unit (value (:unit now))})
+                   fields (present {:variant-label (value (:variant-label now)) :article (value (:article now)) :unit (value (:unit now))
+                                    :store-id      (value (:store-id now))})
                    facts  (concat
-                            (when (not= fields (present (select-keys was [:variant-label :article :unit])))
+                            (when (not= fields (present (select-keys was [:variant-label :article :unit :store-id])))
                               [[::stock-items/stock-item-updated (assoc fields :stock-item-id item)]])
                             (when (not= (:product-id now) (:product-id was))
                               [[::stock-items/stock-item-moved (present {:stock-item-id item              :previous-product-id (:product-id was)
@@ -445,8 +446,10 @@
         picked   (keep #(when (= (:revision %) (:revision (pending (:entry-id %)))) (pending (:entry-id %))) selection)
         status   (entries/status-index facts)
         blocked  (for [entry picked {:keys [code line-id field]} (entries/blockers entry (:lines entry) status)]
-                   {:entry-id (:entry-id entry) :line-id line-id :field field
-                    :code     (if (#{:quantity-missing :warehouse-missing :item-missing :occurred-at-missing} code) :entry-incomplete code)})
+                   (let [incomplete? (#{:quantity-missing :warehouse-missing :item-missing :unit-cost-missing :occurred-at-missing} code)]
+                     (cond-> {:entry-id (:entry-id entry) :line-id line-id :field field :code (if incomplete? :entry-incomplete code)}
+                       ;; The missing fact, so the member is told what to fill in.
+                       incomplete? (assoc :cause code))))
         future   (for [{:keys [entry-id occurred-at]} picked :when (and occurred-at (pos? (compare occurred-at now)))]
                    {:entry-id entry-id :line-id nil :code :future-occurrence})
         sellers  (with-suppliers picked)
@@ -564,12 +567,13 @@
               :data {:warehouse-id (:warehouse-id l) :name (trim (:warehouse-name l)) :status "active" :revision 1}})
            (for [l (sort-by :line-id (first :product-id :new-product?))]
              {:type :tover.catalogues.products.model/product-registered
-              :data {:product-id (:product-id l) :name (trim (:product-name l)) :status "active" :revision 1}})
+              :data (present {:product-id  (:product-id l)  :name (trim (:product-name l)) :status "active" :revision 1
+                              :category-id (:category-id l)})})
            ;; Lines naming one new product and variant share one item: register it, and each of its barcodes, once.
            (for [l (sort-by :line-id (first :stock-item-id :new-item?))]
              {:type ::stock-items/stock-item-registered
               :data (present {:stock-item-id   (:stock-item-id l)   :product-id (:product-id l)  :variant-label (trim (:variant-label l))
-                              :article         (trim (:article l))  :unit       (trim (:unit l)) :condition     (:condition l "regular")  :status "active"
+                              :article         (trim (:article l))  :unit       (trim (:unit l)) :store-id      (:store-id l)             :condition (:condition l "regular") :status "active"
                               :regular-item-id (:regular-item-id l) :revision   1})})
            (for [[item code] (distinct (for [l lines :when (:new-item? l) code (:barcodes l)] [(:stock-item-id l) code]))]
              {:type ::stock-items/stock-item-barcode-assigned

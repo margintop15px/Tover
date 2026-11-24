@@ -60,7 +60,8 @@
         {"line-id"     (:line-id line)
          "quantity"    (some-> (:quantity line) str)                  "unit-cost" (some-> (:unit-cost line) str)
          "occurred-at" (:occurred-at line) "reason" (:reason line) "article" (:article line)
-         "barcodes"    (some->> (:barcodes line) seq (str/join ", ")) "unit"      (:unit line)}))
+         "barcodes"    (some->> (:barcodes line) seq (str/join ", ")) "unit"      (:unit line)
+         "category-id" (:category-id line) "store-id" (:store-id line)}))
 
 
 (defn- decimal
@@ -86,159 +87,180 @@
 
 
 (defn- item-row
-  "One stock item row: product, item, its details and unit cost, a cell per warehouse and Total (units or amount)."
+  "One stock item row: product, category and store, item, its details and unit cost, a cell per warehouse and Total
+  (units or amount), then in Preview the row's occurrence time and reason, and the row actions. Outside Preview the row
+  is read-only: its actions are History and Edit, which opens it in Preview. Preview is always in units."
   {:malli/schema [:=> [:cat :map :map] :map]}
-  [{:keys [mode currency warehouses preview?]}
-   {:keys [id className product-cell label label-cell details details-editable? base locked? accepted lines actions item correction correction-id
+  [{:keys [mode currency warehouses preview? stores]}
+   {:keys [id className product-cells label label-cell details details-editable? base locked? accepted lines item correction correction-id
            default-warehouse operations]}]
-  (let [money?    (= "money" mode)
-        archived? (:archived? item)
+  (let [money?      (and (= "money" mode) (not preview?))
+        archived?   (:archived? item)
         ;; An existing row's counts and stock item changes go to its one Correction entry (chapter 15).
-        counts    (into {} (map (juxt :warehouse-id identity)) (:lines correction))
-        change    (first (:changes correction))
-        ctarget   (fn [path field extra shared?]
-                    {:type   "stock-cell" :id id :rowId id :path path :field field :entry correction-id :revision (:revision correction 0)
-                     :shared (boolean shared?)
-                     :values (merge {"kind" "correction" "stock-item-id" id "line-id" (str correction-id "/change")} extra)})
-        count-q   (reduce + 0 (for [[w l] counts] (- (:quantity l) (get-in accepted [:cells w :quantity] 0))))
-        money     #(amount % currency)
-        column    (into {} (map (juxt :id :id)) warehouses)
-        by-w      (group-by #(column (:warehouse-id %) no-warehouse) lines)
-        entries   (vec (for [l lines] {:entry  (:entry-id l) :revision (:revision l)
-                                       :values (merge base {"warehouse-id" (:warehouse-id l)} (line-values l))}))
-        pend-q    (reduce + 0 (keep (comp decimal :quantity) lines))
-        costs     (distinct (keep (comp decimal :unit-cost) lines))
-        pend-v    (reduce + 0M (for [l lines :let [q (decimal (:quantity l)) c (decimal (:unit-cost l))] :when (and q c)] (* q c)))
-        acc-q     (get-in accepted [:total :quantity] 0)
-        acc-v     (get-in accepted [:total :value] 0M)
-        val-q     (reduce + 0 (keep #(when (and (:valued? %) (:value %)) (:quantity %)) (vals (:cells accepted))))
-        parts     (concat (for [c (vals (:cells accepted)) :when (pos? (:quantity c))] (boolean (and (:valued? c) (:value c))))
-                          (for [l lines :when (some-> (:quantity l) decimal pos?)] (some? (:unit-cost l))))
-        unvalued? (some false? parts)
-        editor    (fn [path]
-                    (if (= "unit" path)
-                      {:type "select" :allowEmpty true :options (into [{:value "" :label ""}] (map #(hash-map :value % :label (i18n/unit-label %))) stock-items/units)}
-                      {:type "text"}))
-        pending   (fn [path]
-                    (case path
-                      "article" (:article change)
-                      "unit" (:unit change)
-                      "barcodes" (when (some #(contains? change %) [:barcodes-added :barcodes-removed])
-                                   (str/join ", " (concat (remove (set (:barcodes-removed change)) (:barcodes item)) (:barcodes-added change))))))
-        field     (fn [path value]
-                    (cond-> {:value (or value "")}
-                      item (merge (let [now (pending path)]
-                                    (cond-> {:value (or now value "")}
-                                      now (assoc :prefix (str (if (seq value) value "—") " → ") :className "stock-cell-pending")
-                                      (and (= "unit" path) now) (assoc :display (or (i18n/unit-label now) now)))))
-                      (and item (not archived?) (not (and (= "unit" path) (:unit-locked? item))))
-                      (assoc :editor (editor path) :target (ctarget path path {} true))
-                      (and item (= "unit" path) (:unit-locked? item))
-                      (assoc :readOnly true :title (i18n/t "The unit is fixed once the item has stock history. Another unit needs another stock item and Production."))
-                      (= "unit" path) (assoc :display (or (i18n/unit-label value) ""))
-                      (= :blank details-editable?) (assoc :editor (editor path) :target {:type "stock-new-field" :id id :rowId id :path path})
-                      (true? details-editable?) (assoc :editor (editor path)
-                                                       :target {:type "stock-item-field" :id id :rowId id :path path :field path :entries entries})))
-        cost      (cond-> {:value     (cond (= 1 (count costs)) (str (first costs))
-                                            (and (empty? lines) (pos? val-q)) (money (with-precision 20 (/ acc-v val-q)))
-                                            :else "")
-                           :className (str "inventory-cell-number" (when (seq costs) " stock-cell-pending"))
-                           :editor    {:type "decimal"}
-                           :title     (if (seq lines) (i18n/t "Unit cost of the pending openings") (i18n/t "Enter a quantity first"))
-                           :target    {:type "stock-item-field" :id id :rowId id :path "unit-cost" :field "unit-cost" :entries entries}}
+        counts      (into {} (map (juxt :warehouse-id identity)) (:lines correction))
+        change      (first (:changes correction))
+        ctarget     (fn [path field extra shared?]
+                      {:type   "stock-cell" :id id :rowId id :path path :field field :entry correction-id :revision (:revision correction 0)
+                       :shared (boolean shared?)
+                       :values (merge {"kind" "correction" "stock-item-id" id "line-id" (str correction-id "/change")}
+                                      (when-let [at (:occurred-at correction)] {"occurred-at" (str at)})
+                                      extra)})
+        count-q     (reduce + 0 (for [[w l] counts] (- (:quantity l) (get-in accepted [:cells w :quantity] 0))))
+        money       #(amount % currency)
+        column      (into {} (map (juxt :id :id)) warehouses)
+        by-w        (group-by #(column (:warehouse-id %) no-warehouse) lines)
+        entries     (vec (for [l lines] {:entry  (:entry-id l) :revision (:revision l)
+                                         :values (merge base {"warehouse-id" (:warehouse-id l)} (line-values l))}))
+        pend-q      (reduce + 0 (keep (comp decimal :quantity) lines))
+        costs       (distinct (keep (comp decimal :unit-cost) lines))
+        pend-v      (reduce + 0M (for [l lines :let [q (decimal (:quantity l)) c (decimal (:unit-cost l))] :when (and q c)] (* q c)))
+        acc-q       (get-in accepted [:total :quantity] 0)
+        acc-v       (get-in accepted [:total :value] 0M)
+        val-q       (reduce + 0 (keep #(when (and (:valued? %) (:value %)) (:quantity %)) (vals (:cells accepted))))
+        store-name  (into {} (map (juxt :store-id :name)) stores)
+        editor      (fn [path]
+                      (case path
+                        "unit" {:type "select" :allowEmpty true :options (into [{:value "" :label ""}] (map #(hash-map :value % :label (i18n/unit-label %))) stock-items/units)}
+                        "store-id" {:type    "select" :allowEmpty true
+                                    :options (into [{:value "" :label ""}]
+                                                   (for [r (sort-by (comp records/name-key :name) stores) :when (= "active" (:status r))]
+                                                     {:value (:store-id r) :label (:name r)}))}
+                        {:type "text"}))
+        shown       (fn [path value]
+                      (case path "unit" (i18n/unit-label value) "store-id" (store-name value) value))
+        pending     (fn [path]
+                      (case path
+                        "article" (:article change)
+                        "unit" (:unit change)
+                        "store-id" (:store-id change)
+                        "barcodes" (when (some #(contains? change %) [:barcodes-added :barcodes-removed])
+                                     (str/join ", " (concat (remove (set (:barcodes-removed change)) (:barcodes item)) (:barcodes-added change))))))
+        field       (fn [path value]
+                      (cond-> {:value (or value "")}
+                        item (merge (let [now (pending path)]
+                                      (cond-> {:value (or now value "")}
+                                        now (assoc :prefix (str (if (seq value) (or (shown path value) value) "—") " → ") :className "stock-cell-pending")
+                                        (and (#{"unit" "store-id"} path) now) (assoc :display (or (shown path now) now)))))
+                        (and item (not archived?) (not (and (= "unit" path) (:unit-locked? item))))
+                        (assoc :editor (editor path) :target (ctarget path path {} true))
+                        (and item (= "unit" path) (:unit-locked? item))
+                        (assoc :readOnly true :title (i18n/t "The unit is fixed once the item has stock history. Another unit needs another stock item and Production."))
+                        (and (#{"unit" "store-id"} path) (not (pending path))) (assoc :display (or (shown path value) ""))
+                        (= :blank details-editable?) (assoc :editor (editor path) :target {:type "stock-new-field" :id id :rowId id :path path})
+                        (true? details-editable?) (assoc :editor (editor path)
+                                                         :target {:type "stock-item-field" :id id :rowId id :path path :field path :entries entries})))
+        cost        (cond-> {:value     (cond (= 1 (count costs)) (str (first costs))
+                                              (and (empty? lines) (pos? val-q)) (money (with-precision 20 (/ acc-v val-q)))
+                                              :else "")
+                             :className (str "inventory-cell-number" (when (seq costs) " stock-cell-pending"))
+                             :editor    {:type "decimal"}
+                             :title     (if (seq lines) (i18n/t "Unit cost of the pending openings") (i18n/t "Enter a quantity first"))
+                             :target    {:type "stock-item-field" :id id :rowId id :path "unit-cost" :field "unit-cost" :entries entries}}
                   ;; A new row keeps its cost until the first quantity saves it with the opening.
-                    (= :blank details-editable?) (assoc :value (get details "unit-cost" "") :title (i18n/t "Unit cost")
-                                                        :target {:type "stock-new-field" :id id :rowId id :path "unit-cost"})
-                    (and (empty? lines) (not= :blank details-editable?)) (assoc :readOnly true))
-        w-cell    (fn [{w :id gone? :archived?}]
-                    (let [ls    (by-w w)
-                          line  (first ls)
-                          cell  (get-in accepted [:cells w])
-                          shown (cond money? (if (and cell (pos? (:quantity cell))) (money (:value cell)) "") cell (str (:quantity cell)) :else "")
-                          count (counts w)]
-                      (if (and item (not money?) (:history? cell) (nil? line) (not gone?) (not archived?))
+                      (= :blank details-editable?) (assoc :value (get details "unit-cost" "") :title (i18n/t "Unit cost")
+                                                          :target {:type "stock-new-field" :id id :rowId id :path "unit-cost"})
+                      (and (empty? lines) (not= :blank details-editable?)) (assoc :readOnly true))
+        row-change  (fn [label icon field value]
+                      (assoc (ctarget "item" field {} true) :type "stock-row-change" :label label :icon icon :value value))
+        row-actions (cond-> []
+                      (and (not preview?) (not= "stock-new-row" className)) (conj {:type "stock-edit" :id id :label (i18n/t "Edit") :icon "✎"})
+                      (and preview? item archived?) (conj (if (:restore change)
+                                                            (row-change (i18n/t "Keep archived") "×" "restore" "")
+                                                            (row-change (i18n/t "Restore") "↺" "restore" "true")))
+                      (and preview? item (not archived?)) (conj (assoc (row-change (i18n/t "Move to another product") "⇄" "move-to" nil) :current (:product-id item))
+                                                                (if (:archive change)
+                                                                  (row-change (i18n/t "Keep") "×" "archive" "")
+                                                                  (row-change (i18n/t "Archive") "−" "archive" "true")))
+                      (and preview? (or (seq lines) correction))
+                      (conj {:type    "stock-discard-row" :id id :label (i18n/t "Discard pending changes")
+                             :icon    "🗑"
+                             :entries (concat
+                                        (for [[entry ls] (group-by :entry-id lines)
+                                              l          (if (< (count ls) (:line-count (first ls))) ls (take 1 ls))]
+                                          {:entry  entry :revision (:revision l) :line (:line-id l)
+                                           :shared (< (count ls) (:line-count l)) :values (line-values l)})
+                                        (when correction
+                                          [{:entry (:entry-id correction) :revision (:revision correction) :shared false :values {}}]))}))
+        ;; Each saved entry of the row (its openings, its correction) takes the row's occurrence time and reason.
+        row-entries (vec (distinct (concat (for [l lines] {:entry (:entry-id l) :revision (:revision l)})
+                                           (when (:revision correction) [{:entry (:entry-id correction) :revision (:revision correction)}]))))
+        described   {"occurred-at" (or (:occurred-at (first lines)) (some-> (:occurred-at correction) str))
+                     "reason"      (or (:reason (first lines)) (:reason correction))}
+        describe    (fn [path editor]
+                      (if (seq row-entries)
+                        {:value  (or (described path) "") :editor editor
+                         :target {:type "stock-describe-row" :id id :rowId id :path path :field path :entries row-entries}}
+                        {:value (or (described path) "") :readOnly true :title (i18n/t "Enter a change first")}))
+        w-cell      (fn [{w :id gone? :archived?}]
+                      (let [ls    (by-w w)
+                            line  (first ls)
+                            cell  (get-in accepted [:cells w])
+                            shown (cond money? (if (and cell (pos? (:quantity cell))) (money (:value cell 0M)) "")
+                                        cell (str (:quantity cell)) :else "")
+                            count (counts w)]
+                        (if (and item (not money?) (:history? cell) (nil? line) (not gone?) (not archived?))
                         ;; Accepted history here: the cell takes a counted balance.
-                        (cond-> {:value  shown :className "inventory-cell-number" :editor {:type "quantity"}
-                                 :title  (i18n/t "Counted balance. Accepted now: {p0}" {:p0 shown})
-                                 :target (ctarget w "quantity" {"warehouse-id" w "line-id" (or (:line-id count) (str correction-id "/" w))}
-                                                  (or change (seq (dissoc counts w))))}
-                          count (assoc :value (str (:quantity count)) :prefix (str shown " → ") :className "inventory-cell-number stock-cell-pending"))
-                        (cond-> {:value shown :className (if (= w default-warehouse) "inventory-cell-number stock-default-warehouse" "inventory-cell-number")}
-                          (and (not money?) (or (= no-warehouse w) (next ls))) (assoc :readOnly true)
-                          (not (or money? (= no-warehouse w) (next ls)))
-                          (assoc :editor {:type "quantity"}
-                                 :target {:type   "stock-cell" :id           id :rowId id :path w :field "quantity"
-                                          :entry  (:entry-id line) :revision (or (:revision line) 0) :shared (< 1 (:line-count line 1))
-                                          :values (merge base {"warehouse-id" w} (line-values line))})
-                          (and (not money?) (or locked? archived?)) (assoc :readOnly true)
-                          (and (= w default-warehouse) (nil? line)) (assoc :title (i18n/t "This product's default warehouse"))
-                          (and (not money?) (nil? line) gone?)
-                          (assoc :readOnly true :title (i18n/t "This warehouse is archived. Restore it to add stock."))
+                          ;; Clearing a count withdraws it, and the cell shows the accepted balance again.
+                          (cond-> {:value  shown :cleared shown :className "inventory-cell-number" :editor {:type "quantity"}
+                                   :title  (i18n/t "Counted balance. Accepted now: {p0}" {:p0 shown})
+                                   :target (ctarget w "quantity" {"warehouse-id" w "line-id" (or (:line-id count) (str correction-id "/" w))}
+                                                    (or change (seq (dissoc counts w))))}
+                            count (assoc :value (str (:quantity count)) :prefix (str shown " → ") :className "inventory-cell-number stock-cell-pending"))
+                          (cond-> {:value shown :className (if (= w default-warehouse) "inventory-cell-number stock-default-warehouse" "inventory-cell-number")}
+                            (and (not money?) (or (= no-warehouse w) (next ls))) (assoc :readOnly true)
+                            (not (or money? (= no-warehouse w) (next ls)))
+                            (assoc :editor {:type "quantity"}
+                                   :target {:type   "stock-cell" :id           id :rowId id :path w :field "quantity"
+                                            :entry  (:entry-id line) :revision (or (:revision line) 0) :shared (< 1 (:line-count line 1))
+                                            :values (merge base {"warehouse-id" w} (line-values line))})
+                            (and (not money?) (or locked? archived?)) (assoc :readOnly true)
+                            (and (= w default-warehouse) (nil? line)) (assoc :title (i18n/t "This product's default warehouse"))
+                            (and (not money?) (nil? line) gone?)
+                            (assoc :readOnly true :title (i18n/t "This warehouse is archived. Restore it to add stock."))
                           ;; Pending purchases and sales are submitted from Operations; here they only show their effect.
-                          (and (not money?) (get operations w) (nil? line) (nil? count))
-                          (assoc :value (str (+ (:quantity cell 0) (reduce + (map :change (operations w)))))
-                                 :prefix (str (if (seq shown) shown "0") " → ") :className "inventory-cell-number stock-cell-pending" :readOnly true
-                                 :title (str/join "\n" (cons (i18n/t "Pending operations, submitted from Operations:")
-                                                             (map :label (operations w)))))
-                          line (assoc :value (if money?
-                                               (if (every? (comp decimal :unit-cost) ls)
-                                                 (money (reduce + 0M (for [l ls] (* (decimal (:unit-cost l)) (or (decimal (:quantity l)) 0M)))))
-                                                 "—")
-                                               (if (some :quantity ls) (str (reduce + 0 (keep (comp decimal :quantity) ls))) ""))
-                                      :prefix "+" :className "inventory-cell-number stock-cell-pending"
-                                      :title (cond (next ls) (i18n/t "Several pending openings. Only one can be accepted.")
-                                                   (= no-warehouse w) (or (:warehouse-name line) (i18n/t "Warehouse is missing."))
-                                                   :else (i18n/t "Pending opening. Accepted now: {p0}" {:p0 (if (seq shown) shown "0")})))))))]
+                            (and (not money?) (get operations w) (nil? line) (nil? count))
+                            (assoc :value (str (+ (:quantity cell 0) (reduce + (map :change (operations w)))))
+                                   :prefix (str (if (seq shown) shown "0") " → ") :className "inventory-cell-number stock-cell-pending" :readOnly true
+                                   :title (str/join "\n" (cons (i18n/t "Pending operations, submitted from Operations:")
+                                                               (map :label (operations w)))))
+                            line (assoc :value (if money?
+                                                 (money (reduce + 0M (for [l ls] (* (or (decimal (:unit-cost l)) 0M) (or (decimal (:quantity l)) 0M)))))
+                                                 (if (some :quantity ls) (str (reduce + 0 (keep (comp decimal :quantity) ls))) ""))
+                                        :prefix "+" :className "inventory-cell-number stock-cell-pending"
+                                        :title (cond (next ls) (i18n/t "Several pending openings. Only one can be accepted.")
+                                                     (= no-warehouse w) (or (:warehouse-name line) (i18n/t "Warehouse is missing."))
+                                                     :else (i18n/t "Pending opening. Accepted now: {p0}" {:p0 (if (seq shown) shown "0")})))))))]
     {:id    id :label label :className className
      :cells (-> (if preview?
                   ;; In preview each row with pending openings can be left for a later submit, or discarded.
                   [(if (or correction (some (complement blocked?) lines)) {:selection {:id id :label (i18n/t "Include in submit")}} {:value ""})]
-                  [])
-                (conj (or product-cell {:value ""}))
+                  ;; Read mode opens an item's history from the first column.
+                  [(if item {:value "" :actions [{:type "item-history" :id (:stock-item-id item) :label (i18n/t "History")}]} {:value ""})])
+                (into (or product-cells (repeat 2 {:value ""})))
+                (conj (field "store-id" (get details "store-id")))
                 (conj (or label-cell
-                          (let [row-change (fn [label icon field value]
-                                             (assoc (ctarget "item" field {} true) :type "stock-row-change" :label label :icon icon :value value))
-                                marks      (cond-> []
-                                             (:archive change) (conj (i18n/t "archive pending"))
-                                             (:restore change) (conj (i18n/t "restore pending"))
-                                             (:product-id change) (conj (i18n/t "move pending"))
-                                             archived? (conj (i18n/t "(archived)")))
-                                actions    (cond-> (vec actions)
-                                             (and item archived?) (conj (if (:restore change)
-                                                                          (row-change (i18n/t "Keep archived") "×" "restore" "")
-                                                                          (row-change (i18n/t "Restore") "↺" "restore" "true")))
-                                             (and item (not archived?)) (conj (assoc (row-change (i18n/t "Move to another product") "⇄" "move-to" nil) :current (:product-id item))
-                                                                              (if (:archive change)
-                                                                                (row-change (i18n/t "Keep") "×" "archive" "")
-                                                                                (row-change (i18n/t "Archive") "−" "archive" "true")))
-                                             (and preview? (or (seq lines) correction))
-                                             (conj {:type    "stock-discard-row" :id id :label (i18n/t "Discard pending changes")
-                                                    :icon    "×"
-                                                    :entries (concat
-                                                               (for [[entry ls] (group-by :entry-id lines)
-                                                                     l          (if (< (count ls) (:line-count (first ls))) ls (take 1 ls))]
-                                                                 {:entry  entry :revision (:revision l) :line (:line-id l)
-                                                                  :shared (< (count ls) (:line-count l)) :values (line-values l)})
-                                                               (when correction
-                                                                 [{:entry (:entry-id correction) :revision (:revision correction) :shared false :values {}}]))}))
-                                variant    (:variant-label item)]
+                          (let [marks   (cond-> []
+                                          (:archive change) (conj (i18n/t "archive pending"))
+                                          (:restore change) (conj (i18n/t "restore pending"))
+                                          (:product-id change) (conj (i18n/t "move pending"))
+                                          archived? (conj (i18n/t "(archived)")))
+                                variant (:variant-label item)]
                             (cond-> {:value label}
                               (and item (not archived?)) (assoc :value (or variant "") :display label :editor {:type "text"}
                                                                 :target (ctarget "item" "variant" {} true))
                               (contains? change :variant-label) (assoc :value (:variant-label change) :display (:variant-label change)
                                                                        :prefix (str (if (seq variant) variant "—") " → ") :className "stock-cell-pending")
-                              (seq marks) (update :display #(str (or % label) " · " (str/join ", " marks)))
-                              (seq actions) (assoc :actions actions)))))
+                              (seq marks) (update :display #(str (or % label) " · " (str/join ", " marks)))))))
                 (into (map (fn [[path]] (field path (get details path)))) item-fields)
                 (conj cost)
                 (into (map w-cell) warehouses)
-                (conj (cond-> {:value     (cond (not money?) (str (+ acc-q pend-q count-q))
-                                                (and unvalued? (not-any? true? parts)) "—"
-                                                :else (money (+ acc-v pend-v)))
+                (conj (cond-> {:value     (if money? (money (+ acc-v pend-v)) (str (+ acc-q pend-q count-q)))
                                :className (str "inventory-cell-number stock-total" (when (or (seq lines) (seq counts)) " stock-cell-pending"))}
                         (seq lines) (assoc :title (i18n/t "Includes pending openings"))
-                        (and (not money?) (seq counts)) (assoc :title (i18n/t "Includes pending changes"))
-                        (and money? unvalued? (some true? parts)) (assoc :partial true :prefix "≥ " :title (i18n/t "Includes unvalued stock")))))}))
+                        (and (not money?) (seq counts)) (assoc :title (i18n/t "Includes pending changes"))))
+                (into (when preview? [(describe "occurred-at" {:type "date"}) (describe "reason" {:type "text"})]))
+                (conj {:value "" :className "stock-row-actions" :actions row-actions})
+                (as-> cells (if preview? cells (mapv #(dissoc % :editor :target) cells))))}))
 
 
 (defn kind-label
@@ -271,6 +293,16 @@
                                                            (some-> stock-item-id item) (some-> warehouse-id warehouse) (some-> quantity str)]))])))
 
 
+(def ^:private problem-text
+  {:occurred-at-missing "Occurrence time is missing."              :quantity-missing  "Quantity is missing."
+   :warehouse-missing   "Warehouse is missing."                    :item-missing      "Stock item is missing."
+   :unit-cost-missing   "Unit cost is missing."
+   :archived-reference  "Restore the archived record first."       :new-reference     "Will be created on acceptance."
+   :similar-reference   "A record with a similar name exists."     :duplicate-variant "This product already has this variant."
+   :insufficient-stock  "Not enough stock." :barcode-conflict "This barcode belongs to another product."
+   :article-conflict    "This article belongs to another product."})
+
+
 (defn finding-text
   "The member's message for one draft finding (chapter 16), naming related records where the rule gives them.
   `names` maps ids to names under `:warehouse`, `:product`, `:item` and `:entry`."
@@ -285,7 +317,7 @@
     :article-conflict (i18n/t "This article belongs to {p0}." {:p0 (or (:name related) (:owner-product related) (i18n/t "another product"))})
     :unit-locked (i18n/t "The unit is locked by stock history.")
     :archive-blocked (if-let [w (:warehouse-id related)]
-                       (i18n/t "Cannot archive: stock in {p0}." {:p0 (warehouse w w)})
+                       (i18n/t "Cannot archive: stock in {p0}. Count it to 0 there first." {:p0 (warehouse w w)})
                        (if-let [e (get entry (:other-entry-id related))]
                          (i18n/t "Cannot archive: pending {p0}." {:p0 e})
                          (i18n/t "Cannot archive: another pending entry names this item.")))
@@ -295,7 +327,7 @@
                        (i18n/t "The move conflicts with {p0}, kept by {p1}." {:p0 what :p1 (get item other other)})
                        (i18n/t "The move conflicts with {p0}." {:p0 what})))
     :field-conflict (i18n/t "Another pending entry changes this field.")
-    (i18n/t "Check this value.")))
+    (i18n/t (problem-text code "Check this value."))))
 
 
 (def ^:private change-codes
@@ -306,7 +338,7 @@
   "The column a finding's field shows in; `:warehouse` is the line's warehouse column."
   {:quantity      :warehouse  :warehouse-id :warehouse :warehouse-name :warehouse :product-name "product"  :product-id "item"
    :variant-label "item"      :status       "item"     :article        "article"  :barcodes     "barcodes" :unit       "unit"
-   :unit-cost     "unit-cost"})
+   :unit-cost     "unit-cost" :store-id     "store"})
 
 
 (def ^:private levels
@@ -342,13 +374,82 @@
           rows)))
 
 
+(defn- cell-text
+  {:malli/schema [:=> [:cat :map] :string]}
+  [cell]
+  (str (:prefix cell) (or (:display cell) (:value cell))))
+
+
+(defn- condition?
+  "One filter condition of the column filter popup, compared ignoring case."
+  {:malli/schema [:=> [:cat :string :map] :boolean]}
+  [text {:keys [type value]}]
+  (let [text (records/name-key (str/trim text)) value (records/name-key (str/trim (str value)))]
+    (case type
+      "empty" (str/blank? text) "notEmpty" (not (str/blank? text))
+      "eq" (= text value) "notEq" (not= text value)
+      "begins" (str/starts-with? text value) "contains" (str/includes? text value) "notContains" (not (str/includes? text value))
+      true)))
+
+
+(defn matches?
+  "Conditions joined left to right by each condition's `relation` (and / or) to the next."
+  {:malli/schema [:=> [:cat :string [:sequential :map]] :boolean]}
+  [text conditions]
+  (if (empty? conditions)
+    true
+    (reduce (fn [result [previous condition]]
+              (if (= "or" (:relation previous)) (or result (condition? text condition)) (and result (condition? text condition))))
+            (condition? text (first conditions))
+            (partition 2 1 conditions))))
+
+
+(def ^:private product-keys
+  "Columns that belong to the product: one value per product, spanning its stock items."
+  ["product" "category"])
+
+
+(defn- arrange
+  "Groups `[rows]` sorted and filtered by column. Product columns compare per product; number columns sum the
+  product's rows; other columns compare the product's first row and also order rows within the product. A filter keeps
+  the rows that match; a product with no matching row is dropped. A new stock item row stays last in its product."
+  {:malli/schema [:=> [:cat [:sequential [:sequential :map]] [:sequential :string] [:set :string] :map] [:sequential [:sequential :map]]]}
+  [groups column-keys numbers {:keys [sort direction filters]}]
+  (let [at      (into {} (map-indexed (fn [i k] [k i])) column-keys)
+        text    (fn [row k] (some->> (at k) (nth (:cells row)) cell-text))
+        number  (fn [row k] (or (some->> (at k) (nth (:cells row)) :value decimal) 0M))
+        blank?  #(= "stock-new-row" (:className %))
+        filters (for [[k conditions] filters :let [k (name k)] :when (and (at k) (seq conditions))] [k conditions])
+        product (filter (comp (set product-keys) first) filters)
+        own     (remove (comp (set product-keys) first) filters)
+        keep?   (fn [row] (every? (fn [[k conditions]] (matches? (text row k) conditions)) own))
+        rows-of (fn [rows] (if (seq own) (let [found (filter #(and (not (blank? %)) (keep? %)) rows)] (when (seq found) (concat found (filter blank? rows)))) rows))
+        groups  (keep (fn [rows]
+                        (when (every? (fn [[k conditions]] (matches? (text (first rows) k) conditions)) product)
+                          (seq (rows-of rows))))
+                      groups)
+        k       (some-> sort name)
+        order   (if (= "desc" direction) #(compare %2 %1) compare)]
+    (cond
+      (not (at k)) groups
+      (numbers k) (sort-by (fn [rows] (reduce + 0M (map #(number % k) rows))) order groups)
+      ((set product-keys) k) (sort-by #(records/name-key (text (first %) k)) order groups)
+      :else (->> groups
+                 (map (fn [rows] (let [{fresh true real false} (group-by blank? rows)]
+                                   (concat (sort-by #(records/name-key (text % k)) order real) fresh))))
+                 (sort-by #(records/name-key (or (text (first %) k) "")) order)))))
+
+
 (defn stock-grid
-  "The stock table as one editable grid: a row per stock item under its product (merged), the item's details, a column
-  per warehouse, Total, Unit cost and Amount. Pending openings and corrections show in their cells; new items get
-  their own rows. Draft `findings` mark the cells they concern."
+  "The stock table as one grid: a row per stock item under its product (merged with the product's category), its store,
+  the item's details, a column per warehouse, Total and the row actions. Outside Preview it is read-only; Edit opens a
+  row in Preview (`:editing` in the scope), where every cell is editable and each product offers a new stock item row.
+  Pending openings and corrections show in their cells. Draft `findings` mark the cells they concern; `:sort`,
+  `:direction` and `:filters` order and narrow the products."
   {:malli/schema [:=> [:cat :map [:map [:mode [:enum "units" "money"]]]] :map]}
-  [{:keys [warehouses products currency]} {:keys [mode scope entries findings stock-items]}]
-  (let [{:keys [productId itemId productName newRow pending addTo]} scope
+  [{:keys [warehouses products currency]} {:keys [mode scope entries findings stock-items categories stores] :as options}]
+  (let [{:keys [productId itemId productName newRow pending addTo newRowId]} scope
+        editing (set (:editing scope))
         lines (pending-lines (filter #(= "opening" (:kind % "opening")) entries))
         ;; ponytail: one Correction per row; a second member's correction of the same item only shows in Submit.
         corrections (filter #(= "correction" (:kind %)) entries)
@@ -369,67 +470,105 @@
         key #(some-> % str/trim not-empty (str/replace #"\s+" " ") records/name-key)
         group-of #(or (:product-id %) (str "name:" (key (:product-name %))))
         new-lines (group-by group-of (remove :stock-item-id lines))
-        ctx {:mode mode :currency currency :warehouses warehouses :preview? (boolean pending)}
-        ;; `add` is a product id, or {:name …} for a product acceptance will register.
-        product (fn [label add] (cond-> {:value label :className "stock-product-cell"}
-                                  add (assoc :actions [(merge {:type "stock-add-item" :label (i18n/t "Add stock item") :icon "+"}
-                                                              (if (map? add) {:id (str "name:" (:name add)) :name (:name add)} {:id add}))])))
+        preview? (boolean pending)
+        ctx {:mode mode :currency currency :warehouses warehouses :preview? preview? :stores stores}
+        category-name (into {} (map (juxt :category-id :name)) categories)
+        choices (fn [rows id-key] (into [{:value "" :label ""}]
+                                        (for [r (sort-by (comp records/name-key :name) rows) :when (= "active" (:status r))]
+                                          {:value (get r id-key) :label (:name r)})))
+        ;; A new product's category goes on each of its pending lines, or waits in the scope for its first line.
+        product-cells (fn [label {:keys [category-id]} target]
+                        (let [pick (fn [field value names rows id-key]
+                                     (cond-> {:value (or value "") :display (or (names value) "")}
+                                       target (assoc :editor {:type "select" :allowEmpty true :options (choices rows id-key)}
+                                                     :target (assoc target :path field :field field))))]
+                          [{:value label :className "stock-product-cell"}
+                           (pick "category-id" category-id category-name categories :category-id)]))
         new-rows (fn [group base-of]
                    (for [[variant ls] (group-by #(or (some-> (:variant-label %) str/trim) "") (new-lines group))]
                      {:id      (str "new:" group ":" variant) :label             (if (seq variant) variant (i18n/t "New stock item"))
                       :details (line-values (first ls))       :details-editable? true :base (base-of variant) :lines ls}))
+        typed-keys ["article" "barcodes" "unit" "unit-cost" "category-id" "store-id"]
         blank-row (fn [group base taken]
-                    (let [typed (when-not (contains? taken (key (:variant scope))) (not-empty (:variant scope)))
-                          id    (str "new-row:" group)
-                          ready (or typed (contains? base "product"))]
-                      {:id                id :className             "stock-new-row"      :label (or typed "") :details (select-keys (update-keys scope name) ["article" "barcodes" "unit" "unit-cost"])
-                       :details-editable? :blank :default-warehouse (:warehouseId scope)
-                       :base              (merge base (select-keys (update-keys scope name) ["article" "barcodes" "unit" "unit-cost"]) {"variant" (or typed "")})
+                    (let [id    (str "new-row:" group)
+                          own?  (= id newRowId)
+                          typed (when (and own? (not (contains? taken (key (:variant scope))))) (not-empty (:variant scope)))
+                          ready (or typed (contains? base "product"))
+                          given (when own? (select-keys (update-keys scope name) typed-keys))]
+                      {:id                id :className             "stock-new-row"                  :label (or typed "") :details given
+                       :details-editable? :blank :default-warehouse (when own? (:warehouseId scope))
+                       :base              (merge base given {"variant" (or typed "")})
                        :locked?           (not ready)
                        :label-cell        {:value   (or typed "") :editor {:type "text"} :className (if typed "stock-variant-cell" "stock-variant-cell stock-variant-empty")
                                            :display (or typed (i18n/t "+ New stock item: type its variant"))
                                            :target  {:type "stock-new-field" :id id :rowId id :path "item"}}}))
-        existing (for [{:keys [product-id name archived? items]} products
+        ;; Outside Preview a product shows the new stock item row only when picked from the search.
+        blank? (fn [product-id] (or preview? (and newRow (= (or productId addTo) product-id))))
+        existing (for [{:keys [product-id name archived? items] :as p} products
                        :when (or (nil? productId) (= productId product-id))
                        :let [items (cond->> items itemId (filter #(= itemId (:stock-item-id %))))
                              taken (into (set (map (comp key :variant-label) items)) (map (comp key :variant-label)) (new-lines product-id))
-                             rows (concat (for [{:keys [stock-item-id variant-label article barcodes unit] :as item} items
+                             rows (concat (for [{:keys [stock-item-id variant-label article barcodes unit store-id] :as item} items
                                                 :let [correction (corrected stock-item-id)]]
                                             {:id            stock-item-id :label (or (not-empty variant-label) name)
-                                             :details       {"article" article "barcodes" (str/join ", " barcodes) "unit" unit}
+                                             :details       {"article" article "barcodes" (str/join ", " barcodes) "unit" unit "store-id" store-id}
                                              :base          {"stock-item-id" stock-item-id} :accepted       {:cells (:cells item) :total (:total item)}
                                              :lines         (at-item stock-item-id)
                                              :operations    (group-by :warehouse-id (operations stock-item-id))
                                              :item          (assoc item :product-id product-id) :correction correction
-                                             :correction-id (or (:entry-id correction) (str "correction-" (random-uuid)))
-                                             :actions       [{:type "item-history" :id stock-item-id :label (i18n/t "History")}]})
+                                             :correction-id (or (:entry-id correction) (str "correction-" (random-uuid)))})
                                           (when-not itemId (new-rows product-id #(hash-map "product-id" product-id "variant" %)))
-                                          (when (and newRow (= (or productId addTo) product-id)) [(blank-row product-id {"product-id" product-id} taken)]))]
+                                          (when (and (blank? product-id) (not archived?)) [(blank-row product-id {"product-id" product-id} taken)]))]
                        :when (or (seq rows) (not itemId))]
-                   [(product (if archived? (str name " " (i18n/t "(archived)")) name) (when-not archived? product-id))
-                    (if (seq rows) rows [{:id (str "product:" product-id) :label "" :base {} :locked? true}])])
+                   {:id    product-id
+                    :cells (product-cells (if archived? (str name " " (i18n/t "(archived)")) name) p nil)
+                    :rows  (if (seq rows) rows [{:id (str "product:" product-id) :label "" :base {} :locked? true}])})
         created (for [[group ls] new-lines
                       :when      (str/starts-with? group "name:")
-                      :let       [label (:product-name (first ls))]
+                      :let       [label (:product-name (first ls))
+                                  entries (vec (for [l ls] {:entry  (:entry-id l) :revision (:revision l)
+                                                            :values (merge {"product" label "variant" (or (:variant-label l) "") "warehouse-id" (:warehouse-id l)}
+                                                                           (line-values l))}))]
                       :when      (and (nil? productId) (nil? itemId))]
-                  [(product label {:name label})
-                   (concat (new-rows group #(hash-map "product" label "variant" %))
-                           (when (and productName (= (key productName) (key label))) [(blank-row group {"product" label} #{})]))])
+                  {:id    group :named label
+                   :cells (product-cells label (first ls) {:type "stock-item-field" :id (str "product-of:" group) :rowId (str "new-row:" group) :entries entries})
+                   :rows  (concat (new-rows group #(hash-map "product" label "variant" %))
+                                  (when (or preview? (and productName (= (key productName) (key label)))) [(blank-row group {"product" label} #{})]))})
         fresh (when (and productName (not (some #(= (str "name:" (key productName)) %) (keys new-lines))))
-                [[(product productName nil) [(blank-row "new" {"product" productName} #{})]]])
+                [{:id    "new" :named productName
+                  :cells (product-cells productName (when (= "new-row:new" newRowId) {:category-id (:category-id scope)})
+                                        {:type "stock-new-field" :id "new-row:new" :rowId "new-row:new"})
+                  :rows  [(blank-row "new" {"product" productName} #{})]}])
         ;; The product being created comes first; it does not filter the table.
-        named? (fn [[cell]] (and productName (= (key productName) (key (:value cell)))))
+        named? (fn [{:keys [named]}] (and productName named (= (key productName) (key named))))
+        real? (fn [row] (or (seq (:lines row)) (:correction row) (editing (:id row))))
         groups (cond->> (let [all (concat created fresh existing)] (concat (filter named? all) (remove named? all)))
-                 pending (keep (fn [[cell rows]] (when-let [rows (seq (filter #(or (seq (:lines %)) (:correction %) (= "stock-new-row" (:className %))) rows))]
-                                                   [cell rows]))))
-        built (for [[cell rows] groups]
-                (map-indexed #(item-row ctx (cond-> %2 (zero? %1) (assoc :product-cell cell))) rows))
-        columns (-> (if pending [{:key "select" :label "" :width 40}] [])
-                    (into [{:key "product" :label (i18n/t "Product") :width 200} {:key "item" :label (i18n/t "Stock item") :width 160}])
+                 preview? (keep (fn [{:keys [id rows named] :as group}]
+                                  (when (or named (some real? rows) (editing (str "product:" id)) (some #(= newRowId (:id %)) rows))
+                                    (assoc group :rows (filter #(or (real? %) (= "stock-new-row" (:className %))) rows))))))
+        columns (-> (if preview? [{:key "select" :label "" :width 40}] [{:key "expand" :label "" :width 36}])
+                    (conj {:key "product" :label (i18n/t "Product") :width 200 :fixed true}
+                          {:key "category" :label (i18n/t "Category") :width 140}
+                          {:key "store" :label (i18n/t "Store") :width 140}
+                          {:key "item" :label (i18n/t "Stock item") :width 160})
                     (into (map (fn [[k label width]] {:key k :label (i18n/t label) :width width})) item-fields)
                     (conj {:key "unit-cost" :label (i18n/t "Unit cost") :width 110})
-                    (into (map #(hash-map :key (:id %) :label (:name %) :width 100)) warehouses)
-                    (conj {:key "total" :label (i18n/t "Total") :width 110}))
+                    (into (map #(hash-map :key (:id %) :label (:name %) :width 100 :fixed true)) warehouses)
+                    (conj {:key "total" :label (i18n/t "Total") :width 110 :fixed true})
+                    (into (when preview? [{:key "occurred-at" :label (i18n/t "Occurred at") :width 170 :fixed true}
+                                          {:key "reason" :label (i18n/t "Reason") :width 180 :fixed true}]))
+                    (conj {:key "actions" :label "" :width 110})
+                    (->> (mapv #(cond-> % (not (#{"select" "expand" "actions"} (:key %))) (assoc :sortKey (:key %) :filterKey (:key %))))))
+        column-keys (mapv :key columns)
+        numbers (into #{"unit-cost" "total"} (map :id) warehouses)
+        offset 1
+        built (arrange (for [{:keys [cells rows]} groups]
+                         (map #(item-row ctx (assoc % :product-cells cells)) rows))
+                       column-keys numbers options)
+        ;; Product cells show once per product, spanning its rows.
+        built (for [rows built]
+                (map-indexed (fn [i row] (cond-> row (pos? i) (update :cells #(reduce (fn [cells x] (assoc cells x {:value ""})) % (range offset (+ offset 2))))))
+                             rows))
         row-of (into {} (for [{:keys [entry-id kind] :as entry} entries
                               {:keys [line-id stock-item-id variant-label warehouse-id] :as line} (:lines entry)]
                           [[entry-id line-id]
@@ -443,8 +582,14 @@
         names {:warehouse warehouse-names :product (into {} (map (juxt :product-id :name)) products) :item item-names
                :entry     (entry-names entries item-names warehouse-names)}
         rows (mark-findings (vec (map-indexed #(assoc %2 :rowIndex %1 :groupIndex %1 :groupId (:id %2)) (apply concat built)))
-                            (mapv :key columns) (or findings []) row-of names)
-        merges (second (reduce (fn [[start acc] group] [(+ start (count group)) (cond-> acc (< 1 (count group)) (conj {:row start :col (if pending 1 0) :rowspan (count group)}))])
+                            column-keys
+                            ;; What blocks review marks its cell too, so a refused Submit points at what to fill in.
+                            (concat findings (for [{:keys [entry-id blockers]} entries b blockers :when (:line-id b)]
+                                               (assoc b :entry-id entry-id :level :error)))
+                            row-of names)
+        merges (second (reduce (fn [[start acc] group]
+                                 [(+ start (count group))
+                                  (cond-> acc (< 1 (count group)) (into (for [x (range offset (+ offset 2))] {:row start :col x :rowspan (count group)})))])
                                [0 []] built))
         ;; Every pending opening with its row, shown or filtered out.
         all-pending (concat
@@ -454,19 +599,11 @@
                                     (blocked? line) (assoc :blocked true))))
                       (for [{:keys [entry-id revision lines changes]} corrections]
                         {:entry-id entry-id :revision revision :rowId (or (:stock-item-id (first lines)) (:stock-item-id (first changes)))}))]
-    {:id      "stock"           :editable true :rowHeaders false :merges merges :editStates [] :showPrevious false
-     :pending (vec all-pending)
-     :columns columns
-     :rows    rows}))
-
-
-(def ^:private problem-text
-  {:occurred-at-missing "Occurrence time is missing."              :quantity-missing  "Quantity is missing."
-   :warehouse-missing   "Warehouse is missing."                    :item-missing      "Stock item is missing."
-   :archived-reference  "Restore the archived record first."       :new-reference     "Will be created on acceptance."
-   :similar-reference   "A record with a similar name exists."     :duplicate-variant "This product already has this variant."
-   :insufficient-stock  "Not enough stock." :barcode-conflict "This barcode belongs to another product."
-   :article-conflict    "This article belongs to another product."})
+    {:id          "stock"           :editable true :rowHeaders false :merges merges :editStates [] :showPrevious false
+     :layoutScope "stock"
+     :pending     (vec all-pending)
+     :columns     columns
+     :rows        rows}))
 
 
 (defn problem-message
@@ -477,7 +614,8 @@
     (finding-text {:code    (if (= :uniqueness-conflict code) (if (= :barcodes field) :barcode-conflict :article-conflict) code)
                    :related (dissoc p :entry-id :line-id :stock-item-id :field :code)}
                   names)
-    (i18n/t (or (problem-text code) (second (acceptance/rejection code)) "Check this value."))))
+    (let [text (i18n/t (or (problem-text (:cause p)) (problem-text code) (second (acceptance/rejection code)) "Check this value."))]
+      (if-let [entry (get (:entry names) (:entry-id p))] (str entry ": " text) text))))
 
 
 (defn- same-name?
@@ -510,6 +648,8 @@
                      item (assoc :stock-item-id (:stock-item-id item))
                      (and (not item) product) (assoc :product-id (:product-id product))
                      (and (not item) (not product) (v "product")) (assoc :product-name (v "product"))
+                     (and (not item) (not product) (v "product") (v "category-id")) (assoc :category-id (v "category-id"))
+                     (and (not item) (v "store-id")) (assoc :store-id (v "store-id"))
                      (and (not item) (v "variant")) (assoc :variant-label (v "variant"))
                      (and (not item) (v "article")) (assoc :article (v "article"))
                      (and (not item) codes) (assoc :barcodes codes)
@@ -532,7 +672,7 @@
 
 
 (def ^:private change-keys
-  [["variant" :variant-label] ["article" :article] ["unit" :unit]])
+  [["variant" :variant-label] ["article" :article] ["unit" :unit] ["store-id" :store-id]])
 
 
 (defn correction-input
@@ -603,14 +743,18 @@
 (defn- table-model
   "The stock grid, or nil when stock or pending work cannot be read."
   {:malli/schema [:function [:=> [:cat :map :string :boolean [:maybe :map]] [:maybe :map]]
-                  [:=> [:cat :map :string :boolean [:maybe :map] :boolean] [:maybe :map]]]}
-  ([context mode hide-empty? scope] (table-model context mode hide-empty? scope false))
-  ([context mode hide-empty? scope show-archived?]
+                  [:=> [:cat :map :string :boolean [:maybe :map] :boolean] [:maybe :map]]
+                  [:=> [:cat :map :string :boolean [:maybe :map] :boolean :map] [:maybe :map]]]}
+  ([context mode hide-empty? scope] (table-model context mode hide-empty? scope false {}))
+  ([context mode hide-empty? scope show-archived?] (table-model context mode hide-empty? scope show-archived? {}))
+  ([context mode hide-empty? scope show-archived? order]
    (let [table     (read-or-nil context ::stock/stock-table (cond-> {:hide-empty? hide-empty?} show-archived? (assoc :show-archived? true)))
          work      (read-or-nil context ::entries/pending-entries {})
          catalogue (read-or-nil context ::references/draft-catalogue {})]
      (when (and table work catalogue)
-       (assoc (stock-grid table {:mode mode :scope scope :entries (:entries work) :findings (:findings work) :stock-items (:stock-items catalogue)})
+       (assoc (stock-grid table (merge order {:mode        mode :scope scope :entries (:entries work) :findings (:findings work)
+                                              :stock-items (:stock-items catalogue) :categories (:categories catalogue)
+                                              :stores      (:stores catalogue)}))
               ;; Move offers every active product, also those the table hides for having no stock items.
               :moveTargets (vec (for [{:keys [product-id name status]} (sort-by (comp records/name-key :name) (:products catalogue))
                                       :when (= "active" status)]
@@ -620,13 +764,14 @@
 (defview table
   {:route-data access
    :schema     [:map [:requestId :string] [:mode [:enum "units" "money"]] [:hideEmpty :boolean] [:showArchived {:optional true} :boolean]
-                [:filter {:optional true} [:maybe :map]]]
+                [:filter {:optional true} [:maybe :map]] [:sort {:optional true} [:maybe :string]]
+                [:direction {:optional true} [:maybe [:enum "asc" "desc"]]] [:filters {:optional true} [:maybe :map]]]
    :query      (fn [context input] {:context context :input input})}
-  [{:keys [context] {scope :filter :keys [requestId mode hideEmpty showArchived]} :input}]
+  [{:keys [context] {scope :filter :keys [requestId mode hideEmpty showArchived sort direction filters]} :input}]
   {:type :signals
    :data {:_stockTableJson (json {:requestId requestId
                                   :model     (table-model context mode (and hideEmpty (not (:pending scope)) (empty? (select-keys scope [:productId :itemId])))
-                                                          scope (boolean showArchived))})}})
+                                                          scope (boolean showArchived) {:sort sort :direction direction :filters filters})})}})
 
 
 (defn suggestions
@@ -765,17 +910,18 @@
 
 
 (defaction describe-entry
-  "Set the occurrence time and reason of a saved opening or correction; an unset one keeps the entry's own."
+  "Set the occurrence time and/or reason of a saved entry. An absent or blank time keeps the entry's own; a given
+  reason replaces it, and a blank one clears it."
   {:route-data access
    :schema     [:map [:workspaceId :uuid] [:entryId [:string {:min 1 :max 500}]] [:revision [:int {:min 1}]]
-                [:occurredAt [:string {:max 100}]] [:reason [:string {:max 1000}]] [:commandId CommandId]]}
-  [context {:keys [workspaceId entryId revision occurredAt reason commandId]}]
+                [:occurredAt {:optional true} [:string {:max 100}]] [:reason {:optional true} [:string {:max 1000}]] [:commandId CommandId]]}
+  [context {:keys [workspaceId entryId revision occurredAt reason commandId] :as input}]
   ;; Reads the entry to keep its lines; the command rejects it when the revision has moved on.
   (let [entry (some #(when (= entryId (:entry-id %)) %) (:entries (runtime/read-model context ::entries/pending-entries {})))
-        at    (or (not-empty (str/trim occurredAt)) (some-> (:occurred-at entry) str))
-        why   (or (not-empty (str/trim reason)) (:reason entry))]
+        at    (or (some-> occurredAt str/trim not-empty) (some-> (:occurred-at entry) str))
+        why   (if (contains? input :reason) (some-> reason str/trim not-empty) (:reason entry))]
     (descriptor ::entries/save-shared-inventory-entry commandId
-                (cond-> (merge (select-keys entry [:supplier-id :supplier-name :store-id])
+                (cond-> (merge (select-keys entry [:supplier-id :supplier-name :store-id :from-warehouse-id :to-warehouse-id :direction :amount])
                                {:workspace-id workspaceId :entry-id entryId :kind (:kind entry "opening") :expected-revision revision :lines (vec (:lines entry))})
                   (seq (:changes entry)) (assoc :changes (:changes entry))
                   at (assoc :occurred-at at)
@@ -850,11 +996,6 @@
         [:button.sheet-icon-button.stock-mode-units {:type "button" :data-mode "units" :aria-pressed "true" :title (i18n/t "Units") :aria-label (i18n/t "Units")} (ui/sheet-icon :units)]
         [:button.sheet-icon-button.stock-mode-money {:type "button" :data-mode "money" :aria-pressed "false" :title (i18n/t "Money") :aria-label (i18n/t "Money")} (ui/sheet-icon :money)]]
        [:button.sheet-icon-button.stock-pending-filter {:type "button" :aria-pressed "false" :title (i18n/t "Preview pending changes") :aria-label (i18n/t "Preview pending changes")} (ui/sheet-icon :preview)]
-       [:span.stock-submit-details {:hidden true}
-        [:input.stock-submit-time {:type       "datetime-local" :step 1 :title (i18n/t "Occurrence time. Leave empty to keep each opening's own.")
-                                   :aria-label (i18n/t "Occurrence time. Leave empty to keep each opening's own.")}]
-        [:input.stock-submit-reason {:type       "text" :maxlength 1000 :placeholder (i18n/t "Reason") :title (i18n/t "Reason. Leave empty to keep each opening's own.")
-                                     :aria-label (i18n/t "Reason. Leave empty to keep each opening's own.")}]]
        [:button.sheet-icon-button.stock-submit {:type "button" :disabled true :title (i18n/t "Submit pending changes") :aria-label (i18n/t "Submit pending changes")} (ui/sheet-icon :submit)]]]
      [:div.catalogue-notice.stock-notice {:role "status"}]
      [:inventory-grid#stock-grid.stock-grid {:data-ignore-morph "" :aria-label (i18n/t "Stock")}]]))

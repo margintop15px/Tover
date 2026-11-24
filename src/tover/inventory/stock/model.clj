@@ -48,7 +48,7 @@
         row      (fn [{:keys [stock-item-id] :as i}]
                    (let [cells (into {} (for [{w :warehouse-id} columns]
                                           [w (cell (balances [stock-item-id w]) (contains? touched [stock-item-id w]) (contains? recorded [stock-item-id w]))]))]
-                     (merge (select-keys i [:stock-item-id :variant-label :article :unit])
+                     (merge (select-keys i [:stock-item-id :variant-label :article :unit :store-id])
                             {:barcodes  (mapv :barcode (codes stock-item-id)) :unit-locked? (boolean (and (contains? locked stock-item-id) (not (str/blank? (:unit i)))))
                              :archived? (= "archived" (:status i))            :cells        cells :total (total (vals cells))})))]
     {:currency   currency
@@ -56,8 +56,9 @@
      :products   (vec (for [p     (sort-by (comp records/name-key :name) (remove #(= "deleted" (:status %)) products))
                             :let  [items (mapv row (sort-by (comp str :variant-label) (by-prod (:product-id p))))]
                             :when (or (seq items) (not hide-empty?))]
-                        {:product-id (:product-id p) :name (:name p) :archived? (= "archived" (:status p)) :items items
-                         :total      (if (seq items) (total (map :total items)) {:quantity 0 :value 0M :valued "full"})}))}))
+                        {:product-id  (:product-id p) :name (:name p) :archived? (= "archived" (:status p)) :items items
+                         :category-id (:category-id p)
+                         :total       (if (seq items) (total (map :total items)) {:quantity 0 :value 0M :valued "full"})}))}))
 
 
 (defn- within?

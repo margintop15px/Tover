@@ -487,11 +487,6 @@
        (into [:select.operations-add {:aria-label (i18n/t "Add operation")} [:option {:value ""} (i18n/t "Add operation")]]
              (for [k operation-kinds] [:option {:value k} (web/kind-label k nil)]))
        [:button.sheet-icon-button.stock-pending-filter {:type "button" :aria-pressed "false" :title (i18n/t "Preview pending changes") :aria-label (i18n/t "Preview pending changes")} (ui/sheet-icon :preview)]
-       [:span.stock-submit-details {:hidden true}
-        [:input.stock-submit-time {:type       "datetime-local" :step 1 :title (i18n/t "Occurrence time. Leave empty to keep each operation's own.")
-                                   :aria-label (i18n/t "Occurrence time. Leave empty to keep each operation's own.")}]
-        [:input.stock-submit-reason {:type       "text" :maxlength 1000 :placeholder (i18n/t "Reason") :title (i18n/t "Reason. Leave empty to keep each operation's own.")
-                                     :aria-label (i18n/t "Reason. Leave empty to keep each operation's own.")}]]
        [:button.sheet-icon-button.stock-submit {:type "button" :disabled true :title (i18n/t "Submit pending changes") :aria-label (i18n/t "Submit pending changes")} (ui/sheet-icon :submit)]]]
      [:div.catalogue-notice.stock-notice {:role "status"}]
      [:inventory-grid#operations-grid.stock-grid {:data-ignore-morph "" :aria-label (i18n/t "Operations")}]]))

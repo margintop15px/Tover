@@ -39,7 +39,6 @@ export class InventoryWorkbench extends HTMLElement {
   showSubmit() {
     const count = this.scope.pending ? (this.selected ?? []).length : 0;
     this.submitButton.disabled = !count;
-    this.submitDetails.hidden = !this.scope.pending;
     this.submitButton.title = !this.model.pending.length ? t('No pending changes')
       : !this.scope.pending ? t('Preview pending changes to submit them')
         : count ? t('Submit the selected changes') : t('Select the changes to submit');
@@ -65,11 +64,11 @@ export class InventoryWorkbench extends HTMLElement {
     this.setStatus('Saving');
     this.emit(this.saveEvent, { workspaceId: this.workspaceId, entryId: id, revision: current, values, commandId: this.pending.commandId });
   }
-  discard({ id, revision, line, shared, values }) {
+  discard({ id, revision, line, shared, values, target }) {
     if (this.pending) return;
-    // Other lines of the entry stay.
-    if (shared) { this.save(line, { id, revision, values: { ...values, 'line-id': line, remove: 'true' } }); this.pending.kind = 'discard-line'; return; }
-    this.pending = { kind: 'discard', id, commandId: crypto.randomUUID() };
+    // Other lines of the entry stay. A cleared cell is acknowledged like a save.
+    if (shared) { this.save(line, { id, revision, values: { ...values, 'line-id': line, remove: 'true' }, target }); this.pending.kind = 'discard-line'; return; }
+    this.pending = { kind: 'discard', id, commandId: crypto.randomUUID(), target };
     this.setStatus('Saving');
     this.emit('stock-discard', { workspaceId: this.workspaceId, entryId: id, revision, commandId: this.pending.commandId });
   }
@@ -79,10 +78,10 @@ export class InventoryWorkbench extends HTMLElement {
     if (response.status === 'ok') {
       if (['save', 'discard-line', 'describe'].includes(request.kind)) this.revisions.set(request.id, request.revision + 1);
       if (['save', 'discard-line'].includes(request.kind)) this.values.set(request.slot, request.values);
-      if (request.kind === 'describe') { this.forget(request.id); this.describe(); return; }
+      if (request.kind === 'describe') { this.forget(request.id); if (this.describe()) return; }
       if (request.target) this.grid.acknowledgeSave(request.target);
       // The new item now has its own row; the blank row starts over.
-      if (request.target?.id.startsWith('new-row:')) for (const key of ['variant', 'article', 'barcodes', 'unit', 'unit-cost']) delete this.scope[key];
+      if (request.target?.id.startsWith('new-row:')) for (const key of ['variant', 'article', 'barcodes', 'unit', 'unit-cost', 'category-id', 'store-id']) delete this.scope[key];
       if (request.kind === 'accept') {
         this.leavePreview();
       }
@@ -108,20 +107,27 @@ export class InventoryWorkbench extends HTMLElement {
     const hidden = this.selected.filter(id => !shown.has(id)).length;
     if (hidden && !window.confirm(t('The filter hides {p0} selected rows. Submit them too?', { p0: hidden }))) return;
     this.reviewed = rows.map(row => ({ 'entry-id': row['entry-id'], revision: row.revision }));
-    const details = { occurredAt: toISOString(this.submitTime.value), reason: this.submitReason.value.trim() };
-    if (!this.submitTime.checkValidity()) { this.submitTime.reportValidity(); return; }
-    this.describing = details.occurredAt || details.reason ? { details, entries: [...this.reviewed] } : null;
+    this.requestReview();
+  }
+  // A row's occurrence time or reason is saved on each of its entries in turn. True while one is being saved.
+  describeRow({ entries, field, value, target }) {
+    if (this.pending) return;
+    const details = field === 'occurred-at' ? { occurredAt: toISOString(value) || value } : { reason: value };
+    this.describing = { details, target, entries: entries.map(entry => ({ 'entry-id': entry.entry, revision: entry.revision })) };
     this.describe();
   }
-  // The time and reason given at submit are saved on each opening, then the openings are reviewed.
   describe() {
     const entry = this.describing?.entries.shift();
-    if (!entry) { this.describing = null; this.requestReview(); return; }
+    if (!entry) {
+      if (this.describing?.target) this.grid.acknowledgeSave(this.describing.target);
+      this.describing = null; return false;
+    }
     const id = entry['entry-id'];
     const revision = Math.max(entry.revision, this.revisions.get(id) ?? 0);
     this.pending = { kind: 'describe', id, revision, commandId: crypto.randomUUID() };
     this.setStatus('Saving');
     this.emit('stock-describe', { workspaceId: this.workspaceId, entryId: id, revision, ...this.describing.details, commandId: this.pending.commandId });
+    return true;
   }
   // A later cell edit must build on the described opening, not on this page's older values.
   forget(id) {

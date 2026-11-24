@@ -26,7 +26,7 @@
 
 (def ^:private change-field
   "Stock item field each change key writes."
-  {:variant-label  :variant-label :article          :article  :unit :unit :product-id :product-id :archive :status :restore :status
+  {:variant-label  :variant-label :article          :article  :unit :unit :store-id :store-id :product-id :product-id :archive :status :restore :status
    :barcodes-added :barcodes      :barcodes-removed :barcodes})
 
 
@@ -35,9 +35,9 @@
   then every change applied."
   {:malli/schema [:=> [:cat :map [:sequential :map] [:sequential :map]] :map]}
   [{:keys [stock-items barcodes]} lines changes]
-  (let [fresh (for [l lines :when (:new-item? l)] (select-keys l [:stock-item-id :product-id :variant-label :article :unit]))
+  (let [fresh (for [l lines :when (:new-item? l)] (select-keys l [:stock-item-id :product-id :variant-label :article :unit :store-id]))
         items (reduce (fn [m {:keys [stock-item-id archive restore] :as c}]
-                        (update m stock-item-id merge (select-keys c [:variant-label :article :unit :product-id])
+                        (update m stock-item-id merge (select-keys c [:variant-label :article :unit :store-id :product-id])
                                 (cond archive {:status "archived"} restore {:status "active"})))
                       (into (by :stock-item-id stock-items) (map (juxt :stock-item-id #(assoc % :status "active"))) fresh)
                       changes)

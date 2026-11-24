@@ -15,12 +15,16 @@ inventory-grid .jss_worksheet > tbody > tr > td.inventory-cell-changed { backgro
 inventory-grid .inventory-cell-before { color:var(--iw-muted); text-decoration:line-through; }
 inventory-grid .jss_worksheet > tbody > tr > td[data-save-state=saving] { box-shadow:inset 0 -2px var(--iw-blue,#82a5cc); }
 inventory-grid .jss_worksheet > tbody > tr > td.inventory-cell-conflict { box-shadow:inset 0 -2px var(--iw-red,#d69b94); overflow:visible; }
-inventory-grid .inventory-cell-resolution { display:inline-flex; gap:4px; margin-left:8px; }
+inventory-grid .jss_worksheet > tbody > tr > td.inventory-cell-conflict { position:relative; }
+/* The choice opens under the conflicted cell when it is selected or hovered, never over its neighbours. */
+inventory-grid .inventory-cell-resolution { position:absolute; top:calc(100% - 1px); left:-1px; z-index:6; display:none; align-items:center; gap:6px; padding:6px 8px; color:var(--iw-ink); background:var(--iw-bg); border:1px solid var(--iw-line); border-radius:6px; box-shadow:0 8px 20px #0003; white-space:nowrap; font-size:12px; line-height:1.3; }
+inventory-grid td.inventory-cell-conflict:is(:hover,.highlight,:focus-within,.inventory-cell-latest-problem) .inventory-cell-resolution { display:inline-flex; }
+inventory-grid td.inventory-cell-conflict:is(:hover,.highlight,:focus-within) .inventory-cell-resolution { z-index:7; }
 inventory-grid .inventory-cell-resolution button { padding:2px 5px; color:var(--iw-ink); background:var(--iw-soft); border:1px solid var(--iw-line); border-radius:3px; font:11px inherit; }
 inventory-grid .jss_worksheet > tbody > tr > td.inventory-cell-editing { padding:0; overflow:visible; position:relative; z-index:3; }
 inventory-grid .inventory-cell-editor { display:flex; min-width:100%; min-height:32px; height:100%; background:var(--iw-bg); }
-inventory-grid .inventory-cell-editor > :is(input,select) { box-sizing:border-box; width:100%; min-width:0; min-height:32px; padding:4px 8px; color:var(--iw-ink); background:var(--iw-bg); border:0; border-radius:0; font:inherit; outline:2px solid var(--iw-blue,#82a5cc); outline-offset:-2px; }
-inventory-grid .inventory-cell-editor > select { appearance:none; padding-right:36px; background:var(--iw-bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2399a0a8' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center / 16px; }
+inventory-grid .inventory-cell-editor > :is(input,select) { box-sizing:border-box; width:100%; min-width:0; min-height:32px; padding:4px 8px; color:var(--iw-ink); background-color:var(--iw-bg); border:0; border-radius:0; font:inherit; outline:2px solid var(--iw-blue,#82a5cc); outline-offset:-2px; }
+inventory-grid .inventory-cell-editor > select { padding-right:28px; background-color:var(--iw-bg); }
 inventory-grid .inventory-goods-picker { position:relative; display:flex; align-items:center; justify-content:center; width:28px; flex:0 0 28px; color:var(--iw-muted); }
 inventory-grid .inventory-goods-picker:hover { color:var(--iw-ink); background:var(--iw-soft); }
 inventory-grid .inventory-goods-picker:focus-within { outline:2px solid var(--iw-blue,#82a5cc); outline-offset:-2px; }
@@ -43,8 +47,9 @@ inventory-grid .inventory-section-cell, inventory-grid .inventory-grid-section {
 inventory-grid:focus { outline:none; }
 inventory-grid .jss_worksheet > tbody > tr > td[data-column-key=quantity] { text-align:right; font-variant-numeric:tabular-nums; }
 inventory-grid .inventory-cell-line { display:block; line-height:20px; }
-inventory-grid .inventory-column-label { display:inline-flex; align-items:center; justify-content:space-between; gap:8px; height:24px; vertical-align:middle; line-height:1; width:calc(100% - 20px); margin:0; padding:0; border:0; background:none; color:inherit; font:inherit; text-align:left; }
+inventory-grid .inventory-column-label { display:inline-flex; align-items:center; justify-content:space-between; gap:8px; height:24px; vertical-align:middle; line-height:1; width:calc(100% - 20px); min-width:0; overflow:hidden; margin:0; padding:0; border:0; background:none; color:inherit; font:inherit; text-align:left; }
 inventory-grid button.inventory-column-label { cursor:pointer; }
+inventory-grid .inventory-column-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 inventory-grid .inventory-column-label[draggable=true] { cursor:grab; }
 inventory-grid .jss_worksheet > thead > tr > td.inventory-column-dragging { opacity:.5; }
 inventory-grid .jss_worksheet > thead > tr > td[data-drop-side=before] { box-shadow:inset 3px 0 var(--iw-blue,#82a5cc); }
@@ -57,7 +62,8 @@ inventory-grid .inventory-column-filter-panel { position:fixed; z-index:40; widt
 inventory-grid .inventory-filter-title { margin-bottom:12px; font-weight:500; }
 inventory-grid .inventory-filter-rule { display:flex; gap:6px; margin:6px 0; }
 inventory-grid .inventory-filter-rule > :is(input,select) { width:calc(50% - 18px); min-width:0; flex:1; }
-inventory-grid .inventory-column-filter-panel :is(input,select,button) { min-height:32px; padding:5px 8px; color:var(--iw-ink); background:var(--iw-soft); border:1px solid var(--iw-line); border-radius:4px; font:inherit; }
+inventory-grid .inventory-column-filter-panel :is(input,select,button) { min-height:32px; padding:5px 8px; color:var(--iw-ink); background-color:var(--iw-soft); border:1px solid var(--iw-line); border-radius:4px; font:inherit; }
+inventory-grid .inventory-column-filter-panel select { padding-right:28px; }
 inventory-grid .inventory-column-filter-panel :is(input,select):focus { outline:2px solid var(--iw-blue,#82a5cc); outline-offset:-1px; }
 inventory-grid .inventory-filter-remove { width:30px; flex:0 0 30px; padding:0; font-size:18px; }
 inventory-grid .inventory-filter-relation { margin-left:5px; font-size:11px; }
@@ -93,7 +99,11 @@ inventory-grid .jss_worksheet > tbody > tr.inventory-row-detail > td.inventory-r
 inventory-grid .inventory-row-detail-cell > #history-panel { box-sizing:border-box; margin:0; border:0; }
 inventory-grid .jss_worksheet > tbody > tr > td[data-column-key=actions] { padding:0 3px; white-space:nowrap; }
 inventory-grid .jss_worksheet > tbody > tr > td[data-column-key=actions] > .inventory-cell-value:empty { display:none; }
-inventory-grid .jss_worksheet > tbody > tr > td[data-column-key=actions] .inventory-cell-action { width:22px; margin:0; font-size:16px; }
+inventory-grid .jss_worksheet > tbody > tr > td[data-column-key=actions] .inventory-cell-action { width:24px; height:24px; margin:0; align-items:center; font-size:16px; vertical-align:middle; }
+inventory-grid .jss_worksheet > tbody > tr > td[data-column-key=expand] { padding:0; text-align:center; vertical-align:middle; }
+inventory-grid .jss_worksheet > tbody > tr > td[data-column-key=expand] > .inventory-cell-with-action { justify-content:center; }
+inventory-grid .jss_worksheet > tbody > tr > td[data-column-key=expand] .inventory-cell-value:empty { display:none; }
+inventory-grid .jss_worksheet > tbody > tr > td[data-column-key=expand] .inventory-cell-action { margin:0; }
 
 inventory-grid .jss_worksheet > tbody > tr > td.inventory-production-input { background:var(--iw-red-fill,#402b2e); }
 inventory-grid .jss_worksheet > tbody > tr > td.inventory-production-output { background:var(--iw-green-fill,#2a3c31); }

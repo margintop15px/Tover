@@ -23,6 +23,7 @@
    [:variant-label {:optional true} :string]
    [:article {:optional true} :string]
    [:unit {:optional true} :string]
+   [:store-id {:optional true :bel/ref :tover.catalogues.stores.model/stores} Id]
    [:condition [:enum "regular" "defective"]]
    [:regular-item-id {:optional true :bel/ref ::stock-items} Id]
    [:status [:enum "active" "archived"]]
@@ -41,10 +42,10 @@
 (defevent stock-item-registered {:schema StockItem})
 (defevent stock-item-barcode-assigned {:schema Barcode})
 ;; Chapter 15 · applied only by accepting a reviewed correction. Updated and Moved carry the resulting values:
-;; `:set` replaces every listed field, so an absent label or article is cleared.
+;; `:set` replaces every listed field, so an absent label, article or store is cleared.
 (defevent stock-item-updated
   {:schema [:map [:stock-item-id Id] [:variant-label {:optional true} :string] [:article {:optional true} :string]
-            [:unit {:optional true} :string] [:revision [:int {:min 1}]]]})
+            [:unit {:optional true} :string] [:store-id {:optional true} Id] [:revision [:int {:min 1}]]]})
 (defevent stock-item-moved
   {:schema [:map [:stock-item-id Id] [:previous-product-id Id] [:product-id Id] [:variant-label {:optional true} :string]
             [:revision [:int {:min 1}]]]})
@@ -58,9 +59,9 @@
    :store  :catalogue
    :schema StockItem
    :policy ::records/workspace-member
-   :events {::stock-item-registered {:create [:product-id :variant-label :article :unit :condition :regular-item-id
+   :events {::stock-item-registered {:create [:product-id :variant-label :article :unit :store-id :condition :regular-item-id
                                               :status :revision]}
-            ::stock-item-updated    {:set [:variant-label :article :unit :revision]}
+            ::stock-item-updated    {:set [:variant-label :article :unit :store-id :revision]}
             ::stock-item-moved      {:set [:product-id :variant-label :revision]}
             ::stock-item-archived   {:set [:status :revision]}
             ::stock-item-restored   {:set [:status :revision]}}})
