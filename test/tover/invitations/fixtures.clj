@@ -165,9 +165,9 @@
        (when-not (manager? db workspace actor) (throw (ex-info "Forbidden" {:type :forbidden :status 403})))
        {:members     (vec (for [m     (vals (:memberships db))
                                 :when (and (= workspace (:workspace_id m)) (contains? #{"active" "suspended" "removed"} (:status m)))]
-                            (assoc (membership m)
-                                   :name (get-in db [:profiles (:user_id m) :display_name])
-                                   :email (email-of db (:user_id m)))))
+                            (present (assoc (membership m)
+                                            :name (get-in db [:profiles (:user_id m) :display_name])
+                                            :email (email-of db (:user_id m))))))
         :invitations (vec (for [row   (vals (:invitations db))
                                 :when (= workspace (:workspace_id row))]
                             (invitation row)))

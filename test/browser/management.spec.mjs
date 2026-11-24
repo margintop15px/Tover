@@ -99,8 +99,8 @@ for (const locale of ['en', 'ru']) {
     await expect(page.locator('.management-count')).toHaveText(['3', '2']);
     const owner = rowFor(page, 'manager@example.test');
     await expect(owner.locator('.management-name')).toHaveText('Alexandra Workspace Manager With A Long Name');
-    await expect(owner.locator('.management-secondary')).toHaveText('manager@example.test');
-    await expect(rowFor(page, 'suspended-member-with-an-intentionally-long-email-address@example.test').locator('.management-secondary')).toHaveCount(0);
+    await expect(owner.locator('td:first-child .management-secondary')).toHaveText('manager@example.test');
+    await expect(rowFor(page, 'suspended-member-with-an-intentionally-long-email-address@example.test').locator('td:first-child .management-secondary')).toHaveCount(0);
     for (const [email, status] of [
       ['manager@example.test', 'Active'], ['admin@example.test', 'Active'],
       ['suspended-member-with-an-intentionally-long-email-address@example.test', 'Suspended'],
