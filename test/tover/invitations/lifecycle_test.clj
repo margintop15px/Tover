@@ -212,7 +212,7 @@
   (is (= [{:type ::accept/workspace-invitation-accepted
            :data {:invitation-id invitation-id :status "accepted" :workspace-id workspace :user-id recipient :role "member"}}
           {:type ::accept/workspace-member-joined
-           :data {:membership-id membership-id :workspace-id workspace :user-id recipient :role "member" :status "active"}}]
+           :data {:membership-id membership-id :workspace-id workspace :user-id recipient :role "member" :status "active" :revision 1}}]
          (events (accept {})))))
 
 
@@ -249,7 +249,7 @@
 (deftest a-former-admin-rejoining-as-member
   (let [membership {:membership-id membership-id :role "admin" :status "removed"
                     :removed-at    (.minus (:created-at received) (Duration/ofHours 1))}]
-    (is (= {:membership-id membership-id :workspace-id workspace :user-id recipient :role "member" :status "active"}
+    (is (= {:membership-id membership-id :workspace-id workspace :user-id recipient :role "member" :status "active" :revision 1}
            (get-in (accept {:membership membership}) [:events 1 :data]))
         "the existing membership row is reused with exactly the offered role")))
 
@@ -281,7 +281,7 @@
 (deftest team-shows-the-latest-offer-per-recipient-with-separate-delivery
   (let [older                 {:invitation-id (random-uuid)                    :workspace-id workspace :email "ANN@example.test" :role "admin" :status "revoked"
                                :created-at    (.minus now (Duration/ofDays 3)) :expires-at   (.plus now (Duration/ofDays 4))}
-        {:keys [invitations]} (team/team {:members [] :invitations [older offer] :deliveries [last-request]} now)]
+        {:keys [invitations]} (team/team {:members [] :invitations [older offer] :deliveries [last-request]} nil now)]
     (is (= [{:invitation-id invitation-id       :email       "ann@example.test" :role        "member" :state "pending"
              :expires-at    (:expires-at offer) :can-resend? true               :can-cancel? true}]
            (mapv #(dissoc % :delivery) invitations)))
@@ -289,8 +289,8 @@
 
 
 (deftest removal-invalidates-earlier-pending-offers-in-the-team-view
-  (let [member                {:user-id recipient :email "ann@example.test" :role "admin" :status "removed" :removed-at now}
-        {:keys [invitations]} (team/team {:members [member] :invitations [offer] :deliveries []} now)]
+  (let [member                {:membership-id membership-id :user-id recipient :email "ann@example.test" :role "admin" :status "removed" :removed-at now}
+        {:keys [invitations]} (team/team {:members [member] :invitations [offer] :deliveries []} nil now)]
     (is (= {:state "invalidated" :can-resend? false :can-cancel? false}
            (select-keys (first invitations) [:state :can-resend? :can-cancel?])))))
 

@@ -8,21 +8,13 @@
     [clojure.string :as str]
     [tover.accounts.profile.model :as profile]
     [tover.invitations.issue.model :as issue]
-    [tover.invitations.status.model :as status]))
+    [tover.invitations.status.model :as status]
+    [tover.memberships.model :as memberships]))
 
 
 (defmethod runtime/policy ::recipient
   [_ {{:keys [user-id confirmed? password-required?]} :principal scope :scope} _]
   (boolean (and confirmed? (not password-required?) (= user-id (:user-id scope)))))
-
-
-(def Membership
-  [:map
-   [:membership-id :uuid]
-   [:workspace-id :uuid]
-   [:user-id :uuid]
-   [:role :string]
-   [:status :string]])
 
 
 (defevent workspace-invitation-accepted
@@ -40,15 +32,19 @@
             [:workspace-id :uuid]
             [:user-id :uuid]
             [:role :string]
-            [:status [:= "active"]]]})
+            [:status [:= "active"]]
+            [:revision :int]
+            ;; Never present: declared so a rejoin clears the earlier removal kind.
+            [:removal-kind {:optional true} :string]]})
 
 
 (defmodel memberships
   {:id     :membership-id
    :store  :directory
-   :schema Membership
+   :schema memberships/Membership
    :policy ::recipient
-   :events {::workspace-member-joined {:set [:workspace-id :user-id :role :status]}}})
+   ;; Rejoining clears the earlier removal kind; removed-at stays so offers from before it remain invalid.
+   :events {::workspace-member-joined {:set [:workspace-id :user-id :role :status :revision :removal-kind]}}})
 
 
 (def Reviewed
@@ -74,7 +70,8 @@
 
 
 (def OwnMembership
-  [:maybe [:map [:membership-id :uuid] [:role :string] [:status :string] [:removed-at {:optional true} validation/Instant]]])
+  [:maybe [:map [:membership-id :uuid] [:role :string] [:status :string] [:revision {:optional true} :int]
+           [:removed-at {:optional true} validation/Instant]]])
 
 
 (defn offer-state
@@ -123,7 +120,8 @@
                  :data {:invitation-id invitation-id :status "accepted" :workspace-id workspace-id :user-id actor :role role}}
                 {:type ::workspace-member-joined
                  :data {:membership-id (or (:membership-id membership) membership-id)
-                        :workspace-id  workspace-id :user-id actor :role role :status "active"}}]})))
+                        :workspace-id  workspace-id :user-id actor :role role :status "active"
+                        :revision      (memberships/next-revision membership)}}]})))
 
 
 (def Review

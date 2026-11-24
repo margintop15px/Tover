@@ -58,6 +58,15 @@
             :attempted-at (:attempted_at row) :submitted-at    (:submitted_at row)}))
 
 
+(defn- membership
+  {:malli/schema [:=> [:cat :map] :map]}
+  [row]
+  (present {:membership-id (:membership_id row) :workspace-id      (:workspace_id row)      :user-id  (:user_id row)
+            :role          (:role row)          :status            (:status row)            :revision (or (:revision row) 1)
+            :removed-at    (:removed_at row)    :removal-kind      (:removal_kind row)
+            :suspended-at  (:suspended_at row)  :suspension-reason (:suspension_reason row)}))
+
+
 (defn- email-of
   {:malli/schema [:=> [:cat :map [:maybe :uuid]] [:maybe :string]]}
   [db user-id]
@@ -129,8 +138,25 @@
    (fn [{:keys [actor] :as context} {:keys [workspace-id]}]
      (some (fn [m]
              (when (and (= workspace-id (:workspace_id m)) (= actor (:user_id m)))
-               (present {:membership-id (:membership_id m) :role (:role m) :status (:status m) :removed-at (:removed_at m)})))
+               (present {:membership-id (:membership_id m) :role (:role m) :status (:status m) :revision (:revision m)
+                         :removed-at    (:removed_at m)})))
            (vals (:memberships (db context)))))
+
+   :tover.memberships.persistence/target
+   (fn [{:keys [scope] :as context} {:keys [membership-id]}]
+     (let [m (get-in (db context) [:memberships membership-id])]
+       (when (= (:workspace-id scope) (:workspace_id m)) (membership m))))
+
+   :tover.memberships.persistence/own
+   (fn [{:keys [scope actor] :as context} _]
+     (some #(when (and (= (:workspace-id scope) (:workspace_id %)) (= actor (:user_id %))) (membership %))
+           (vals (:memberships (db context)))))
+
+   :tover.memberships.persistence/active-owners
+   (fn [{:keys [scope] :as context} _]
+     (vec (sort (for [m     (vals (:memberships (db context)))
+                      :when (and (= (:workspace-id scope) (:workspace_id m)) (= "owner" (:role m)) (= "active" (:status m)))]
+                  (:user_id m)))))
 
    :tover.invitations.persistence/team
    (fn [{:keys [scope actor] :as context} _]
@@ -139,9 +165,9 @@
        (when-not (manager? db workspace actor) (throw (ex-info "Forbidden" {:type :forbidden :status 403})))
        {:members     (vec (for [m     (vals (:memberships db))
                                 :when (and (= workspace (:workspace_id m)) (contains? #{"active" "suspended" "removed"} (:status m)))]
-                            (present {:user-id    (:user_id m)               :name (get-in db [:profiles (:user_id m) :display_name])
-                                      :email      (email-of db (:user_id m)) :role (:role m) :status (:status m)
-                                      :removed-at (:removed_at m)})))
+                            (assoc (membership m)
+                                   :name (get-in db [:profiles (:user_id m) :display_name])
+                                   :email (email-of db (:user_id m)))))
         :invitations (vec (for [row   (vals (:invitations db))
                                 :when (= workspace (:workspace_id row))]
                             (invitation row)))

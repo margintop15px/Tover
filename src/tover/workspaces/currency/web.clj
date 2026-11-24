@@ -5,6 +5,7 @@
     [bel.core :as bel :refer [defaction defpage]]
     [bel.runtime :as runtime]
     [com.brunobonacci.mulog :as mu]
+    [tover.memberships.departure.web :as departure]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.forms :refer [csrf-field]]
@@ -28,6 +29,7 @@
                     (when (= :forbidden (:type (ex-data error))) (throw error))
                     (mu/log ::currency-unavailable :error-type (:type (ex-data error)))
                     nil))
+   :leave    (departure/eligibility context)
    :rejected (:tover/rejection request)})
 
 
@@ -65,7 +67,8 @@
             (currency-form props)
             [:div.management-empty {:role "alert"}
              [:p (i18n/t "Could not load the workspace currency.")]
-             [:p [:a {:href (:uri request)} (i18n/t "Retry")]]])]})
+             [:p [:a {:href (:uri request)} (i18n/t "Retry")]]])
+          (departure/leave-section {:request request :eligibility (:leave props)})]})
 
 
 (defaction save

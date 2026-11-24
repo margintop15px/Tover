@@ -78,8 +78,8 @@
                           other-workspace-id {:workspace_id other-workspace-id :name "Other workspace" :created_by other-id :created_at seeded-at}}
      :memberships        (into {} (for [[workspace user role] memberships
                                         :let                  [id (UUID/nameUUIDFromBytes (.getBytes (str workspace user)))]]
-                                    [id {:membership_id id        :workspace_id workspace :user_id user :role role :status "active"
-                                         :created_at    seeded-at}]))
+                                    [id {:membership_id id :workspace_id workspace :user_id user :role role :status "active"
+                                         :revision      1  :created_at   seeded-at}]))
      :sessions           {}
      :session_boundaries {}}))
 

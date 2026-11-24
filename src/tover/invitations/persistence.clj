@@ -104,7 +104,7 @@
   [_ context {:keys [workspace-id]}]
   (runtime/with-store context :directory :repeatable-read
     (fn [{:keys [tx actor]}]
-      (fields (db/execute-one! tx {:select [[:membership_id :membership-id] :role :status [:removed_at :removed-at]]
+      (fields (db/execute-one! tx {:select [[:membership_id :membership-id] :role :status :revision [:removed_at :removed-at]]
                                    :from   [:memberships]
                                    :where  [:and [:= :workspace_id workspace-id] [:= :user_id actor]]})))))
 
@@ -116,8 +116,10 @@
       (let [workspace-id (:workspace-id scope)
             invitations  (binding-of ::model/invitations)
             deliveries   (binding-of ::model/invitation-deliveries)]
-        {:members     (mapv fields (db/execute! tx {:select [[:user_id :user-id] :name :email :role :status
-                                                             [:removed_at :removed-at]]
+        {:members     (mapv fields (db/execute! tx {:select [[:membership_id :membership-id] [:user_id :user-id] :name :email
+                                                             :role :status :revision [:removed_at :removed-at]
+                                                             [:removal_kind :removal-kind] [:suspended_at :suspended-at]
+                                                             [:suspension_reason :suspension-reason]]
                                                     :from   [[[:app_private.bel_workspace_team workspace-id] :team]]}))
          :invitations (mapv fields (db/execute! tx {:select   (db/selection (:columns invitations)) :from  [(:table invitations)]
                                                     :where    [:= :workspace_id workspace-id]

@@ -27,6 +27,8 @@
         repeated (into #{} (keep (fn [[name n]] (when (> n 1) name))) (frequencies (map :name memberships)))
         return-to (access/local-path (get-in request [:params :return-to]))]
     [:div.management-content
+     (when-let [left (not-empty (get-in request [:params :left]))]
+       [:p.management-status {:role "status" :aria-live "polite"} (i18n/t "You left {workspace}." {:workspace left})])
      [:details.management-disclosure {:open (or (empty? memberships) (contains? (:params request) :name))}
       [:summary (i18n/t "Create workspace")]
       (create/create-form {:request request})]

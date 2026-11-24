@@ -92,7 +92,11 @@
   (let [changed [409 "This invitation changed. Reload the page."]]
     {:already-member     409 :member-suspended       409     :invitation-exists      409     :removal-review-required 409
      :invitation-changed 409 :invitation-invalidated 409     :invitation-not-pending 409     :permanent-failure       409
-     :resend-cooldown    429 :conflict               changed :identity-conflict      changed}))
+     :resend-cooldown    429 :conflict               changed :identity-conflict      changed
+     ;; Membership rows (board chapters 34–39).
+     :not-permitted      403 :own-membership         409     :changed-since-review   409     :not-active              409
+     :not-suspended      409 :already-removed        409     :last-owner             409     :already-owner           409
+     :reason-too-long    422}))
 
 
 (declare after)
@@ -166,9 +170,93 @@
              (command-fields request))])])
 
 
+(defn- row-fields
+  "Command fields of one member row: the reviewed membership and its revision."
+  {:malli/schema [:=> [:cat :map model/Member] [:vector :any]]}
+  [request {:keys [membership-id revision]}]
+  (into (command-fields request)
+        [[:input {:type "hidden" :name "membership-id" :value (str membership-id)}]
+         [:input {:type "hidden" :name "expected-revision" :value (str revision)}]]))
+
+
+(defn- reason-field
+  {:malli/schema [:=> [:cat] schema/Hiccup]}
+  []
+  [:label (i18n/t "Reason (optional)") [:input {:name "reason" :maxlength 500}]])
+
+
+(defn- confirm
+  "A row action behind a disclosure: what happens, an optional reason and the confirming button."
+  {:malli/schema [:=> [:cat :map :qualified-keyword :string :string [:* :any]] schema/Hiccup]}
+  [request action label explanation & fields]
+  [:details.management-disclosure
+   [:summary label]
+   [:div.management-form
+    [:p.management-secondary explanation]
+    (apply form request action label (concat fields [(reason-field)]))]])
+
+
+(defn- member-actions
+  "What the reader may do on this row (board chapters 34–36, 38, 39)."
+  {:malli/schema [:=> [:cat :map model/Member :int] [:maybe schema/Hiccup]]}
+  [request {:keys [actions own?] :as member} my-revision]
+  (let [{:keys [roles suspend? reinstate? remove? grant? transfer?]} actions
+        fields (row-fields request member)]
+    (when (or (seq roles) suspend? reinstate? remove? grant? transfer?)
+      [:div.management-member-actions
+       (when (seq roles)
+         (apply form request :tover.memberships.web/change-role (i18n/t "Save role")
+                (concat fields
+                        [[:label (i18n/t "Role")
+                          [:select {:name "role"}
+                           (for [role roles]
+                             [:option {:value role :selected (= role (:role member))} (role-label role)])]]
+                         (when own?
+                           [:input {:type "hidden" :name "own" :value "true"}])
+                         (when own?
+                           [:p.management-secondary (i18n/t "Changing your own role to Member removes your access to this page.")])
+                         (reason-field)])))
+       (when suspend?
+         (apply confirm request :tover.memberships.web/suspend (i18n/t "Suspend access")
+                (i18n/t "They lose this workspace at once and keep their role. Their work stays.") fields))
+       (when reinstate?
+         (apply confirm request :tover.memberships.web/reinstate (i18n/t "Reinstate")
+                (i18n/t "Restores this membership with the same role.") fields))
+       (when remove?
+         [:div.management-action-danger
+          (apply confirm request :tover.memberships.web/remove-member (i18n/t "Remove from workspace")
+                 (i18n/t "Returning needs a new invitation. Their accepted work stays.") fields)])
+       (when grant?
+         (apply confirm request :tover.memberships.web/grant-ownership (i18n/t "Make owner")
+                (i18n/t "They get full Owner authority. You stay an Owner.") fields))
+       (when transfer?
+         (apply confirm request :tover.memberships.web/transfer-ownership (i18n/t "Transfer ownership")
+                (i18n/t "They become Owner and you become Admin. To keep your role, use Make owner.")
+                (conj fields [:input {:type "hidden" :name "my-expected-revision" :value (str my-revision)}])))])))
+
+
+(def ^:private status-labels
+  {"active" "Active" "suspended" "Suspended" "removed" "Removed"})
+
+
+(defn- status-label
+  {:malli/schema [:=> [:cat model/Member] :string]}
+  [{:keys [status removal-kind]}]
+  (i18n/t (if (and (= "removed" status) (= "left" removal-kind)) "Left" (status-labels status))))
+
+
+(def ^:private outcomes
+  {"role-changed"          "Role changed."
+   "suspended"             "Access suspended."
+   "reinstated"            "Access reinstated."
+   "removed"               "Removed from the workspace."
+   "ownership-granted"     "Ownership granted."
+   "ownership-transferred" "Ownership transferred. You are now an Admin."})
+
+
 (defn- members-section
-  {:malli/schema [:=> [:cat :map [:vector model/Member]] schema/Hiccup]}
-  [request members]
+  {:malli/schema [:=> [:cat :map [:vector model/Member] :int] schema/Hiccup]}
+  [request members my-revision]
   [:section.management-section {:aria-labelledby "team-members-title"}
    [:div.management-section-heading
     [:h2#team-members-title (i18n/t "Members")]
@@ -184,16 +272,21 @@
        (into [:tbody]
              (for [member members
                    :let   [role (role-label (:role member))
-                           state (i18n/t (str/capitalize (:status member)))
+                           state (status-label member)
                            named? (not (str/blank? (:name member)))]]
-               [:tr
+               [:tr {:data-membership-id (str (:membership-id member))}
                 [:td.management-primary
                  [:span.management-name (if named? (:name member) (:email member))]
                  (when named? [:span.management-secondary (:email member)])
                  [:span.management-mobile-meta role " · " state]]
                 [:td.management-role role]
-                [:td.management-status state]
+                [:td.management-status state
+                 (when (:suspended-at member)
+                   [:span.management-secondary (i18n/t "Since") " " (moment (:suspended-at member))])
+                 (when (:suspension-reason member)
+                   [:span.management-secondary (:suspension-reason member)])]
                 [:td.management-actions
+                 (member-actions request member my-revision)
                  ;; A removed member rejoins only through a fresh offer reviewed after the latest removal.
                  (when (= "removed" (:status member))
                    [:details.management-disclosure
@@ -315,6 +408,8 @@
                ;; The just-issued offer's known result, which the team list would otherwise show in its row.
                (list (when-not (:failed? recipient) (recipient-status recipient now))
                      (retry request))
-               (list (members-section request (:members team))
+               (list (when-let [done (get outcomes (:done params))]
+                       [:p.management-status {:role "status" :aria-live "polite"} (i18n/t done)])
+                     (members-section request (:members team) (:my-revision team 0))
                      ;; An accepted offer's person is listed under members.
                      (invitations-section request (filterv #(not= "accepted" (:state %)) (:invitations team)) now)))]]}))

@@ -5,19 +5,52 @@
     [bel.core :refer [defreadmodel]]
     [bel.validation :as validation]
     [tover.invitations.issue.model :as issue]
-    [tover.invitations.status.model :as status])
+    [tover.invitations.status.model :as status]
+    [tover.memberships.ownership.model :as ownership]
+    [tover.memberships.removal.model :as removal]
+    [tover.memberships.role.model :as role]
+    [tover.memberships.suspension.model :as suspension])
   (:import
     [java.time Instant]))
 
 
+(def Actions
+  "What the reading manager may do on one member row (board chapters 34–39)."
+  [:map
+   [:roles [:vector :string]]
+   [:suspend? :boolean]
+   [:reinstate? :boolean]
+   [:remove? :boolean]
+   [:grant? :boolean]
+   [:transfer? :boolean]])
+
+
 (def Member
   [:map
+   [:membership-id :uuid]
    [:user-id :uuid]
    [:name {:optional true} :string]
    [:email :string]
    [:role :string]
    [:status [:enum "active" "suspended" "removed"]]
-   [:removed-at {:optional true} validation/Instant]])
+   [:revision :int]
+   [:removed-at {:optional true} validation/Instant]
+   [:removal-kind {:optional true} [:enum "removed" "left"]]
+   [:suspended-at {:optional true} validation/Instant]
+   [:suspension-reason {:optional true} :string]
+   [:own? :boolean]
+   [:actions Actions]])
+
+
+(defn actions
+  {:malli/schema [:=> [:cat [:maybe :map] :map] Actions]}
+  [own member]
+  {:roles      (role/settable-roles own member)
+   :suspend?   (suspension/can-suspend? own member)
+   :reinstate? (suspension/can-reinstate? own member)
+   :remove?    (removal/can-remove? own member)
+   :grant?     (ownership/eligible? own member)
+   :transfer?  (ownership/eligible? own member)})
 
 
 (def Offer
@@ -33,7 +66,7 @@
 
 
 (def Team
-  [:map [:members [:vector Member]] [:invitations [:vector Offer]]])
+  [:map [:members [:vector Member]] [:invitations [:vector Offer]] [:my-revision {:optional true} :int]])
 
 
 (defn- normalized
@@ -62,12 +95,13 @@
 
 
 (defn team
-  "Members sorted by email; the latest offer per recipient, newest first."
+  "Members sorted by email with what `own` (the reader's membership) may do on each row; the latest offer per
+  recipient, newest first."
   {:malli/schema [:=> [:cat [:map [:members [:sequential :map]] [:invitations [:sequential :map]]
                              [:deliveries [:sequential :map]]]
-                       validation/Instant]
+                       [:maybe :map] validation/Instant]
                   Team]}
-  [{:keys [members invitations deliveries]} now]
+  [{:keys [members invitations deliveries]} own now]
   (let [by-email   (into {} (map (juxt #(normalized (:email %)) identity)) members)
         latest     (->> invitations
                         (sort-by :created-at #(compare %2 %1))
@@ -80,7 +114,15 @@
                         (reduce (fn [seen delivery]
                                   (if (contains? seen (:invitation-id delivery)) seen (assoc seen (:invitation-id delivery) delivery)))
                                 {}))]
-    {:members     (vec (sort-by (juxt :email :user-id) (map #(select-keys % [:user-id :name :email :role :status :removed-at]) members)))
+    {:my-revision (:revision own 0)
+     :members     (vec (sort-by (juxt :email :user-id)
+                                (map (fn [member]
+                                       (let [member (assoc (select-keys member [:membership-id :user-id :name :email :role :status
+                                                                                :removed-at :removal-kind :suspended-at
+                                                                                :suspension-reason])
+                                                           :revision (:revision member 1))]
+                                         (assoc member :own? (= (:user-id own) (:user-id member)) :actions (actions own member))))
+                                     members)))
      :invitations (->> (vals latest)
                        (sort-by :created-at #(compare %2 %1))
                        (mapv #(offer % (get deliveries (:invitation-id %)) (get by-email (normalized (:email %))) now)))}))
@@ -91,6 +133,7 @@
    :output Team
    :policy ::issue/invitation-manager
    :cofx   [[:rows :tover.invitations.persistence/team]
+            [:own :tover.memberships.persistence/own (constantly {})]
             [:clock :bel/now]]}
-  [{:keys [rows clock]} _]
-  (team rows clock))
+  [{:keys [rows own clock]} _]
+  (team rows own clock))
