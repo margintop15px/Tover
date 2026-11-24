@@ -57,6 +57,26 @@
       (mapv #(assoc % :change (some-> (:quantity %) (* (sign kind 1)))) lines))))
 
 
+(defn collapse
+  "The entry facts an accepted operation revision came from, the inverse of `expand`: its replacement or its copy
+  starts here. Line ids are `<record-revision-id>-<position>`; money and quantities stay as accepted."
+  {:malli/schema [:=> [:cat :map [:sequential :map]] :map]}
+  [{:keys [record-revision-id kind] :as record} lines]
+  (let [lines   (sort-by :position lines)
+        entered (remove :carry-from lines)
+        present #(into {} (remove (comp nil? val)) %)
+        line    (fn [{:keys [position quantity-change] :as l}]
+                  (cond-> (merge {:line-id  (str record-revision-id "-" position) :stock-item-id (:stock-item-id l)
+                                  :quantity (abs quantity-change)}
+                                 (present (select-keys l [:unit-cost :unit-price])))
+                    (not= "transfer" kind) (assoc :warehouse-id (:warehouse-id l))
+                    (= "production" kind) (assoc :side (if (neg? quantity-change) "input" "output"))))]
+    (cond-> (assoc (present (select-keys record [:kind :occurred-at :reason :supplier-id :store-id :direction :amount]))
+                   :lines (mapv line entered))
+      (= "transfer" kind) (assoc :from-warehouse-id (:warehouse-id (first entered))
+                                 :to-warehouse-id (:warehouse-id (first (filter :carry-from lines)))))))
+
+
 (defn lines-of
   "Lines with their entry id; an entering half is marked `:entering?`."
   {:malli/schema [:=> [:cat [:sequential :map] [:sequential :map]] [:vector :map]]}

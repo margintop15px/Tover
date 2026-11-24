@@ -60,6 +60,8 @@
 
 (defevent inventory-changes-accepted {:schema Acceptance})
 (defevent inventory-record-accepted {:schema Record})
+(defevent operation-amended {:schema Record})
+(defevent operation-cancelled {:schema Record})
 (defevent inventory-record-line-accepted {:schema RecordLine})
 
 
@@ -71,13 +73,19 @@
    :events {::inventory-changes-accepted {:create [:actor :recorded-at :record-count]}}})
 
 
+(def ^:private record-fields
+  [:record-id :revision :acceptance-id :kind :occurred-at :sequence :amends :cancelled :reason :supplier-id :store-id :direction
+   :amount])
+
+
 (defmodel records
   {:id     :record-revision-id
    :store  :catalogue
    :schema Record
    :policy ::records/workspace-member
-   :events {::inventory-record-accepted {:create [:record-id :revision :acceptance-id :kind :occurred-at :sequence :amends
-                                                  :cancelled :reason :supplier-id :store-id :direction :amount]}}})
+   :events {::inventory-record-accepted {:create record-fields}
+            ::operation-amended         {:create record-fields}
+            ::operation-cancelled       {:create record-fields}}})
 
 
 (defmodel record-lines
@@ -274,24 +282,32 @@
 
 (defn- tentative
   "Selected entries as record revisions, and their signed lines (`movements/expand`) as record lines, in reviewed
-  order, recorded `now`. A payment is a record without lines."
+  order, recorded `now`. A payment is a record without lines; an amending entry is the next revision of its `:target`;
+  a cancellation has no facts but its target's kind and instant."
   {:malli/schema [:=> [:cat [:sequential :map] [:sequential :map] [:sequential :string] :any] :map]}
   [entries lines order now]
   (let [position (zipmap order (range))
-        grouped  (group-by :entry-id lines)]
-    {:records (vec (for [{:keys [entry-id kind occurred-at supplier-id store-id direction amount]} entries
-                         :when (or (= "payment" kind) (grouped entry-id))]
-                     (present {:record-revision-id (record-revision-id entry-id 1) :record-id entry-id :revision  1     :kind        kind
-                               :occurred-at        occurred-at :sequence (position entry-id 0)         :cancelled false :recorded-at now
-                               :supplier-id        supplier-id :store-id store-id :direction direction                  :amount      amount})))
+        grouped  (group-by :entry-id lines)
+        identity (fn [{:keys [entry-id target]}]
+                   (let [record-id (:record-id target entry-id)
+                         revision  (inc (:revision target 0))]
+                     {:record-revision-id (record-revision-id record-id revision) :record-id record-id :revision revision}))
+        revision (into {} (map (juxt :entry-id (comp :record-revision-id identity))) entries)]
+    {:records (vec (for [{:keys [entry-id kind occurred-at reason supplier-id store-id direction amount amends cancel target] :as entry} entries
+                         :when (or cancel (= "payment" kind) (grouped entry-id))]
+                     (merge (identity entry)
+                            (present {:kind        kind                  :occurred-at (if cancel (:occurred-at target) occurred-at)
+                                      :sequence    (position entry-id 0) :cancelled   (boolean cancel) :recorded-at now
+                                      :amends      amends                :reason      reason
+                                      :supplier-id supplier-id           :store-id    store-id :direction           direction :amount amount}))))
      :lines   (vec (for [[entry-id ls] grouped
                          [index line]  (map vector (range) ls)]
-                     (present {:record-line-id     (record-line-id (record-revision-id entry-id 1) index)
-                               :record-revision-id (record-revision-id entry-id 1) :position index
-                               :stock-item-id      (:stock-item-id line) :warehouse-id       (:warehouse-id line)
+                     (present {:record-line-id     (record-line-id (revision entry-id) index)
+                               :record-revision-id (revision entry-id) :position       index
+                               :stock-item-id      (:stock-item-id line) :warehouse-id (:warehouse-id line)
                                (if (= "correction" (:kind (:entry line))) :counted-quantity :quantity-change)
                                (if (= "correction" (:kind (:entry line))) (:quantity line) (:change line))
-                               :unit-cost          (:unit-cost line) :unit-price             (:unit-price line)   :carry-from (:carry-from line)})))}))
+                               :unit-cost          (:unit-cost line) :unit-price       (:unit-price line)   :carry-from (:carry-from line)})))}))
 
 
 (defn- openings
@@ -346,11 +362,14 @@
 
 (defn- ties
   "Board chapter 17: entries other than openings on one stock item and warehouse at the same second need the member's
-  explicit order. An opening always comes first in its timeline, so it ties with nothing."
+  explicit order. An opening always comes first in its timeline, so it ties with nothing; a revision at an unchanged
+  instant keeps its accepted place."
   {:malli/schema [:=> [:cat [:sequential :map]] [:sequential Problem]]}
   [lines]
   (for [[[item warehouse at] ls] (group-by (juxt :stock-item-id :warehouse-id (comp :occurred-at :entry))
-                                           (remove #(= "opening" (:kind (:entry %))) lines))
+                                           (remove (fn [{{:keys [kind occurred-at target]} :entry}]
+                                                     (or (= "opening" kind) (and target (= occurred-at (:occurred-at target)))))
+                                                   lines))
         :when                    (and at (< 1 (count (distinct (map :entry-id ls)))))
         entry-id                 (distinct (map :entry-id ls))]
     {:entry-id entry-id :line-id nil :code :order-required :stock-item-id item :warehouse-id warehouse
@@ -405,17 +424,22 @@
 
 (defn fingerprint
   "What the review saw: the selection and order, the selected entries, referenced and same-named catalogue records
-  (suppliers and stores included), owners of the barcodes and articles used, accepted record ids on the affected pairs, and the currency."
-  {:malli/schema [:=> [:cat :map Selection [:sequential :map] [:sequential :map]] :string]}
-  [{:keys [products warehouses stock-items barcodes history currency entries suppliers] :as facts} selection lines changes]
+  (suppliers and stores included), owners of the barcodes and articles used, accepted lines on the affected pairs with
+  every revision of their records, the revisions of the amended records, and the currency. `replaced` are the accepted
+  lines of the amended records."
+  {:malli/schema [:=> [:cat :map Selection [:sequential :map] [:sequential :map] [:sequential :map]] :string]}
+  [{:keys [products warehouses stock-items barcodes history currency entries suppliers] :as facts} selection lines changes replaced]
   (let [ids      (fn [k] (set (concat (keep k lines) (keep k changes))))
         names    (set (keep (comp text-key :product-name) lines))
         stores   (set (keep (comp text-key :warehouse-name) lines))
         codes    (set (concat (mapcat :barcodes lines) (mapcat :barcodes-added changes)))
         articles (set (keep (comp text-key :article) lines))
-        pairs    (set (map (juxt :stock-item-id :warehouse-id) lines))
+        pairs    (set (map (juxt :stock-item-id :warehouse-id) (concat lines replaced)))
         picked   (set (map :entry-id (:selection selection)))
         chosen   (filter (comp picked :entry-id) entries)
+        touching (filter #(pairs [(:stock-item-id %) (:warehouse-id %)]) (:lines history))
+        seen     (into (set (map :record-revision-id touching)) (keep :amends) chosen)
+        owners   (set (keep #(when (seen (:record-revision-id %)) (:record-id %)) (:records history)))
         sellers  (set (keep :supplier-id chosen))
         named    (set (keep (comp text-key :supplier-name) chosen))
         shops    (set (keep :store-id chosen))]
@@ -427,7 +451,9 @@
                                     (sort-by :warehouse-id (filter #(or ((ids :warehouse-id) (:warehouse-id %)) (stores (text-key (:name %)))) warehouses))
                                     (sort-by :stock-item-id (filter #(or ((ids :stock-item-id) (:stock-item-id %)) (articles (text-key (:article %)))) stock-items))
                                     (sort-by :barcode-id (filter #(or (codes (:barcode %)) ((ids :stock-item-id) (:stock-item-id %))) barcodes))
-                                    (sort (keep #(when (pairs [(:stock-item-id %) (:warehouse-id %)]) (:record-line-id %)) (:lines history)))
+                                    (sort (map :record-line-id touching))
+                                    ;; A cancellation has no lines, so the revisions of those records count too.
+                                    (sort (keep #(when (owners (:record-id %)) (:record-revision-id %)) (:records history)))
                                     currency
                                     (sort-by :supplier-id (filter #(or (sellers (:supplier-id %)) (named (text-key (:name %)))) suppliers))
                                     (sort-by :store-id (filter (comp shops :store-id) (:stores facts)))])))))
@@ -443,7 +469,15 @@
         changed  (for [{:keys [entry-id revision]} selection
                        :when (not= revision (:revision (pending entry-id)))]
                    {:entry-id entry-id :line-id nil :code :entry-changed})
-        picked   (keep #(when (= (:revision %) (:revision (pending (:entry-id %)))) (pending (:entry-id %))) selection)
+        picked   (for [{:keys [entry-id revision]} selection
+                       :let [{:keys [amends] :as entry} (pending entry-id)]
+                       :when (and entry (= revision (:revision entry)))]
+                   (cond-> entry amends (assoc :target (entries/latest-revision history amends))))
+        amended  (concat (for [entry picked :let [code (entries/target-problem history entry)] :when code]
+                           {:entry-id (:entry-id entry) :line-id nil :code code})
+                         (for [[target es] (group-by (comp :record-id :target) picked) :when (and target (< 1 (count es))) entry es]
+                           {:entry-id (:entry-id entry) :line-id nil :code :target-not-current}))
+        replaced (mapcat (comp :lines :target) picked)
         status   (entries/status-index facts)
         blocked  (for [entry picked {:keys [code line-id field]} (entries/blockers entry (:lines entry) status)]
                    (let [incomplete? (#{:quantity-missing :warehouse-missing :item-missing :unit-cost-missing :occurred-at-missing} code)]
@@ -453,15 +487,17 @@
         future   (for [{:keys [entry-id occurred-at]} picked :when (and occurred-at (pos? (compare occurred-at now)))]
                    {:entry-id entry-id :line-id nil :code :future-occurrence})
         sellers  (with-suppliers picked)
+        standing (update history :records entries/without-records (into #{} (keep :amends) picked))
         lines    (resolve-lines facts (map #(assoc % :lines (movements/expand % (partial movements/counterpart (:stock-items facts)))) sellers))
+        blocked  (concat amended blocked)
         usable   (if (seq blocked) [] lines)
         changes  (if (seq blocked) [] (picked-changes picked))
         proposed (tentative (if (seq blocked) [] sellers) usable order now)
         before   (valuation/replay (:records history) (:lines history))
         after    (valuation/replay (into (:records history) (:records proposed)) (into (:lines history) (:lines proposed)))
-        pairs    (distinct (map (juxt :stock-item-id :warehouse-id) usable))
+        pairs    (distinct (map (juxt :stock-item-id :warehouse-id) (concat usable (when (empty? blocked) replaced))))
         problems (vec (distinct (concat changed blocked future
-                                        (when (seq usable) (openings history usable))
+                                        (when (seq usable) (openings standing usable))
                                         (uniqueness facts usable)
                                         (unknown-units usable)
                                         (counts-without-history history usable)
@@ -469,20 +505,20 @@
                                         (when-not ordered? (ties usable))
                                         (changes/problems facts usable changes after)
                                         (when-let [{:keys [stock-item-id warehouse-id occurred-at]} (:error after)]
-                                          [{:entry-id     (first order) :code        :negative-balance :stock-item-id stock-item-id
+                                          [{:entry-id     (first order) :line-id     nil         :code :negative-balance :stock-item-id stock-item-id
                                             :warehouse-id warehouse-id  :occurred-at occurred-at}]))))]
     {:valid?        (and (empty? problems) (seq selection) (= (set order) (set (map :entry-id selection))))
      :effects       (vec (for [[item warehouse :as pair] pairs
                                :let [b (get-in before [:balances pair]) a (get-in after [:balances pair])]]
                            {:stock-item-id   item :warehouse-id warehouse
                             :quantity-before (:quantity b 0)               :quantity-after (:quantity a 0)
-                            :value-before    (if b (valuation/value b) 0M) :value-after    (valuation/value a)}))
+                            :value-before    (if b (valuation/value b) 0M) :value-after    (if a (valuation/value a) 0M)}))
      :registrations (registrations facts usable)
      :problems      problems
      :lines         usable
      :records       proposed
      :item-events   (item-events facts usable changes)
-     :fingerprint   (fingerprint facts input lines (picked-changes picked))}))
+     :fingerprint   (fingerprint facts input lines (picked-changes picked) replaced)}))
 
 
 (defmethod runtime/coeffect ::now
@@ -543,6 +579,8 @@
    :amount-missing        [:validation "Enter an amount above 0."]
    :supplier-name-taken   [:supplier-name-taken "A supplier with this name already exists."]
    :archived-reference    [:archived-reference "Restore the archived record first."]
+   :target-not-current    [:target-not-current "This operation changed since it was loaded. Review the latest values."]
+   :already-cancelled     [:already-cancelled "This operation is already cancelled."]
    :count-without-history [:validation "This stock has no history here. Declare opening stock first."]
    :unit-required         [:validation "Set the stock item's unit first."]
    :order-required        [:order-required "Entries for the same stock at the same second need an order."]
@@ -584,7 +622,8 @@
   {:input  Accept
    :policy ::records/workspace-member
    :cofx   review-facts
-   :emits  #{::inventory-changes-accepted ::inventory-record-accepted ::inventory-record-line-accepted
+   :emits  #{::inventory-changes-accepted ::inventory-record-accepted ::operation-amended ::operation-cancelled
+             ::inventory-record-line-accepted
              ::stock-items/stock-item-registered ::stock-items/stock-item-barcode-assigned ::stock-items/stock-item-updated
              ::stock-items/stock-item-moved ::stock-items/stock-item-archived ::stock-items/stock-item-restored
              ::stock-items/stock-item-barcode-removed
@@ -593,8 +632,7 @@
              :tover.inventory.entries.model/shared-inventory-entry-accepted}}
   [{:keys [scope actor now] :as facts} {:keys [acceptance-id fingerprint selection order] :as input}]
   (entries/check-workspace! scope input)
-  (let [{:keys [problems lines records item-events] :as result} (review (assoc (review-input facts) :now now) (select-keys input [:selection :order :ordered?]))
-        reasons (into {} (map (juxt :entry-id :reason)) (:entries facts))]
+  (let [{:keys [problems lines records item-events] :as result} (review (assoc (review-input facts) :now now) (select-keys input [:selection :order :ordered?]))]
     (when (not= fingerprint (:fingerprint result))
       (records/fail! :review-outdated "Something the review saw changed. Review it again." {}))
     (when-let [{:keys [code] :as problem} (first problems)]
@@ -608,8 +646,8 @@
                     (registration-events lines)
                     item-events
                     (for [r (sort-by :sequence (:records records))]
-                      {:type ::inventory-record-accepted
-                       :data (present (-> r (dissoc :recorded-at) (assoc :acceptance-id acceptance-id :reason (reasons (:record-id r)))))})
+                      {:type (cond (:cancelled r) ::operation-cancelled (:amends r) ::operation-amended :else ::inventory-record-accepted)
+                       :data (-> r (dissoc :recorded-at) (assoc :acceptance-id acceptance-id))})
                     (for [l (:lines records)] {:type ::inventory-record-line-accepted :data l})
                     (for [entry-id order
                           :let     [revision (some #(when (= entry-id (:entry-id %)) (:revision %)) selection)]]
@@ -635,20 +673,24 @@
 
 
 (defn operations
-  "Effective operation records (every kind but opening and correction), newest first, each with its lines and derived
-  total: a payment's amount, else the sum of priced line amounts (quantity × the kind's price field), `partial?` when
-  some line of a priced kind has no price. Kinds without a price have no total."
+  "Operation records (every kind but opening and correction), newest first, each with its lines and derived total: a
+  payment's amount, else the sum of priced line amounts (quantity × the kind's price field), `partial?` when some line
+  of a priced kind has no price. Kinds without a price have no total. A cancelled operation shows its last facts;
+  `:revisions` are all its revisions with their lines, first to last."
   {:malli/schema [:=> [:cat :map] [:vector :map]]}
   [{:keys [records lines]}]
-  (let [by-record (group-by :record-revision-id lines)]
-    (->> (valuation/effective records)
-         (remove (comp #{"opening" "correction"} :kind))
+  (let [by-record (update-vals (group-by :record-revision-id lines) #(vec (sort-by :position %)))]
+    (->> (vals (group-by :record-id (remove (comp #{"opening" "correction"} :kind) records)))
+         (map #(mapv (fn [r] (assoc r :lines (by-record (:record-revision-id r) []))) (sort-by :revision %)))
+         (map (fn [revisions]
+                (let [{:keys [cancelled record-revision-id]} (peek revisions)]
+                  (assoc (last (remove :cancelled revisions)) :record-revision-id record-revision-id :cancelled cancelled
+                         :revisions revisions))))
          (sort-by (juxt :occurred-at :recorded-at :sequence) #(compare %2 %1))
-         (mapv (fn [{:keys [kind record-revision-id amount] :as r}]
-                 (let [ls     (vec (sort-by :position (by-record record-revision-id)))
-                       price  (get-in entries/operation-rules [kind :price])
+         (mapv (fn [{:keys [kind amount] ls :lines :as r}]
+                 (let [price  (get-in entries/operation-rules [kind :price])
                        priced (when price (filter price ls))]
-                   (assoc r :lines ls
+                   (assoc r
                           :total (cond amount (bigdec amount)
                                        (seq priced) (reduce + 0M (map #(* (abs (:quantity-change %)) (bigdec (price %))) priced)))
                           :partial? (boolean (and price (< (count priced) (count ls)))))))))))

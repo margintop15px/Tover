@@ -42,7 +42,7 @@
   [operations {:keys [products stock-items]}]
   (let [product (into {} (map (juxt :product-id :name)) products)
         item    (into {} (map (juxt :stock-item-id identity)) stock-items)]
-    (into {} (for [[supplier ops] (group-by :supplier-id (filter #(= "purchase" (:kind %)) operations))
+    (into {} (for [[supplier ops] (group-by :supplier-id (filter #(and (= "purchase" (:kind %)) (not (:cancelled %))) operations))
                    :let           [items (keep item (distinct (mapcat #(map :stock-item-id (:lines %)) ops)))]]
                [supplier (str/join "; " (for [[p is] (sort-by (comp records/name-key str product key) (group-by :product-id items))]
                                           (let [variants (sort (keep #(not-empty (:variant-label %)) is))]

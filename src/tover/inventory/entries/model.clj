@@ -8,6 +8,7 @@
     [clojure.string :as str]
     [tover.catalogues.records :as records :refer [Id]]
     [tover.inventory.findings :as findings]
+    [tover.inventory.movements :as movements]
     [tover.inventory.stock-items.model :as stock-items]
     [tover.inventory.valuation :as valuation])
   (:import
@@ -53,6 +54,9 @@
    ;; Payment: money received (in) or paid (out), an exact decimal above 0; the counterparty is the supplier or store.
    [:direction {:optional true} [:enum "in" "out"]]
    [:amount {:optional true} :string]
+   ;; Chapters 26 and 27: the accepted operation revision (`record-revision-id`) this entry replaces or withdraws.
+   [:amends {:optional true} Id]
+   [:cancel {:optional true} :boolean]
    [:status [:enum "pending" "accepted" "discarded"]]
    [:revision [:int {:min 1}]]
    [:saved-by :uuid]])
@@ -124,7 +128,7 @@
 
 (def ^:private entry-fields
   [:kind :occurred-at :reason :supplier-id :supplier-name :store-id :from-warehouse-id :to-warehouse-id :direction :amount
-   :status :revision :saved-by])
+   :amends :cancel :status :revision :saved-by])
 
 
 (def ^:private line-keys
@@ -374,6 +378,11 @@
    [:to-warehouse-id {:optional true} [:maybe Id]]
    [:direction {:optional true} [:maybe [:enum "in" "out"]]]
    [:amount {:optional true} [:maybe :string]]
+   [:amends {:optional true} [:maybe Id]]
+   [:cancel {:optional true} [:maybe :boolean]]
+   ;; Chapter 28, not stored: the pending entry or accepted revision a new entry is prefilled from; its archived
+   ;; references are kept.
+   [:copies {:optional true} [:maybe Id]]
    [:lines {:optional true} [:vector DraftLine]]
    [:changes {:optional true} [:vector DraftChange]]])
 
@@ -383,13 +392,14 @@
 
 
 (defn- parse-line
-  "A typed line as stored. New selections must name active records; a saved reference is kept even if archived."
-  {:malli/schema [:=> [:cat :map [:maybe :map] :map] Line]}
-  [references previous {:keys [line-id] :as line}]
+  "A typed line as stored. New selections must name active records; a saved reference, or one in `kept` (field and id
+  pairs of the amended or copied operation), is kept even if archived."
+  {:malli/schema [:=> [:cat :map [:set :any] [:maybe :map] :map] Line]}
+  [references kept previous {:keys [line-id] :as line}]
   (let [line (into {} (keep (fn [[k v]] (when-some [v (blank->nil v)] [k v]))) line)]
     (doseq [[field kind] reference-fields
             :let         [id (get line field)]
-            :when        (and id (not= id (get previous field)))]
+            :when        (and id (not= id (get previous field)) (not (kept [field id])))]
       (try (records/check-related! id (get references kind) :validation)
            (catch clojure.lang.ExceptionInfo _
              (invalid! field "Choose an active record of this workspace." {:line-id line-id :attempted id}))))
@@ -451,8 +461,8 @@
 (defn- check-references!
   "Supplier, store, warehouse pair and payment fields only where the kind has them. A new choice must be an active
   record; a saved one is kept even if archived."
-  {:malli/schema [:=> [:cat :map [:maybe :map] :map] :nil]}
-  [references entry {:keys [kind] :as input}]
+  {:malli/schema [:=> [:cat :map [:set :any] [:maybe :map] :map] :nil]}
+  [references kept entry {:keys [kind] :as input}]
   (let [party     (:party (operation-rules kind))
         given     #(blank->nil (get input %))
         supplier? (#{:supplier :either} party)
@@ -475,7 +485,7 @@
       (invalid! :lines "A payment has no lines." {}))
     (doseq [[field records] [[:supplier-id :suppliers] [:store-id :stores] [:from-warehouse-id :warehouses] [:to-warehouse-id :warehouses]]
             :let            [id (given field)]
-            :when           (and id (not= id (get entry field)))]
+            :when           (and id (not= id (get entry field)) (not (kept [field id])))]
       (try (records/check-related! id (get references records) :validation)
            (catch clojure.lang.ExceptionInfo _
              (invalid! field "Choose an active record of this workspace." {:attempted id}))))))
@@ -590,20 +600,93 @@
   [[:entry ::entries entry-key] [:lines ::lines entry-key] [:changes ::changes entry-key]])
 
 
+(defn latest-revision
+  "The latest revision of the record that `revision-id` is a revision of, with its collapsed `:facts`, or nil."
+  {:malli/schema [:=> [:cat [:maybe :map] [:maybe :string]] [:maybe :map]]}
+  [{:keys [records lines]} revision-id]
+  (when-let [record-id (some #(when (= revision-id (:record-revision-id %)) (:record-id %)) records)]
+    (let [{:keys [record-revision-id kind] :as record} (apply max-key :revision (filter #(= record-id (:record-id %)) records))
+          own (filterv #(= record-revision-id (:record-revision-id %)) lines)]
+      (cond-> (assoc record :lines own)
+        (operation-rules kind) (assoc :facts (movements/collapse record own))))))
+
+
+(defn without-records
+  "Accepted records without any revision of the records that `revision-ids` are revisions of."
+  {:malli/schema [:=> [:cat [:sequential :map] [:set :string]] [:vector :map]]}
+  [records revision-ids]
+  (let [gone (set (keep #(when (revision-ids (:record-revision-id %)) (:record-id %)) records))]
+    (into [] (remove (comp gone :record-id)) records)))
+
+
+(defn target-problem
+  "Why `entry` cannot amend its target now, or nil: the target was superseded, is missing or was cancelled."
+  {:malli/schema [:=> [:cat [:maybe :map] :map] [:maybe [:enum :target-not-current :already-cancelled]]]}
+  [history {:keys [amends]}]
+  (when amends
+    (let [target (latest-revision history amends)]
+      (cond (:cancelled target) :already-cancelled
+            (not= amends (:record-revision-id target)) :target-not-current))))
+
+
+(def ^:private fact-fields
+  [:occurred-at :supplier-id :supplier-name :store-id :from-warehouse-id :to-warehouse-id :direction :amount :lines :changes])
+
+
+(defn- check-amendment!
+  "An amending entry keeps its target and the target's kind; the target is the latest revision of an operation that no
+  other pending entry amends. A cancelling entry carries only a reason."
+  {:malli/schema [:=> [:cat :map :map] :nil]}
+  [{:keys [entry pending history]} {:keys [entry-id kind amends cancel] :as input}]
+  (when (and entry (not= amends (:amends entry)))
+    (invalid! :amends "A pending entry keeps the operation it amends." {}))
+  (when (and cancel (not amends))
+    (invalid! :cancel "Choose the accepted operation to cancel." {}))
+  (when amends
+    (let [target (latest-revision history amends)
+          other  (some #(when (and (not= entry-id (:entry-id %)) (= amends (:amends %))) %) pending)]
+      (when-not (and target (operation-rules (:kind target)))
+        (invalid! :amends "Choose an accepted operation." {:attempted amends}))
+      (when (not= kind (:kind target))
+        (invalid! :kind "An accepted operation keeps its kind." {:attempted kind}))
+      (when (target-problem history input)
+        (records/fail! :target-not-current "This operation changed since it was loaded. Review the latest values."
+                       {:current (dissoc target :facts :lines)}))
+      (when other
+        (records/fail! :stale-draft "This entry changed. Review the latest values." {:current other}))
+      (when (and cancel (some #(let [v (get input %)] (if (coll? v) (seq v) (blank->nil v))) fact-fields))
+        (invalid! :cancel "A cancellation carries no other changes." {})))))
+
+
+(defn- kept-references
+  "Field and id pairs of the operation this save amends or copies; they stay even when archived."
+  {:malli/schema [:=> [:cat :map :map] [:set :any]]}
+  [{:keys [entry pending history]} {:keys [amends copies]}]
+  (let [facts (if (and copies (not entry))
+                (or (some #(when (= copies (:entry-id %)) %) pending) (:facts (latest-revision history copies)))
+                (:facts (latest-revision history amends)))]
+    (into (set (select-keys facts [:supplier-id :store-id :from-warehouse-id :to-warehouse-id]))
+          (mapcat #(select-keys % (keys reference-fields)))
+          (:lines facts))))
+
+
 (defcommand save-shared-inventory-entry
   {:input SaveEntry :policy ::records/workspace-member
-   :cofx  (conj draft-facts [:references ::references (constantly {})])
+   :cofx  (conj draft-facts [:references ::references (constantly {})] [:pending ::pending (constantly {})]
+                [:history :tover.inventory.acceptance.model/history (constantly {})])
    :emits #{::shared-inventory-entry-saved ::inventory-entry-line-saved ::inventory-entry-line-removed
             ::inventory-entry-line-barcode-added ::inventory-entry-line-barcode-removed ::inventory-entry-change-saved
             ::inventory-entry-change-removed ::inventory-entry-change-barcode-added ::inventory-entry-change-barcode-removed}}
-  [{:keys [scope actor entry lines changes references]} {:keys [entry-id expected-revision kind occurred-at reason] :as input}]
+  [{:keys [scope actor entry lines changes references] :as facts} {:keys [entry-id expected-revision kind occurred-at reason amends cancel] :as input}]
   (check-workspace! scope input)
   (current-draft! entry lines (or changes []) expected-revision)
   (when (and (seq (:changes input)) (not= "correction" kind))
     (invalid! :changes "Only a correction changes stock items." {}))
-  (check-references! references entry input)
+  (check-amendment! facts input)
+  (check-references! references (kept-references facts input) entry input)
   (let [before   (into {} (map (juxt :line-id identity)) lines)
-        parsed   (mapv #(parse-line references (get before (:line-id %)) %) (:lines input))
+        kept     (kept-references facts input)
+        parsed   (mapv #(parse-line references kept (get before (:line-id %)) %) (:lines input))
         _        (cond
                    (= "correction" kind) (run! check-correction-line! parsed)
                    (operation-rules kind) (run! #(check-operation-line! references kind %) parsed)
@@ -623,7 +706,9 @@
                    (blank->nil (:from-warehouse-id input)) (assoc :from-warehouse-id (:from-warehouse-id input))
                    (blank->nil (:to-warehouse-id input)) (assoc :to-warehouse-id (:to-warehouse-id input))
                    (:direction input) (assoc :direction (:direction input))
-                   (blank->nil (:amount input)) (assoc :amount (parse-payment-amount (:amount input))))]
+                   (blank->nil (:amount input)) (assoc :amount (parse-payment-amount (:amount input)))
+                   amends (assoc :amends amends)
+                   cancel (assoc :cancel true))]
     {:events (-> [{:type ::shared-inventory-entry-saved :data saved}]
                  (into (line-events entry-id lines parsed))
                  (into (change-events entry-id (or changes []) proposed)))
@@ -652,52 +737,53 @@
 (defn blockers
   "What keeps a pending entry from review: missing facts and archived references, per line and field. Units enter
   stock only at a cost, so an opening or purchase line needs its unit cost. An entry
-  with only stock item changes needs no occurrence time; a transfer's lines take its warehouses; a payment has no lines."
+  with only stock item changes needs no occurrence time; a transfer's lines take its warehouses; a payment has no lines.
+  A cancellation needs nothing."
   {:malli/schema [:=> [:cat :map [:sequential Line] :map] [:vector :map]]}
-  [{:keys [kind] :as entry} lines status]
-  (let [{:keys [party reason?] :as rules} (operation-rules kind)
-        entry-blocker (fn [field code] {:line-id nil :field field :code code})
-        archived? (fn [index id] (and id (not= "active" (get-in status [index id]))))]
-    (into (cond-> (if (or (:occurred-at entry) (and (empty? lines) (seq (:changes entry))))
-                    []
-                    [(entry-blocker :occurred-at :occurred-at-missing)])
-            (and (= :supplier party) (not (some entry [:supplier-id :supplier-name])))
-            (conj (entry-blocker :supplier-id :supplier-missing))
-            (and rules (not= "payment" kind) (empty? lines))
-            (conj (entry-blocker :lines :lines-missing))
-            (and reason? (str/blank? (:reason entry)))
-            (conj (entry-blocker :reason :reason-missing))
-            (and (= "transfer" kind) (not (:from-warehouse-id entry)))
-            (conj (entry-blocker :from-warehouse-id :warehouse-missing))
-            (and (= "transfer" kind) (not (:to-warehouse-id entry)))
-            (conj (entry-blocker :to-warehouse-id :warehouse-missing))
-            (and (= "production" kind) (seq lines) (not-any? #(= "input" (:side %)) lines))
-            (conj (entry-blocker :lines :inputs-missing))
-            (and (= "production" kind) (seq lines) (not-any? #(= "output" (:side %)) lines))
-            (conj (entry-blocker :lines :outputs-missing))
-            (and (= "payment" kind) (not (:direction entry)))
-            (conj (entry-blocker :direction :direction-missing))
-            (and (= "payment" kind) (not (some entry [:supplier-id :store-id])))
-            (conj (entry-blocker :supplier-id :counterparty-missing))
-            (and (= "payment" kind) (not (:amount entry)))
-            (conj (entry-blocker :amount :amount-missing))
-            (archived? :suppliers (:supplier-id entry)) (conj (entry-blocker :supplier-id :archived-reference))
-            (archived? :stores (:store-id entry)) (conj (entry-blocker :store-id :archived-reference))
-            (archived? :warehouses (:from-warehouse-id entry)) (conj (entry-blocker :from-warehouse-id :archived-reference))
-            (archived? :warehouses (:to-warehouse-id entry)) (conj (entry-blocker :to-warehouse-id :archived-reference)))
-          (mapcat (fn [{:keys [line-id] :as line}]
-                    (concat
-                      (when-not (:quantity line) [{:line-id line-id :field :quantity :code :quantity-missing}])
-                      (when-not (or (= "transfer" kind) (some line [:warehouse-id :warehouse-name]))
-                        [{:line-id line-id :field :warehouse-id :code :warehouse-missing}])
-                      (when-not (some line [:stock-item-id :product-id :product-name]) [{:line-id line-id :field :stock-item-id :code :item-missing}])
-                      (when (and (= "production" kind) (not (:side line))) [{:line-id line-id :field :side :code :side-missing}])
-                      (when (and (#{"opening" "purchase"} kind) (not (:unit-cost line)))
-                        [{:line-id line-id :field :unit-cost :code :unit-cost-missing}])
-                      (for [[field index] reference-fields
-                            :when         (archived? index (get line field))]
-                        {:line-id line-id :field field :code :archived-reference}))))
-          lines)))
+  [{:keys [kind cancel] :as entry} lines status]
+  (if cancel [] (let [{:keys [party reason?] :as rules} (operation-rules kind)
+                      entry-blocker (fn [field code] {:line-id nil :field field :code code})
+                      archived? (fn [index id] (and id (not= "active" (get-in status [index id]))))]
+                  (into (cond-> (if (or (:occurred-at entry) (and (empty? lines) (seq (:changes entry))))
+                                  []
+                                  [(entry-blocker :occurred-at :occurred-at-missing)])
+                          (and (= :supplier party) (not (some entry [:supplier-id :supplier-name])))
+                          (conj (entry-blocker :supplier-id :supplier-missing))
+                          (and rules (not= "payment" kind) (empty? lines))
+                          (conj (entry-blocker :lines :lines-missing))
+                          (and reason? (str/blank? (:reason entry)))
+                          (conj (entry-blocker :reason :reason-missing))
+                          (and (= "transfer" kind) (not (:from-warehouse-id entry)))
+                          (conj (entry-blocker :from-warehouse-id :warehouse-missing))
+                          (and (= "transfer" kind) (not (:to-warehouse-id entry)))
+                          (conj (entry-blocker :to-warehouse-id :warehouse-missing))
+                          (and (= "production" kind) (seq lines) (not-any? #(= "input" (:side %)) lines))
+                          (conj (entry-blocker :lines :inputs-missing))
+                          (and (= "production" kind) (seq lines) (not-any? #(= "output" (:side %)) lines))
+                          (conj (entry-blocker :lines :outputs-missing))
+                          (and (= "payment" kind) (not (:direction entry)))
+                          (conj (entry-blocker :direction :direction-missing))
+                          (and (= "payment" kind) (not (some entry [:supplier-id :store-id])))
+                          (conj (entry-blocker :supplier-id :counterparty-missing))
+                          (and (= "payment" kind) (not (:amount entry)))
+                          (conj (entry-blocker :amount :amount-missing))
+                          (archived? :suppliers (:supplier-id entry)) (conj (entry-blocker :supplier-id :archived-reference))
+                          (archived? :stores (:store-id entry)) (conj (entry-blocker :store-id :archived-reference))
+                          (archived? :warehouses (:from-warehouse-id entry)) (conj (entry-blocker :from-warehouse-id :archived-reference))
+                          (archived? :warehouses (:to-warehouse-id entry)) (conj (entry-blocker :to-warehouse-id :archived-reference)))
+                        (mapcat (fn [{:keys [line-id] :as line}]
+                                  (concat
+                                    (when-not (:quantity line) [{:line-id line-id :field :quantity :code :quantity-missing}])
+                                    (when-not (or (= "transfer" kind) (some line [:warehouse-id :warehouse-name]))
+                                      [{:line-id line-id :field :warehouse-id :code :warehouse-missing}])
+                                    (when-not (some line [:stock-item-id :product-id :product-name]) [{:line-id line-id :field :stock-item-id :code :item-missing}])
+                                    (when (and (= "production" kind) (not (:side line))) [{:line-id line-id :field :side :code :side-missing}])
+                                    (when (and (#{"opening" "purchase"} kind) (not (:unit-cost line)))
+                                      [{:line-id line-id :field :unit-cost :code :unit-cost-missing}])
+                                    (for [[field index] reference-fields
+                                          :when         (archived? index (get line field))]
+                                      {:line-id line-id :field field :code :archived-reference}))))
+                        lines))))
 
 
 (defmethod runtime/coeffect ::pending
@@ -745,11 +831,17 @@
    :cofx   [[:pending ::pending (constantly {})] [:catalogue ::catalogue (constantly {})]
             [:history :tover.inventory.acceptance.model/history (constantly {})]]}
   [{:keys [pending catalogue history]} _]
-  (let [status  (status-index catalogue)
-        entries (->> pending
-                     (sort-by (juxt (comp nil? :occurred-at) :occurred-at :entry-id))
-                     (mapv #(assoc % :blockers (blockers % (:lines %) status))))]
+  (let [status   (status-index catalogue)
+        entries  (->> pending
+                      (sort-by (juxt (comp nil? :occurred-at) :occurred-at :entry-id))
+                      (mapv #(cond-> (assoc % :blockers (into (if-let [code (target-problem history %)] [{:line-id nil :field :amends :code code}] [])
+                                                              (blockers % (:lines %) status)))
+                              ;; The accepted lines a pending revision replaces, so reads count only the difference.
+                               (:amends %) (assoc :replaces (filterv (fn [l] (= (:amends %) (:record-revision-id l))) (:lines history))))))
+        replaced (set (keep :amends entries))]
     {:entries  entries
      :findings (findings/derive-within-limit
                  (assoc catalogue :entries entries
-                        :balances (:balances (valuation/replay (:records history) (:lines history)))))}))
+                        ;; A pending revision stands in for its accepted one.
+                        :balances (:balances (valuation/replay (without-records (:records history) replaced)
+                                                               (:lines history)))))}))

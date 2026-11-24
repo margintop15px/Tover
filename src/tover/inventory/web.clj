@@ -455,7 +455,10 @@
         corrections (filter #(= "correction" (:kind %)) entries)
         operations (group-by :stock-item-id
                              (for [{:keys [kind stock-item-id warehouse-id change] :as line}
-                                   (movements/lines-of (or stock-items []) (remove (comp #{"opening" "correction"} :kind) entries))
+                                   (concat (movements/lines-of (or stock-items []) (remove (comp #{"opening" "correction"} :kind) entries))
+                                           ;; A pending revision or cancellation takes its accepted lines back.
+                                           (for [{:keys [kind replaces]} entries line replaces]
+                                             (-> line (dissoc :unit-cost) (assoc :kind kind :change (- (:quantity-change line 0))))))
                                    :when (and stock-item-id warehouse-id (int? change) (not (:new-item? line)))]
                                {:stock-item-id stock-item-id :warehouse-id warehouse-id :change change
                                 :label         (str (kind-label kind nil) " " (if (neg? change) "−" "+") (abs change))}))
@@ -614,8 +617,12 @@
     (finding-text {:code    (if (= :uniqueness-conflict code) (if (= :barcodes field) :barcode-conflict :article-conflict) code)
                    :related (dissoc p :entry-id :line-id :stock-item-id :field :code)}
                   names)
-    (let [text (i18n/t (or (problem-text (:cause p)) (problem-text code) (second (acceptance/rejection code)) "Check this value."))]
-      (if-let [entry (get (:entry names) (:entry-id p))] (str entry ": " text) text))))
+    (if-let [negative (and (= :negative-balance code) (:occurred-at p))]
+      (i18n/t "{p0} in {p1} would go below zero on {p2}."
+              {:p0 (get (:item names) (:stock-item-id p) (:stock-item-id p)) :p1 (get (:warehouse names) (:warehouse-id p) (:warehouse-id p))
+               :p2 (str/replace (subs (str negative) 0 16) "T" " ")})
+      (let [text (i18n/t (or (problem-text (:cause p)) (problem-text code) (second (acceptance/rejection code)) "Check this value."))]
+        (if-let [entry (get (:entry names) (:entry-id p))] (str entry ": " text) text)))))
 
 
 (defn- same-name?
@@ -921,7 +928,8 @@
         at    (or (some-> occurredAt str/trim not-empty) (some-> (:occurred-at entry) str))
         why   (if (contains? input :reason) (some-> reason str/trim not-empty) (:reason entry))]
     (descriptor ::entries/save-shared-inventory-entry commandId
-                (cond-> (merge (select-keys entry [:supplier-id :supplier-name :store-id :from-warehouse-id :to-warehouse-id :direction :amount])
+                (cond-> (merge (select-keys entry [:supplier-id :supplier-name :store-id :from-warehouse-id :to-warehouse-id :direction :amount
+                                                   :amends :cancel])
                                {:workspace-id workspaceId :entry-id entryId :kind (:kind entry "opening") :expected-revision revision :lines (vec (:lines entry))})
                   (seq (:changes entry)) (assoc :changes (:changes entry))
                   at (assoc :occurred-at at)

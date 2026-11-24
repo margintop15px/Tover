@@ -69,19 +69,27 @@
 
 (defn history-rows
   "Rows of one stock item in `[from, to)`: effective lines in business order with the true running balance, then
-  superseded revisions, which count for nothing."
+  superseded opening and correction revisions. An operation shows once, with its latest revision; a cancelled one keeps
+  its last rows at their place, marked `:cancelled?`. Neither superseded nor cancelled rows count for anything."
   {:malli/schema [:=> [:cat :map :map] :map]}
   [{:keys [history]} {:keys [stock-item-id from to]}]
-  (let [record    (into {} (map (juxt :record-revision-id identity)) (:records history))
-        effective (set (map :record-revision-id (valuation/business-order (:records history))))
-        row       (fn [line superseded?]
-                    (let [r (record (:record-revision-id line))]
-                      (merge (select-keys r [:record-id :revision :kind :occurred-at :sequence :actor :recorded-at :reason])
-                             (select-keys line [:warehouse-id :quantity-change :counted-quantity :unit-cost :balance-after])
-                             {:superseded? superseded?})))
-        mine?     #(and (= stock-item-id (:stock-item-id %)) (within? (:occurred-at (record (:record-revision-id %))) from to))]
-    {:rows (vec (concat (for [step (:steps (valuation/replay (:records history) (:lines history))) :when (mine? step)] (row step false))
-                        (for [line (:lines history) :when (and (mine? line) (not (effective (:record-revision-id line))))]
+  (let [record     (into {} (map (juxt :record-revision-id identity)) (:records history))
+        effective  (set (map :record-revision-id (valuation/business-order (:records history))))
+        ;; The last facts of every cancelled record.
+        cancelled  (into #{} (comp (filter #(:cancelled (peek %))) (keep #(:record-revision-id (last (remove :cancelled %)))))
+                         (map #(vec (sort-by :revision %)) (vals (group-by :record-id (:records history)))))
+        operation? #(not (#{"opening" "correction"} (:kind (record (:record-revision-id %)))))
+        row        (fn [line superseded?]
+                     (let [r (record (:record-revision-id line))]
+                       (merge (select-keys r [:record-id :revision :kind :occurred-at :sequence :actor :recorded-at :reason])
+                              (select-keys line [:warehouse-id :quantity-change :counted-quantity :unit-cost :balance-after])
+                              {:superseded? superseded?})))
+        mine?      #(and (= stock-item-id (:stock-item-id %)) (within? (:occurred-at (record (:record-revision-id %))) from to))]
+    {:rows (vec (concat (sort-by :occurred-at
+                                 (concat (for [step (:steps (valuation/replay (:records history) (:lines history))) :when (mine? step)] (row step false))
+                                         (for [line (:lines history) :when (and (mine? line) (cancelled (:record-revision-id line)))]
+                                           (assoc (row line false) :cancelled? true))))
+                        (for [line (:lines history) :when (and (mine? line) (not (effective (:record-revision-id line))) (not (operation? line)))]
                           (row line true))))}))
 
 

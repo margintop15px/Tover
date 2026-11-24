@@ -12,20 +12,35 @@
   [:map [:quantity :int] [:average [:maybe decimal?]] [:valued? :boolean]])
 
 
+(defn latest
+  "The latest revision of every record, cancelled ones included."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:sequential :map]]}
+  [records]
+  (map #(apply max-key :revision %) (vals (group-by :record-id records))))
+
+
 (defn effective
   "Latest revision per record id; a cancelled latest revision removes the record."
   {:malli/schema [:=> [:cat [:sequential :map]] [:sequential :map]]}
   [records]
-  (->> (vals (group-by :record-id records))
-       (map #(apply max-key :revision %))
-       (remove :cancelled)))
+  (remove :cancelled (latest records)))
+
+
+(defn- place
+  "Acceptance time and sequence of the revision that last changed the record's instant: a revision at an unchanged
+  instant keeps its place among records of the same second."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:tuple :any :any]]}
+  [revisions]
+  ((juxt :recorded-at :sequence)
+   (reduce (fn [kept r] (if (= (:occurred-at kept) (:occurred-at r)) kept r)) (sort-by :revision revisions))))
 
 
 (defn business-order
-  "Effective records sorted by occurrence; at equal instants openings first, then acceptance time and sequence."
+  "Effective records sorted by occurrence; at equal instants openings first, then `place`."
   {:malli/schema [:=> [:cat [:sequential :map]] [:vector :map]]}
   [records]
-  (vec (sort-by (juxt :occurred-at #(if (= "opening" (:kind %)) 0 1) :recorded-at :sequence) (effective records))))
+  (let [placed (update-vals (group-by :record-id records) place)]
+    (vec (sort-by (juxt :occurred-at #(if (= "opening" (:kind %)) 0 1) (comp placed :record-id)) (effective records)))))
 
 
 (defn- average

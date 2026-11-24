@@ -281,9 +281,9 @@ class StockWorkbench extends InventoryWorkbench {
     if (!response.rows.length) { body.replaceChildren(element('p', { textContent: t('No accepted records in this period.') })); return; }
     body.replaceChildren(element('table', { className: 'stock-history-rows' },
       element('thead', {}, element('tr', {}, ...['Occurred at', 'Kind', 'Warehouse', 'Change', 'Balance', 'Unit cost', 'Reason'].map(label => element('th', { textContent: t(label) })))),
-      element('tbody', {}, ...response.rows.map(row => element('tr', { className: row['superseded?'] ? 'stock-history-superseded' : '' },
+      element('tbody', {}, ...response.rows.map(row => element('tr', { className: row['superseded?'] || row['cancelled?'] ? 'stock-history-superseded' : '' },
         element('td', { textContent: formatDate(row['occurred-at']) }),
-        element('td', { textContent: row['kind-label'] + (row['superseded?'] ? ` (${t('superseded')})` : '') }),
+        element('td', { textContent: row['kind-label'] + (row['cancelled?'] ? ` (${t('cancelled')})` : row['superseded?'] ? ` (${t('superseded')})` : '') }),
         element('td', { textContent: row.warehouse }),
         element('td', { textContent: String(row['quantity-change']) }),
         element('td', { textContent: row['balance-after'] ?? '—' }),
@@ -294,7 +294,7 @@ class StockWorkbench extends InventoryWorkbench {
   // Every accepted operation of the item on a time axis: a lane per warehouse, a bar per balance, a mark per operation.
   timeline(rows) {
     const at = row => Date.parse(row['occurred-at']);
-    const live = rows.filter(row => !row['superseded?']);
+    const live = rows.filter(row => !row['superseded?'] && !row['cancelled?']);
     const start = Math.min(...live.map(at));
     const end = Math.max(Date.now(), ...live.map(row => at(row) + 1));
     const percent = time => 100 * (time - start) / (end - start);
