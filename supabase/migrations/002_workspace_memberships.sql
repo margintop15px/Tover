@@ -61,4 +61,24 @@ CREATE POLICY membership_leave ON public.memberships FOR UPDATE TO tover_app
   WITH CHECK (user_id = nullif(current_setting('request.jwt.claim.sub', true), '')::uuid AND status = 'removed'
     AND removal_kind = 'left');
 
-GRANT UPDATE (revision, removed_at, removal_kind, suspended_at, suspension_reason) ON public.memberships TO tover_app;
+-- Accepting an invitation writes the new revision and clears removal_kind on insert and on rejoin.
+GRANT INSERT (revision, removal_kind),
+  UPDATE (revision, removed_at, removal_kind, suspended_at, suspension_reason) ON public.memberships TO tover_app;
+
+-- Leaving ends the actor's own membership before the journal records it; that commit may still write its events.
+CREATE POLICY bel_events_workspace_departure ON app_private.bel_events FOR INSERT TO tover_app
+  WITH CHECK (scope_kind = 'workspace' AND actor_id = nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+    AND EXISTS (SELECT FROM public.memberships m
+      WHERE m.workspace_id = scope_id AND m.user_id = actor_id AND m.status = 'removed' AND m.removal_kind = 'left'
+        AND m.xmin = pg_current_xact_id()::xid));
+CREATE POLICY bel_receipts_workspace_departure ON app_private.bel_receipts FOR INSERT TO tover_app
+  WITH CHECK (scope_kind = 'workspace' AND actor_id = nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+    AND EXISTS (SELECT FROM public.memberships m
+      WHERE m.workspace_id = scope_id AND m.user_id = actor_id AND m.status = 'removed' AND m.removal_kind = 'left'
+        AND m.xmin = pg_current_xact_id()::xid));
+-- The receipt insert returns its row, so the same commit must also pass a read policy.
+CREATE POLICY bel_receipts_workspace_departure_read ON app_private.bel_receipts FOR SELECT TO tover_app
+  USING (scope_kind = 'workspace' AND actor_id = nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+    AND EXISTS (SELECT FROM public.memberships m
+      WHERE m.workspace_id = scope_id AND m.user_id = actor_id AND m.status = 'removed' AND m.removal_kind = 'left'
+        AND m.xmin = pg_current_xact_id()::xid));

@@ -95,7 +95,7 @@ The development alias is required for tests because Kaocha hooks and instrumenta
 
 ## Structure and limits
 
-- `src/tover`: domain folders for Identity (`tover.identity`: access policy, sessions, GoTrue provider, signup/sign-in/recovery/sign-out slices), Accounts (profile), Workspaces (create, select), Invitations, Stock and Operations; shared UI/web/infrastructure under `shared`; Integrant composition in `app.clj`. Onboarding slices are listed in `docs/bel-onboarding-mapping.md`.
+- `src/tover`: domain folders for Identity (`tover.identity`: access policy, sessions, GoTrue provider, signup/sign-in/recovery/sign-out slices), Accounts (profile), Workspaces (create, select), Invitations, Memberships (role, suspension, removal, departure, ownership), Stock and Operations; shared UI/web/infrastructure under `shared`; Integrant composition in `app.clj`. Onboarding slices are listed in `docs/bel-onboarding-mapping.md`.
 - `src/bel`: declaration, rendering, validation and realtime transport support.
 - `resources/public`: Datastar/Jspreadsheet CE browser adapters and static assets.
 - `resources/inventory`: versioned RDF/OWL vocabulary, SHACL constraints and executable SPARQL projections/invariants.

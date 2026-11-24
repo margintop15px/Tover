@@ -14,6 +14,7 @@
     [tover.identity.provider :as provider]
     ;; Directory coeffects that commands name by keyword.
     [tover.invitations.persistence]
+    [tover.memberships.persistence]
     [tover.shared.rdf :as rdf]
     [tover.workspaces.persistence])
   (:import

@@ -541,7 +541,7 @@
     (when-not (= (System/getenv "TOVER_BEL_TEST_DATA_DIRECTORY")
                  (:data_directory (admin! ["show data_directory"])))
       (throw (ex-info "Refusing a database outside the disposable cluster" {}))))
-  (require 'goods-journal-integration 'invitation-delivery-integration)
+  (require 'goods-journal-integration 'invitation-delivery-integration 'membership-integration)
   (instrumentation/start!)
   (let [result (try
                  (if (= "1" (System/getenv "TOVER_BEL_RESTART_CHECK"))
@@ -549,7 +549,8 @@
                      (test/test-vars [#'restart-receipt (resolve 'goods-journal-integration/restart-delivery)])
                      (let [result @test/*report-counters*]
                        (test/do-report (assoc result :type :summary)) result))
-                   (test/run-tests 'workspace-creation-integration 'goods-journal-integration 'invitation-delivery-integration))
+                   (test/run-tests 'workspace-creation-integration 'goods-journal-integration 'invitation-delivery-integration
+                                   'membership-integration))
                  (finally (instrumentation/stop!) (shutdown-agents)))]
     (flush)
     ;; The disposable runner restarts the stores after an abrupt exit, without JVM shutdown hooks.
