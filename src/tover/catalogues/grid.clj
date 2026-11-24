@@ -6,6 +6,7 @@
   (:require
     [bel.core :refer [defaction defpage defview]]
     [bel.expressions :refer [->expr]]
+    [bel.nav :as nav]
     [bel.runtime :as runtime]
     [charred.api :as charred]
     [clojure.string :as str]
@@ -282,7 +283,7 @@
   {:malli/schema [:=> [:cat Kind :boolean :map] schema/Hiccup]}
   [kind archived? model]
   [:catalogue-workbench.catalogue-workbench
-   {:id (str "catalogue-workbench-" kind)
+   {:id (str "catalogue-workbench-" kind (when archived? "-archived"))
     :data-kind               kind
     :data-model              (charred/write-json-str model)
     :data-query              (charred/write-json-str {:kind kind :archived archived? :query "" :sort "name" :direction "asc" :filters {}})
@@ -295,14 +296,12 @@
                                                       :inventoryChanged       ""})
     :data-effect             "el.catalogueResponse=JSON.parse($_catalogueResponseJson); el.catalogueWindow=JSON.parse($_catalogueWindowJson); el.catalogueChoices=JSON.parse($_catalogueChoicesJson); el.catalogueSave=JSON.parse($_catalogueSaveJson); el.catalogueChanged=$inventoryChanged; el.catalogueLayouts=$_columnLayoutsJson; el.catalogueLayoutStatus=$_layoutStatus"}
    [:div.smart-entry
-    [:div.smart-line
-     [:input.catalogue-search {:type "search" :aria-label (i18n/t "Search by name") :placeholder (i18n/t "Search by name…")}]
-     [:button.catalogue-reset {:type "button"} (i18n/t "Reset all")]]]
+    [:smart-entry {:id (str "catalogue-smart-" kind (when archived? "-archived")) :data-ignore-morph "" :data-input-class "catalogue-search"}]]
    [:div.sheet-toolbar
     [:div.sheet-change-status
      [:nav.catalogue-kinds {:aria-label (i18n/t "Catalogues")}
       (for [[other {:keys [title]}] kinds]
-        [:a {:href (href other false) :aria-current (when (= kind other) "page")} (i18n/t title)])]
+        [:a (nav/link (href other false) {:aria-current (when (= kind other) "page")}) (i18n/t title)])]
      [:span.catalogue-save-status.quiet {:role "status"}]]
     [:div.sheet-actions
      [:button.sheet-add-row.catalogue-add {:type "button" :hidden archived?} (ui/sheet-icon :added) (i18n/t "Add row")]
@@ -310,11 +309,11 @@
      [:button.catalogue-discard-new {:type "button" :hidden true} (i18n/t "Discard")]
      [:nav.sheet-actions {:aria-label (i18n/t "Record status")}
       (for [[archived-tab? icon label] [[false :active "Active records"] [true :archived "Archived records"]]]
-        [:a.sheet-icon-button {:href         (href kind archived-tab?)                 :title (i18n/t label) :aria-label (i18n/t label)
-                               :aria-current (when (= archived? archived-tab?) "page")}
+        [:a.sheet-icon-button (nav/link (href kind archived-tab?) {:title        (i18n/t label) :aria-label (i18n/t label)
+                                                                   :aria-current (when (= archived? archived-tab?) "page")})
          (ui/sheet-icon icon)])]]]
    [:div.catalogue-notice {:role "status"}]
-   [:inventory-grid.catalogue-grid {:id (str "catalogue-grid-" kind) :data-ignore-morph "" :aria-label (i18n/t (get-in kinds [kind :title]))}]])
+   [:inventory-grid.catalogue-grid {:id (str "catalogue-grid-" kind (when archived? "-archived")) :data-ignore-morph "" :aria-label (i18n/t (get-in kinds [kind :title]))}]])
 
 
 (defn query-page

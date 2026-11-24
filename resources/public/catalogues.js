@@ -1,5 +1,6 @@
 import { t } from './i18n.js';
 import './inventory-grid.js';
+import './smart-entry.js';
 
 document.addEventListener('datastar-fetch', event => {
   const workbench = event.detail?.el?.closest('catalogue-workbench');
@@ -36,15 +37,14 @@ class CatalogueWorkbench extends HTMLElement {
     });
     this.onLeave = event => { if (this.drafts.length) event.preventDefault(); };
     window.addEventListener('beforeunload', this.onLeave);
-    this.querySelector('.catalogue-search').addEventListener('input', event => {
-      clearTimeout(this.timer);
-      this.state.query = event.target.value;
-      this.timer = setTimeout(() => this.refresh(), 180);
-    });
-    this.querySelector('.catalogue-reset').addEventListener('click', () => {
-      this.state.query = ''; this.state.filters = {};
-      this.querySelector('.catalogue-search').value = ''; this.refresh();
-    });
+    // Navigation inside the page would drop unsaved rows as silently as a reload would not.
+    this.onLink = event => {
+      const link = event.target.closest?.('a[href]');
+      if (!link || !this.drafts.length || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (!window.confirm(t('Discard the rows that are not saved?'))) { event.preventDefault(); event.stopImmediatePropagation(); } else this.drafts = [];
+    };
+    document.addEventListener('click', this.onLink, true);
+    this.setupSmart();
     this.addEventListener('catalogue-edit', event => this.save(event.detail));
     this.addEventListener('inventory-sort', event => {
       this.state.sort = event.detail.column; this.state.direction = event.detail.direction; this.refresh();
@@ -68,7 +68,42 @@ class CatalogueWorkbench extends HTMLElement {
       }
     }
   }
-  disconnectedCallback() { clearTimeout(this.timer); window.removeEventListener('beforeunload', this.onLeave); }
+  disconnectedCallback() { clearTimeout(this.timer); window.removeEventListener('beforeunload', this.onLeave); document.removeEventListener('click', this.onLink, true); document.removeEventListener('keydown', this.onFocus); }
+  // Smart input: searches by name as it is typed, or builds one new record that Done saves.
+  setupSmart() {
+    this.smart = this.querySelector('smart-entry');
+    const add = this.querySelector('.catalogue-add');
+    const label = path => this.savedModel.columns[this.savedModel.draftCells.findIndex(cell => cell.target?.path === path)]?.label;
+    this.smart.context = {
+      placeholder: t('Search by name or add a record…'), addLabel: t('Add row'), typeHint: t('New record'), live: true,
+      kinds: () => (add.hidden ? [] : [{ kind: 'record', label: document.querySelector('.catalogue-kinds [aria-current=page]')?.textContent ?? t('New record') }]),
+      begin: kind => ({ kind, values: {}, lines: [] }),
+      fields: () => this.savedModel.draftCells.filter(cell => cell.target && cell.target.path !== 'status').map(cell => ({ key: cell.target.path, label: label(cell.target.path), required: cell.target.path === 'name',
+        lookup: cell.target.lookupKind, editor: cell.editor.type === 'catalogue-reference' ? { type: 'goods' } : cell.editor.type === 'select' ? { ...cell.editor, options: cell.editor.options.filter(option => option.value) } : cell.editor })),
+    };
+    this.smart.addEventListener('smart-search', event => {
+      clearTimeout(this.timer);
+      this.state.query = event.detail.text;
+      this.timer = setTimeout(() => this.refresh(), 180);
+    });
+    this.smart.addEventListener('smart-items', event => {
+      this.smartRequest = crypto.randomUUID();
+      this.emit('catalogue-choices', { kind: event.detail.field.lookup, text: event.detail.text, requestId: this.smartRequest });
+    });
+    this.smart.addEventListener('smart-done', event => {
+      this.smart.busy = false;
+      if (this.pending) return;
+      const { kind: _kind, ...values } = event.detail.values;
+      const id = crypto.randomUUID();
+      this.drafts.unshift({ id, values });
+      this.smart.finish();
+      this.showDrafts();
+      this.queue = [id]; this.failures = [];
+      this.saveNextDraft();
+    });
+    this.onFocus = event => { if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.isComposing && event.key.toLowerCase() === 'k') { event.preventDefault(); this.smart.focusInput(); } };
+    document.addEventListener('keydown', this.onFocus);
+  }
   emit(name, detail) { this.dispatchEvent(new CustomEvent(name, { bubbles: true, detail })); }
   setStatus(status, message = '') {
     this.status.textContent = status === 'Saved' ? '' : t(status);
@@ -98,9 +133,10 @@ class CatalogueWorkbench extends HTMLElement {
   }
   set catalogueWindow(response) { if (this.grid && response) this.grid.windowResponse = response; }
   set catalogueChoices(response) {
-    if (!this.choiceGrid || !response) return;
+    if (!this.grid || !response) return; // the previous tab's answer may arrive before this one connects
     for (const option of response.options || []) this.labels.set(option.value, option.label);
-    this.choiceGrid.referenceOptionsResponse = response;
+    if (response.requestId === this.smartRequest) { this.smart.items = response.options || []; return; }
+    if (this.choiceGrid) this.choiceGrid.referenceOptionsResponse = response;
   }
   set catalogueLayouts(json) {
     if (!this.grid || !json) return;
@@ -208,7 +244,7 @@ class CatalogueWorkbench extends HTMLElement {
   requestFailed(kind) {
     if (kind === 'save') { this.pending = null; this.setStatus('Failed', t('Could not save. Your edit is retained; retry when connected.')); }
     else if (kind === 'window') this.grid.windowResponse = { ...this.windowRequest, status: 'failed' };
-    else if (kind === 'choices') this.choiceGrid.referenceOptionsResponse = { ...this.choiceRequest, status: 'failed', options: [] };
+    else if (kind === 'choices') { if (this.choiceGrid) this.choiceGrid.referenceOptionsResponse = { ...this.choiceRequest, status: 'failed', options: [] }; }
     else {
       this.notice.replaceChildren(document.createTextNode(t('Could not load records. ')));
       const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = t('Retry');

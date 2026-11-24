@@ -41,18 +41,21 @@ function projectColumnLayout(model, layout) {
   const free = model.columns.filter(movableColumn).map(column => column.key);
   const content = [...new Set([...(layout.order || []), ...free])].filter(key => free.includes(key));
   let next = 0;
-  const order = model.columns.map(column => (movableColumn(column) ? content[next++] : column.key));
+  const hidden = new Set(layout.hidden || []);
+  const shown = column => !hidden.has(column.key) || column.required || utilityColumn(column.key);
+  const byKey = new Map(model.columns.map(column => [column.key, column]));
+  const order = model.columns.map(column => (movableColumn(column) ? content[next++] : column.key)).filter(key => shown(byKey.get(key)));
   const indexes = order.map(key => keys.indexOf(key)), positions = new Map(indexes.map((index, position) => [index, position]));
   const rows = model.rows.map(row => ({ ...row, cells: indexes.map(index => row.cells[index]) }));
   const merges = (model.merges || []).map(merge => {
     if (merge.colspan === keys.length) {
       rows[merge.row].cells[0] = model.rows[merge.row].cells[merge.col];
-      return { ...merge, col: 0 };
+      return { ...merge, col: 0, colspan: indexes.length };
     }
     return { ...merge, col: positions.get(merge.col) };
-  });
+  }).filter(merge => merge.col !== undefined);
   return { ...model, columns: indexes.map(index => model.columns[index]), rows, merges,
-    savedWidths: layout.widths || {}, columnOrder: content, layoutVersion: layout.version || 0, lastColumn: layout.lastColumn };
+    savedWidths: layout.widths || {}, columnOrder: content, hiddenColumns: layout.hidden || [], layoutVersion: layout.version || 0, lastColumn: layout.lastColumn };
 }
 function gridIcon(name) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -214,7 +217,7 @@ export class InventoryGrid extends HTMLElement {
       while (this._windowCache.size > 5) this._windowCache.delete(this._windowCache.keys().next().value);
     }
     if (value.layoutScope && (!this._columnLayout || (value.layoutVersion || 0) >= (this._columnLayout.version || 0))) {
-      this._columnLayout = { widths: value.savedWidths || {}, order: value.columnOrder || [], version: value.layoutVersion || 0, lastColumn: value.lastColumn };
+      this._columnLayout = { widths: value.savedWidths || {}, order: value.columnOrder || [], hidden: value.hiddenColumns || [], version: value.layoutVersion || 0, lastColumn: value.lastColumn };
     }
     this._model = projectColumnLayout(value, this._columnLayout);
     this._syncLayoutWidths();
@@ -1020,6 +1023,7 @@ export class InventoryGrid extends HTMLElement {
       label.replaceChildren();
       for (const line of cell.lines) { const node = document.createElement('span'); node.className = `inventory-cell-line${line.date ? ' inventory-cell-date' : ''}`; node.textContent = `${line.prefix || ''}${line.date ? formatDate(line.value) : (line.value ?? '')}`; label.append(node); }
     }
+    if (cell.placeholder && !label.textContent) { label.textContent = cell.placeholder; label.classList.add('inventory-cell-placeholder'); }
     td.append(label);
     if (this._model.showPrevious === false && cell.before !== undefined && !sameValue(cell.before, cell.value)) td.title = t("Previously: {p0}", {p0: cell.before === '' || cell.before == null ? '—' : cell.before});
     if (cell.title) td.title = cell.title;

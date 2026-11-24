@@ -285,7 +285,7 @@ test('a failed suggestion lookup offers Retry by mouse and keyboard, never "no m
   await expect(search).toBeFocused();
   // Focus that leaves the search and its list closes the list.
   await page.locator('.stock-pending-filter').focus();
-  await expect(page.locator('#stock-suggestions')).toBeHidden();
+  await expect(page.locator('#stock-smart-options')).toBeHidden();
 });
 
 test('correct an item: bad counts refused, findings read on focus, move dialog, discard text, tie order, restore and retry', async ({ page }) => {

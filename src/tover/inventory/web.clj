@@ -374,7 +374,7 @@
           rows)))
 
 
-(defn- cell-text
+(defn cell-text
   {:malli/schema [:=> [:cat :map] :string]}
   [cell]
   (str (:prefix cell) (or (:display cell) (:value cell))))
@@ -547,10 +547,10 @@
                                   (when (or named (some real? rows) (editing (str "product:" id)) (some #(= newRowId (:id %)) rows))
                                     (assoc group :rows (filter #(or (real? %) (= "stock-new-row" (:className %))) rows))))))
         columns (-> (if preview? [{:key "select" :label "" :width 40}] [{:key "expand" :label "" :width 36}])
-                    (conj {:key "product" :label (i18n/t "Product") :width 200 :fixed true}
+                    (conj {:key "product" :label (i18n/t "Product") :width 200 :fixed true :required true}
                           {:key "category" :label (i18n/t "Category") :width 140}
                           {:key "store" :label (i18n/t "Store") :width 140}
-                          {:key "item" :label (i18n/t "Stock item") :width 160})
+                          {:key "item" :label (i18n/t "Stock item") :width 160 :required true})
                     (into (map (fn [[k label width]] {:key k :label (i18n/t label) :width width})) item-fields)
                     (conj {:key "unit-cost" :label (i18n/t "Unit cost") :width 110})
                     (into (map #(hash-map :key (:id %) :label (:name %) :width 100 :fixed true)) warehouses)
@@ -962,6 +962,24 @@
    :model        (table-model context "units" true nil)})
 
 
+(defn mode-switch
+  "Units or money; the workbench element handles the presses."
+  {:malli/schema [:=> [:cat :map] schema/Hiccup]}
+  [_]
+  [:span.stock-mode {:role "group" :aria-label (i18n/t "Show")}
+   [:button.sheet-icon-button.stock-mode-units {:type "button" :data-mode "units" :aria-pressed "true" :title (i18n/t "Units") :aria-label (i18n/t "Units")} (ui/sheet-icon :units)]
+   [:button.sheet-icon-button.stock-mode-money {:type "button" :data-mode "money" :aria-pressed "false" :title (i18n/t "Money") :aria-label (i18n/t "Money")} (ui/sheet-icon :money)]])
+
+
+(defn column-picker
+  "Checkboxes for the table's columns; the workbench element fills the list."
+  {:malli/schema [:=> [:cat :map] schema/Hiccup]}
+  [_]
+  [:details.column-picker
+   [:summary.sheet-icon-button {:title (i18n/t "Columns") :aria-label (i18n/t "Columns")} (ui/sheet-icon :columns)]
+   [:div.column-picker-list {:role "group" :aria-label (i18n/t "Columns")}]])
+
+
 (defn workbench
   {:malli/schema [:=> [:cat :map] schema/Hiccup]}
   [{:keys [workspace-id model]}]
@@ -981,20 +999,16 @@
                                       :_stockHistoryJson "null" :_stockSaveJson    "null" :inventoryChanged ""})
       :data-effect             "el.tableResponse=JSON.parse($_stockTableJson); el.suggestResponse=JSON.parse($_stockSuggestJson); el.reviewResponse=JSON.parse($_stockReviewJson); el.historyResponse=JSON.parse($_stockHistoryJson); el.saveResponse=JSON.parse($_stockSaveJson); el.changed=$inventoryChanged"}
      [:div.smart-entry.stock-search
-      [:div.smart-line
-       [:input.catalogue-search.stock-search-input {:type          "search" :autocomplete          "off" :role "combobox" :aria-expanded "false"
-                                                    :aria-controls "stock-suggestions" :aria-label (i18n/t "Find or add a product")
-                                                    :placeholder   (i18n/t "Find or add a product, stock item, article or barcode")}]
-       [:button.stock-filter-chip {:type "button" :hidden true :aria-label (i18n/t "Clear filter")}]]
-      [:ul#stock-suggestions.stock-suggestions {:role "listbox" :hidden true}]]
+      [:smart-entry#stock-smart {:data-ignore-morph "" :data-input-class "stock-search-input"}]
+      [:button.stock-filter-chip {:type "button" :hidden true :aria-label (i18n/t "Clear filter")}]
+      [:div.smart-filters {:hidden true}]]
      [:div.sheet-toolbar
       [:div.sheet-change-status [:span.stock-save-status.quiet {:role "status"}]]
       [:div.sheet-actions
        [:button.sheet-icon-button.stock-show-archived {:type "button" :aria-pressed "false" :title (i18n/t "Show archived items") :aria-label (i18n/t "Show archived items")} (ui/sheet-icon :archived)]
        [:button.sheet-icon-button.stock-hide-empty {:type "button" :aria-pressed "true" :title (i18n/t "Hide products without stock items") :aria-label (i18n/t "Hide products without stock items")} (ui/sheet-icon :hide-empty)]
-       [:span.stock-mode {:role "group" :aria-label (i18n/t "Show")}
-        [:button.sheet-icon-button.stock-mode-units {:type "button" :data-mode "units" :aria-pressed "true" :title (i18n/t "Units") :aria-label (i18n/t "Units")} (ui/sheet-icon :units)]
-        [:button.sheet-icon-button.stock-mode-money {:type "button" :data-mode "money" :aria-pressed "false" :title (i18n/t "Money") :aria-label (i18n/t "Money")} (ui/sheet-icon :money)]]
+       (mode-switch {})
+       (column-picker {})
        [:button.sheet-icon-button.stock-pending-filter {:type "button" :aria-pressed "false" :title (i18n/t "Preview pending changes") :aria-label (i18n/t "Preview pending changes")} (ui/sheet-icon :preview)]
        [:button.sheet-icon-button.stock-submit {:type "button" :disabled true :title (i18n/t "Submit pending changes") :aria-label (i18n/t "Submit pending changes")} (ui/sheet-icon :submit)]]]
      [:div.catalogue-notice.stock-notice {:role "status"}]

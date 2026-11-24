@@ -1,6 +1,7 @@
 import { t } from './i18n.js';
 import { formatDate } from './dates.js';
 import './inventory-grid.js';
+import './smart-entry.js';
 import { InventoryWorkbench, element, prefs } from './inventory-submit.js';
 
 document.addEventListener('datastar-fetch', event => {
@@ -17,26 +18,25 @@ class StockWorkbench extends InventoryWorkbench {
     if (!this.isConnected || this._connected) return;
     this._connected = true;
     this.workspaceId = this.dataset.workspaceId;
-    this.mode = prefs.get('mode', 'units');
     this.days = prefs.get('period', '30');
     this.hideEmpty = true;
     this.scope = {};
-    this.order = { sort: null, direction: 'asc', filters: {} };
     this.grid = this.querySelector('.stock-grid');
     this.notice = this.querySelector('.stock-notice');
+    this.setupTable();
     this.findingNote = element('p', { className: 'stock-finding-note', role: 'status' });
     this.grid.after(this.findingNote);
     this.status = this.querySelector('.stock-save-status');
     this.submitButton = this.querySelector('.stock-submit');
     this.pendingButton = this.querySelector('.stock-pending-filter');
-    this.search = this.querySelector('.stock-search-input');
+    this.smart = this.querySelector('smart-entry');
     this.chip = this.querySelector('.stock-filter-chip');
-    this.list = this.querySelector('.stock-suggestions');
     this.queued = new Map();
     this.revisions = new Map();
     this.values = new Map();
     this.cellEntries = new Map();
     this.showModel(JSON.parse(this.dataset.model));
+    this.smart.context = this.smartContext();
     if (this.mode !== 'units') this.refreshTable();
     this.showMode();
 
@@ -44,20 +44,6 @@ class StockWorkbench extends InventoryWorkbench {
     archived.addEventListener('click', () => { this.showArchived = !this.showArchived; archived.setAttribute('aria-pressed', String(this.showArchived)); this.refreshTable(); });
     const hide = this.querySelector('.stock-hide-empty');
     hide.addEventListener('click', () => { this.hideEmpty = !this.hideEmpty; hide.setAttribute('aria-pressed', String(this.hideEmpty)); this.refreshTable(); });
-    for (const button of this.querySelectorAll('.stock-mode button')) {
-      button.addEventListener('click', () => { if (this.scope.pending) return; this.mode = button.dataset.mode; prefs.set('mode', this.mode); this.showMode(); this.refreshTable(); });
-    }
-    this.addEventListener('inventory-sort', event => { this.order = { ...this.order, sort: event.detail.column, direction: event.detail.direction }; this.refreshTable(); });
-    this.addEventListener('inventory-filter', event => { this.order = { ...this.order, filters: event.detail.filters }; this.refreshTable(); });
-    // Column order and widths are kept per browser (chapter 30 moves them to the member).
-    this.addEventListener('inventory-layout', event => {
-      const saved = this.layout();
-      const layout = { order: event.detail.order ?? saved.order ?? [], widths: { ...(saved.widths ?? {}), ...(event.detail.widths ?? {}) }, version: (saved.version ?? 0) + 1,
-        lastColumn: Object.keys(event.detail.widths ?? {}).at(-1) ?? saved.lastColumn };
-      prefs.set('stock-layout', JSON.stringify(layout));
-      this.grid.columnLayout = layout;
-      this.grid.layoutStatus = 'Saved';
-    });
     // Edit opens the row in Preview, or focuses it there.
     this.addEventListener('stock-edit', event => {
       const { id } = event.detail;
@@ -65,26 +51,14 @@ class StockWorkbench extends InventoryWorkbench {
       this.setScope({ ...this.scope, pending: true, editing: [...new Set([...(this.scope.editing ?? []), id])] }, this.scopeLabel);
     });
     this.addEventListener('stock-describe-row', event => this.describeRow(event.detail));
-    // The grid renders a window of rows; windows are cut here from the whole table.
-    this.addEventListener('inventory-window', event => {
-      const { requestId, queryId, start, anchorId } = event.detail;
-      queueMicrotask(() => {
-        this.grid.windowResponse = queryId === this.queryId
-          ? { requestId, queryId, status: 'ok', model: this.windowModel(start, anchorId) }
-          : { requestId, queryId, status: 'expired' };
-      });
-    });
-    this.addEventListener('inventory-resnapshot', () => this.refreshTable());
     this.pendingButton.addEventListener('click', () => (this.scope.pending ? this.leavePreview() : this.setScope({ ...this.scope, pending: true }, this.scopeLabel)));
     this.submitButton.addEventListener('click', () => this.review());
-    this.chip.addEventListener('click', () => { this.setScope({}, ''); this.search.focus(); });
-    this.search.addEventListener('input', () => { clearTimeout(this.typing); this.typing = setTimeout(() => this.suggest(), 120); });
-    this.search.addEventListener('keydown', event => this.searchKey(event));
-    // Focus may move into the list (Retry), by Tab or by a press that outlasts the timer.
-    const leave = () => setTimeout(() => { if (!this.search.matches(':focus') && !this.list.contains(document.activeElement)) this.closeSuggestions(); }, 150);
-    this.search.addEventListener('blur', leave);
-    this.list.addEventListener('focusout', leave);
-    this.list.addEventListener('mousedown', event => event.preventDefault());
+    this.chip.addEventListener('click', () => { this.setScope({}, ''); this.smart.focusInput(); });
+    this.smart.addEventListener('smart-pick', event => this.choose(event.detail));
+    this.smart.addEventListener('smart-filter', event => this.setFilters({ ...this.order.filters, [event.detail.key]: [{ type: 'begins', value: event.detail.value }] }));
+    document.addEventListener('keydown', event => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.isComposing && event.key.toLowerCase() === 'k' && this.isConnected) { event.preventDefault(); this.smart.focusInput(); }
+    });
     this.addEventListener('stock-cell', event => this.edit(event.detail));
     // A new row's details wait in the filter until its first quantity saves them with the opening.
     this.addEventListener('stock-new-field', event => {
@@ -125,81 +99,37 @@ class StockWorkbench extends InventoryWorkbench {
       if (Object.prototype.hasOwnProperty.call(this, property)) { const value = this[property]; delete this[property]; this[property] = value; }
     }
   }
-  // Preview is always in units.
-  showMode() {
-    const mode = this.scope.pending ? 'units' : this.mode;
-    for (const button of this.querySelectorAll('.stock-mode button')) {
-      button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
-      button.disabled = Boolean(this.scope.pending) && button.dataset.mode === 'money';
-      if (button.dataset.mode === 'money') button.title = this.scope.pending ? t('Money is not shown in Preview') : t('Money');
-    }
-  }
-  layout() {
-    try { return JSON.parse(prefs.get('stock-layout', '{}')) || {}; } catch { return {}; }
-  }
-
   // Search: suggestions filter the one table; picking a product opens a new stock item row under it.
-  suggest() {
-    const text = this.search.value.trim();
-    if (!text) { this.closeSuggestions(); return; }
-    this.suggestRequest = crypto.randomUUID();
-    this.emit('stock-suggest', { requestId: this.suggestRequest, text });
+  smartContext() {
+    return {
+      placeholder: t('Find or add a product, stock item, article or barcode'), addLabel: t('Add operation'), typeHint: t('Choose an operation type'),
+      kinds: () => [['purchase', 'Purchase'], ['sale', 'Sale'], ['customer-return', 'Customer return'], ['supplier-return', 'Supplier return'], ['transfer', 'Transfer'],
+        ['production', 'Production'], ['defect', 'Defect'], ['write-off', 'Write-off'], ['payment', 'Payment']].map(([kind, name]) => ({ kind, label: t(name) })),
+      // Operations are built on the operations page.
+      begin: kind => { location.assign(`/operations#add=${kind}`); return null; },
+      columns: () => this.filterColumns(), columnValues: key => this.columnValues(key),
+      lookup: text => {
+        this.suggestRequest = crypto.randomUUID(); this.suggestText = text;
+        this.emit('stock-suggest', { requestId: this.suggestRequest, text });
+      },
+    };
   }
   set suggestResponse(response) {
-    if (!this.list || !response || response.requestId !== this.suggestRequest || !this.fresh(response)) return;
+    if (!this.smart || !response || response.requestId !== this.suggestRequest || !this.fresh(response)) return;
     if (response.failed) { this.suggestFailed(); return; }
-    const options = [...response.options];
-    if (!response.exact && response.text.trim()) options.push({ kind: 'create', label: response.text.trim() });
-    // "add" offers a new operation, built on the operations page.
-    const first = response.text.trim().toLowerCase().split(/\s+/)[0];
-    if (first.length >= 2 && ['add', t('Add operation').toLowerCase().split(' ')[0]].some(word => word.startsWith(first))) {
-      options.unshift(...[['purchase', 'Purchase'], ['sale', 'Sale'], ['customer-return', 'Customer return'], ['supplier-return', 'Supplier return'], ['transfer', 'Transfer'],
-        ['production', 'Production'], ['defect', 'Defect'], ['write-off', 'Write-off'], ['payment', 'Payment']].map(([op, name]) => ({ kind: 'operation', op, label: `${t('Add operation')}: ${t(name)}` })));
-    }
-    this.options = options; this.active = 0;
-    this.list.replaceChildren(...options.map((option, index) => {
-      const item = element('li', { role: 'option', id: `stock-option-${index}`, className: `stock-option stock-option-${option.kind}` },
-        element('span', { className: 'stock-option-label', textContent: option.kind === 'create' ? t('Create product «{p0}»', { p0: option.label }) : option.label }),
-        element('span', { className: 'stock-option-kind', textContent: option.kind === 'product' ? t('Product') : option.kind === 'item' ? (option.hint || t('Stock item')) : '' }));
-      item.addEventListener('mousedown', event => { event.preventDefault(); this.choose(option); });
-      return item;
-    }));
-    this.list.hidden = !options.length;
-    this.search.setAttribute('aria-expanded', String(!this.list.hidden));
-    this.highlight();
+    const text = response.text.trim();
+    const options = response.options.map(option => ({ ...option, hint: option.kind === 'product' ? t('Product') : option.hint || t('Stock item') }));
+    if (!response.exact && text) options.push({ kind: 'create', name: text, label: t('Create product «{p0}»', { p0: text }), hint: '' });
+    this.smart.found = { text, options };
   }
   // A failed lookup is not "no match": offer Retry and no Create.
-  suggestFailed() {
-    if (!this.list) return;
-    this.options = [];
-    const item = element('li', { className: 'stock-option stock-option-failed' });
-    this.retryNotice(item, () => { this.search.focus(); this.suggest(); });
-    this.list.replaceChildren(item);
-    this.list.hidden = false;
-    this.search.setAttribute('aria-expanded', 'true');
-  }
-  highlight() {
-    [...this.list.children].forEach((node, index) => node.setAttribute('aria-selected', String(index === this.active)));
-    this.search.setAttribute('aria-activedescendant', this.list.hidden ? '' : `stock-option-${this.active}`);
-  }
-  searchKey(event) {
-    if (event.key === 'Escape') { this.closeSuggestions(); return; }
-    if (this.list.hidden || !this.options?.length) return;
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      this.active = (this.active + (event.key === 'ArrowDown' ? 1 : -1) + this.options.length) % this.options.length;
-      this.highlight();
-    } else if (event.key === 'Enter') { event.preventDefault(); this.choose(this.options[this.active]); }
-  }
-  closeSuggestions() { this.list.hidden = true; this.search.setAttribute('aria-expanded', 'false'); }
+  suggestFailed() { this.smart.found = { text: this.suggestText, failed: true }; }
   choose(option) {
-    this.closeSuggestions(); this.search.value = '';
-    if (option.kind === 'operation') { location.assign(`/operations#add=${option.op}`); return; }
     // A product brings its default warehouse: the new row marks that cell and focus moves there once the variant is typed.
     if (option.kind === 'product') this.setScope({ productId: option.id, newRow: true, pending: true, newRowId: `new-row:${option.id}`, warehouseId: option.warehouseId }, option.label, true);
     else if (option.kind === 'item') this.setScope({ itemId: option.id, pending: this.scope.pending }, option.label);
     // A new product opens at the top of the preview; the table is not filtered.
-    else this.setScope({ productName: option.label, newRow: true, pending: true, newRowId: 'new-row:new' }, '', true);
+    else this.setScope({ productName: option.name, newRow: true, pending: true, newRowId: 'new-row:new' }, '', true);
   }
   // Leaving the preview keeps a product filter; a product being created only lived in the preview.
   // Leaving it also ends editing: the rows opened with Edit go back to read-only.
@@ -228,14 +158,8 @@ class StockWorkbench extends InventoryWorkbench {
     this.model = model;
     // History opens in read mode only.
     if (this.scope.pending && this.grid.rowDetail) this.grid.rowDetail = null;
-    const layout = this.layout();
-    this.queryId = crypto.randomUUID();
-    this.queryKey = JSON.stringify([this.scope.pending ? 'units' : this.mode, this.hideEmpty, Boolean(this.showArchived), this.scope, this.order]);
-    this.layoutFields = { savedWidths: layout.widths ?? {}, columnOrder: layout.order ?? [], layoutVersion: layout.version ?? 0, lastColumn: layout.lastColumn };
     const focus = this.focusRow ? model.rows.findIndex(row => row.id === this.focusRow) : -1;
-    this.grid.model = this.windowModel(Math.max(0, focus - 66));
-    this.grid.acceptedSort = this.order.sort ? { column: this.order.sort, direction: this.order.direction } : {};
-    this.grid.acceptedFilters = this.order.filters;
+    this.presentModel(Math.max(0, focus - 66));
     // A dot says there is something to preview; in preview the table itself shows it.
     this.pendingButton.classList.toggle('has-pending', Boolean(model.pending.length) && !this.scope.pending);
     // Preview starts with every row included; unticked rows wait for a later submit.
@@ -255,20 +179,6 @@ class StockWorkbench extends InventoryWorkbench {
     const typed = this.focusWarehouse && model.rows.find(newRow);
     this.focusWarehouse = false;
     if (typed) this.grid.whenReady.then(() => this.grid.focusField(typed.id, this.scope.warehouseId));
-  }
-  // Rows [start, start + 200), widened so a product's rows are never split.
-  windowModel(start = 0, anchorId = null) {
-    const { rows, merges = [] } = this.model, size = 200, total = rows.length;
-    if (anchorId) { const index = rows.findIndex(row => row.id === anchorId); if (index >= 0) start = Math.max(0, index - 66); }
-    const spans = new Map();
-    for (const merge of merges) for (let y = merge.row; y < merge.row + (merge.rowspan || 1); y++) spans.set(y, [merge.row, merge.row + (merge.rowspan || 1)]);
-    let from = Math.max(0, Math.min(start, total - 1));
-    if (spans.has(from)) [from] = spans.get(from);
-    let to = Math.min(total, from + size);
-    if (to < total && spans.has(to - 1)) [, to] = spans.get(to - 1);
-    return { ...this.model, ...this.layoutFields, rows: rows.slice(from, to),
-      merges: merges.filter(merge => merge.row >= from && merge.row < to).map(merge => ({ ...merge, row: merge.row - from })),
-      viewport: { queryId: this.queryId, queryKey: this.queryKey, start: from, end: to, totalRows: total, windowSize: size } };
   }
   // A cell commit saves a one-line opening for that item and warehouse.
   edit(detail) {
@@ -414,7 +324,7 @@ class StockWorkbench extends InventoryWorkbench {
   requestFailed(kind) {
     if (kind === 'save') { this.pending = null; this.setStatus('Failed', t('Could not save. Your edit is retained; retry when connected.')); }
     else if (kind === 'table') this.retryNotice(this.notice, () => this.refreshTable());
-    else if (kind === 'suggest') { if (this.search.value.trim()) this.suggestFailed(); }
+    else if (kind === 'suggest') this.suggestFailed();
     else if (kind === 'review') this.setStatus('Failed', t('Could not check the pending changes. Try again.'));
     else if (kind === 'history' && this.historyNode) this.retryNotice(this.historyNode.querySelector('.stock-history-body'), () => this.loadHistory(this.historyItem));
   }

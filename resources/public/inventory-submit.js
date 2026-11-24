@@ -36,6 +36,124 @@ export class InventoryWorkbench extends HTMLElement {
     button.addEventListener('click', retry);
     node.replaceChildren(document.createTextNode(`${t('Could not load stock.')} `), button);
   }
+  // The stock and operations tables share units / money, sorting, filters, column layout and windows of rows.
+  get prefix() { return 'stock'; }
+  get modeKey() { return 'mode'; }
+  setupTable() {
+    this.mode = prefs.get(this.modeKey, 'units');
+    this.order = { sort: null, direction: 'asc', filters: {} };
+    for (const button of this.querySelectorAll('.stock-mode button')) {
+      button.addEventListener('click', () => { if (this.scope.pending) return; this.mode = button.dataset.mode; prefs.set(this.modeKey, this.mode); this.showMode(); this.refreshTable(); });
+    }
+    this.addEventListener('inventory-sort', event => { this.order = { ...this.order, sort: event.detail.column, direction: event.detail.direction }; this.refreshTable(); });
+    this.addEventListener('inventory-filter', event => this.setFilters(event.detail.filters));
+    // Column order, widths and visibility are kept per browser (chapters 30 and 47 move them to the member).
+    this.addEventListener('inventory-layout', event => {
+      const saved = this.layout();
+      this.saveLayout({ ...(event.detail.order ? { order: event.detail.order } : {}), widths: { ...(saved.widths ?? {}), ...(event.detail.widths ?? {}) },
+        lastColumn: Object.keys(event.detail.widths ?? {}).at(-1) ?? saved.lastColumn });
+      this.grid.layoutStatus = 'Saved';
+    });
+    this.picker = this.querySelector('.column-picker');
+    document.addEventListener('pointerdown', event => { if (this.picker.open && !this.picker.contains(event.target)) this.picker.open = false; });
+    this.picker.addEventListener('keydown', event => { if (event.key === 'Escape') { this.picker.open = false; this.picker.querySelector('summary').focus(); } });
+    // The grid renders a window of rows; windows are cut here from the whole table.
+    this.addEventListener('inventory-window', event => {
+      const { requestId, queryId, start, anchorId } = event.detail;
+      queueMicrotask(() => {
+        this.grid.windowResponse = queryId === this.queryId
+          ? { requestId, queryId, status: 'ok', model: this.windowModel(start, anchorId) }
+          : { requestId, queryId, status: 'expired' };
+      });
+    });
+    this.addEventListener('inventory-resnapshot', () => this.refreshTable());
+  }
+  // Preview is always in units.
+  showMode() {
+    const mode = this.scope.pending ? 'units' : this.mode;
+    for (const button of this.querySelectorAll('.stock-mode button')) {
+      button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+      button.disabled = Boolean(this.scope.pending) && button.dataset.mode === 'money';
+      if (button.dataset.mode === 'money') button.title = this.scope.pending ? t('Money is not shown in Preview') : t('Money');
+    }
+  }
+  setFilters(filters) { this.order = { ...this.order, filters }; this.refreshTable(); }
+  filterColumns() { return this.model.columns.filter(column => column.filterKey).map(column => ({ key: column.filterKey, label: column.label })); }
+  columnValues(key) {
+    const x = this.model.columns.findIndex(column => column.filterKey === key);
+    return [...new Set(this.model.rows.map(row => row.cells[x]).map(cell => String(cell?.display ?? cell?.value ?? '')).filter(Boolean))];
+  }
+  // The active filters below the input, each removable.
+  showFilters() {
+    const strip = this.querySelector('.smart-filters');
+    const active = Object.entries(this.order.filters).filter(([, conditions]) => conditions?.length);
+    const names = { empty: 'Empty', notEmpty: 'Not empty', eq: 'Equal', notEq: 'Not equal', begins: 'Begins with', contains: 'Contains', notContains: 'Does not contain' };
+    const remove = key => { const { [key]: _gone, ...rest } = this.order.filters; this.setFilters(rest); };
+    strip.hidden = !active.length;
+    strip.replaceChildren(...active.map(([key, conditions]) => {
+      const label = this.model.columns.find(column => column.filterKey === key)?.label ?? key;
+      const text = conditions.map((condition, index) => [t(names[condition.type] ?? condition.type).toLowerCase(), condition.value, index < conditions.length - 1 ? t(condition.relation === 'or' ? 'OR' : 'AND') : ''].filter(Boolean).join(' ')).join(' ');
+      const button = element('button', { type: 'button', className: 'stock-entry-chip-remove', textContent: '×', ariaLabel: t('Remove filter: {p0}', { p0: label }) });
+      button.addEventListener('click', () => remove(key));
+      return element('span', { className: 'stock-entry-chip' },
+        element('span', { className: 'stock-entry-chip-edit' }, element('span', { className: 'stock-entry-chip-label', textContent: `${label}: ` }), element('span', { className: 'stock-entry-chip-value', textContent: text })), button);
+    }));
+    if (active.length) {
+      const reset = element('button', { type: 'button', className: 'smart-filters-reset', textContent: t('Reset all') });
+      reset.addEventListener('click', () => this.setFilters({}));
+      strip.append(reset);
+    }
+  }
+  layout() {
+    try { return JSON.parse(prefs.get(`${this.prefix}-layout`, '{}')) || {}; } catch { return {}; }
+  }
+  saveLayout(change) {
+    const saved = this.layout();
+    const layout = { order: [], widths: {}, hidden: [], ...saved, ...change, version: (saved.version ?? 0) + 1 };
+    prefs.set(`${this.prefix}-layout`, JSON.stringify(layout));
+    this.layoutFields = this.fieldsOf(layout);
+    this.grid.columnLayout = layout;
+  }
+  fieldsOf(layout) {
+    return { savedWidths: layout.widths ?? {}, columnOrder: layout.order ?? [], hiddenColumns: layout.hidden ?? [], layoutVersion: layout.version ?? 0, lastColumn: layout.lastColumn };
+  }
+  showColumns() {
+    const hidden = new Set(this.layout().hidden ?? []);
+    this.picker.querySelector('.column-picker-list').replaceChildren(...this.model.columns.filter(column => column.label).map(column => {
+      const box = element('input', { type: 'checkbox', checked: column.required || !hidden.has(column.key), disabled: Boolean(column.required) });
+      box.addEventListener('change', () => {
+        const now = new Set(this.layout().hidden ?? []);
+        if (box.checked) now.delete(column.key); else now.add(column.key);
+        this.saveLayout({ hidden: [...now] });
+      });
+      return element('label', {}, box, element('span', { textContent: column.label }));
+    }));
+  }
+  // Gives the grid the current model: its first window, the column layout and the order in force.
+  presentModel(start = 0) {
+    this.queryId = crypto.randomUUID();
+    this.queryKey = JSON.stringify([this.scope.pending ? 'units' : this.mode, this.hideEmpty, Boolean(this.showArchived), this.scope, this.order]);
+    this.layoutFields = this.fieldsOf(this.layout());
+    this.grid.model = this.windowModel(start);
+    this.grid.acceptedSort = this.order.sort ? { column: this.order.sort, direction: this.order.direction } : {};
+    this.grid.acceptedFilters = this.order.filters;
+    this.showColumns();
+    this.showFilters();
+  }
+  // Rows [start, start + 200), widened so a product's rows are never split.
+  windowModel(start = 0, anchorId = null) {
+    const { rows, merges = [] } = this.model, size = 200, total = rows.length;
+    if (anchorId) { const index = rows.findIndex(row => row.id === anchorId); if (index >= 0) start = Math.max(0, index - 66); }
+    const spans = new Map();
+    for (const merge of merges) for (let y = merge.row; y < merge.row + (merge.rowspan || 1); y++) spans.set(y, [merge.row, merge.row + (merge.rowspan || 1)]);
+    let from = Math.max(0, Math.min(start, total - 1));
+    if (spans.has(from)) [from] = spans.get(from);
+    let to = Math.min(total, from + size);
+    if (to < total && spans.has(to - 1)) [, to] = spans.get(to - 1);
+    return { ...this.model, ...this.layoutFields, rows: rows.slice(from, to),
+      merges: merges.filter(merge => merge.row >= from && merge.row < to).map(merge => ({ ...merge, row: merge.row - from })),
+      viewport: { queryId: this.queryId, queryKey: this.queryKey, start: from, end: to, totalRows: total, windowSize: size } };
+  }
   showSubmit() {
     const count = this.scope.pending ? (this.selected ?? []).length : 0;
     this.submitButton.disabled = !count;

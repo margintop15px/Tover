@@ -54,38 +54,34 @@
 (deftest operations-are-groups-of-lines
   (let [model (grid false)]
     (is (= ["p|p-0" "p|p-1" "s|0"] (map :id (:rows model))))
-    (is (= [["T-shirt / M" "Main" "5" "200.00" "1000.00"] ["T-shirt / M" "Back" "2" "" ""]]
-           (for [row ["p|p-0" "p|p-1"]] (map #(column model row %) ["item" "warehouse" "quantity" "price" "amount"]))))
-    (is (= "Textiles LLC" (column model "p|p-0" "party")))
+    (is (= [["T-shirt / M" "Main" "5" "200.00"] ["T-shirt / M" "Back" "2" ""]]
+           (for [row ["p|p-0" "p|p-1"]] (map #(column model row %) ["item" "warehouse" "quantity" "price"]))))
+    (is (= ["Textiles LLC" ""] (map #(column model "p|p-0" %) ["supplier" "store"])))
     (is (= #{0} (set (map :row (:merges model)))) "the purchase's shared cells span its two lines")
-    (testing "accepted operations are read-only with their total"
-      (is (every? :readOnly (:cells (last (:rows model)))))
-      (is (= ["Sale" "Web shop" "3" "450.00" "450.00"] (map #(column model "s|0" %) ["kind" "party" "quantity" "amount" "total"]))))))
+    (testing "normal mode is read-only; a pending operation offers Edit"
+      (is (not-any? #(or (:editor %) (:target %)) (mapcat :cells (:rows model))))
+      (is (= [["stock-edit"] nil nil] (map #(some->> % :actions (map :type)) (map (comp last :cells) (:rows model)))))
+      (is (= ["Sale" "Web shop" "3"] (map #(column model "s|0" %) ["kind" "store" "quantity"]))))))
 
 
-(deftest preview-shows-pending-only-with-include
-  (let [model (grid true)]
-    (is (= ["p|p-0" "p|p-1"] (map :id (:rows model))))
-    (is (= {:id "p" :label "Include in submit"} (:selection (first (:cells (first (:rows model)))))))
-    (is (= [{:entry-id "p" :revision 2 :rowId "p"}] (:pending model)))))
+(defn- shown
+  {:malli/schema [:=> [:cat :map] :map]}
+  [view]
+  (operations/operations-grid (merge {:catalogue catalogue :pending [purchase] :findings [] :accepted accepted :currency "RUB" :preview? false} view)))
 
 
-(deftest partial-total-is-marked
-  (let [model (operations/operations-grid {:catalogue catalogue :pending [] :findings [] :currency "RUB" :preview? false
-                                           :accepted  [(assoc (first accepted) :total 300M :partial? true
-                                                              :lines [{:position 0 :stock-item-id "tee-m" :warehouse-id "main" :quantity-change 2 :unit-cost "150.00"}
-                                                                      {:position 1 :stock-item-id "tee-m" :warehouse-id "main" :quantity-change 1}])]})]
-    (is (= "≥ 300.00" (column model "s|0" "total")))))
+(deftest money-mode-shows-amounts-in-place-of-quantities
+  (let [model (shown {:mode "money"})]
+    (is (= ["1000.00" "" "450.00"] (map #(column model % "quantity") ["p|p-0" "p|p-1" "s|0"])))
+    (is (some #(= ["quantity" "Amount"] ((juxt :key :label) %)) (:columns model)))
+    (is (= "5" (column (shown {:mode "money" :preview? true}) "p|p-0" "quantity")) "Preview is in units")))
 
 
-(deftest findings-and-blockers-mark-cells
-  (let [model (operations/operations-grid {:catalogue catalogue :currency "RUB" :preview? false :accepted []
-                                           :pending   [(assoc purchase :supplier-id nil :blockers [{:line-id nil :field :supplier-id :code :supplier-missing}])]
-                                           :findings  [{:entry-id "p" :line-id "p-1" :field :quantity :code :insufficient-stock :level :warning}]})
-        cell  (fn [row key] (get (:cells (some #(when (= row (:id %)) %) (:rows model))) (.indexOf ^java.util.List (mapv :key (:columns model)) key)))]
-    (is (re-find #"stock-finding-error" (:className (cell "p|p-0" "party"))))
-    (is (= "Choose a supplier." (:title (cell "p|p-0" "party"))))
-    (is (re-find #"stock-finding-warning" (:className (cell "p|p-1" "quantity"))))))
+(deftest sort-and-filter-keep-operations-whole
+  (is (= ["s|0" "p|p-0" "p|p-1"] (map :id (:rows (shown {:sort "quantity" :direction "asc"})))))
+  (is (= ["s|0" "p|p-0" "p|p-1"] (map :id (:rows (shown {:sort "kind" :direction "desc"})))))
+  (is (= ["p|p-0" "p|p-1"] (map :id (:rows (shown {:filters {:warehouse [{:type "eq" :value "back"}]}})))) "one matching line keeps its operation")
+  (is (= ["s|0"] (map :id (:rows (shown {:filters {"store" [{:type "begins" :value "web"}]}}))))))
 
 
 (def stocked {"tee-m" ["main"]})
@@ -95,6 +91,50 @@
   {:malli/schema [:=> [:cat :map [:maybe :map]] :map]}
   [values saved]
   (operations/operation-input catalogue stocked workspace (:entry-id saved "n") (:revision saved 0) values saved))
+
+
+(deftest a-blank-row-adds-a-line-in-preview
+  (let [row  (last (:rows (shown {:preview? true})))
+        cell (some #(when (= "item" (get-in % [:target :field])) %) (:cells row))]
+    (is (= ["p|p-r2" "+ Add line"] [(:id row) (:placeholder cell)]))
+    (is (= ["p-0" "p-1" "p-r2"] (map :line-id (:lines (input {"field" "item" "line-id" (get-in cell [:target :line]) "value" "tee-m"} purchase)))))
+    (is (= "output" (:side (last (:lines (input {"field" "item" "line-id" "m-r1-output" "side" "output" "value" "tee-m"}
+                                                {:entry-id "m" :revision 1 :kind "production" :lines []}))))))))
+
+
+(deftest smart-addition-builds-the-operation
+  (is (= {:kind  "production" :occurred-at "2026-11-20T10:00:00Z"
+          :lines [{:line-id "n-0" :side "input" :stock-item-id "tee-m" :warehouse-id "main" :quantity "12"}
+                  {:line-id "n-1" :side "output" :product-name "Pack" :quantity "1"}]}
+         (select-keys (operations/addition-input catalogue stocked workspace "n" {"kind" "production" "occurred-at" "2026-11-20T10:00:00Z"}
+                                                 [{"side" "input" "item" "tee-m" "quantity" "12"} {"side" "input" "item" ""} {"side" "output" "item" "Pack" "quantity" "1"}])
+                      [:kind :occurred-at :lines])))
+  (is (= "tex" (:supplier-id (operations/addition-input catalogue stocked workspace "n" {"kind" "purchase" "supplier" "textiles llc"} [])))))
+
+
+(deftest preview-shows-pending-only-with-include
+  (let [model (grid true)]
+    (is (= ["p|p-0" "p|p-1" "p|p-r2"] (map :id (:rows model))))
+    (is (= {:id "p" :label "Include in submit"} (:selection (first (:cells (first (:rows model)))))))
+    (is (= [{:entry-id "p" :revision 2 :rowId "p"}] (:pending model)))))
+
+
+(deftest partial-total-is-marked
+  (let [model (shown {:pending  [] :mode "money"
+                      :accepted [(assoc (first accepted) :total 300M :partial? true
+                                        :lines [{:position 0 :stock-item-id "tee-m" :warehouse-id "main" :quantity-change -2 :unit-price "150.00"}
+                                                {:position 1 :stock-item-id "tee-m" :warehouse-id "main" :quantity-change -1}])]})]
+    (is (some #(= "Total: 300.00. Some lines have no price." (:title %)) (:cells (first (:rows model)))))))
+
+
+(deftest findings-and-blockers-mark-cells
+  (let [model (operations/operations-grid {:catalogue catalogue :currency "RUB" :preview? false :accepted []
+                                           :pending   [(assoc purchase :supplier-id nil :blockers [{:line-id nil :field :supplier-id :code :supplier-missing}])]
+                                           :findings  [{:entry-id "p" :line-id "p-1" :field :quantity :code :insufficient-stock :level :warning}]})
+        cell  (fn [row key] (get (:cells (some #(when (= row (:id %)) %) (:rows model))) (.indexOf ^java.util.List (mapv :key (:columns model)) key)))]
+    (is (re-find #"stock-finding-error" (:className (cell "p|p-0" "supplier"))))
+    (is (= "Choose a supplier." (:title (cell "p|p-0" "supplier"))))
+    (is (re-find #"stock-finding-warning" (:className (cell "p|p-1" "quantity"))))))
 
 
 (deftest one-edit-saves-one-field
@@ -175,14 +215,14 @@
 (defn- pending-grid
   {:malli/schema [:=> [:cat :map] :map]}
   [entry]
-  (operations/operations-grid {:catalogue catalogue :pending [entry] :findings [] :accepted [] :currency "RUB" :preview? false}))
+  (operations/operations-grid {:catalogue catalogue :pending [entry] :findings [] :accepted [] :currency "RUB" :preview? true}))
 
 
 (deftest transfer-and-defect-show-leaving-and-entering-rows
   (let [model (pending-grid {:entry-id "t" :revision 1 :kind "transfer" :occurred-at at :from-warehouse-id "main" :to-warehouse-id "back"
                              :lines    [{:line-id "t-0" :stock-item-id "tee-m" :quantity 4}]})]
     (is (= [["t|t-0" "operations-pending operations-out" "Main" "4"] ["t|t-0|in" "operations-pending operations-in" "Back" "4"]]
-           (map (juxt :id :className #(column model (:id %) "warehouse") #(column model (:id %) "quantity")) (:rows model))))
+           (map (juxt :id :className #(column model (:id %) "warehouse") #(column model (:id %) "quantity")) (take 2 (:rows model)))))
     (is (= "to-warehouse" (get-in (second (:rows model)) [:cells (.indexOf ^java.util.List (mapv :key (:columns model)) "warehouse") :target :field]))
         "the green warehouse edits the destination"))
   (let [model (pending-grid {:entry-id "d" :revision 1 :kind "defect" :occurred-at at :reason "torn" :lines [{:line-id "d-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 1}]})]
@@ -193,15 +233,16 @@
   (let [model (pending-grid {:entry-id "m" :revision 1 :kind "production" :occurred-at at
                              :lines    [{:line-id "m-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 2 :side "input"}
                                         {:line-id "m-1" :product-name "Pack" :warehouse-id "main" :quantity 1 :side "output"}]})]
-    (is (= ["operations-pending operations-out" "operations-pending operations-in"] (map :className (:rows model))))
-    (is (= ["Add input" "Add output"] (map :label (:actions (first (:cells (first (:rows model)))))))))
+    (is (= [["m|m-0" "−"] ["m|m-r1-input" nil] ["m|m-1" "+"] ["m|m-r1-output" nil]]
+           (map (juxt :id #(some :prefix (:cells %))) (:rows model))))
+    (is (= ["+ Add input" "+ Add output"] (filter #(re-find #"Add" %) (keep :placeholder (mapcat :cells (:rows model)))))))
   (is (= ["n-0" "input"] ((juxt :line-id :side) (first (:lines (input {"kind" "production" "field" "create" "value" "2026-11-20T10:00:00Z"} nil))))))
   (is (= "output" (:side (last (:lines (input {"field" "add-line" "value" "output"} {:entry-id "m" :revision 1 :kind "production" :lines []})))))))
 
 
 (deftest payment-is-one-row-with-amount
   (let [model (pending-grid {:entry-id "pay" :revision 1 :kind "payment" :occurred-at at :direction "in" :store-id "web" :amount "500" :lines []})]
-    (is (= [["Payment received" "Web shop" "500"]] (map (fn [r] (map #(column model (:id r) %) ["kind" "party" "total"])) (:rows model)))))
+    (is (= [["Payment received" "Web shop" "500.00 RUB"]] (map (fn [r] (map #(column model (:id r) %) ["kind" "store" "quantity"])) (:rows model)))))
   (is (= ["store-id" "web"] (let [saved (input {"field" "counterparty" "value" "store:web"} {:entry-id "pay" :revision 1 :kind "payment" :supplier-id "tex" :lines []})]
                               [(some #(when (% saved) (name %)) [:supplier-id :store-id]) (:store-id saved)])))
   (is (= [] (:lines (input {"kind" "payment" "field" "create" "value" "2026-11-20T10:00:00Z"} nil)))))
@@ -221,4 +262,4 @@
 (deftest accepted-payment-has-a-row
   (let [model (operations/operations-grid {:catalogue catalogue :pending [] :findings [] :currency "RUB" :preview? false
                                            :accepted  [{:record-id "pay" :kind "payment" :direction "out" :occurred-at at :supplier-id "tex" :total 1000M :partial? false :lines []}]})]
-    (is (= ["Payment made" "Textiles LLC" "1000.00"] (map #(column model "pay|" %) ["kind" "party" "total"])))))
+    (is (= ["Payment made" "Textiles LLC" "1000.00 RUB"] (map #(column model "pay|" %) ["kind" "supplier" "quantity"])))))

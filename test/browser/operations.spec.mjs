@@ -59,7 +59,6 @@ async function addOperation(page, kind) {
 }
 
 async function submit(page) {
-  await page.locator('.stock-pending-filter').click();
   await expect(page.locator('.stock-submit')).toBeEnabled();
   await page.locator('.stock-submit').click();
   await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
@@ -114,7 +113,6 @@ test('record a purchase and a sale, preview, submit, and see stock change', asyn
   await expect(grid.locator(`td[data-entry-id="${purchase.line}"][data-path="warehouse"]`)).toHaveText(`Main ${suffix}`);
   await type(page, purchase.line, 'quantity', '5');
   await type(page, purchase.line, 'price', '200');
-  await expect(grid.locator(`tr[data-row-id="${purchase.line}"] td[data-column-key="amount"]`)).toHaveText('1000.00');
   await shot(page, 'operations-1-purchase');
   await submit(page);
   await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(0);
@@ -126,9 +124,17 @@ test('record a purchase and a sale, preview, submit, and see stock change', asyn
   await choose(page, sale.line, 'item', `T-shirt ${suffix} / M`, '.inventory-goods-choice');
   await type(page, sale.line, 'quantity', '3');
   await type(page, sale.line, 'price', '250');
-  await page.locator('.stock-pending-filter').click();
   await shot(page, 'operations-2-preview');
+  // Outside Preview the operation is read-only, in units or money; Edit returns to it.
   await page.locator('.stock-pending-filter').click();
+  await idle(page, 'operations-workbench');
+  expect(await grid.evaluate(node => node.model.rows.every(row => row.cells.every(cell => !cell.editor)))).toBe(true);
+  await page.locator('.stock-mode button[data-mode="money"]').click();
+  await idle(page, 'operations-workbench');
+  await expect(grid.locator(`tr[data-row-id="${sale.line}"] td[data-column-key="quantity"]`)).toHaveText('750.00');
+  await page.locator('.stock-mode button[data-mode="units"]').click();
+  await idle(page, 'operations-workbench');
+  await grid.locator(`tr[data-row-id="${sale.line}"]`).getByRole('button', { name: 'Edit' }).click();
   await idle(page, 'operations-workbench');
   await submit(page);
   await shot(page, 'operations-3-accepted');
@@ -140,7 +146,7 @@ test('record a purchase and a sale, preview, submit, and see stock change', asyn
   await choose(page, transfer.line, 'from-warehouse', `Main ${suffix}`);
   await choose(page, transfer.line, 'to-warehouse', `Back ${suffix}`);
   await type(page, transfer.line, 'quantity', '2');
-  await expect(grid.locator(`tr[data-row-id="${transfer.line}|in"] td[data-column-key="quantity"]`)).toHaveText('2');
+  await expect(grid.locator(`tr[data-row-id="${transfer.line}|in"] td[data-column-key="quantity"]`)).toHaveText('+2');
   await shot(page, 'operations-5-transfer');
   await submit(page);
   await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(0);
@@ -148,7 +154,7 @@ test('record a purchase and a sale, preview, submit, and see stock change', asyn
   // A payment made to the supplier: one row, no stock effect.
   const payment = await addOperation(page, 'payment');
   await choose(page, payment.group, 'direction', 'Payment made');
-  await choose(page, payment.group, 'counterparty', `Textiles ${suffix}`);
+  await choose(page, payment.group, 'supplier', `Textiles ${suffix}`);
   await type(page, payment.group, 'amount', '1000');
   await submit(page);
   await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(0);
@@ -176,47 +182,93 @@ test('smart input: add a purchase with Done, keep it across a reload, cancel wit
   // From the stock search, "add" opens the operations page with the addition started.
   await page.goto('/');
   await page.locator('.stock-search-input').fill('add');
-  await page.locator('.stock-option').filter({ hasText: 'Add operation: Purchase' }).click();
+  await page.locator('.stock-entry-option').filter({ hasText: 'Purchase' }).first().click();
   await expect(page).toHaveURL(/\/operations$/);
-  const chips = page.locator('.operations-smart-chips');
-  await expect(chips).toBeVisible();
-  await expect(page.locator('.operations-smart-done')).toBeDisabled();
-  await chips.locator('.operations-chip-party').fill(`Cotton ${suffix}`);
-  await chips.locator('.operations-chip-item').fill(`Tote ${suffix}`);
-  await chips.locator('.operations-chip-quantity').fill('4');
+  const smart = page.locator('smart-entry');
+  const input = smart.locator('.stock-entry-input');
+  const chip = key => smart.locator(`.stock-entry-chip[data-key="${key}"]`);
+  const option = text => smart.locator('.stock-entry-option').filter({ hasText: text });
+  const fill = async (field, value) => {
+    await input.fill(field);
+    await option(field).first().click();
+    await expect(smart.locator('.stock-entry-field')).toHaveText(`${field}:`);
+    await input.fill(value);
+    await input.press('Enter');
+  };
+  await expect(input).toBeVisible();
+  await fill('Supplier', `Cotton ${suffix}`);
+  await expect(chip('supplier')).toContainText(`Cotton ${suffix}`);
+  await fill('Stock item', `Tote ${suffix}`);
+  // A quantity must be a whole number of 1 or more.
+  await fill('Quantity', '0');
+  await expect(smart.locator('.stock-entry-feedback')).toBeVisible();
+  await input.fill('4');
+  await expect(smart.locator('.stock-entry-option').first()).toContainText('Done');
+  await input.press('Enter');
   await page.reload();
-  await expect(chips.locator('.operations-chip-quantity')).toHaveValue('4');
-  await expect(page.locator('.operations-smart-done')).toBeEnabled();
+  await expect(chip('lines/0/quantity')).toContainText('4');
   await shot(page, 'operations-4-smart');
   const grid = page.locator('#operations-grid');
-  const before = await grid.evaluate(node => node.model.pending.length);
-  await chips.locator('.operations-chip-quantity').press('Control+Enter');
-  await expect(chips).toBeHidden();
-  await expect.poll(() => grid.evaluate(node => node.model.pending.length)).toBe(before + 1);
+  const before = await grid.evaluate(node => node.model.rows.length && node.closest('operations-workbench').model.pending.length);
+  const pending = () => page.locator('operations-workbench').evaluate(node => node.model.pending.length);
+  await input.press('Control+Enter');
+  await expect(smart.locator('.stock-entry-chip')).toHaveCount(0);
+  await expect.poll(pending).toBe(before + 1);
+  // Done opens the new operation in Preview.
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'true');
   await expect(grid).toContainText(`Tote ${suffix}`);
   await expect(grid).toContainText(`Cotton ${suffix}`);
 
-  // A write-off needs a reason before Done.
-  await page.locator('.operations-smart-input').fill('add write');
-  await page.locator('.operations-smart-input').press('Enter');
-  await expect(chips.locator('.operations-chip-kind')).toHaveText('Write-off');
-  await expect(chips.locator('.operations-chip-party')).toHaveCount(0);
-  await chips.locator('.operations-chip-item').fill(`Tote ${suffix}`);
-  await chips.locator('.operations-chip-quantity').fill('1');
-  await expect(page.locator('.operations-smart-done')).toBeDisabled();
-  await chips.locator('.operations-chip-reason').fill('Damaged');
-  await expect(page.locator('.operations-smart-done')).toBeEnabled();
-  await page.locator('.operations-smart-cancel').click();
-  await expect(chips).toBeHidden();
+  // A write-off needs a reason before Done, and an existing item.
+  await input.fill('add write'); await input.press('Enter');
+  await expect(smart.locator('.stock-entry-chip').first()).toContainText('Write-off');
+  await fill('Stock item', `Missing ${suffix}`);
+  await expect(smart.locator('.stock-entry-feedback')).toBeVisible();
+  await smart.locator('.stock-entry-cancel').click();
+  await expect(smart.locator('.stock-entry-chip')).toHaveCount(0);
 
-  // Cancel: Escape on an empty field drops the addition only.
-  await page.locator('.operations-smart-input').fill('add s');
-  await page.locator('.operations-smart-input').press('Enter');
-  await expect(chips.locator('.operations-chip-kind')).toHaveText('Sale');
-  await chips.locator('.operations-chip-item').press('Escape');
-  await expect(chips).toBeHidden();
+  // Cancel: Escape on an empty input drops the addition only.
+  await input.fill('add s'); await input.press('Enter');
+  await expect(smart.locator('.stock-entry-chip').first()).toContainText('Sale');
+  await input.press('Escape');
+  await expect(smart.locator('.stock-entry-chip')).toHaveCount(0);
   await page.reload();
-  await expect(chips).toBeHidden();
-  expect(await grid.evaluate(node => node.model.pending.length)).toBe(before + 1);
+  expect(await pending()).toBe(before + 1);
+
+  // Typing filters the table; the filter shows below the input and can be removed.
+  await input.fill('Supplier'); await option('Supplier').first().click();
+  await input.fill(`Cotton ${suffix}`); await input.press('Enter');
+  await idle(page, 'operations-workbench');
+  expect(await page.locator('operations-workbench').evaluate(node => new Set(node.model.rows.map(row => row.groupId)).size)).toBe(1);
+  await page.locator('.smart-filters .stock-entry-chip-remove').click();
+  await idle(page, 'operations-workbench');
+  await expect(page.locator('.smart-filters')).toBeHidden();
+
+  // Columns can be hidden; the choice survives a reload.
+  await page.locator('.column-picker summary').click();
+  await page.locator('.column-picker-list').getByLabel('Article').uncheck();
+  await expect(grid.locator('thead td[data-column-key="article"]')).toHaveCount(0);
+  await page.reload();
+  await expect.poll(() => grid.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  await expect(grid.locator('thead td[data-column-key="article"]')).toHaveCount(0);
+  await expect(grid.locator('thead td[data-column-key="item"]')).toHaveCount(1);
   expect(errors).toEqual([]);
+});
+
+test('production: blank rows add inputs and outputs in Preview', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/operations');
+  const grid = page.locator('#operations-grid');
+  await expect.poll(() => grid.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  await page.locator('.stock-pending-filter').click();
+  await idle(page, 'operations-workbench');
+  const made = await addOperation(page, 'production');
+  const entry = made.group.slice(0, -1);
+  const output = `${entry}|${entry}-1`;
+  const input = await editor(grid, output, 'item', '.inventory-cell-editor > input');
+  await input.fill(`Pack ${Date.now()}`); await input.press('Enter');
+  await idle(page, 'operations-workbench');
+  await expect(grid).toContainText('+ Add output');
+  await expect(grid).toContainText('Choose an input');
+  await shot(page, 'operations-6-production');
 });

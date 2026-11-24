@@ -125,23 +125,17 @@
 #inventory-evidence-workbench .sheet-history-toggle svg{display:block;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 /* ponytail: spike of the one-table stock page */
 .stock-workbench .stock-search{position:relative}
-.stock-workbench .stock-mode{display:inline-flex;gap:2px;margin:0 4px;padding:0 4px;border-left:1px solid var(--iw-line);border-right:1px solid var(--iw-line)}
-:is(#inventory-evidence-workbench,.stock-workbench) .sheet-actions button.sheet-icon-button[aria-pressed=true]{color:var(--iw-blue);background:var(--iw-blue-fill)}
-:is(#inventory-evidence-workbench,.stock-workbench) .sheet-actions button.stock-submit:enabled{color:var(--iw-green)}
-:is(#inventory-evidence-workbench,.stock-workbench) .sheet-actions button.stock-submit:hover:enabled{color:var(--iw-green);background:var(--iw-green-fill)}
-.stock-workbench .stock-pending-filter{position:relative}
-.stock-workbench .stock-pending-filter.has-pending::after{content:"";position:absolute;top:3px;right:3px;width:7px;height:7px;border-radius:50%;background:var(--iw-green)}
-.stock-workbench .stock-save-status{font-size:12px;white-space:nowrap}
+:is(.stock-workbench,.operations-workbench) .stock-mode{display:inline-flex;gap:2px;margin:0 4px;padding:0 4px;border-left:1px solid var(--iw-line);border-right:1px solid var(--iw-line)}
+:is(#inventory-evidence-workbench,.stock-workbench,.operations-workbench) .sheet-actions button.sheet-icon-button[aria-pressed=true]{color:var(--iw-blue);background:var(--iw-blue-fill)}
+:is(#inventory-evidence-workbench,.stock-workbench,.operations-workbench) .sheet-actions button.stock-submit:enabled{color:var(--iw-green)}
+:is(#inventory-evidence-workbench,.stock-workbench,.operations-workbench) .sheet-actions button.stock-submit:hover:enabled{color:var(--iw-green);background:var(--iw-green-fill)}
+:is(.stock-workbench,.operations-workbench) .stock-pending-filter{position:relative}
+:is(.stock-workbench,.operations-workbench) .stock-pending-filter.has-pending::after{content:"";position:absolute;top:3px;right:3px;width:7px;height:7px;border-radius:50%;background:var(--iw-green)}
+:is(.stock-workbench,.operations-workbench) .stock-save-status{font-size:12px;white-space:nowrap}
 .stock-workbench .stock-filter-chip{flex:0 0 auto;padding:3px 9px;border:1px solid color-mix(in srgb,var(--iw-blue) 30%,var(--iw-line));border-radius:999px;background:var(--iw-blue-fill);color:var(--iw-blue);font-size:12px;cursor:pointer}
 .stock-workbench .stock-filter-chip[hidden]{display:none}
-.stock-workbench .stock-notice:empty{display:none}
-.stock-workbench .stock-notice{padding:6px 16px;font-size:12px;color:var(--iw-red)}
-.stock-workbench .stock-suggestions{position:absolute;z-index:20;left:16px;right:16px;top:calc(100% - 8px);margin:0;padding:4px 0;list-style:none;max-height:320px;overflow:auto;background:var(--iw-bg);border:1px solid var(--iw-line);border-radius:6px;box-shadow:0 8px 24px rgb(0 0 0/.12)}
-.stock-workbench .stock-suggestions[hidden]{display:none}
-.stock-workbench .stock-option{display:flex;justify-content:space-between;gap:12px;padding:7px 12px;cursor:pointer;font-size:13px}
-.stock-workbench .stock-option[aria-selected=true],.stock-workbench .stock-option:hover{background:var(--iw-soft)}
-.stock-workbench .stock-option-kind{color:var(--iw-muted);font-size:12px;white-space:nowrap}
-.stock-workbench .stock-option-create{border-top:1px solid var(--iw-line);color:var(--iw-blue)}
+:is(.stock-workbench,.operations-workbench) .stock-notice:empty{display:none}
+:is(.stock-workbench,.operations-workbench) .stock-notice{padding:6px 16px;font-size:12px;color:var(--iw-red)}
 .stock-workbench .stock-grid{overflow-x:auto}
 #stock-grid .jss_worksheet>tbody>tr>td.stock-product-cell{vertical-align:top;padding-top:7px;font-weight:600}
 /* One baseline across a row: actions and checkboxes sit on the text line */
@@ -185,15 +179,69 @@
 .stock-move-dialog label { display: grid; gap: 4px; margin-bottom: 12px; }
 .stock-move-dialog h2 { margin-top: 0; font-size: 1rem; }
 
-/* Operations smart input: the unfinished addition as editable chips. */
-.operations-smart-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; padding: 0.5rem 0; }
-.operations-smart-chips[hidden] { display: none; }
-.operations-chip-kind { font-weight: 600; }
-.operations-add { white-space: nowrap; }
+/* Smart input, after the legacy stock entry. */
+.catalogue-workbench smart-entry{display:block;position:relative;z-index:5}
+.catalogue-workbench .stock-entry-line{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-height:40px;padding:3px 4px;background:var(--iw-soft);border-radius:6px;cursor:text}
+.catalogue-workbench .stock-entry-chips{display:contents}
+.catalogue-workbench .stock-entry-chip{display:inline-flex;align-items:center;max-width:100%;height:27px;border-radius:4px;background:var(--iw-bg);box-shadow:0 0 0 1px var(--iw-line);overflow:hidden}
+.catalogue-workbench .stock-entry-chip button{border-radius:0;padding:3px 6px;height:27px;min-height:27px}
+.catalogue-workbench .stock-entry-chip-edit{display:flex;align-items:center;gap:1px;min-width:0;font-family:ui-monospace,SFMono-Regular,monospace}
+.catalogue-workbench .stock-entry-chip-label{font-size:12px;color:light-dark(#7555a1,#b79ad9)}
+.catalogue-workbench .stock-entry-chip-value{max-width:240px;text-overflow:ellipsis;overflow:hidden;white-space:nowrap;font-size:12px;color:var(--iw-green)}
+.catalogue-workbench button.stock-entry-chip-remove{color:var(--iw-muted);padding:0 6px;font-size:17px;line-height:1}
+.catalogue-workbench .stock-entry-field{padding-left:6px;color:var(--iw-muted);font-size:12px;white-space:nowrap}
+.catalogue-workbench input.stock-entry-input{flex:1;min-width:150px;width:auto;background:transparent;border:0;outline:0;box-shadow:none;padding:7px 6px;height:32px}
+.catalogue-workbench input.stock-entry-input:focus-visible{outline:0;box-shadow:none}
+.catalogue-workbench .stock-entry-input::placeholder{color:var(--iw-muted);opacity:1}
+.catalogue-workbench .stock-entry-menu{position:absolute;top:calc(100% + 4px);left:0;width:100%;max-height:300px;overflow:auto;padding:4px;border:1px solid var(--iw-line);border-radius:6px;background:var(--iw-bg);box-shadow:0 8px 24px #0002;z-index:20}
+.catalogue-workbench button.stock-entry-option{display:flex;align-items:center;gap:10px;width:100%;min-height:34px;padding:7px 9px;border-radius:3px;text-align:left}
+.catalogue-workbench button.stock-entry-option.is-active,.catalogue-workbench button.stock-entry-option:hover{background:var(--iw-blue-fill)}
+.catalogue-workbench .stock-entry-menu-heading{padding:6px 9px 3px;color:var(--iw-muted);font-size:10px;letter-spacing:.06em;text-transform:uppercase}
+.catalogue-workbench .stock-entry-option-icon{flex:0 0 16px;color:var(--iw-muted);font:15px ui-monospace,monospace;text-align:center}
+.catalogue-workbench .stock-entry-option-icon.is-done{color:var(--iw-green);font-weight:700}
+.catalogue-workbench .stock-entry-option-content{display:flex;align-items:center;gap:1px;min-width:0;font:12px ui-monospace,SFMono-Regular,monospace}
+.catalogue-workbench .stock-entry-option-field{flex-shrink:0;color:light-dark(#7555a1,#b79ad9)}
+.catalogue-workbench .stock-entry-option-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--iw-green)}
+.catalogue-workbench .stock-entry-option-description{margin-left:auto;color:var(--iw-muted);font-size:11px;white-space:nowrap}
+@media(max-width:600px){.catalogue-workbench input.stock-entry-input{font-size:16px;min-width:110px}.catalogue-workbench .stock-entry-chip-value{max-width:180px}}
+.catalogue-workbench button.stock-entry-clear{flex:0 0 auto;padding:0 8px;color:var(--iw-muted);font-size:18px;line-height:1}
+.catalogue-workbench button.stock-entry-cancel{flex:0 0 auto;min-height:28px;padding:0 8px;font-size:12px;color:var(--iw-muted)}
+.catalogue-workbench button.stock-entry-cancel[hidden]{display:none}
+.catalogue-workbench .stock-entry-shortcut{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.catalogue-workbench .stock-entry-feedback{padding:7px 4px;color:var(--iw-red);font-size:12px}
+.catalogue-workbench .stock-entry-error{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px}
+.catalogue-workbench .stock-entry-error button{padding:3px 7px;border:1px solid var(--iw-line);border-radius:3px;color:var(--iw-ink)}
+.catalogue-workbench .stock-entry button{border:0;background:transparent;color:var(--iw-ink);font:inherit;cursor:pointer}
+.catalogue-workbench .stock-entry :is(.stock-entry-menu,.stock-entry-feedback,.stock-entry-field,.stock-entry-clear)[hidden]{display:none}
+.catalogue-workbench .smart-filters{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding-top:8px}
+.catalogue-workbench .smart-filters[hidden]{display:none}
+.catalogue-workbench .smart-filters .stock-entry-chip-edit{display:inline-flex;gap:4px;padding:3px 6px}
+.catalogue-workbench .smart-filters button{border:0;background:transparent;color:var(--iw-muted);font-size:12px;cursor:pointer}
+/* Column visibility */
+.column-picker{position:relative;display:inline-block}
+.catalogue-workbench .sheet-actions summary.sheet-icon-button{align-items:center;justify-content:center;width:28px;height:28px;border:1px solid transparent;border-radius:5px;color:var(--iw-muted)}
+.catalogue-workbench .sheet-actions summary.sheet-icon-button svg{display:block;width:18px;height:18px}
+.catalogue-workbench .sheet-actions :is(summary.sheet-icon-button:hover,.column-picker[open]>summary){color:var(--iw-ink);background:var(--iw-soft);border-color:var(--iw-line)}
+.catalogue-workbench .stock-option-failed{padding:7px 9px;font-size:12px}
+.stock-workbench .stock-filter-chip{margin-top:8px}
+.column-picker>summary{display:inline-flex;list-style:none;cursor:pointer}
+.column-picker>summary::-webkit-details-marker{display:none}
+.column-picker-list{position:absolute;right:0;top:calc(100% + 4px);z-index:30;min-width:200px;max-height:60vh;overflow:auto;padding:6px;border:1px solid var(--iw-line);border-radius:6px;background:var(--iw-bg);box-shadow:0 8px 24px #0003}
+.column-picker-list label{display:flex;align-items:center;gap:8px;min-height:30px;padding:0 8px;border-radius:3px;font-size:13px;white-space:nowrap;cursor:pointer}
+.column-picker-list label:hover{background:var(--iw-soft)}
+.column-picker-list input{width:14px;height:14px;margin:0;accent-color:var(--iw-blue)}
 /* Board chapters 21–23: leaving (red) and entering (green) rows of transfers, defects and production. */
-#operations-grid .jss_worksheet>tbody>tr.operations-out>td{box-shadow:inset 3px 0 0 var(--iw-red)}
-#operations-grid .jss_worksheet>tbody>tr.operations-in>td{box-shadow:inset 3px 0 0 var(--iw-green)}
-#operations-grid .jss_worksheet>tbody>tr.operations-in>td.readonly{color:var(--iw-green)}
+#operations-grid .jss_worksheet>tbody>tr>td.operations-out:is([data-column-key=item],[data-column-key=article],[data-column-key=unit],[data-column-key=warehouse],[data-column-key=quantity],[data-column-key=price]){background:color-mix(in srgb,var(--iw-red) 7%,var(--iw-bg))}
+#operations-grid .jss_worksheet>tbody>tr>td.operations-in:is([data-column-key=item],[data-column-key=article],[data-column-key=unit],[data-column-key=warehouse],[data-column-key=quantity],[data-column-key=price]){background:color-mix(in srgb,var(--iw-green) 7%,var(--iw-bg))}
+#operations-grid .jss_worksheet>tbody>tr>td.operations-out[data-column-key=item]{box-shadow:inset 3px 0 0 var(--iw-red)}
+#operations-grid .jss_worksheet>tbody>tr>td.operations-in[data-column-key=item]{box-shadow:inset 3px 0 0 var(--iw-green)}
+#operations-grid .jss_worksheet>tbody>tr>td.operations-out[data-column-key=quantity]{color:var(--iw-red)}
+#operations-grid .jss_worksheet>tbody>tr>td.operations-in[data-column-key=quantity]{color:var(--iw-green)}
+#operations-grid .jss_worksheet>tbody>tr>td[rowspan]{vertical-align:top;padding-top:7px}
+#operations-grid .jss_worksheet>tbody>tr>td.stock-finding-error{background-image:linear-gradient(225deg,var(--iw-red) 7px,transparent 7px)}
+#operations-grid .jss_worksheet>tbody>tr>td.stock-finding-warning{background-image:linear-gradient(225deg,var(--iw-amber) 7px,transparent 7px)}
+#operations-grid .jss_worksheet>tbody>tr>td.stock-finding-info{background-image:linear-gradient(225deg,var(--iw-blue) 7px,transparent 7px)}
+inventory-grid .inventory-cell-placeholder{color:var(--iw-muted);font-weight:400}
 .operations-add{min-height:32px}
 
 #stock-grid .stock-timeline{min-width:640px;max-width:1100px;border:1px solid var(--iw-line);border-bottom:0}

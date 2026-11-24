@@ -56,7 +56,7 @@ async function create(page, ...names) {
 async function edit(page, id, field, value, key = 'Enter') {
   const input = await catalogueInput(page, id, field);
   await input.fill(value);
-  if (key === 'blur') await page.locator('.catalogue-search').click();
+  if (key === 'blur') { await page.locator('.catalogue-search').click(); await page.keyboard.press('Escape'); }
   else await input.press(key);
   await saved(page);
   await expect(cell(page, id, field)).toContainText(value);
@@ -111,7 +111,7 @@ test('all five tables share drafts, inline saves, references, search and transla
   await expect(cell(page, product, 'category-id')).toContainText(`Category ${suffix}`);
   await page.locator('.catalogue-search').fill(`Missing ${suffix}`);
   await expect(cell(page, product, 'name')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Reset all', exact: true }).click();
+  await page.getByRole('button', { name: 'Clear unfinished field', exact: true }).click();
   await expect(cell(page, product, 'name')).toBeVisible();
   await grid(page).getByRole('button', { name: 'Sort by Name', exact: true }).click();
   await expect(grid(page).locator('thead td[data-column-key="name"]')).toHaveAttribute('aria-sort', 'descending');
@@ -309,6 +309,26 @@ test('a member-created category is offered without interrupting another memberâ€
     await open(page, 'categories'); await page.locator('.catalogue-search').fill(name);
     await expect.poll(() => grid(page).evaluate(node => node.model.rows.length)).toBe(1);
   } finally { await other.close(); }
+});
+
+test('tabs switch without a page load, and the smart input adds a record', async ({ page }) => {
+  await signIn(page); await open(page, 'products');
+  const suffix = Date.now();
+  await page.evaluate(() => { window.sameDocument = true; });
+  await open(page, 'categories');
+  await expect(page).toHaveURL(/categories$/);
+  const input = page.locator('.stock-entry-input');
+  await input.fill('add'); await input.press('Enter');
+  await expect(page.locator('.stock-entry-chip')).toHaveCount(1);
+  await page.locator('.stock-entry-option').filter({ hasText: 'Name' }).click();
+  await input.fill(`Smart ${suffix}`); await input.press('Control+Enter');
+  await expect(grid(page)).toContainText(`Smart ${suffix}`);
+  await expect(page.locator('.catalogue-save-new')).toBeHidden();
+  await page.getByRole('link', { name: 'Archived records' }).click();
+  await expect(grid(page)).not.toContainText(`Smart ${suffix}`);
+  await page.getByRole('link', { name: 'Active records' }).click();
+  await expect(grid(page)).toContainText(`Smart ${suffix}`);
+  expect(await page.evaluate(() => window.sameDocument)).toBe(true);
 });
 
 test('Bel snapshot signals replace omitted fields, shorter arrays and explicit nulls', async ({ page }) => {
