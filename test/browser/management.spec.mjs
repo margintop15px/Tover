@@ -207,6 +207,85 @@ for (const locale of ['en', 'ru']) {
     }
   });
 
+  test(`${locale}: managers change roles, suspend, reinstate, remove and hand over ownership; the old Owner leaves`, async ({ page }) => {
+    const person = name => `actions-${name}-${locale}@example.test`;
+    const workspace = `Actions ${locale}`;
+    const member = (action, email) => rowFor(page, email).locator(`form[action="/action/tover.memberships.web/${action}"]`);
+    const outcome = page.locator('p.management-status[role=status]');
+    const role = email => rowFor(page, email).locator('td.management-role');
+    const status = email => rowFor(page, email).locator('td.management-status');
+    async function confirm(action, email, reason) {
+      const form = member(action, email);
+      await reveal(form);
+      if (reason) await form.locator('[name=reason]').fill(reason);
+      await form.locator('button').click();
+    }
+
+    // An Admin sees no actions on an Owner's row and manages Members.
+    await login(page, person('admin'), locale);
+    await open(page, workspace, t);
+    await page.goto('/team');
+    await expect(rowFor(page, person('owner')).locator('form')).toHaveCount(0);
+    await expect(member('suspend', person('member'))).toHaveCount(1);
+    await expect(member('grant-ownership', person('member'))).toHaveCount(0);
+    await page.goto('/workspace');
+    await formFor(page, 'tover.identity.sign-out.web/sign-out').locator('button').click();
+
+    await login(page, person('owner'), locale);
+    await open(page, workspace, t);
+    await page.goto('/team');
+    // Nobody suspends or removes their own row.
+    await expect(member('suspend', person('owner'))).toHaveCount(0);
+    await expect(member('remove-member', person('owner'))).toHaveCount(0);
+
+    const change = member('change-role', person('member'));
+    await change.locator('[name=role]').selectOption('admin');
+    await change.locator('button').click();
+    await expect(outcome).toHaveText(t('Role changed.'));
+    await expect(role(person('member'))).toHaveText(t('Admin'));
+
+    // A form reviewed before another change is refused and changes nothing.
+    const stale = member('suspend', person('member'));
+    await reveal(stale);
+    await stale.locator('[name=expected-revision]').evaluate(input => { input.value = '1'; });
+    await stale.locator('button').click();
+    await expect(page.getByRole('alert')).toContainText(t('This member changed. Reload the page.'));
+    await page.goto('/team');
+    await expect(status(person('member'))).toHaveText(t('Active'));
+
+    await confirm('suspend', person('member'), 'Holiday cover ended');
+    await expect(outcome).toHaveText(t('Access suspended.'));
+    await expect(status(person('member'))).toContainText(t('Suspended'));
+    await expect(status(person('member'))).toContainText('Holiday cover ended');
+    await expect(role(person('member'))).toHaveText(t('Admin'));
+    await confirm('reinstate', person('member'));
+    await expect(outcome).toHaveText(t('Access reinstated.'));
+    await expect(status(person('member'))).toHaveText(t('Active'));
+
+    await confirm('remove-member', person('admin'));
+    await expect(outcome).toHaveText(t('Removed from the workspace.'));
+    await expect(status(person('admin'))).toHaveText(t('Removed'));
+    await expect(rowFor(page, person('admin')).locator('summary', { hasText: t('Invite again') })).toHaveCount(1);
+
+    await confirm('grant-ownership', person('heir'));
+    await expect(outcome).toHaveText(t('Ownership granted.'));
+    await expect(role(person('heir'))).toHaveText(t('Owner'));
+
+    await confirm('transfer-ownership', person('member'));
+    await expect(outcome).toHaveText(t('Ownership transferred. You are now an Admin.'));
+    await expect(role(person('member'))).toHaveText(t('Owner'));
+    await expect(role(person('owner'))).toHaveText(t('Admin'));
+    await assertTranslated(page, locale);
+
+    // The former Owner, now Admin, leaves from workspace settings and lands on the chooser without it.
+    await page.goto('/settings');
+    const leave = formFor(page, 'tover.memberships.departure.web/leave');
+    await reveal(leave);
+    await Promise.all([page.waitForURL(url => url.pathname === '/workspace'), leave.locator('button').click()]);
+    await expect(page.locator('p.management-status[role=status]')).toHaveText(t('You left {workspace}.').replace('{workspace}', workspace));
+    await expect(rowFor(page, workspace)).toHaveCount(0);
+  });
+
   test(`${locale}: native POST fallback creates, opens and invites without JavaScript`, async ({ browser, baseURL }) => {
     const context = await browser.newContext({ baseURL, javaScriptEnabled: false, locale: locale === 'ru' ? 'ru-RU' : 'en-US' });
     const page = await context.newPage();

@@ -48,6 +48,16 @@ const program = `
                ["00000000-0000-4000-8000-000000000015" "invited@example.test" nil]
                ["00000000-0000-4000-8000-000000000016" "native-en@example.test" "Native EN"]
                ["00000000-0000-4000-8000-000000000017" "native-ru@example.test" "Native RU"]]
+        ;; One workspace per locale for the member actions (board 34–39): owner, admin, member and heir.
+        actors (for [[n locale] [[1 "en"] [2 "ru"]]
+                     [m person] [[1 "owner"] [2 "admin"] [3 "member"] [4 "heir"]]]
+                 {:workspace-id (id (format "00000000-0000-4000-8000-00000000030%d" n))
+                  :workspace    (str "Actions " locale)
+                  :user         (format "00000000-0000-4000-8000-0000000003%d%d" n m)
+                  :email        (str "actions-" person "-" locale "@example.test")
+                  :name         (str "Actions " person " " locale)
+                  :role         (case person "owner" "owner" "admin" "admin" "member")})
+        users (into users (map (juxt :user :email :name)) actors)
         memberships [["00000000-0000-4000-8000-000000000012" "owner" "active"]
                      ["00000000-0000-4000-8000-000000000013" "admin" "active"]
                      ["00000000-0000-4000-8000-000000000014" "member" "suspended"]
@@ -71,6 +81,13 @@ const program = `
                                :let [membership (java.util.UUID/nameUUIDFromBytes (.getBytes (str workspace-id user)))]]
                            [membership {:membership_id membership :workspace_id workspace-id :user_id (id user) :role role
                                         :status status :created_at at}]))
+                 (update :workspaces into (for [{:keys [workspace-id workspace]} actors]
+                                            [workspace-id {:workspace_id workspace-id :name workspace :created_at at
+                                                           :created_by (id (:user (first actors)))}]))
+                 (update :memberships into (for [{:keys [workspace-id user role]} actors
+                                                 :let [membership (java.util.UUID/nameUUIDFromBytes (.getBytes (str workspace-id user)))]]
+                                             [membership {:membership_id membership :workspace_id workspace-id :user_id (id user)
+                                                          :role role :status "active" :revision 1 :created_at at}]))
                  (update :invitations (fnil into {})
                          [(invitation "00000000-0000-4000-8000-000000000201" "pending@example.test" "member" "pending"
                                       (.plusSeconds (java.time.Instant/now) 604800))
