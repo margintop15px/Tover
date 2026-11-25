@@ -153,12 +153,16 @@
 
 
 (def SourceOperation
+  "`handed-over-at` is the handover time last observed on a posting, which its cancelled revisions keep as
+  `occurred-at`."
   (into [:map [:source-operation-id [:string {:min 1 :max 700}]]]
         (concat Observed
                 [[:kind observations/OperationKind] [:status :string] [:terminal :boolean]
                  [:occurred-at {:optional true} At] [:planned-at {:optional true} At] [:provider-updated-at {:optional true} At]
                  [:related-operation {:optional true} :string] [:lines Text]
                  [:from-warehouse {:optional true} :string] [:to-warehouse {:optional true} :string]
+                 [:handed-over-at {:optional true} At] [:return-schema {:optional true} [:enum "fbo" "fbs"]]
+                 [:compensated {:optional true} :boolean] [:disposed {:optional true} :boolean]
                  [:complete :boolean] [:missing {:optional true} Text]])))
 
 
@@ -300,7 +304,8 @@
   {:id     :source-operation-id :store :catalogue :schema SourceOperation :policy ::records/workspace-member
    :events {::source-operation-observed {:set (into observed-fields [:kind :status :terminal :occurred-at :planned-at
                                                                      :provider-updated-at :related-operation :lines
-                                                                     :from-warehouse :to-warehouse :complete :missing])}
+                                                                     :from-warehouse :to-warehouse :complete :missing
+                                                                     :handed-over-at :return-schema :compensated :disposed])}
             ::source-operation-seen     {:set [:last-observed-at]}}})
 
 

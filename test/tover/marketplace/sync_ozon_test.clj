@@ -3,7 +3,7 @@
   against a fake Ozon. No live provider calls."
   (:require
     [charred.api :as json]
-    [clojure.test :refer [deftest is]]
+    [clojure.test :refer [are deftest is]]
     [tover.marketplace.sync.ozon :as ozon]))
 
 
@@ -71,7 +71,7 @@
 
 
 (deftest unexpected-client-error-is-not-retried
-  (doseq [status [400 404 408 422]]
+  (doseq [status [400 404 408 422 425]]
     (let [{:keys [env calls sleeps]} (env [{:status status} (ok {})])
           error (thrown #(ozon/request! env "/v1/returns/list" {}))]
       (is (= :unexpected-response (:type error)))
@@ -207,44 +207,192 @@
   (is (false? (:complete (ozon/fbo-posting {"posting_number" "1" "status" "delivered" "analytics_data" {"warehouse_id" 2}
                                             "products"       [{"sku" 100 "quantity" 1}]}))))
   (is (false? (:complete (ozon/rfbs-return {"return_id" "R1" "state" {"state" "ArrivedAtReturnPlace"} "product" {"sku" "123"}}))))
-  (is (false? (:complete (ozon/supply {"order_id" 5 "state" "COMPLETED"} [{"sku" 100 "quantity" 5}]))))
+  (is (false? (:complete (ozon/supply {"order_id" 5} {"supply_id" 51 "state" "COMPLETED"} [{"sku" 100 "quantity" 5}] []))))
   (is (false? (:complete (ozon/removal {"sku" "100" "quantity_for_return" 4 "return_id" 7} "from-stock")))))
 
 
-(deftest supply-act-quantities-kept-apart
-  (let [order    {"order_id" 5 "state" "COMPLETED" "supplies" [{"storage_warehouse" {"warehouse_id" 2}}]}
-        bundle   [{"sku" 100 "quantity" 5} {"sku" 200 "quantity" 3}]
-        agreeing (ozon/supply order bundle [{"act_id" 77 "sku" 100 "declared_quantity" 5 "fact_quantity" 5 "approved_quantity" 5}
-                                            {"act_id" 77 "sku" 200 "declared_quantity" 3 "fact_quantity" 3 "approved_quantity" 3}])
-        differ   (ozon/supply order bundle [{"act_id" 77 "sku" 100 "declared_quantity" 5 "fact_quantity" 4 "approved_quantity" 5}
-                                            {"act_id" 77 "sku" 200 "declared_quantity" 3 "fact_quantity" 3 "approved_quantity" 3}])]
-    (is (= [{:declared-quantity "5" :fact-quantity "4" :approved-quantity "5" :act-id "77"}]
-           (map #(not-empty (select-keys % [:declared-quantity :fact-quantity :approved-quantity :act-id :quantity]))
-                (take 1 (:lines differ))))
-        "the three quantities stay apart and no line quantity is chosen")
-    (is (some #{"accepted quantity"} (:missing differ)) "disagreeing act keeps the supply incomplete")
-    (is (= ["5" "3"] (map :quantity (:lines agreeing))) "agreeing act gives the line quantity")
-    (is (= ["actual time"] (:missing agreeing)) "still incomplete: the actual time is unconfirmed")
-    (is (some #{"accepted quantity"} (:missing (ozon/supply order bundle))) "no act, no accepted quantity")))
+(defn p
+  "An FBS posting in `status` with its handover dates."
+  {:malli/schema [:=> [:cat :string [:* :any]] :map]}
+  [status & {:keys [fact delivering after-ship]}]
+  {"posting_number"     "P-1" "status"         status
+   "fact_delivery_date" fact "delivering_date" delivering
+   "cancellation"       {"cancelled_after_ship" after-ship}
+   "delivery_method"    {"warehouse_id" 1}
+   "products"           [{"sku" 100 "quantity" 2}]})
 
 
-(deftest supply-acts-read-per-supply-once-accepted
+(deftest posting-times
+  (are [posting at] (= at (:occurred-at (ozon/fbs-posting posting)))
+    (p "delivering" :fact "2026-11-26T10:00:00Z" :delivering "2026-11-26T09:00:00Z") "2026-11-26T10:00:00Z"
+    (p "delivering" :delivering "2026-11-26T09:00:00Z") "2026-11-26T09:00:00Z"
+    (p "delivering" :fact "" :delivering "2026-11-26T09:00:00Z") "2026-11-26T09:00:00Z"
+    (p "awaiting_deliver" :fact "2026-11-26T10:00:00Z") nil
+    (p "cancelled" :fact "2026-11-26T10:00:00Z") nil
+    (p "cancelled" :fact "2026-11-26T10:00:00Z" :after-ship true) "2026-11-26T10:00:00Z"
+    (p "cancelled" :after-ship true) nil)
+  (is (= ["actual time"] (:missing (ozon/fbs-posting (p "cancelled" :after-ship true)))) "the flag alone proves no time"))
+
+
+(deftest handed-over-statuses
+  (doseq [kind ["fbs-posting" "fbo-posting"]]
+    (doseq [status ["delivering" "driver_pickup" "delivered" "client_arbitration" "arbitration" "not_accepted" "sent_by_seller"]]
+      (is (true? (ozon/handed-over? kind {"status" status}))))
+    (doseq [status ["awaiting_packaging" "awaiting_deliver" "acceptance_in_progress" "cancelled" "unknown" nil]]
+      (is (false? (ozon/handed-over? kind {"status" status}))))))
+
+
+(defn f
+  "An FBO posting in `status` of warehouse 77."
+  {:malli/schema [:=> [:cat :string [:maybe :string]] :map]}
+  [status fact]
+  {"posting_number"  "F-1"                  "status"         status              "fact_delivery_date" fact
+   "delivering_date" "2026-11-26T09:00:00Z" "analytics_data" {"warehouse_id" 77} "products"           [{"sku" 100 "quantity" 1}]})
+
+
+(deftest fbo-posting-complete-after-handover
+  (is (= [true nil "2026-11-26T10:00:00Z" {:type "fbo" :id "77"}]
+         ((juxt :complete :missing :occurred-at :from-warehouse) (ozon/fbo-posting (f "delivering" "2026-11-26T10:00:00Z")))))
+  (is (= ["actual time"] (:missing (ozon/fbo-posting (f "delivering" nil)))) "delivering_date never stands in")
+  (is (= ["actual time"] (:missing (ozon/fbo-posting (f "awaiting_deliver" "2026-11-26T10:00:00Z")))))
+  (is (= ["actual time" "line quantity" "warehouse"]
+         (:missing (ozon/fbo-posting (assoc (f "delivering" nil) "products" [] "analytics_data" nil))))))
+
+
+(deftest cancelled-fbo-posting-with-fact-date-is-handed-over
+  (is (= [true "2026-11-26T10:00:00Z" true]
+         ((juxt :complete :occurred-at :terminal) (ozon/fbo-posting (f "cancelled" "2026-11-26T10:00:00Z")))))
+  (doseq [fact [nil "" " "]]
+    (is (false? (ozon/handed-over? "fbo-posting" (assoc (f "cancelled" fact) "cancellation" {"cancelled_after_ship" true}))))
+    (is (= ["actual time"] (:missing (ozon/fbo-posting (f "cancelled" fact))))))
+  (is (true? (ozon/handed-over? "fbs-posting" (p "cancelled" :after-ship true))))
+  (is (false? (ozon/handed-over? "fbs-posting" (p "cancelled" :fact "2026-11-26T10:00:00Z")))))
+
+
+(deftest financial-price-wins
+  (let [prices  #(mapv (juxt :price :price-currency) (:lines %))
+        posting (assoc (p "delivered")
+                       "products" [{"sku" 100 "quantity" 1 "price" "900.10" "currency_code" "RUB"}
+                                   {"sku" 200 "quantity" 1 "price" "50" "currency_code" "RUB"}
+                                   {"sku" 300 "quantity" 1 "price" "" "currency_code" "RUB"}
+                                   {"sku" 400 "quantity" 1 "price" "40" "currency_code" "RUB"}]
+                       "financial_data" {"products" [{"product_id" 400 "price" "" "currency_code" "CNY"}
+                                                     {"product_id" 100 "price" 850.50M "currency_code" "CNY"}]})
+        twice   (assoc posting
+                       "products" [{"sku" 100 "quantity" 1} {"sku" 100 "quantity" 2}]
+                       "financial_data" {"products" [{"product_id" 100 "price" 10 "currency_code" "RUB"}
+                                                     {"product_id" 100 "price" 20 "currency_code" "RUB"}]})
+        ret     {"id"      1 "schema" "Fbo"
+                 "product" {"sku" 100 "quantity" 1 "price" {"price" 99.90M "currency_code" "RUB"}
+                            "price_without_commission" {"price" 70 "currency_code" "RUB"}}}]
+    (is (= [["850.50" "CNY"] ["50" "RUB"] [nil nil] ["40" "RUB"]]
+           (prices (ozon/fbs-posting posting)) (prices (ozon/fbo-posting posting))))
+    (is (= [["10" "RUB"] ["20" "RUB"]] (prices (ozon/fbs-posting twice))) "repeated lines keep their own price")
+    (is (= [["99.90" "RUB"]] (prices (ozon/fbo-fbs-return ret))))))
+
+
+(deftest details-request-analytics-and-financial-data
+  (doseq [[domain path] [["fbs-postings" "/v3/posting/fbs/get"] ["fbo-postings" "/v2/posting/fbo/get"]]]
+    (let [{:keys [env calls]} (env [(ok {:result {:posting_number "1"}})])]
+      (ozon/step domain env {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}} {:started? true :pending ["1"]})
+      (is (= [{:path path :body {:posting_number "1" :with {:analytics_data true :financial_data true}}}]
+             (mapv #(select-keys % [:path :body]) @calls))))))
+
+
+(defn act
+  {:malli/schema [:=> [:cat :any :any :any :any] :map]}
+  [id sku fact approved]
+  {"act_id"        id   "act_type"          "ACCEPTANCE" "sku" sku "declared_quantity" approved
+   "fact_quantity" fact "approved_quantity" approved})
+
+
+(deftest approved-quantity-summed-over-acceptance-acts
+  (let [supply (partial ozon/supply {"order_id" 5} {"supply_id" 51 "state" "COMPLETED" "storage_warehouse" {"warehouse_id" 2}})
+        bundle [{"sku" 100 "quantity" 11}]]
+    (let [s (supply bundle [(act 77 100 4 4) (act 78 100 6 6) (assoc (act 79 100 9 9) "act_type" "DISCREPANCY")
+                            (dissoc (act 80 100 9 9) "act_type")])]
+      (is (= [{:quantity "10" :fact-quantity "10" :approved-quantity "10" :act-id "77,78"}]
+             (mapv #(select-keys % [:quantity :fact-quantity :approved-quantity :act-id]) (:lines s)))
+          "acts of another or no stated type are no acceptance")
+      (is (= ["actual time"] (:missing s)) "the receipt time is never stated"))
+    (let [s (supply bundle [(act 77 100 9 10)])]
+      (is (= {:fact-quantity "9" :approved-quantity "10"}
+             (select-keys (first (:lines s)) [:quantity :fact-quantity :approved-quantity])) "no quantity is chosen")
+      (is (some #{"accepted quantity"} (:missing s))))
+    (is (some #{"accepted quantity"} (:missing (supply bundle [(act 77 100 5 4) (act 78 100 5 6)])))
+        "acts that differ do not even out")
+    (is (= [nil nil] (mapv :quantity (:lines (supply [{"sku" 100 "quantity" 5} {"sku" 100 "quantity" 6}] [(act 77 100 11 11)]))))
+        "a sum is never given to two lines")
+    (is (= [["100" "4"] ["200" "3"]]
+           (mapv (juxt #(:value (first (:identifiers %))) :quantity)
+                 (:lines (supply bundle [(act 77 100 4 4) (act 77 200 1 1) (act 78 200 2 2)]))))
+        "an accepted SKU the bundle does not list is one line")
+    (is (= [nil nil] (mapv :quantity (:lines (supply [{"quantity" 1}] [(act 77 nil 1 1)])))) "a line without SKU is never matched")
+    (is (some #{"accepted quantity"} (:missing (supply bundle []))))))
+
+
+(defn observe-supplies
+  "The detail batch of order 5, its bundles and acts answered by `answer`; with the calls made."
+  {:malli/schema [:=> [:cat [:sequential :map] [:fn fn?]] [:map [:calls :any] [:observations :any]]]}
+  [supplies answer]
   (let [{:keys [env calls]} (env (fn [path body]
-                                   (ok (case path
-                                         "/v3/supply-order/list" {:order_ids [5 6] :last_id ""}
-                                         "/v3/supply-order/get" {:orders [{:order_id 5 :state "COMPLETED" :supplies [{:supply_id 51 :bundle_id "b"}]}
-                                                                          {:order_id 6 :state "DATA_FILLING" :supplies [{:supply_id 61}]}]}
-                                         "/v1/supply-order/bundle" {:items [{:sku 100 :quantity 5}] :has_next false}
-                                         "/v1/supply-order/act/product/get" {:items [{:sku           100               :act_id            9 :declared_quantity 5
-                                                                                      :fact_quantity 5                 :approved_quantity 5
-                                                                                      :supply        (:supply_id body)}]}))))
-        context             {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}}
-        listed              (ozon/step "supplies" env context {})
-        detailed            (ozon/step "supplies" env context (:state listed))]
-    (is (= [{:supply_id "51"}] (map :body (filter #(= "/v1/supply-order/act/product/get" (:path %)) @calls)))
-        "only the accepted order's supply")
-    (is (= [["5" ["5"]] ["6" []]]
-           (map (juxt :source-id #(mapv :quantity (:lines %))) (:observations detailed))))))
+                                   (ok (if (= "/v3/supply-order/get" path)
+                                         {:orders [{:order_id 5 :state "IN_TRANSIT" :order_tags {:seller_warehouse_id 1} :supplies supplies}]}
+                                         (answer path body)))))]
+    {:observations (:observations (ozon/step "supplies" env {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}}
+                                             {:started? true :pending ["5"]}))
+     :calls        @calls}))
+
+
+(deftest one-operation-per-supply
+  (let [{:keys [observations calls]}
+        (observe-supplies [{:supply_id 51 :bundle_id "a" :state "COMPLETED" :storage_warehouse {:warehouse_id 2 :name "Two"}}
+                           {:supply_id 52 :bundle_id "b" :storage_warehouse {:warehouse_id 3}}
+                           {:supply_id 53 :bundle_id "c"}]
+                          (fn [path body]
+                            (if (= "/v1/supply-order/bundle" path)
+                              {:items [{:sku ({"a" 100 "b" 200 "c" 300} (first (:bundle_ids body))) :quantity 5}] :has_next false}
+                              {:items [(act 9 100 5 5)]})))
+        ops (filterv #(= "operation" (:kind %)) observations)]
+    (is (= [["51" "COMPLETED" true "2" "100" "5"] ["52" "IN_TRANSIT" false "3" "200" nil] ["53" "IN_TRANSIT" false nil "300" nil]]
+           (mapv (juxt :source-id :status :terminal (comp :id :to-warehouse)
+                       #(get-in % [:lines 0 :identifiers 0 :value]) #(get-in % [:lines 0 :quantity]))
+                 ops)))
+    (is (= [["actual time"] ["actual time" "line quantity" "accepted quantity"]
+            ["actual time" "line quantity" "warehouse" "accepted quantity"]]
+           (mapv :missing ops)) "a supply without storage warehouse lacks the warehouse, though its origin is stated")
+    (is (= ["5" "5" "5"] (mapv :refetch-key ops)) "supplies are read again by their order")
+    (is (= [{:supply_id "51"}] (mapv :body (filter #(= "/v1/supply-order/act/product/get" (:path %)) calls)))
+        "acts of the accepted supply only")
+    (is (= [["fbo" "2" "Two"] ["fbo" "3" nil]]
+           (mapv (juxt :warehouse-type :source-id :name) (filter #(= "warehouse" (:kind %)) observations))))))
+
+
+(deftest bundle-pages
+  (let [read (fn [pages]
+               (let [left   (atom 10)
+                     answer (fn [_ body]
+                              (when (neg? (swap! left dec)) (throw (ex-info "endless" {:type :endless})))
+                              (pages (:last_id body)))]
+                 (->> (observe-supplies [{:supply_id 51 :bundle_id "a"}] answer)
+                      :observations first :lines (map #(get-in % [:identifiers 0 :value])))))
+        page (fn [sku more? last-id] {:items [{:sku sku :quantity 1}] :has_next more? :last_id last-id})]
+    (is (= ["1" "2"] (read {"" (page 1 true "x") "x" (page 2 false "x")})))
+    (is (= ["1"] (read {"" (page 1 false "x")})) "has_next decides")
+    (is (= :repeated-cursor (:type (thrown #(read {"" (page 1 true "x") "x" (page 2 true "x")})))))
+    (is (= :incomplete-page (:type (thrown #(read {"" (page 1 true "")})))))
+    (is (= :repeated-cursor (:type (thrown #(read {"" (page 1 true "x") "x" (page 2 true "y") "y" (page 3 true "x")}))))
+        "a cycle is never followed")))
+
+
+(deftest removals-given-out-or-disposed
+  (let [row   {"return_id" 7 "box_id" 8 "sku" 100 "quantity_for_return" 4 "given_out_date" "" "utilization_date" " "}
+        facts (juxt :occurred-at :disposed #(get-in % [:lines 0 :quantity]) :missing :terminal)]
+    (is (= [nil false nil ["actual time" "line quantity" "warehouse"] false] (facts (ozon/removal row "from-stock"))) "blank is absent")
+    (is (= ["2026-11-26T10:00:00Z" false "4" ["warehouse"] true]
+           (facts (ozon/removal (assoc row "given_out_date" "2026-11-26T10:00:00Z") "from-stock"))))
+    (is (= ["2026-11-27T10:00:00Z" true "4" ["warehouse"] true]
+           (facts (ozon/removal (assoc row "utilization_date" "2026-11-27T10:00:00Z") "from-supply"))))))
 
 
 (def window
@@ -311,7 +459,7 @@
                                            {:orders [{:order_id          "1" :state "DATA_FILLING"
                                                       :dropoff_warehouse {:warehouse_id 5 :name "Drop-off"}
                                                       :order_tags        {:seller_warehouse_id 1}
-                                                      :supplies          [{:storage_warehouse {:warehouse_id 2 :name "FBO 2"}}]}]
+                                                      :supplies          [{:supply_id 51 :storage_warehouse {:warehouse_id 2 :name "FBO 2"}}]}]
                                             :items  []})]
     (is (= [{:type "supply-origin" :id "1"} {:type "fbo" :id "2" :name "FBO 2"}]
            ((juxt :from-warehouse :to-warehouse) operation)))
@@ -350,9 +498,46 @@
 
 
 (deftest fbo-return-received-by-ozon
-  (let [observed (observe-return {:schema "FBO" :place {:id 88} :target_place {:id 89}})]
+  (let [[r :as observed] (observe-return {:schema "Fbo" :visual {:status {:sys_name "ReturnedToOzon"}} :place {:id 88} :target_place {:id 89}})]
     (names-no-place observed)
-    (is (= ["fbo-posting:FBO-1" "9223372036854775807"] ((juxt :related-operation :source-id) (first observed))))))
+    (is (= ["fbo-posting:FBO-1" "9223372036854775807" "fbo" false "2026-07-27T10:00:00Z" "ReturnedToOzon" true]
+           ((juxt :related-operation :source-id :return-schema :compensated :occurred-at :status :terminal) r)))))
+
+
+(deftest fbo-return-received-by-seller
+  (let [[r :as observed] (observe-return {:schema "Fbo"})]
+    (names-no-place observed)
+    (is (= ["fbo" "ReceivedBySeller" "2026-07-27T10:00:00Z"] ((juxt :return-schema :status :occurred-at) r)))))
+
+
+(deftest fbo-return-lacks-receiving-warehouse
+  (names-no-place (observe-return {:schema "FBO" :place {:id 88 :name "Hub"}})))
+
+
+(deftest fbs-return-lacks-receiving-warehouse
+  (let [[r :as observed] (observe-return {:schema "FBS" :visual {:status {:sys_name "SomeStatus"}} :place {:id 9}})]
+    (names-no-place observed)
+    (is (= ["fbs" "fbs-posting:FBO-1" "2026-07-27T10:00:00Z"] ((juxt :return-schema :related-operation :occurred-at) r)))))
+
+
+(deftest no-final-moment-no-receipt
+  (doseq [moment [nil ""]
+          row    [{} {:type "Cancellation"} {:compensation_status {:status {:id 1 :sys_name "CompensationSent"}}}]]
+    (is (= ["actual time" "receiving warehouse"]
+           (:missing (first (observe-return (merge {:schema "FBO" :logistic {:final_moment moment :return_date "2026-07-26T10:00:00Z"}} row))))))))
+
+
+(deftest compensation-is-recorded-beside-the-final-moment
+  (are [status compensated] (= [compensated "2026-07-27T10:00:00Z"]
+                               ((juxt :compensated :occurred-at) (first (observe-return {:schema "FBO" :compensation_status status}))))
+    {:status {:id 1 :display_name "Sent" :sys_name "CompensationSent"}} true
+    {:status {:id 0 :display_name "" :sys_name ""}} false
+    nil false))
+
+
+(deftest return-of-another-schema
+  (is (= [] (observe-return {:schema "FBP"})) "FBP operations are not read")
+  (is (= [nil nil] ((juxt :return-schema :related-operation) (first (observe-return {:schema "New"})))) "never guessed"))
 
 
 (deftest fbs-return-at-a-pickup-point
@@ -558,7 +743,7 @@
     (is (= [["7" "P-1" false]] (map (juxt :source-id :refetch-key :terminal) (:observations refetched))))
     (is (not (:finished? refetched)))
     (let [listed (ozon/step "returns" env context (:state refetched))]
-      (is (= {:logistic_return_date {:time_from "2026-12-09T06:00:00Z" :time_to "2026-12-10T06:00:00Z"}}
+      (is (= {:visual_status_change_moment {:time_from "2026-12-09T06:00:00Z" :time_to "2026-12-10T06:00:00Z"}}
              (get-in (last @calls) [:body :filter])) "then the window")
       (is (:finished? listed)))))
 

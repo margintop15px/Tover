@@ -61,6 +61,8 @@
    [:approved-quantity {:optional true} :string]
    [:act-id {:optional true} :string]
    [:unit {:optional true} :string]
+   [:price {:optional true} :string]
+   [:price-currency {:optional true} :string]
    [:warehouse {:optional true} Warehouse]
    [:duplicate {:optional true} :boolean]
    ;; Declared so that a batch still carrying buyer data is refused instead of silently stripped.
@@ -102,6 +104,9 @@
    [:lines {:optional true} [:vector Line]]
    [:from-warehouse {:optional true} Warehouse]
    [:to-warehouse {:optional true} Warehouse]
+   [:return-schema {:optional true} [:enum "fbo" "fbs"]]
+   [:compensated {:optional true} :boolean]
+   [:disposed {:optional true} :boolean]
    [:complete {:optional true} :boolean]
    [:missing {:optional true} [:vector :string]]
    [:category-id {:optional true} :string]
@@ -203,6 +208,37 @@
     (boolean (some true? (map #(and (some? %1) (nil? %2))
                               (slots observation (:lines observation))
                               (slots row (read-json (:lines row))))))))
+
+
+(defn after-handover?
+  "Whether a posting in this status was handed over."
+  {:malli/schema [:=> [:cat [:maybe :string]] :boolean]}
+  [status]
+  (contains? #{"delivering" "driver_pickup" "delivered" "client_arbitration" "arbitration" "not_accepted" "sent_by_seller"}
+             (some-> status str/lower-case)))
+
+
+(defn cancelled?
+  {:malli/schema [:=> [:cat [:maybe :string]] :boolean]}
+  [status]
+  (= "cancelled" (some-> status str/lower-case)))
+
+
+(defn- with-handover
+  "The posting with the handover time observed so far. A cancelled revision that states none takes it: it is
+  the stored one's, not the provider's, so it is no part of the payload hash."
+  {:malli/schema [:=> [:cat [:maybe :map] :map] :map]}
+  [row {:keys [operation-kind status occurred-at missing] :as observation}]
+  (let [at (or occurred-at
+               (:handed-over-at row)
+               ;; Recorded before that field: such a time is proven only in a status after handover.
+               (when (after-handover? (:status row)) (:occurred-at row)))]
+    (if-not (and at (#{"fbs-posting" "fbo-posting"} operation-kind))
+      observation
+      (cond-> (assoc observation :handed-over-at at)
+        (and (nil? occurred-at) (cancelled? status))
+        (as-> o (let [missing (vec (remove #{"actual time"} missing))]
+                  (assoc o :occurred-at at :missing missing :complete (empty? missing))))))))
 
 
 (defn entity-id
@@ -313,7 +349,9 @@
 
 
 (defn observe
-  "One observation of a run against the current rows: [events rows new?]. An unchanged hash only moves last observed."
+  "One observation of a run against the current rows: [events rows new?]. An unchanged hash only moves last
+  observed, except that an operation stored by another adapter version is observed again: the new revision holds
+  this version, so that happens once."
   {:malli/schema [:=> [:cat :map :map :string :string :string :string] [:tuple [:vector :map] :map [:maybe :string]]]}
   [rows observation connection-id run-id now adapter]
   (let [kind        (:kind observation)
@@ -324,7 +362,7 @@
         stated      (cond-> (map-warehouses #(select-keys % [:type :id]) observation)
                       (and (= "fbo" (:warehouse-type observation)) (nil? (:name observation)) (:name row))
                       (assoc :name (:name row)))
-        observation (resolved rows connection-id stated)]
+        observation (cond->> (resolved rows connection-id stated) (= "operation" kind) (with-handover row))]
     (case kind
       "stock"
       (if-not row
@@ -350,7 +388,8 @@
             _ model
             facts (dissoc stated :kind)
             hash (payload-hash facts)]
-        (if (and (= hash (:payload-hash row)) (not (and (= "operation" kind) (warehouse-gained? row observation))))
+        (if (and (= hash (:payload-hash row)) (not (and (= "operation" kind)
+                                                        (or (not= adapter (:adapter-version row)) (warehouse-gained? row observation)))))
           [[{:type seen :data (cond-> {id-key id :last-observed-at now} (= "warehouse" kind) (assoc :active true))}]
            (update rows id assoc :last-observed-at now) nil]
           (let [common (observed-common {:id-key id-key} row {:id id :hash hash :adapter adapter} connection-id
@@ -361,7 +400,8 @@
                                 "warehouse" (cond-> {:warehouse-type (:warehouse-type observation) :active true}
                                               (:name observation) (assoc :name (:name observation)))
                                 "operation" (cond-> (select-keys observation [:status :terminal :complete :occurred-at :planned-at
-                                                                              :provider-updated-at :from-warehouse :to-warehouse])
+                                                                              :provider-updated-at :from-warehouse :to-warehouse
+                                                                              :handed-over-at :return-schema :compensated :disposed])
                                               true (assoc :kind (:operation-kind observation)
                                                           :lines (write-json (vec (:lines observation))))
                                               (:related-operation observation) (assoc :related-operation (str connection-id ":" (:related-operation observation)))

@@ -17,6 +17,7 @@
     [tover.marketplace.sync-ozon-test :as fake]
     [tover.marketplace.sync.model :as sync]
     [tover.marketplace.sync.observations :as observations]
+    [tover.marketplace.sync.ozon :as ozon]
     [tover.support :as support])
   (:import
     [java.time Instant]
@@ -550,6 +551,99 @@
                (observe-posting {fbs-id {:active false} rfbs-id {:active true}} listed)))))))
 
 
+(defn posting-in
+  "FBO posting P in `status`, handed over at `fact`, as translated."
+  {:malli/schema [:=> [:cat :string [:maybe :string]] :map]}
+  [status fact]
+  (ozon/fbo-posting {"posting_number" "P"                 "status"   status "fact_delivery_date" fact
+                     "analytics_data" {"warehouse_id" 77} "products" [{"sku" 100 "quantity" 1}]}))
+
+
+(defn revise
+  "Rows and event types after `observation` is recorded over `rows`."
+  {:malli/schema [:function [:=> [:cat :map :map] :any] [:=> [:cat :map :map :string] :any]]}
+  ([rows observation] (revise rows observation ozon/adapter-version))
+  ([rows observation adapter]
+   (let [plan (record {:existing rows} {:domain "fbo-postings" :observations [observation] :adapter-version adapter})
+         data (event plan ::sync/source-operation-observed)]
+     [(cond-> rows data (assoc (:source-operation-id data) data))
+      (vec (remove #{::sync/source-batch-recorded} (events plan)))])))
+
+
+(defn after-revision
+  "The stored operation after these observations in turn."
+  {:malli/schema [:=> [:cat [:* :map]] :map]}
+  [& observations]
+  (val (first (reduce #(first (revise %1 %2)) {} observations))))
+
+
+(def moment
+  "2026-11-26T10:00:00Z")
+
+
+(deftest handover-survives-cancellation
+  (let [handed    (posting-in "delivering" moment)
+        cancelled (posting-in "cancelled" nil)
+        row       (after-revision handed cancelled)]
+    (is (= [2 moment true nil "cancelled"] ((juxt :revision :occurred-at :complete :missing :status) row)))
+    (is (= row (after-revision handed cancelled cancelled cancelled)) "the same payload adds no revision")
+    (is (= (:payload-hash row) (:payload-hash (after-revision cancelled))) "hashed as the provider stated it")
+    (is (= [nil false "[\"actual time\"]"] ((juxt :occurred-at :complete :missing) (after-revision cancelled))))
+    (is (= [3 moment true] ((juxt :revision :occurred-at :complete)
+                            (after-revision handed cancelled (assoc cancelled :planned-at "2026-11-25T10:00:00Z")))))
+    (is (= moment (:occurred-at (after-revision handed (posting-in "delivering" nil) cancelled)))
+        "also when an earlier revision already stopped stating it")
+    (is (= [nil false] ((juxt :occurred-at :complete) (after-revision handed (posting-in "delivering" nil))))
+        "only cancelled revisions keep it")
+    (is (= "2026-11-27T10:00:00Z" (:occurred-at (after-revision handed (posting-in "cancelled" "2026-11-27T10:00:00Z"))))
+        "a stated time wins")
+    (is (= ["[\"line quantity\"]" false]
+           ((juxt :missing :complete) (after-revision handed (assoc cancelled :missing ["actual time" "line quantity"])))))))
+
+
+(deftest fbs-handover-survives-cancellation
+  (let [posting #(ozon/fbs-posting {"posting_number" "P" "status" %1 "fact_delivery_date" %2 "delivery_method" {"warehouse_id" 3}
+                                    "products"       [{"sku" 100 "quantity" 1}]})
+        [rows]  (revise {} (posting "delivering" moment))
+        [rows]  (revise rows (posting "cancelled" nil))
+        id      (str c ":fbs-posting:P")]
+    (is (= [moment false "[\"warehouse\"]"] ((juxt :occurred-at :complete :missing) (rows id))))
+    (let [[listed types] (revise (assoc rows fbs-id {:active true}) (posting "cancelled" nil))]
+      (is (= [::sync/source-operation-observed] types))
+      (is (= [3 moment true nil fbs-id] ((juxt :revision :occurred-at :complete :missing :from-warehouse) (listed id))))
+      (is (= [::sync/source-operation-seen] (second (revise listed (posting "cancelled" nil))))))))
+
+
+(deftest earlier-adapter-time-is-kept-only-after-handover
+  (let [id   (str c ":fbs-posting:P")
+        kept (fn [status]
+               (let [row {:source-operation-id id     :revision    1      :payload-hash "x" :adapter-version "ozon-1"
+                          :status              status :occurred-at moment}]
+                 (:occurred-at (get (first (revise {id row} (ozon/fbs-posting {"posting_number" "P" "status" "cancelled" "products" []}))) id))))]
+    (is (= [moment nil nil] (map kept ["delivering" "awaiting_deliver" "cancelled"])))))
+
+
+(deftest new-adapter-observes-an-unchanged-operation-once
+  (let [posting       (posting-in "delivering" moment)
+        id            (str c ":fbo-posting:P")
+        [old]         (revise {} posting "ozon-1")
+        [again first] (revise old posting)
+        [_ second]    (revise again posting)]
+    (is (= "ozon-2" ozon/adapter-version))
+    (is (= [[::sync/source-operation-observed] [::sync/source-operation-seen]] [first second]))
+    (is (= [2 "ozon-2" (:payload-hash (old id))] ((juxt :revision :adapter-version :payload-hash) (again id))))))
+
+
+(deftest operation-evidence-is-recorded
+  (let [ret     (after-revision (ozon/fbo-fbs-return {"id"                  7 "schema" "Fbo"
+                                                      "compensation_status" {"status" {"sys_name" "Sent"}}
+                                                      "product"             {"sku" 100 "quantity" 1 "price" {"price" 9.50M "currency_code" "RUB"}}}))
+        removal (after-revision (ozon/removal {"return_id" 7 "utilization_date" moment} "from-stock"))]
+    (is (= ["fbo" true nil] ((juxt :return-schema :compensated :disposed) ret)))
+    (is (= [["9.50" "RUB"]] (map (juxt :price :price-currency) (json/read-json (:lines ret) :key-fn keyword))))
+    (is (= [nil nil true] ((juxt :return-schema :compensated :disposed) removal)))))
+
+
 (deftest same-barcode-under-two-connections
   (let [one (event (record {} {:observations [(product "A-1")]}) ::sync/external-product-observed)
         two (event (record {:run (run {:connection-id "c2"})} {:observations [(product "A-1")]}) ::sync/external-product-observed)]
@@ -964,10 +1058,12 @@
                                                   :has_next false}
       "/v1/analytics/stocks" {:items [{:sku 100 :warehouse_id 2 :available_stock_count 6}]}
       "/v4/posting/fbs/list" {:result {:postings [{:posting_number "123-0001-1"}] :has_next false}}
-      "/v3/posting/fbs/get" {:result {:posting_number "123-0001-1" :status "delivering" :delivery_method {:warehouse_id 1}
+      "/v3/posting/fbs/get" {:result {:posting_number "123-0001-1" :status "delivering" :fact_delivery_date "2026-11-26T10:00:00Z" :delivery_method {:warehouse_id 1}
                                       :products       [{:sku 100 :offer_id "A-1" :quantity 2}]}}
       "/v3/posting/fbo/list" {:result []}
-      "/v1/returns/list" {:returns [] :has_next false}
+      "/v1/returns/list" {:returns  [{:id       7 :schema "Fbo" :posting_number "F-1" :visual {:status {:sys_name "ReturnedToOzon"}}
+                                      :logistic {:final_moment "2026-11-26T10:00:00Z"} :product {:sku 100 :quantity 1}}]
+                          :has_next false}
       "/v2/returns/rfbs/list" {:returns []}
       "/v3/supply-order/list" {:order_ids [] :last_id ""}
       ("/v1/removal/from-stock/list" "/v1/removal/from-supply/list") {:returns_summary_report_rows [] :last_id ""})))
@@ -1022,7 +1118,7 @@
           (let [status (read)]
             (is (nil? (:current-run status)))
             (is (= "completed" (:last-outcome status)))
-            (is (= {:listings 1 :warehouses 4 :operations 1} (:found-counts status)))
+            (is (= {:listings 1 :warehouses 4 :operations 2} (:found-counts status)))
             (is (every? :covered-until (:covered-until status)) "every domain covered until the run start")
             (is (some? (:next-sync-at status)))))
 
@@ -1042,7 +1138,9 @@
                          :from-warehouse {:type "fbs" :id "1"}}]
             (is (= [["fbo:2" "fbo" nil true] ["fbo:77" "fbo" nil true] ["fbs:1" "fbs" "FBS 1" true] ["supply-origin:2" "supply-origin" "FBO" true]]
                    (sort-by first (map (juxt #(subs (:external-warehouse-id %) (inc (count c))) :warehouse-type :name :active) rows))))
-            (is (= [(str c ":fbs:1")] (map :from-warehouse posts)))
+            (is (= #{["fbs-posting" (str c ":fbs:1") true "2026-11-26T10:00:00Z" "2026-11-26T10:00:00Z" nil nil nil]
+                     ["return" nil false "2026-11-26T10:00:00Z" nil "[\"receiving warehouse\"]" "fbo" false]}
+                   (set (map (juxt :kind :from-warehouse :complete :occurred-at :handed-over-at :missing :return-schema :compensated) posts))))
             (is (contains? (runtime/coeffect ::sync/existing (assoc ctx :scope scope) {:connection-id c :observations [posting]})
                            (str c ":fbs:1"))
                 "a posting's warehouse is loaded to tell FBS from rFBS")))

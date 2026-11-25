@@ -2,7 +2,7 @@
   "Board chapter 41 · Fetch the next source batch: the read-only Ozon client and one traversal per sync domain.
 
   `request!` is the only way to Ozon. It refuses any path outside `allowlist`, keeps request starts for one
-  Client-Id at least 25 ms apart, tries a request at most 4 times (timeouts and 408, 425, 429, 5xx) with
+  Client-Id at least 25 ms apart, tries a request at most 4 times (timeouts, 429 and 5xx) with
   0.5 / 1 / 2 s plus up to 0.25 s jitter, honours Retry-After and Item-Retry-After up to 30 s in place and
   turns a longer wait into `:throttled`. A 401 is `:credentials-rejected`, a 403 `:unavailable`.
 
@@ -25,9 +25,9 @@
 
 
 (def adapter-version
-  "Translation version recorded with every observation. A confirmed reading of an unverified field ships as a
-  new version."
-  "ozon-1")
+  "Translation version recorded with every observation. A changed reading ships as a new version, under which
+  every operation is observed again once."
+  "ozon-2")
 
 
 (def allowlist
@@ -311,6 +311,27 @@
          (cost (required (get item "price")))))
 
 
+(defn- decimal
+  "An exact decimal; nil when blank or not one."
+  {:malli/schema [:=> [:cat :any] [:maybe decimal?]]}
+  [value]
+  (when-let [s (text value)]
+    (try (bigdec s) (catch NumberFormatException _ nil))))
+
+
+(defn- price
+  "The price stated by `m`, a scalar beside its currency or one map of both; only with the currency stated there."
+  {:malli/schema [:=> [:cat [:maybe :map]] [:map [:price {:optional true} :string] [:price-currency {:optional true} :string]]]}
+  [m]
+  (let [stated   (get m "price")
+        source   (if (map? stated) stated m)
+        amount   (text (decimal (get source "price")))
+        currency (text (get source "currency_code"))]
+    (cond-> {}
+      amount (assoc :price amount)
+      (and amount currency) (assoc :price-currency currency))))
+
+
 (defn- fulfilment
   {:malli/schema [:=> [:cat :any] [:maybe :string]]}
   [value]
@@ -426,7 +447,7 @@
 
 (def ^:private terminal-statuses
   #{"delivered" "cancelled" "not_accepted" "returned" "receivedbyseller" "utilized" "completed" "rejected"
-    "cancelled_by_seller" "moneyreturned"})
+    "cancelled_by_seller" "moneyreturned" "returnedtoozon"})
 
 
 (defn- terminal?
@@ -445,136 +466,192 @@
                                                                  (identifier "article" (text (get p "offer_id")))
                                                                  (identifier "product-id" (text (get p "product_id")))]))}
                         (text (get p "quantity")) (assoc :quantity (text (get p "quantity")))
+                        true (merge (price p))
                         warehouse (assoc :warehouse warehouse))))
         counts (frequencies (map :identifiers rows))]
     (mapv #(cond-> % (< 1 (counts (:identifiers %))) (assoc :duplicate true)) rows)))
 
 
 (defn- operation
-  "Common completeness: the actual time, every line with a quantity and the warehouse."
-  {:malli/schema [:=> [:cat :map [:vector :string]] :map]}
-  [{:keys [operation-kind occurred-at lines from-warehouse to-warehouse] :as op} unconfirmed]
-  (let [missing (vec (concat (when-not occurred-at ["actual time"])
-                             (when (or (empty? lines) (some #(nil? (:quantity %)) lines)) ["line quantity"])
-                             (when-not (or from-warehouse to-warehouse (every? :warehouse lines))
-                               [(if (#{"return" "rfbs-return"} operation-kind) "receiving warehouse" "warehouse")])
-                             unconfirmed))
-        missing (vec (distinct missing))]
-    (cond-> (assoc op :kind "operation" :terminal (terminal? (:status op)) :complete (empty? missing))
-      (seq missing) (assoc :missing missing))))
+  "Common completeness: the actual time, every line with a quantity and the warehouse. A supply lacks it without
+  the storage warehouse it goes to."
+  {:malli/schema [:function [:=> [:cat :map] :map] [:=> [:cat :map [:vector :string]] :map]]}
+  ([op] (operation op []))
+  ([{:keys [operation-kind occurred-at lines from-warehouse to-warehouse] :as op} unproven]
+   (let [placed? (if (= "supply" operation-kind)
+                   to-warehouse
+                   (or from-warehouse to-warehouse (and (seq lines) (every? :warehouse lines))))
+         missing (vec (concat (when-not occurred-at ["actual time"])
+                              (when (or (empty? lines) (some #(nil? (:quantity %)) lines)) ["line quantity"])
+                              (when-not placed?
+                                [(if (#{"return" "rfbs-return"} operation-kind) "receiving warehouse" "warehouse")])
+                              unproven))]
+     (cond-> (assoc op :kind "operation" :terminal (terminal? (:status op)) :complete (empty? missing))
+       (seq missing) (assoc :missing missing)))))
+
+
+(defn handed-over?
+  "Whether the posting was handed over: its status is after handover or, when cancelled, Ozon says so: by flag for
+  FBS, by the handover time for FBO, which states no flag."
+  {:malli/schema [:=> [:cat observations/OperationKind :map] :boolean]}
+  [kind posting]
+  (let [status (text (get posting "status"))]
+    (cond (observations/after-handover? status) true
+          (not (observations/cancelled? status)) false
+          (= "fbo-posting" kind) (some? (instant (get posting "fact_delivery_date")))
+          :else (true? (get-in posting ["cancellation" "cancelled_after_ship"])))))
+
+
+(defn- priced-products
+  "The posting's products, each with the price and currency of its financial row (found by SKU, in order) when
+  that states one."
+  {:malli/schema [:=> [:cat :map] [:vector :map]]}
+  [posting]
+  (let [financial (group-by #(stated-id (get % "product_id")) (get-in posting ["financial_data" "products"]))]
+    (first (reduce (fn [[products left] product]
+                     (let [sku          (stated-id (get product "sku"))
+                           [row & more] (when sku (left sku))]
+                       [(conj products (cond-> product (:price (price row)) (merge {"price" nil "currency_code" nil} (select-keys row ["price" "currency_code"]))))
+                        (assoc left sku more)]))
+                   [[] financial] (get posting "products")))))
+
+
+(defn- posting
+  "A posting whose handover time is the first stated of `times`, and only after handover."
+  {:malli/schema [:=> [:cat observations/OperationKind :map [:vector :string] [:maybe observations/Warehouse]] :map]}
+  [kind source times warehouse]
+  (let [at      (when (handed-over? kind source) (some #(instant (get source %)) times))
+        planned (instant (get source "shipment_date"))]
+    (operation (cond-> {:operation-kind kind :source-id (required (text (get source "posting_number")))
+                        :status         (or (text (get source "status")) "unknown")
+                        :lines          (lines (priced-products source) nil)}
+                 at (assoc :occurred-at at)
+                 planned (assoc :planned-at planned)
+                 warehouse (assoc :from-warehouse warehouse)))))
 
 
 (defn fbs-posting
-  "`/v3/posting/fbs/get` result. `delivering_date` is the handover time; `shipment_date` is only planned."
+  "`/v3/posting/fbs/get` result. `fact_delivery_date`, else `delivering_date`, is the handover time;
+  `shipment_date` is only planned."
   {:malli/schema [:=> [:cat :map] :map]}
-  [posting]
-  (let [warehouse (named-warehouse "fbs" (get-in posting ["delivery_method" "warehouse_id"]) nil)]
-    (operation (cond-> {:operation-kind "fbs-posting" :source-id (required (text (get posting "posting_number")))
-                        :status         (or (text (get posting "status")) "unknown")
-                        :lines          (lines (get posting "products") nil)}
-                 (instant (get posting "delivering_date")) (assoc :occurred-at (instant (get posting "delivering_date")))
-                 (instant (get posting "shipment_date")) (assoc :planned-at (instant (get posting "shipment_date")))
-                 warehouse (assoc :from-warehouse warehouse))
-               [])))
+  [source]
+  (posting "fbs-posting" source ["fact_delivery_date" "delivering_date"]
+           (named-warehouse "fbs" (get-in source ["delivery_method" "warehouse_id"]) nil)))
 
 
 (defn fbo-posting
-  "`/v2/posting/fbo/get` result. FBO dispatch time is unconfirmed (board decision), so it stays incomplete."
+  "`/v2/posting/fbo/get` result. `fact_delivery_date` is the handover time; the list does not state it."
   {:malli/schema [:=> [:cat :map] :map]}
-  [posting]
-  (let [{:strs [warehouse_id warehouse_name]} (get posting "analytics_data")
-        warehouse (named-warehouse "fbo" warehouse_id warehouse_name)]
-    (operation (cond-> {:operation-kind "fbo-posting" :source-id (required (text (get posting "posting_number")))
-                        :status         (or (text (get posting "status")) "unknown")
-                        :lines          (lines (get posting "products") nil)}
-                 warehouse (assoc :from-warehouse warehouse))
-               ["actual time"])))
+  [source]
+  (let [{:strs [warehouse_id warehouse_name]} (get source "analytics_data")]
+    (posting "fbo-posting" source ["fact_delivery_date"] (named-warehouse "fbo" warehouse_id warehouse_name))))
+
+
+(defn- compensated?
+  {:malli/schema [:=> [:cat :map] :boolean]}
+  [row]
+  (let [status (get-in row ["compensation_status" "status"])]
+    (boolean (some #(stated-id (get status %)) ["id" "sys_name" "display_name"]))))
+
+
+(defn- return-schema
+  {:malli/schema [:=> [:cat :map] [:maybe :string]]}
+  [row]
+  (some-> (text (get row "schema")) str/lower-case))
 
 
 (defn fbo-fbs-return
-  "`/v1/returns/list` row: the place (pickup point, returns centre or blank) is never a
-  warehouse, so the receiving warehouse is always missing."
+  "`/v1/returns/list` row. `final_moment` is the receipt, by Ozon or the seller as the status says. The place
+  (pickup point, returns centre or blank) is never a warehouse, so the receiving warehouse is always missing."
   {:malli/schema [:=> [:cat :map] :map]}
   [row]
-  (let [status   (or (text (get-in row ["visual" "status" "sys_name"])) "unknown")
-        received (= "receivedbyseller" (str/lower-case status))
-        moment   (when received (instant (get-in row ["logistic" "final_moment"])))
-        posting  (text (get row "posting_number"))
-        kind     (if (= "fbo" (some-> (text (get row "schema")) str/lower-case)) "fbo-posting" "fbs-posting")]
-    (operation (cond-> {:operation-kind "return" :source-id (required (text (get row "id"))) :status status
+  (let [moment  (instant (get-in row ["logistic" "final_moment"]))
+        posting (text (get row "posting_number"))
+        schema  (#{"fbo" "fbs"} (return-schema row))]
+    (operation (cond-> {:operation-kind "return" :source-id (required (text (get row "id")))
+                        :status         (or (text (get-in row ["visual" "status" "sys_name"])) "unknown")
+                        :compensated    (compensated? row)
                         :lines          (lines [(get row "product")] nil)}
                  moment (assoc :occurred-at moment)
-                 posting (assoc :related-operation (str kind ":" posting) :refetch-key posting))
-               [])))
+                 schema (assoc :return-schema schema)
+                 posting (assoc :refetch-key posting)
+                 (and schema posting) (assoc :related-operation (str schema "-posting:" posting))))))
 
 
 (defn rfbs-return
-  "`/v2/returns/rfbs/get` return: receipt time and quantity are unconfirmed (board decision) and its warehouse is
-  not proven as receiving."
+  "`/v2/returns/rfbs/get` return: receipt time and quantity are not stated and its warehouse is not proven as
+  receiving."
   {:malli/schema [:=> [:cat :map] :map]}
   [ret]
   (let [posting (text (get ret "posting_number"))]
     (operation (cond-> {:operation-kind "rfbs-return" :source-id (required (text (or (get ret "return_id") (get ret "id"))))
                         :status         (or (text (get-in ret ["state" "state"])) (text (get ret "state")) "unknown")
                         :lines          (mapv #(dissoc % :quantity) (lines [(get ret "product")] nil))}
-                 posting (assoc :related-operation (str "fbs-posting:" posting)))
-               ["actual time" "line quantity"])))
+                 posting (assoc :related-operation (str "fbs-posting:" posting))))))
 
 
 (def ^:private act-quantities
   {"declared_quantity" :declared-quantity "fact_quantity" :fact-quantity "approved_quantity" :approved-quantity})
 
 
-(defn- act-line
-  "Acceptance act quantities kept apart; the line quantity only when declared, fact and approved agree."
-  {:malli/schema [:=> [:cat :map [:maybe :map]] :map]}
-  [line act]
-  (let [quantities (into {} (keep (fn [[k field]] (some->> (text (get act k)) (vector field)))) act-quantities)
-        line       (cond-> (merge (dissoc line :quantity) quantities)
-                     (text (get act "act_id")) (assoc :act-id (text (get act "act_id"))))]
-    (if (and (= 3 (count quantities)) (apply = (vals quantities)))
-      (assoc line :quantity (:approved-quantity quantities))
-      line)))
+(defn- accepted
+  "A supply line with the quantities of its SKU's acceptance `acts`, each summed over them when all state it. The
+  line quantity is the approved sum, only when every act's fact and approved quantities agree."
+  {:malli/schema [:=> [:cat :map [:sequential :map]] :map]}
+  [line acts]
+  (let [sums   (into {} (for [[field k] act-quantities
+                              :let      [stated (map #(decimal (get % field)) acts)]
+                              :when     (and (seq stated) (every? some? stated))]
+                          [k (text (reduce + stated))]))
+        ids    (distinct (keep #(text (get % "act_id")) acts))
+        agree? (fn [act] (some-> (decimal (get act "fact_quantity")) (== (or (decimal (get act "approved_quantity")) -1M))))]
+    (cond-> (merge (dissoc line :quantity) sums)
+      (seq ids) (assoc :act-id (str/join "," ids))
+      (and (seq acts) (every? agree? acts)) (assoc :quantity (:approved-quantity sums)))))
 
 
 (defn supply
-  "`/v3/supply-order/get` order with its bundle items and acceptance act items (`/v1/supply-order/act/product/get`).
-  The actual time is unconfirmed (board decision); without an agreeing act the accepted quantity is too."
-  {:malli/schema [:function [:=> [:cat :map [:sequential :map]] :map]
-                  [:=> [:cat :map [:sequential :map] [:sequential :map]] :map]]}
-  ([order bundle-items] (supply order bundle-items []))
-  ([order bundle-items act-items]
-   (let [from     (named-warehouse "supply-origin" (get-in order ["order_tags" "seller_warehouse_id"]) nil)
-         storage  (get (first (get order "supplies")) "storage_warehouse")
-         to       (named-warehouse "fbo" (get storage "warehouse_id")
-                                   (get storage "name"))
-         by-sku   (group-by #(stated-id (get % "sku")) act-items)
-         planned  (lines bundle-items to)
-         line-sku #(some (fn [{:keys [type value]}] (when (= "sku" type) value)) (:identifiers %))
-         extra    (remove #(contains? (set (keep line-sku planned)) (stated-id (get % "sku"))) act-items)
-         rows     (concat (map #(act-line % (first (by-sku (line-sku %)))) planned)
-                          (map #(act-line (first (lines [%] to)) %) extra))
-         rows     (vec (map-indexed #(assoc %2 :line-key (str (inc %1))) rows))
-         agreed?  (and (seq rows) (every? :quantity rows))]
-     (operation (cond-> {:operation-kind "supply" :source-id (required (text (or (get order "order_id") (get order "id"))))
-                         :status         (or (text (get order "state")) "unknown")
-                         :lines          rows}
-                  from (assoc :from-warehouse from)
-                  to (assoc :to-warehouse to))
-                (cond-> ["actual time"] (not agreed?) (conj "accepted quantity"))))))
+  "One supply of a `/v3/supply-order/get` order with its bundle items and the items of its acts
+  (`/v1/supply-order/act/product/get`). Only ACCEPTANCE acts state accepted quantities; the receipt time is not
+  stated. A sum goes to the one line of its SKU; a SKU the bundle does not list adds a line."
+  {:malli/schema [:=> [:cat :map :map [:sequential :map] [:sequential :map]] :map]}
+  [order {:strs [supply_id state storage_warehouse]} bundle-items act-items]
+  (let [from     (named-warehouse "supply-origin" (get-in order ["order_tags" "seller_warehouse_id"]) nil)
+        to       (named-warehouse "fbo" (get storage_warehouse "warehouse_id") (get storage_warehouse "name"))
+        sku      #(stated-id (get % "sku"))
+        acts     (filter #(= "ACCEPTANCE" (some-> (text (get % "act_type")) str/upper-case)) act-items)
+        by-sku   (dissoc (group-by sku acts) nil)
+        listed   (set (keep sku bundle-items))
+        extra    (concat (map #(hash-map "sku" %) (distinct (remove listed (keep sku acts))))
+                         (filter (comp nil? sku) acts))
+        rows     (mapv (fn [item line] (accepted line (if (:duplicate line) [] (get by-sku (sku item) []))))
+                       (concat bundle-items extra)
+                       (lines (concat bundle-items extra) to))
+        order-id (text (or (get order "order_id") (get order "id")))]
+    (operation (cond-> {:operation-kind "supply" :source-id (required (stated-id supply_id))
+                        :status         (or (text state) (text (get order "state")) "unknown")
+                        :lines          rows}
+                 order-id (assoc :refetch-key order-id)
+                 from (assoc :from-warehouse from)
+                 to (assoc :to-warehouse to))
+               (if (and (seq rows) (every? :quantity rows)) [] ["accepted quantity"]))))
 
 
 (defn removal
-  "Removal report row: the requested quantity is not a handed-over quantity (board decision)."
+  "Removal report row: the requested quantity left only with a box that was given out or disposed. Warehouses are
+  not stated as ids."
   {:malli/schema [:=> [:cat :map :string] :map]}
   [row source]
-  (let [id (str/join "/" (keep text [source (get row "return_id") (get row "box_id") (get row "sku")]))]
-    (operation {:operation-kind "removal" :source-id (if (str/blank? id) (fail! :incomplete-page) id)
-                :status         (if (or (text (get row "given_out_date")) (text (get row "utilization_date")))
-                                  "completed"
-                                  (or (text (get row "return_state")) (text (get row "state")) "requested"))
-                :lines          [{:line-key "1" :identifiers (vec (keep identity [(identifier "sku" (stated-id (get row "sku")))]))}]}
-               ["actual time" "handed-over quantity"])))
+  (let [id       (str/join "/" (keep text [source (get row "return_id") (get row "box_id") (get row "sku")]))
+        given    (text (get row "given_out_date"))
+        disposed (when-not given (text (get row "utilization_date")))
+        done     (or given disposed)
+        at       (instant done)]
+    (operation (cond-> {:operation-kind "removal" :source-id (if (str/blank? id) (fail! :incomplete-page) id)
+                        :status         (if done "completed" (or (text (get row "return_state")) (text (get row "state")) "requested"))
+                        :disposed       (some? disposed)
+                        :lines          (lines [(cond-> {"sku" (get row "sku")} done (assoc "quantity" (get row "quantity_for_return")))] nil)}
+                 at (assoc :occurred-at at)))))
 
 
 ;; Traversal: one page or detail batch per step
@@ -778,6 +855,10 @@
   (or (:window context) (fail! :incomplete-page)))
 
 
+(def ^:private posting-details
+  {:analytics_data true :financial_data true})
+
+
 (defmethod step "fbs-postings" [_ env context state]
   (let [{:keys [from to]} (window context)]
     (dated context state 50
@@ -790,7 +871,7 @@
                 :more? (boolean (and (seq rows) (get (result body) "has_next")))}))
            (fn [numbers]
              (for [n numbers]
-               (fbs-posting (result (:body (request! env "/v3/posting/fbs/get" {:posting_number n :with {}})))))))))
+               (fbs-posting (result (:body (request! env "/v3/posting/fbs/get" {:posting_number n :with posting-details})))))))))
 
 
 (defmethod step "fbo-postings" [_ env context state]
@@ -807,7 +888,7 @@
              (with-named-fbo
                (for [n numbers]
                  (fbo-posting (result (:body (request! env "/v2/posting/fbo/get"
-                                                       {:posting_number n :with {:analytics_data true}}))))))))))
+                                                       {:posting_number n :with posting-details}))))))))))
 
 
 (defn- returns-page
@@ -822,6 +903,13 @@
     {:rows rows :next next :more? (and (seq rows) (get body "has_next"))}))
 
 
+(defn- returns
+  "FBP operations are not read."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:vector :map]]}
+  [rows]
+  (into [] (comp (remove #(= "fbp" (return-schema %))) (map fbo-fbs-return)) rows))
+
+
 (defmethod step "returns" [_ env {:keys [refetch-ids] :as context} state]
   ;; The list has no detail call: known non-terminal returns are read again by posting number (their
   ;; refetch key), 50 postings per request, before the window is listed.
@@ -832,11 +920,11 @@
     (if (seq pending)
       (let [[batch more]              (split-at 50 pending)
             {:keys [rows next more?]} (returns-page env {:posting_numbers (vec batch)} last-id)]
-        (page (mapv fbo-fbs-return rows)
+        (page (returns rows)
               (if more? (assoc state :last-id next) (assoc state :pending (vec more) :last-id nil))
               false))
-      (let [{:keys [rows next more?]} (returns-page env {:logistic_return_date {:time_from from :time_to to}} last-id)]
-        (page (mapv fbo-fbs-return rows) (assoc state :last-id next) (not more?))))))
+      (let [{:keys [rows next more?]} (returns-page env {:visual_status_change_moment {:time_from from :time_to to}} last-id)]
+        (page (returns rows) (assoc state :last-id next) (not more?))))))
 
 
 (defmethod step "rfbs-returns" [_ env context state]
@@ -859,12 +947,15 @@
   [env bundle-id]
   (if-not bundle-id
     []
-    (loop [last-id "" acc []]
-      (let [{:keys [body]} (request! env "/v1/supply-order/bundle" {:bundle_ids [bundle-id] :limit 100 :last_id last-id})
-            rows           (required (items body ["items"]))
-            next           (text (get body "last_id"))
-            acc            (into acc rows)]
-        (if (and (get body "has_next") next (not= next last-id)) (recur next acc) acc)))))
+    (loop [last-id "" seen #{} acc []]
+      (let [{:keys [body]}             (request! env "/v1/supply-order/bundle" {:bundle_ids [bundle-id] :limit 100 :last_id last-id})
+            {:strs [has_next last_id]} (result body)
+            acc (into acc (required (items body ["items"])))
+            next (further last-id {"has_next" has_next "cursor" last_id})]
+        (cond (nil? next) acc
+              ;; The whole bundle is read in one step, so a cycle would never end.
+              (seen next) (fail! :repeated-cursor)
+              :else (recur next (conj seen next) acc))))))
 
 
 (def ^:private accepted-states
@@ -874,15 +965,14 @@
 
 
 (defn- act-items
-  "Acceptance act items of every supply in an accepted `order`, one `/v1/supply-order/act/product/get` call
-  per supply; none before acceptance."
-  {:malli/schema [:=> [:cat Env :map] [:vector :map]]}
-  [env order]
-  (vec (for [supply-id (when (contains? accepted-states (some-> (text (get order "state")) str/upper-case))
-                         (keep #(text (get % "supply_id")) (get order "supplies")))
-             item      (required (items (:body (request! env "/v1/supply-order/act/product/get" {:supply_id supply-id}))
-                                        ["items" "products"]))]
-         item)))
+  "Items of every act of an accepted supply; none before acceptance."
+  {:malli/schema [:=> [:cat Env :map :map] [:vector :map]]}
+  [env order supply]
+  (let [state (or (text (get supply "state")) (text (get order "state")))]
+    (if (contains? accepted-states (some-> state str/upper-case))
+      (vec (required (items (:body (request! env "/v1/supply-order/act/product/get" {:supply_id (required (text (get supply "supply_id")))}))
+                            ["items" "products"])))
+      [])))
 
 
 (defmethod step "supplies" [_ env context state]
@@ -900,9 +990,9 @@
                  found          (set (keep #(text (or (get % "order_id") (get % "id"))) orders))]
              (when-not (every? found ids) (fail! :incomplete-page))
              (with-named-fbo
-               (for [order orders]
-                 (supply order (bundle-items env (text (get-in order ["supplies" 0 "bundle_id"])))
-                         (act-items env order))))))))
+               (for [order orders
+                     each  (required (get order "supplies"))]
+                 (supply order each (bundle-items env (text (get each "bundle_id"))) (act-items env order each))))))))
 
 
 (defmethod step "removals" [_ env context {:keys [phase last-id]}]
