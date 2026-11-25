@@ -4,6 +4,7 @@
   (:require
     [bel.core :as bel]
     [bel.core-test :as bel-test]
+    [bel.handler :as handler]
     [bel.journal :as journal]
     [bel.realtime]
     [bel.runtime :as runtime]
@@ -235,6 +236,44 @@
           (is (zero? @calls) "Ozon is not asked again"))))))
 
 
+(defn submit
+  "Post `form` as the browser does: text values, with the fields every Tover form carries."
+  {:malli/schema [:=> [:cat :map :qualified-keyword :map] :any]}
+  [ctx id form]
+  (handler/execute-action ctx id (merge {:__anti-forgery-token "token"                   :_tover-context "version"
+                                         :workspace-id         (str scenarios/workspace)}
+                                        form)))
+
+
+(deftest retries-sent-by-the-real-form
+  (doseq [verify [fake-verify
+                  (constantly {:verification-outcome "unreachable"})
+                  #(assoc (fake-verify %) :account-label "Renamed" :readable-domains ["products"])]]
+    (with-context
+      (fn [ctx marketplace]
+        (runtime/execute! ctx ::stores/register-store {:command-id "st2" :input {:store-id "s2" :name "Second shop"}})
+        (let [calls    (atom 0)
+              later    (verifying ctx calls verify)
+              form     (assoc connect-form :command-id "attempt-1")
+              change   {:command-id "attempt-2" :connection-id "c-1" :client-id " 123 " :api-key "good-2"}
+              conflict #(scenarios/rejection (fn [] (submit later %1 %2)))
+              row      #(runtime/read-model ctx ::model/connections {:connection-id "c-1"})]
+          (let [shown (submit ctx ::web/connect form)]
+            (is (= {:type :page :id ::web/connection :path-params {:connection-id "c-1"}} shown))
+            (is (= shown (submit later ::web/connect form)) "double-click on Connect"))
+          (doseq [other [{:client-id "456"} {:store-id "s2"} {:api-key "good-2"} {:connection-id "c-2"}]]
+            (is (= :idempotency-conflict (conflict ::web/connect (merge form other)))))
+          (let [shown    (submit ctx ::web/replace-credentials change)
+                replaced (row)]
+            (is (= shown (submit later ::web/replace-credentials change)) "double-click on Replace credentials")
+            (is (= replaced (row)))
+            (is (= "good-2" (connector/api-key marketplace scenarios/workspace (:secret-ref replaced)))))
+          (doseq [other [{:client-id "456"} {:api-key "good"}]]
+            (is (= :idempotency-conflict (conflict ::web/replace-credentials (merge change other)))))
+          (is (= 1 (count (:connections (runtime/read-model ctx ::model/marketplace-connections-and-requirements {})))))
+          (is (zero? @calls) "Ozon is not asked again"))))))
+
+
 (deftest a-retry-recovers-an-attempt-that-left-the-outbox
   (with-context
     (fn [ctx _]
@@ -250,6 +289,7 @@
           (is (= before (act later ::web/connect form))))
         (with-redefs [journal/receipt (constantly nil)]
           (is (= :journal-unavailable (scenarios/rejection #(act later ::web/connect form)))))
+        (is (= 503 (web/problems :journal-unavailable)) "a problem on the form that can be retried")
         (is (zero? @calls))))))
 
 

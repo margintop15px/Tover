@@ -27,7 +27,7 @@
      :already-connected        409 :unknown-connection   404     :needs-credentials    409     :store-archived        409
      :different-seller-account 422 :conflict             changed :identity-conflict    changed
      :connection-paused        409 :throttled            409     :idempotency-conflict changed
-     :not-configured           503}))
+     :not-configured           503 :journal-unavailable  503}))
 
 
 (def Command
@@ -68,7 +68,8 @@
                       (throw (ex-info "Marketplace connections are not configured" {:type :not-configured})))
         client-id   (str/trim client-id)
         secret-ref  (connector/secret-ref marketplace command-id client-id api-key)
-        entered     (assoc (dissoc input :api-key :command-id :workspace-id) :client-id client-id)
+        ;; Named fields only: a form also posts its anti-forgery token and context version.
+        entered     (assoc (select-keys input [:connection-id :store-id :provider]) :client-id client-id)
         attempt     (select-keys input [:command-id :workspace-id])
         accepted    #(some-> (runtime/read-model context ::model/accepted-attempt
                                                  {:command-id command-id :command command
