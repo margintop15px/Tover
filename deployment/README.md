@@ -48,12 +48,12 @@ tar -xzf "tover-$RELEASE.tar.gz" -C "/srv/tover-releases/$RELEASE"
 
 ## Activate the release
 
-Set `TOVER_ENV_FILE` in every new SSH session. Persist the image from the bundle manifest in the existing `app.env`: for `v0.2.0`, this changes `TOVER_APP_IMAGE=tover:v0.1.6` to `TOVER_APP_IMAGE=tover:v0.2.0`. The commands below update only that setting and clear any shell override.
+The live Compose project is `tover-v3`, configured by `/etc/tover/app-v3.env`; `/etc/tover/app.env` belongs to the old stopped `tover-tester` project. Set `TOVER_ENV_FILE` in every new SSH session. Persist the image from the bundle manifest in the existing `app-v3.env`: for `v0.2.0`, this changes `TOVER_APP_IMAGE=tover:v0.1.6` to `TOVER_APP_IMAGE=tover:v0.2.0`. The commands below update only that setting and clear any shell override.
 
 ```sh
 set -eu
 RELEASE=v0.2.0
-export TOVER_ENV_FILE=/etc/tover/app.env
+export TOVER_ENV_FILE=/etc/tover/app-v3.env
 unset TOVER_APP_IMAGE
 cd "/srv/tover-releases/$RELEASE"
 deployment/production/production.sh load-images
