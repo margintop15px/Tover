@@ -45,6 +45,10 @@
 ;; Client: retries, pacing, allowlist
 
 
+(def act-path
+  "/v1/supply-order/act/product/get")
+
+
 (deftest throttled-briefly
   (let [{:keys [env calls sleeps]} (env [{:status 429 :headers {"retry-after" "10"}} (ok {:result {:items [] :last_id ""}})])
         result (ozon/request! env "/v3/product/list" {:last_id ""})]
@@ -64,6 +68,18 @@
     (is (= :retries-exhausted (:type (thrown #(ozon/request! env "/v1/returns/list" {})))))
     (is (= 4 (count @calls)))
     (is (= [600 1100 2100] @sleeps))))
+
+
+(deftest throttling-that-outlasts-its-tries-is-a-wait
+  (doseq [[headers waited] [[nil 3800] [{"retry-after" "10"} 30000] [{"item-retry-after" "0"} 75]]]
+    (let [{:keys [env calls]} (env (vec (repeat 4 {:status 429 :headers headers})))
+          error               (thrown #(ozon/request! env act-path {:supply_id 1}))]
+      (is (= :throttled (:type error)))
+      (is (= 4 (count @calls)))
+      (is (= (str (java.time.Instant/ofEpochMilli (+ 1000000 waited 60000))) (:resume-not-before error)) "at least 60 s ahead")))
+  (doseq [answer [{:status 503} (java.net.http.HttpTimeoutException. "slow")]
+          :let   [{:keys [env]} (env (conj (vec (repeat 3 {:status 429})) answer))]]
+    (is (= :retries-exhausted (:type (thrown #(ozon/request! env act-path {:supply_id 1})))))))
 
 
 (deftest timeouts-are-retried
@@ -497,10 +513,6 @@
   (count (filter #(= path (:path %)) @calls)))
 
 
-(def act-path
-  "/v1/supply-order/act/product/get")
-
-
 (defn metered
   "Every step of the supplies domain with the calls it made."
   {:malli/schema [:=> [:cat :map :any :map] [:vector :map]]}
@@ -642,6 +654,35 @@
   (let [{:keys [env calls]} (order-pages [] (constantly nil))]
     (is (:finished? (last (traverse "supplies" env {:refetch-ids ["7/700"]} {} 10))))
     (is (= 0 (paths calls "/v3/supply-order/get")))))
+
+
+(deftest recorded-terminal-supplies-are-not-read-again-before-the-first-coverage
+  (let [asked  (atom [])
+        fact   (fn [id status terminal]
+                 {:operation-kind "supply" :source-id id :status status :terminal terminal :refetch-key (str (subs id 0 1) "/" id)})
+        facts  [(fact "500" "COMPLETED" true) (fact "400" "IN_TRANSIT" false) (fact "300" "CANCELLED" true)]
+        stored (fn [ids] (swap! asked conj (vec ids)) (filter #(some #{(:refetch-key %)} ids) facts))
+        read   (fn [context]
+                 (let [{:keys [env calls]} (order-pages [[5 "COMPLETED" nil 1] [4 "IN_TRANSIT" nil 1] [3 "COMPLETED" nil 1] [2 "COMPLETED" nil 1]]
+                                                        (constantly nil))
+                       steps               (traverse "supplies" env context {} 30)]
+                   (is (:finished? (last steps)))
+                   [(mapv :source-id (mapcat :observations steps)) (paths calls "/v1/supply-order/bundle") (paths calls act-path)]))]
+    (is (= [["400" "300" "200"] 3 2] (read {:stored-supplies stored}))
+        "a supply in another status, an open one and one without facts are read")
+    (is (seq @asked))
+    (is (every? #(= 1 (count %)) @asked) "one order at a time")
+    (is (not-any? #{["4/400"]} @asked) "an open supply is not looked up")
+    (reset! asked [])
+    (is (= [["500" "400" "300" "200"] 4 3] (read {:stored-supplies stored :settled-before "2026-01-01T00:00:00Z"})) "after it nothing changes")
+    (is (= [] @asked)))
+  (testing "a recorded supply of an order in progress does not become open"
+    (let [{:keys [env]} (order-pages [[5 "COMPLETED" nil 3]] (constantly nil))
+          asked         (atom [])
+          stored        (fn [ids] (swap! asked conj (vec ids)) [{:source-id "500" :status "COMPLETED" :terminal true}])
+          [one]         (traverse "supplies" env {:stored-supplies stored} {:started? true :pending ["5"] :listed? true} 1)]
+      (is (= [["501"] ["5/502"]] [(map :source-id (:observations one)) (:pending-ids one)]))
+      (is (= [["5/500" "5/501" "5/502"]] @asked) "once per order and step"))))
 
 
 (deftest cancelled-order-closes-its-known-supplies

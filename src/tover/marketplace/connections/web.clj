@@ -9,6 +9,7 @@
     [bel.core :refer [defaction defpage]]
     [bel.runtime :as runtime]
     [clojure.string :as str]
+    [ring.util.codec :as codec]
     [tover.identity.access :as access]
     [tover.invitations.team.web :as team]
     [tover.marketplace.connections.model :as model]
@@ -22,11 +23,12 @@
 (def problems
   "Board rejections, shown on the page the form came from."
   (let [changed [409 "This connection changed. Reload the page."]]
-    {:store-not-available      409 :credentials-rejected 422     :could-not-verify     503     :products-not-readable 422
-     :already-connected        409 :unknown-connection   404     :needs-credentials    409     :store-archived        409
-     :different-seller-account 422 :conflict             changed :identity-conflict    changed
-     :connection-paused        409 :throttled            409     :idempotency-conflict changed
-     :not-configured           503 :journal-unavailable  503}))
+    {:store-not-available      409 :credentials-rejected 422 :could-not-verify      503     :products-not-readable 422
+     :already-connected        409 :unknown-connection   404 :needs-credentials     409     :store-archived        409
+     :different-seller-account 422 :conflict             changed :identity-conflict changed
+     :connection-paused        409 :throttled            409 :idempotency-conflict  changed
+     :not-configured           503 :journal-unavailable  [503 "The result is not recorded yet. Try again."]
+     :validation               [422 "Check the entered fields."]}))
 
 
 (def Command
@@ -90,7 +92,7 @@
 
 
 (defaction connect
-  {:schema     (into Command (concat [[:connection-id model/Ref] [:store-id :string] [:provider model/Provider]]
+  {:schema     (into Command (concat [[:connection-id model/ConnectionId] [:store-id :string] [:provider model/Provider]]
                                      (rest Credentials)))
    :route-data {:tover/access :manager :bel/error-page ::connections :bel/retain ["store-id"] :tover/problems problems}}
   [context input]
@@ -106,7 +108,7 @@
 
 
 (defaction replace-credentials
-  {:schema     (into Command (concat [[:connection-id model/Ref]] (rest Credentials)))
+  {:schema     (into Command (concat [[:connection-id model/ConnectionId]] (rest Credentials)))
    :route-data {:tover/access :manager :bel/error-page ::connection :tover/problems problems}}
   [context input]
   (let [account (:provider-account-id (runtime/read-model context ::model/connection-status-and-sync-coverage
@@ -116,7 +118,7 @@
 
 
 (defaction pause
-  {:schema     (conj Command [:connection-id model/Ref])
+  {:schema     (conj Command [:connection-id model/ConnectionId])
    :route-data {:tover/access :manager :bel/error-page ::connection :tover/problems problems}}
   [context input]
   (descriptor context ::model/pause-marketplace-connection input))
@@ -124,7 +126,7 @@
 
 (defaction sync-now
   "Any active member. During a run nothing new starts and the page shows that run."
-  {:schema     (conj Command [:connection-id model/Ref])
+  {:schema     (conj Command [:connection-id model/ConnectionId])
    :route-data {:tover/access :workspace :bel/error-page ::connection :tover/problems problems}}
   [context {:keys [command-id] :as input}]
   (descriptor context ::sync/start-marketplace-sync
@@ -132,7 +134,7 @@
 
 
 (defaction resume
-  {:schema     (conj Command [:connection-id model/Ref])
+  {:schema     (conj Command [:connection-id model/ConnectionId])
    :route-data {:tover/access :manager :bel/error-page ::connection :tover/problems problems}}
   [context input]
   (descriptor context ::model/resume-marketplace-connection input))
@@ -167,9 +169,10 @@
 
 
 (defn- connection-link
+  "Encoded: the path also stands in a Datastar expression."
   {:malli/schema [:=> [:cat :string] :string]}
   [connection-id]
-  (str "/marketplace/" connection-id))
+  (str "/marketplace/" (codec/url-encode connection-id)))
 
 
 (defn- connect-form
@@ -248,6 +251,14 @@
   {"paused" "Paused" "needs credentials" "Needs credentials" "no baseline" "No cutover baseline"})
 
 
+(def domain-labels
+  {"warehouses"   "Warehouses"   "products"              "Products"              "sku-aliases"     "SKU aliases"
+   "attributes"   "Attributes"   "attribute-definitions" "Attribute definitions" "prices"          "Prices"
+   "stock-totals" "Stock totals" "stock-by-warehouse"    "Stock by warehouse"    "stock-analytics" "Stock analytics"
+   "fbs-postings" "FBS postings" "fbo-postings"          "FBO postings"          "returns"         "Returns"
+   "rfbs-returns" "rFBS returns" "supplies"              "Supplies"              "removals"        "Removals"})
+
+
 (defn- action-form
   {:malli/schema [:=> [:cat :map :qualified-keyword :string :string] schema/Hiccup]}
   [request action label connection-id]
@@ -269,7 +280,7 @@
                                                    :total (+ (count (:finished-domains current-run))
                                                              (count (:unfinished-domains current-run)))})]
      (= "failed" last-outcome)
-     [:p (i18n/t "Last sync failed on {domain}: {reason}" {:domain (:failed-domain last-failure)
+     [:p (i18n/t "Last sync failed on {domain}: {reason}" {:domain (i18n/t (domain-labels (:failed-domain last-failure)))
                                                            :reason (i18n/t (:reason last-failure))})
       " " (team/moment (:failed-at last-failure))]
      (= "completed" last-outcome)
@@ -285,7 +296,7 @@
   {:route      "/marketplace/:connection-id"
    :title      "Marketplace connection · Tover"
    :parent     :tover.shared.web.core/shell
-   :schema     [:map [:connection-id model/Ref]]
+   :schema     [:map [:connection-id model/ConnectionId]]
    :route-data {:tover/access :workspace}
    :query      query-connection}
   [{:keys [request status paused attention sync]}]
@@ -339,7 +350,7 @@
                [:thead [:tr [:th {:scope "col"} (i18n/t "Data")] [:th {:scope "col"} (i18n/t "Covered until")]]]
                (into [:tbody]
                      (for [{:keys [domain readable? covered-until]} (:domains status)]
-                       [:tr [:td domain]
+                       [:tr [:td (i18n/t (domain-labels domain))]
                         [:td (cond (not readable?) (i18n/t "Unavailable for this API key")
                                    covered-until (team/moment covered-until)
                                    :else (i18n/t "Not yet"))]]))]]

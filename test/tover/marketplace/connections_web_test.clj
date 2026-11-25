@@ -289,7 +289,7 @@
           (is (= before (act later ::web/connect form))))
         (with-redefs [journal/receipt (constantly nil)]
           (is (= :journal-unavailable (scenarios/rejection #(act later ::web/connect form)))))
-        (is (= 503 (web/problems :journal-unavailable)) "a problem on the form that can be retried")
+        (is (= 503 (first (web/problems :journal-unavailable))) "a problem on the form that can be retried")
         (is (zero? @calls))))))
 
 
@@ -382,7 +382,7 @@
           (is (str/includes? html "Confirm &lt;b&gt;") "text from outside is escaped")
           (is (not (str/includes? html "Confirm <b>")))
           (is (not (re-find #"href=\"[^\"]*/(products|warehouses|cutover|operations)" html)) "no links to pages that do not exist")
-          (is (every? #(str/includes? html (str "<td>" % "</td>")) connector/domains) "one row per domain"))
+          (is (every? #(str/includes? html (str "<td>" (web/domain-labels %) "</td>")) connector/domains) "one row per domain"))
         (finally (remove-method model/count-part :unmatched-listings)
                  (defmethod model/count-part :next-steps [_ _ _] {}))))))
 
@@ -410,6 +410,67 @@
             secret (connector/store-secret! marketplace other "key")]
         (is (= :identity (scenarios/rejection #(act ctx ::web/connect (assoc connect-form :workspace-id other)))))
         (is (= "key" (connector/api-key marketplace other secret)))))))
+
+
+(def unsafe-ids
+  ["x');alert(1);('" "a:b" "a/b" "a b" "a\n" "" (apply str (repeat 101 "a"))])
+
+
+(deftest a-connection-id-is-letters-digits-and-hyphens
+  (with-context
+    (fn [ctx _]
+      (let [calls (atom 0)
+            ctx   (verifying ctx calls fake-verify)
+            good  (:input (act ctx ::web/connect connect-form))]
+        (reset! calls 0)
+        (doseq [id unsafe-ids]
+          (doseq [[action form] {::web/connect             connect-form
+                                 ::web/replace-credentials {:client-id "123" :api-key "good"}
+                                 ::web/pause               {}
+                                 ::web/resume              {}
+                                 ::web/sync-now            {}}]
+            (is (= [:validation true]
+                   ((juxt :type :bel/input-error?)
+                    (try (submit ctx action (assoc form :command-id "attempt-1" :connection-id id)) nil
+                         (catch clojure.lang.ExceptionInfo error (ex-data error)))))
+                (str action " " id)))
+          (is (= :validation
+                 (scenarios/rejection #(runtime/execute! ctx ::model/connect-marketplace-account
+                                                         {:command-id (str (random-uuid)) :input (assoc good :connection-id id)})))
+              (str "the command refuses " id)))
+        (is (zero? @calls) "Ozon is not asked")
+        (is (= [] (:connections (runtime/read-model ctx ::model/marketplace-connections-and-requirements {}))))))))
+
+
+(deftest a-connection-id-is-encoded-in-expressions
+  (is (= "/marketplace/x%27%29%3Balert%281%29%3B%28%27" (#'web/connection-link "x');alert(1);('")))
+  (is (= "/marketplace/00000000-0000-0000-0000-00000000c001" (#'web/connection-link scenarios/c))))
+
+
+(deftest problems-are-translated
+  (doseq [[type status] {:journal-unavailable 503 :validation 422}
+          locale        ["en" "ru"]
+          :let          [[code message] (web/problems type)]]
+    (is (= status code))
+    (is (some? (get-in i18n/messages [locale message])) (str type))))
+
+
+(deftest domains-are-named
+  (with-context
+    (fn [ctx _]
+      (accept! ctx (act ctx ::web/connect connect-form))
+      (doseq [[locale names] {"en" ["Warehouses" "FBO postings"] "ru" ["Склады" "Отправления FBO"]}]
+        (binding [i18n/*locale* locale]
+          (let [html   (page ctx ::web/connection {:connection-id "c-1"})
+                failed (chassis/html (#'web/sync-panel {} {:last-outcome "failed" :found-counts {}
+                                                           :last-failure {:failed-domain "fbo-postings" :reason "retries exhausted"
+                                                                          :failed-at     scenarios/now}} "c-1"))]
+            (is (every? #(str/includes? html (str "<td>" % "</td>")) names))
+            (is (not-any? #(str/includes? html (str "<td>" % "</td>")) connector/domains))
+            (is (str/includes? failed (second names)))
+            (is (not (str/includes? failed "fbo-postings"))))))
+      (is (= (set connector/domains) (set (keys web/domain-labels))))
+      (is (every? #(get-in i18n/messages ["ru" %]) (vals web/domain-labels))))))
 
 
 (deftest rejected-form-stays-open-without-credentials

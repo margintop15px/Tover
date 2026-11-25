@@ -1097,7 +1097,21 @@
     "incomplete page": "incomplete page",
     "unexpected provider response": "unexpected provider response",
     "Connection paused": "Connection paused",
-    "Throttled": "Throttled"
+    "Throttled": "Throttled",
+    "The result is not recorded yet. Try again.": "The result is not recorded yet. Try again.",
+    "SKU aliases": "SKU aliases",
+    "Attributes": "Attributes",
+    "Attribute definitions": "Attribute definitions",
+    "Prices": "Prices",
+    "Stock totals": "Stock totals",
+    "Stock by warehouse": "Stock by warehouse",
+    "Stock analytics": "Stock analytics",
+    "FBS postings": "FBS postings",
+    "FBO postings": "FBO postings",
+    "Returns": "Returns",
+    "rFBS returns": "rFBS returns",
+    "Supplies": "Supplies",
+    "Removals": "Removals"
   },
   "ru": {
     "Stock": "Остатки",
@@ -2192,7 +2206,7 @@
     "Sync now": "Синхронизировать сейчас",
     "Sync running since {time}": "Синхронизация идёт с {time}",
     "{done} of {total} data kinds read": "прочитано {done} из {total} видов данных",
-    "Last sync failed on {domain}: {reason}": "Последняя синхронизация не удалась на {domain}: {reason}",
+    "Last sync failed on {domain}: {reason}": "Последняя синхронизация не удалась («{domain}»): {reason}",
     "Last sync found {listings} new listings, {warehouses} new warehouses and {operations} new operations.": "Последняя синхронизация нашла новых карточек: {listings}, складов: {warehouses}, операций: {operations}.",
     "Scheduling stopped after 5 failed syncs. Use Sync now to try again.": "Расписание остановлено после 5 неудачных синхронизаций. Нажмите «Синхронизировать сейчас», чтобы попробовать снова.",
     "credentials rejected": "ключи отклонены",
@@ -2201,6 +2215,20 @@
     "incomplete page": "неполная страница",
     "unexpected provider response": "неожиданный ответ провайдера",
     "Connection paused": "Подключение приостановлено",
-    "Throttled": "Ozon просит подождать"
+    "Throttled": "Ozon просит подождать",
+    "The result is not recorded yet. Try again.": "Результат ещё не записан. Попробуйте ещё раз.",
+    "SKU aliases": "Связанные SKU",
+    "Attributes": "Характеристики",
+    "Attribute definitions": "Описания характеристик",
+    "Prices": "Цены",
+    "Stock totals": "Остатки по схемам",
+    "Stock by warehouse": "Остатки по складам",
+    "Stock analytics": "Аналитика остатков",
+    "FBS postings": "Отправления FBS",
+    "FBO postings": "Отправления FBO",
+    "Returns": "Возвраты",
+    "rFBS returns": "Возвраты rFBS",
+    "Supplies": "Поставки",
+    "Removals": "Вывоз и утилизация"
   }
 }

@@ -78,6 +78,11 @@
   [:string {:min 1 :max 100}])
 
 
+(def ConnectionId
+  "A connection id a browser proposes: plain text in any URL or expression."
+  [:re #"\A[A-Za-z0-9-]{1,100}\z"])
+
+
 (def At
   "An instant as ISO-8601 text."
   [:string {:min 20 :max 40}])
@@ -306,7 +311,7 @@
 
 (def ConnectMarketplaceAccount
   [:map
-   [:connection-id Ref]
+   [:connection-id ConnectionId]
    [:store-id records/Id]
    [:provider Provider]
    [:client-id ClientId]

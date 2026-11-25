@@ -393,6 +393,31 @@
     (is (true? (get-in (fetch {:status 403}) [1 :input :domain-unavailable])))))
 
 
+(deftest throttling-that-outlasts-its-tries-keeps-the-run-open
+  (let [open     (run {:finished-domains (connections/encode-domains (take-while #(not= "fbs-postings" %) all-domains))})
+        position {:run-id r :cursor "{:started? true, :pending [\"A\" \"B\"]}" :finished false}
+        fetch    (fn [throttled status]
+                   (sync/fetch-request (item open {"fbs-postings" position}
+                                             (fn [_ body]
+                                               (if (throttled (:posting_number body))
+                                                 {:status status}
+                                                 (fake/ok {:result {:posting_number "A" :status "delivering"}}))))))]
+    (let [{:keys [id input]} (fetch #{"A" "B"} 429)
+          plan               (record {:run open :position position} input)]
+      (is (= [::sync/record-source-observations (:cursor position) (:cursor position) []]
+             [id (:batch-key input) (get-in input [:next-position :cursor]) (:observations input)]))
+      (is (= [::sync/provider-throttled] (events plan)) "the run stays open and the position does not move")
+      ;; The fake clock starts at 1000 s; the tries wait 3.8 s.
+      (is (= "1970-01-01T00:17:43.800Z" (:resume-not-before input))))
+    (let [[batch wait] (fetch #{"B"} 429)
+          cursor       (get-in batch [:input :next-position :cursor])]
+      (is (= [["A"] "{:started? true, :pending [\"B\"]}"] [(map :source-id (get-in batch [:input :observations])) cursor])
+          "what was read before it is recorded")
+      (is (= [cursor cursor true] [(get-in wait [:input :batch-key]) (get-in wait [:input :next-position :cursor])
+                                   (some? (get-in wait [:input :resume-not-before]))])))
+    (is (= "retries exhausted" (get-in (fetch #{"A" "B"} 503) [:input :reason])))))
+
+
 (deftest unreadable-page-fails-the-run
   (let [open   (run {:finished-domains "warehouses"})
         fetch  #(sync/fetch-request (item open {} %))
@@ -1797,10 +1822,128 @@
         (is (= (:started-at (runtime/coeffect ::sync/run ctx {:run-id "R1"})) (:first-covered-at (position))))))))
 
 
+(deftest a-failed-first-pass-continues-after-its-recorded-supplies
+  (support/with-store
+    (fn [repo _]
+      (let [orders      (atom (sorted-map 1 "COMPLETED" 2 "COMPLETED" 3 "COMPLETED" 4 "COMPLETED"))
+            fails       (atom true)
+            calls       (atom [])
+            answer      (fn [path body]
+                          (case path
+                            "/v3/supply-order/list" {:order_ids (if (= "" (:last_id body)) (reverse (keys @orders)) []) :last_id "end"}
+                            "/v3/supply-order/get" {:orders (for [id (map parse-long (:order_ids body))]
+                                                              {:order_id id :state (@orders id) :state_updated_date "2026-01-01T00:00:00Z"
+                                                               :supplies [{:supply_id (* 10 id) :bundle_id (str "b" id)}]})}
+                            "/v1/supply-order/bundle" {:items [{:sku 100 :quantity 5}] :has_next false}
+                            "/v1/supply-order/act/product/get" {:supply_id (:supply_id body) :supply_acts []}
+                            nil))
+            marketplace {:verify (constantly nil) :repo repo :key key-bytes :pacer (atom {})
+                         :post   (fn [path body _]
+                                   (swap! calls conj [path body])
+                                   (if (and @fails (= 20 (:supply_id body)))
+                                     {:status 404 :body "{}"}
+                                     (if-let [answer (answer path body)]
+                                       {:status 200 :body (json/write-json-str answer)}
+                                       (update (ozon path body) :body json/write-json-str))))}
+            system      (support/bel-system {:repo repo :marketplace marketplace})
+            ctx         (assoc (context system) :scope scope)
+            row         #(runtime/read-model ctx ::connections/connections {:connection-id c})
+            finish!     #(loop [left 60]
+                           (when (and (pos? left) (= "open" (:run-state (row))))
+                             (runtime/run-processors! system) (recur (dec left))))
+            read        (fn []
+                          [(sort (map (comp first :bundle_ids second) (filter (comp #{"/v1/supply-order/bundle"} first) @calls)))
+                           (sort (keep (comp :supply_id second) @calls))])
+            status      (fn [id] (some #(when (= ["supply" id] ((juxt :kind :source-id) %)) (:status %))
+                                       (records/all-records ctx ::sync/source-operations :source-operation-id)))]
+        (runtime/execute! ctx ::stores/register-store {:command-id "st1" :input {:store-id "s" :name "Ozon shop"}})
+        (runtime/execute! ctx ::connections/connect-marketplace-account
+                          {:command-id "connect-1"
+                           :input      {:connection-id        c :store-id                  "s"   :provider         "ozon"                  :client-id "123"
+                                        :secret-ref           (connector/store-secret! marketplace workspace "k")
+                                        :verification-outcome "verified" :account-currency "RUB" :readable-domains ["products" "supplies"]}})
+        (runtime/run-processors! system)
+        (finish!)
+        (is (= "failed" (:run-state (row))))
+        (is (= [["b2" "b3" "b4"] [20 30 40]] (read)))
+        (reset! fails false)
+        (reset! calls [])
+        (swap! orders assoc 3 "CANCELLED")
+        (runtime/execute! ctx ::sync/start-marketplace-sync
+                          {:command-id "s2" :input {:attempt-id "s2" :run-id "R2" :connection-id c :trigger "member"}})
+        (finish!)
+        (is (= ["R2" "completed"] ((juxt :run-id :run-state) (row))))
+        (is (= [["b1" "b2" "b3"] [10 20]] (read)) "4 is recorded as completed; 3 has another status now")
+        (is (= ["COMPLETED" "COMPLETED" "CANCELLED" "COMPLETED"] (map status ["10" "20" "30" "40"])))))))
+
+
+(deftest only-an-absent-or-undecryptable-key-rejects-the-credentials
+  (support/with-store
+    (fn [repo _]
+      (let [c2          "00000000-0000-0000-0000-00000000c002"
+            marketplace {:verify (constantly nil) :repo repo :key key-bytes :pacer (atom {})
+                         :post   (fn [path body _] (update (ozon path body) :body json/write-json-str))}
+            system      (support/bel-system {:repo repo :marketplace marketplace})
+            with        #(assoc-in system [:resources :marketplace] %)
+            ctx         (assoc (context system) :scope scope)
+            row         (fn [id] (runtime/read-model ctx ::connections/connections {:connection-id id}))
+            connect!    (fn [id client-id]
+                          (runtime/execute! ctx ::connections/connect-marketplace-account
+                                            {:command-id id
+                                             :input      {:connection-id        id :store-id                 "s"   :provider         "ozon"       :client-id client-id
+                                                          :secret-ref           (connector/store-secret! marketplace workspace client-id)
+                                                          :verification-outcome "verified" :account-currency "RUB" :readable-domains ["products"]}}))
+            start!      (fn [id run-id]
+                          (runtime/execute! ctx ::sync/start-marketplace-sync
+                                            {:command-id run-id :input {:attempt-id run-id :run-id run-id :connection-id id :trigger "member"}}))
+            items       (fn [system]
+                          (mapv (fn [{:keys [run env]}] [(:run-id run) (some? env)])
+                                (sort-by (comp :run-id :run) (runtime/coeffect ::sync/runs-to-fetch {:bel/system system} {}))))
+            states      #(mapv (juxt :run-state :credentials-state) [(row c) (row c2)])
+            untouched   (fn [system]
+                          (dotimes [_ 5] (runtime/run-processors! system))
+                          (= [["open" "valid"] ["open" "valid"]] (states)))
+            api-key     connector/api-key
+            load-rows   @#'sync/load-rows]
+        (runtime/execute! ctx ::stores/register-store {:command-id "st1" :input {:store-id "s" :name "Ozon shop"}})
+        (connect! c "123")
+        (connect! c2 "456")
+        (start! c "R1")
+        (start! c2 "R2")
+        (is (= [["R1" true] ["R2" true]] (items system)))
+        (testing "a connector key that is not configured skips every run"
+          (doseq [system [(with (dissoc marketplace :key)) (with nil)]]
+            (is (= [] (items system)))
+            (is (untouched system))))
+        (testing "any read error skips its own connection only"
+          (let [broken (:secret-ref (row c))]
+            (with-redefs [connector/api-key (fn [m w secret]
+                                              (if (= secret broken) (throw (RuntimeException. "store down")) (api-key m w secret)))]
+              (is (= [["R2" true]] (items system)))))
+          (with-redefs-fn {#'sync/load-rows (fn [ctx model ids]
+                                              (if (= ["R1"] ids) (throw (RuntimeException. "store down")) (load-rows ctx model ids)))}
+            #(is (= [["R2" true]] (items system))))
+          (with-redefs [connector/api-key (fn [_ _ _] (throw (ex-info "Cannot read" {:type :conflict})))]
+            (is (= [] (items system)))
+            (is (untouched system)))
+          (with-redefs [connector/api-key (fn [_ _ _] (throw (InterruptedException.)))]
+            (is (thrown? InterruptedException (items system)) "a shutdown is not the connection's error")))
+        (testing "an absent key"
+          (connector/destroy-secret! marketplace workspace (:secret-ref (row c)))
+          (is (= [["R1" false] ["R2" true]] (items system)))
+          (runtime/run-processors! system)
+          (is (= ["failed" "rejected"] (first (states)))))
+        (testing "a key that cannot be decrypted"
+          (let [system (with (assoc marketplace :key (byte-array (repeat 32 (byte 7)))))]
+            (is (= [["R2" false]] (items system)))
+            (runtime/run-processors! system)
+            (is (= [["failed" "rejected"] ["failed" "rejected"]] (states)))))))))
+
+
 (deftest parts-of-a-figure-add-up-through-the-store
   (support/with-store
     (fn [repo _]
-      (let [marketplace {:verify (constantly nil) :repo repo :key key-bytes}
+      (let [marketplace {:verify (constantly nil) :repo repo :key key-bytes :post (constantly {:status 503})}
             system      (support/bel-system {:repo repo :marketplace marketplace})
             ctx         (assoc (context system) :scope scope)
             connector   {:bel/system   system    :bel/service ::sync/marketplace-fetcher :user-id (sync/connector-actor c)

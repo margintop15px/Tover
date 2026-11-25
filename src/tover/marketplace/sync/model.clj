@@ -1174,31 +1174,50 @@
        (not (some-> (instant resume-not-before) (.isAfter now)))))
 
 
+(defn- or-skip
+  "The value of `f`. What cannot be read now says nothing about the credentials: it is nil, and tried again later."
+  {:malli/schema [:=> [:cat [:fn fn?]] :any]}
+  [f]
+  (try (f)
+       (catch InterruptedException error (throw error))
+       (catch Exception error
+         (mu/log ::fetch-skipped :error-type (or (:type (ex-data error)) (.getName (class error))))
+         nil)))
+
+
+(defn- fetch-item
+  "The open run of a connection with what the fetcher needs; nil without one. `:env` is nil only when the sealed key
+  is absent or cannot be decrypted."
+  {:malli/schema [:=> [:cat :map :map] [:maybe FetchItem]]}
+  [{:keys [bel/system scope] :as context} connection]
+  (let [marketplace  (get-in system [:resources :marketplace])
+        workspace-id (:workspace-id scope)
+        run          (get (load-rows context ::sync-runs [(:run-id connection)]) (:run-id connection))]
+    (when (= "open" (:run-state run))
+      {:workspace-id    (str workspace-id)
+       :run             run
+       :positions       (runtime/coeffect ::connection-positions context {:connection-id (:connection-id connection)})
+       :env             (some->> (connector/api-key marketplace workspace-id (:secret-ref connection))
+                                 (ozon/env marketplace (:provider-account-id connection)))
+       :attempts        (:attempts marketplace)
+       :known-orders    #(known-orders context (:connection-id connection))
+       :stored-supplies #(stored-supplies context (:connection-id connection) %)
+       :figures         #(load-rows context ::source-stock (stock-ids (:connection-id connection) (:run-id run) %))
+       :products        #(into {} (filter (fn [[_ p]] (= (:connection-id connection) (:connection-id p))))
+                               (map (juxt :external-product-id identity)
+                                    (records/all-records context ::external-products :external-product-id)))})))
+
+
 (defmethod runtime/coeffect ::runs-to-fetch
   [_ {:keys [bel/system]} _]
-  (let [now         (Instant/now)
-        marketplace (get-in system [:resources :marketplace])]
+  (let [now (Instant/now)]
     (vec (for [workspace-id (workspace-ids system)
                :let         [context {:bel/system system :scope {:workspace-id workspace-id}}]
-               connection   (workspace-connections system workspace-id)
+               connection   (or-skip #(workspace-connections system workspace-id))
                :when        (fetchable? connection now)
-               :let         [run (get (load-rows context ::sync-runs [(:run-id connection)]) (:run-id connection))]
-               :when        (= "open" (:run-state run))]
-           {:workspace-id    (str workspace-id)
-            :run             run
-            :positions       (runtime/coeffect ::connection-positions context {:connection-id (:connection-id connection)})
-            :env             (try (some->> (connector/api-key marketplace workspace-id (:secret-ref connection))
-                                           (ozon/env marketplace (:provider-account-id connection)))
-                                  (catch Exception error
-                                    (mu/log ::credentials-unavailable :error-type (.getName (class error)))
-                                    nil))
-            :attempts        (:attempts marketplace)
-            :known-orders    #(known-orders context (:connection-id connection))
-            :stored-supplies #(stored-supplies context (:connection-id connection) %)
-            :figures         #(load-rows context ::source-stock (stock-ids (:connection-id connection) (:run-id run) %))
-            :products        #(into {} (filter (fn [[_ p]] (= (:connection-id connection) (:connection-id p))))
-                                    (map (juxt :external-product-id identity)
-                                         (records/all-records context ::external-products :external-product-id)))}))))
+               :let         [item (or-skip #(fetch-item context connection))]
+               :when        item]
+           item))))
 
 
 ;; ponytail: the fetcher shares the journal-delivery worker thread, one step of at most `ozon/max-calls` calls per

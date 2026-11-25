@@ -203,13 +203,21 @@
   nil)
 
 
+(defn- opened
+  "The unsealed text; nil when it cannot be decrypted."
+  {:malli/schema [:=> [:cat bytes? :string] [:maybe :string]]}
+  [key sealed]
+  (try (unseal key sealed) (catch Exception _ nil)))
+
+
 (defn api-key
-  "The API key behind a reference, for the server-side fetcher only; nil when destroyed."
+  "The API key behind a reference, for the server-side fetcher only; nil when it is destroyed or cannot be decrypted.
+  A missing connector key and any read error throw."
   {:malli/schema [:=> [:cat [:maybe :map] :uuid :string] [:maybe :string]]}
   [connector workspace-id secret-ref]
   (let [{:keys [repo key]} (configured! connector)]
     (rdf/with-transaction [conn {:repo repo :level :snapshot}]
-      (some->> (rdf/value-at conn (graph workspace-id) (subject secret-ref) sealed-key) (unseal key)))))
+      (some->> (rdf/value-at conn (graph workspace-id) (subject secret-ref) sealed-key) (opened key)))))
 
 
 ;; Ozon

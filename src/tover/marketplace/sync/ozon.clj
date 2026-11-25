@@ -4,7 +4,8 @@
   `request!` is the only way to Ozon. It refuses any path outside `allowlist`, keeps request starts for one
   Client-Id at least 25 ms apart, tries a request at most 4 times (timeouts, 429 and 5xx) with
   0.5 / 1 / 2 s plus up to 0.25 s jitter, honours Retry-After and Item-Retry-After up to 30 s in place and
-  turns a longer wait into `:throttled`. A 401 is `:credentials-rejected`, a 403 `:unavailable`.
+  turns a longer wait into `:throttled`. So does a 429 that outlasts the tries, for at least 60 s.
+  A 401 is `:credentials-rejected`, a 403 `:unavailable`.
 
   `step` reads one page or detail batch of a domain from an opaque traversal state and returns sanitized
   observations (only the facts named on the board; no buyer data, selling prices or raw payloads), the next state and
@@ -85,6 +86,11 @@
 (def ^:private in-place-limit
   "Longest provider-requested wait spent in place, in milliseconds."
   30000)
+
+
+(def ^:private throttled-wait
+  "Shortest wait after a 429 that outlasted its tries, in milliseconds."
+  60000)
 
 
 (def ^:private spacing
@@ -168,10 +174,11 @@
         (= 401 status) (fail! :credentials-rejected)
         (= 403 status) (fail! :unavailable)
         (retryable? status)
-        (let [wait (retry-after headers (clock))]
+        (let [wait     (retry-after headers (clock))
+              throttle (fn [wait] (fail! :throttled {:resume-not-before (str (Instant/ofEpochMilli (+ (clock) wait)))}))]
           (cond
-            (and wait (> wait in-place-limit))
-            (fail! :throttled {:resume-not-before (str (Instant/ofEpochMilli (+ (clock) wait)))})
+            (and wait (> wait in-place-limit)) (throttle wait)
+            (and (= 429 status) (>= attempt tries)) (throttle (max (or wait 0) throttled-wait))
             (>= attempt tries) (fail! :retries-exhausted)
             :else (do (sleep (or wait (+ (get try-waits (dec attempt)) (jitter 250))))
                       (recur (inc attempt)))))
@@ -1076,11 +1083,18 @@
   #{"ACCEPTANCE_AT_STORAGE_WAREHOUSE" "REPORTS_CONFIRMATION_AWAITING" "REPORT_REJECTED" "COMPLETED"})
 
 
+(defn- stated-status
+  "The status of a supply, else of its order."
+  {:malli/schema [:=> [:cat :map :map] [:maybe :string]]}
+  [order supply]
+  (or (text (get supply "state")) (text (get order "state"))))
+
+
 (defn- accepted?
   "Whether the supply is accepted, so that it has acts."
   {:malli/schema [:=> [:cat :map :map] :boolean]}
   [order supply]
-  (contains? accepted-states (or (text (get supply "state")) (text (get order "state")))))
+  (contains? accepted-states (stated-status order supply)))
 
 
 (defn- read-supply
@@ -1169,11 +1183,27 @@
   (if (and reading (= id (:order reading))) reading {:order id :done []}))
 
 
+(defn- recorded
+  "Until a first pass finished: the ids of an order's supplies recorded as terminal in the status now stated. A pass
+  that failed is not read again."
+  {:malli/schema [:=> [:cat :map :map] [:set :string]]}
+  [{:keys [settled-before stored-supplies]} order]
+  (let [stated (when (and stored-supplies (not settled-before))
+                 (into {} (for [s     (supplies order)
+                                :let  [status (stated-status order s)]
+                                :when (terminal? status)]
+                            [(supply-id s) status])))]
+    (if (seq stated)
+      (into #{} (comp (filter #(and (:terminal %) (= (:status %) (stated (:source-id %))))) (map :source-id))
+            (stored-supplies (map #(str (order-id order) "/" %) (keys stated))))
+      #{})))
+
+
 (defn- unread
-  "The supplies of an order that are not read yet."
-  {:malli/schema [:=> [:cat :map :map] [:sequential :map]]}
-  [{:keys [done]} order]
-  (remove #(contains? (set done) (supply-id %)) (supplies order)))
+  "The supplies of an order that are not read yet, by the step's `:recorded` and the progress in the order."
+  {:malli/schema [:=> [:cat :map :map :map] [:sequential :map]]}
+  [{:keys [recorded]} {:keys [done]} order]
+  (remove (comp (into (recorded order) done) supply-id) (supplies order)))
 
 
 (defn- read-next
@@ -1181,7 +1211,7 @@
   {:malli/schema [:=> [:cat Env :map :map :map] :map]}
   [env context {:keys [pending] :as now} order]
   (let [progress (in-progress now (first pending))]
-    (if-let [source (first (unread progress order))]
+    (if-let [source (first (unread context progress order))]
       (let [part {:supply (supply-id source) :bundle-id (text (get source "bundle_id"))}
             {:keys [operation acts? bundle]}
             (read-supply env order source (when (= part (select-keys progress [:supply :bundle-id])) (:bundle progress)))]
@@ -1196,13 +1226,13 @@
 (defn- orders-page
   "The step's page. The unread supplies of an order in progress become open, so the next run reads them although
   the recorded ones make their order known."
-  {:malli/schema [:=> [:cat [:vector :map] :map [:map-of :string :map]] Step]}
-  [observed {:keys [pending] :as now} orders]
+  {:malli/schema [:=> [:cat :map [:vector :map] :map [:map-of :string :map]] Step]}
+  [context observed {:keys [pending] :as now} orders]
   (let [id       (first pending)
         order    (get orders id)
         progress (in-progress now id)
         ids      (if (and order (seq (:done progress)))
-                   (mapv #(str id "/" (supply-id %)) (unread progress order))
+                   (mapv #(str id "/" (supply-id %)) (unread context progress order))
                    [])]
     (cond-> (page (with-named-fbo observed) now false)
       (seq ids) (assoc :pending-ids ids))))
@@ -1217,14 +1247,14 @@
   (loop [now state, observed []]
     (let [order (get orders (first (:pending now)))]
       (if (or (nil? order) (and (not= now state) (spent? env)))
-        (orders-page observed now orders)
+        (orders-page context observed now orders)
         (let [next (try (read-next env context now order)
                         (catch clojure.lang.ExceptionInfo error
                           {:setback (met (not= now state) error)}))
               seen (into observed (:observed next))]
           (cond
-            (:setback next) (assoc (orders-page observed now orders) :setback (:setback next))
-            (:stop? next) (orders-page seen (:now next) orders)
+            (:setback next) (assoc (orders-page context observed now orders) :setback (:setback next))
+            (:stop? next) (orders-page context seen (:now next) orders)
             :else (recur (:now next) seen)))))))
 
 
@@ -1245,7 +1275,8 @@
         next    (cond-> (assoc state :pending (into (vec kept) later)) (seq settled) (assoc :settled? true))]
     (if (empty? kept)
       (page [] next false)
-      (read-orders env context next orders))))
+      ;; Stored facts are looked up one order at a time, once a step.
+      (read-orders env (assoc context :recorded (memoize #(recorded context %))) next orders))))
 
 
 (defmethod step "supplies" [_ env context {:keys [pending listed? settled? at] :as state}]

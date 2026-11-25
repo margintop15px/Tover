@@ -43,6 +43,27 @@ class ProductionConfigurationTest(unittest.TestCase):
             f"{key}={value}" if line.startswith(key + "=") else line
             for line in self.environment.read_text().splitlines()) + "\n")
 
+    def test_restore_compares_the_connector_key(self):
+        backup = self.directory / "backup.env"
+
+        def keys(current, saved):
+            self.replace("TOVER_CONNECTOR_KEY", saved)
+            shutil.copy(self.environment, backup)
+            self.replace("TOVER_CONNECTOR_KEY", current)
+
+        for current in ("current-key", ""):
+            keys(current, "other-key")
+            with self.assertRaisesRegex(ValueError, "Restore requires the original"):
+                CONFIG.compare_restore(self.environment, backup)
+            keys(current, current)
+            CONFIG.compare_restore(self.environment, backup)
+            # Nothing was sealed in a backup without the key.
+            keys(current, "")
+            CONFIG.compare_restore(self.environment, backup)
+            backup.write_text("".join(line for line in backup.read_text().splitlines(True)
+                                      if not line.startswith("TOVER_CONNECTOR_KEY=")))
+            CONFIG.compare_restore(self.environment, backup)
+
     def test_init_is_private_and_refuses_overwrite(self):
         self.assertEqual(stat.S_IMODE(self.environment.stat().st_mode), 0o600)
         original = self.environment.read_bytes()

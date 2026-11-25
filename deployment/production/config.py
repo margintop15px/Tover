@@ -113,6 +113,10 @@ def compare_restore(current, backup):
             "SERVICE_ROLE_KEY", "SESSION_ENCRYPTION_KEY")
     if any(current_values.get(key) != backup_values.get(key) for key in keys):
         raise ValueError("Restore requires the original database, JWT and session encryption secrets")
+    # Optional: a backup without it holds no sealed marketplace credentials.
+    connector = backup_values.get("TOVER_CONNECTOR_KEY")
+    if connector and current_values.get("TOVER_CONNECTOR_KEY") != connector:
+        raise ValueError("Restore requires the original marketplace connector key")
     if current_values.get("TOVER_APP_IMAGE") != backup_values.get("TOVER_APP_IMAGE"):
         raise ValueError("Restore requires the application's original release image")
 

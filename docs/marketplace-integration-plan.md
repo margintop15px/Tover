@@ -391,12 +391,12 @@ Release limitations and operational notes:
 | --- | --- | --- |
 | M0 | **Complete** | v0.3.0 committed/deployed; verified backup/health and bilingual authenticated catalogues; complete plan/context saved separately |
 | M1 | **Complete** | Open schemas, separate RDF/SHACL package, policy presets, source matrix and 13 contract tests; full suite 537 tests / 9,163 assertions passed |
-| M2 | **Next** | Persistence, bounded lookups, Store collection, reopen/rebuild evidence |
+| M2 | Implemented in part, not deployed | Source records with bounded lookups (board chapter 41) and Stores (chapter 12). Effective mappings and reopen/rebuild evidence are open |
 | M3 | Pending | Reviewed linking/creation, stable provisional IDs, mixed acceptance |
 | M4 | Pending | Normalization, shared atomic acceptance, provenance, deduplication/races |
 | M5 | Pending | Reviewed cutover/reconciliation, transit projection, boundary tests |
-| M6 | Pending | Protected connection setup, lossless read client, contract/live smoke evidence |
-| M7 | Pending | Restart-safe daily worker, eligibility, progress and failure evidence |
+| M6 | Implemented, not deployed | Board chapters 40 and 41: protected connection setup and the read-only Ozon client. Field shapes checked live read-only on 2026-11-25; a full live sync is the next evidence |
+| M7 | Implemented in part, not deployed | Board chapter 41: restart-safe daily sync with positions, throttling and failure waits, as evidence only. Eligibility, matching, cutover and acceptance are deferred |
 | M8 | Pending | Optional external columns, source inspection, transit UI, bounded reads |
 | M9 | Pending | Restored-copy rehearsal, controlled pilot, deployment evidence |
 
@@ -485,7 +485,7 @@ Verification:
 - Earlier focused runs exposed two SPARQL UNION scope mistakes that missed invalid mapping/identifier facts, plus test/schema setup defects. These were corrected; the final full suite covers the negative cases. A clean nREPL restart cleared a stale Malli protocol instance during initial setup; do not reload dependency protocols during application edits.
 - No migration, production deployment, remote database inspection/mutation, live Ozon fetch, credentials, scheduler or browser/UI changes were performed. Browser checks and a new release rehearsal were outside this milestone. The v0.3.0 deployment and its recorded restore-rehearsal limitation remain unchanged.
 - Limits for later milestones: M2 must provide the complete competing effective bindings/mappings and catalogue context inside the transaction; the test graph builder is not a production codec. M4 supplies real normalization, stable event/line identity, ledger validation and deduplication. M6 must verify account permissions/current pagination and the unresolved FBO dispatch, return receipt, supply acceptance and removal completion evidence before enabling conversion. No legacy local mappings are accepted as truth.
-- **Gate: M1 complete. Next: M2.** Implement external persistence and bounded queries in the existing repository, preserve source revisions and observed identifier history, then add the Store-collection migration and prove reopen/rebuild preservation. Keep live fetching deferred to M6.
+- **Gate: M1 complete. Next: M2.** Implement external persistence and bounded queries in the existing repository, preserve source revisions and observed identifier history, then add the Store-collection migration and prove reopen/rebuild preservation. Keep live fetching deferred to M6. (2026-11-25: superseded. Connect and read-only sync are implemented and not deployed, see the checklist; matching, cutover and acceptance remain deferred.)
 
 ### 2026-11-12 — Stakeholder identity decisions and board alignment
 
