@@ -149,6 +149,13 @@
             "no connector key, no stored credentials")))))
 
 
+(defn restarted
+  "The same vault after a process restart: nothing is in flight."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [vault]
+  (assoc vault :in-flight (atom {})))
+
+
 (deftest unreferenced-secrets-are-destroyed
   (support/with-store
     (fn [repo _]
@@ -158,7 +165,7 @@
             kept      (connector/store-secret! vault workspace "kept")
             orphan    (connector/store-secret! vault workspace "orphan")
             other     (connector/store-secret! vault elsewhere "other workspace")]
-        (connector/destroy-unreferenced! vault workspace #{kept})
+        (connector/destroy-unreferenced! (restarted vault) workspace #{kept})
         (is (= "kept" (connector/api-key vault workspace kept)))
         (is (nil? (connector/api-key vault workspace orphan)))
         (is (= "other workspace" (connector/api-key vault elsewhere other)))))))
@@ -184,10 +191,41 @@
                                             (during)
                                             (rdf/add! conn nil (rdf/iri "urn:test:connection") (rdf/iri "urn:test:secret-ref") secret))))]
         (testing "destroyed between the command's check and its commit: the command is refused"
-          (is (= :conflict (:type (support/error-data (fn [] (accept! #(connector/destroy-unreferenced! vault workspace #{})))))))
+          (is (= :conflict (:type (support/error-data (fn [] (accept! #(connector/destroy-unreferenced! (restarted vault) workspace #{})))))))
           (is (nil? (connector/api-key vault workspace secret))))
         (testing "named by a stored record: kept"
           (connector/store-secret! vault workspace secret "key")
           (accept! (constantly nil))
-          (connector/destroy-unreferenced! vault workspace #{})
+          (connector/destroy-unreferenced! (restarted vault) workspace #{})
           (is (= "key" (connector/api-key vault workspace secret))))))))
+
+
+(deftest in-flight-secrets-survive-a-sweep
+  (support/with-store
+    (fn [repo _]
+      (let [now       (atom 1000000)
+            vault     (assoc (connector/connector {:repo repo :connector-key key-text}) :clock #(deref now))
+            workspace (random-uuid)
+            secret    (connector/store-secret! vault workspace "key")
+            sweep!    #(do (connector/destroy-unreferenced! % workspace #{}) (connector/api-key vault workspace secret))]
+        (is (= "key" (sweep! vault)))
+        (swap! now + 120000)
+        (is (= "key" (sweep! vault)) "two minutes, inclusive")
+        (swap! now inc)
+        (is (nil? (sweep! vault)) "an attempt abandoned without a crash waits two minutes")
+        (connector/store-secret! vault workspace secret "key")
+        (is (= "key" (sweep! vault)) "sealing again starts again")
+        (is (nil? (sweep! (restarted vault))) "a restart forgets it")))))
+
+
+(deftest a-secret-is-in-flight-before-a-sweep-can-see-it
+  (support/with-store
+    (fn [repo _]
+      (let [vault (connector/connector {:repo repo :connector-key key-text})
+            seen  (atom nil)
+            add   rdf/add!]
+        (with-redefs [rdf/add! (fn [& args]
+                                 (reset! seen (vals @(:in-flight vault)))
+                                 (apply add args))]
+          (connector/store-secret! vault (random-uuid) "key"))
+        (is (= 1 (count @seen)))))))

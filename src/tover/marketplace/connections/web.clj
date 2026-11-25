@@ -58,22 +58,31 @@
 (defn credentials
   "Replace `:api-key` with the provider's verification and, when `acceptable?` holds for the Client-Id, the
   secret reference of the sealed key. Keys earlier attempts sealed without an accepted command are destroyed
-  first; without a connector key nothing is sent to the provider."
-  {:malli/schema [:=> [:cat :map :map [:fn fn?]] :map]}
-  [context {:keys [command-id workspace-id client-id api-key] :as input} acceptable?]
-  (let [_            (selected! context workspace-id)
-        marketplace  (get-in context [:bel/system :resources :marketplace])
-        _            (when-not (:key marketplace)
-                       (throw (ex-info "Marketplace connections are not configured" {:type :not-configured})))
-        client-id    (str/trim client-id)
-        secret-ref   (connector/secret-ref marketplace command-id client-id api-key)
-        _            (connector/destroy-unreferenced! marketplace workspace-id #{secret-ref})
-        verification ((:verify marketplace) {:client-id client-id :api-key api-key})]
-    (cond-> (merge (dissoc input :api-key) {:client-id client-id} verification)
-      (and (= "verified" (:verification-outcome verification))
-           (some #{"products"} (:readable-domains verification))
-           (acceptable? client-id))
-      (assoc :secret-ref (connector/store-secret! marketplace workspace-id secret-ref api-key)))))
+  first; without a connector key nothing is sent to the provider. An attempt accepted before (or while the
+  provider answered) keeps its recorded input: nothing is asked or sealed again."
+  {:malli/schema [:=> [:cat :map :qualified-keyword :map [:fn fn?]] :map]}
+  [context command {:keys [command-id workspace-id client-id api-key] :as input} acceptable?]
+  (let [_           (selected! context workspace-id)
+        marketplace (get-in context [:bel/system :resources :marketplace])
+        _           (when-not (:key marketplace)
+                      (throw (ex-info "Marketplace connections are not configured" {:type :not-configured})))
+        client-id   (str/trim client-id)
+        secret-ref  (connector/secret-ref marketplace command-id client-id api-key)
+        entered     (assoc (dissoc input :api-key :command-id :workspace-id) :client-id client-id)
+        attempt     (select-keys input [:command-id :workspace-id])
+        accepted    #(some-> (runtime/read-model context ::model/accepted-attempt
+                                                 {:command-id command-id :command command
+                                                  :entered    (assoc entered :secret-ref secret-ref)})
+                             (merge attempt))]
+    (or (accepted)
+        (let [_            (connector/destroy-unreferenced! marketplace workspace-id #{secret-ref})
+              verification ((:verify marketplace) {:client-id client-id :api-key api-key})]
+          (or (accepted)
+              (cond-> (merge attempt entered verification)
+                (and (= "verified" (:verification-outcome verification))
+                     (some #{"products"} (:readable-domains verification))
+                     (acceptable? client-id))
+                (assoc :secret-ref (connector/store-secret! marketplace workspace-id secret-ref api-key))))))))
 
 
 (def Credentials
@@ -93,7 +102,7 @@
                            (not-any? #(and (= client-id (:provider-account-id %))
                                            (not= (:connection-id input) (:connection-id %)))
                                      connections)))]
-    (descriptor context ::model/connect-marketplace-account (credentials context input acceptable?))))
+    (descriptor context ::model/connect-marketplace-account (credentials context ::model/connect-marketplace-account input acceptable?))))
 
 
 (defaction replace-credentials
@@ -103,7 +112,7 @@
   (let [account (:provider-account-id (runtime/read-model context ::model/connection-status-and-sync-coverage
                                                           (select-keys input [:connection-id])))]
     (descriptor context ::model/replace-connection-credentials
-                (dissoc (credentials context input #(= account %)) :account-label))))
+                (dissoc (credentials context ::model/replace-connection-credentials input #(= account %)) :account-label))))
 
 
 (defaction pause

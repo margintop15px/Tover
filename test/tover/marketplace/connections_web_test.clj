@@ -4,8 +4,10 @@
   (:require
     [bel.core :as bel]
     [bel.core-test :as bel-test]
+    [bel.journal :as journal]
     [bel.realtime]
     [bel.runtime :as runtime]
+    [bel.store :as store]
     [clojure.string :as str]
     [clojure.test :refer [deftest is testing use-fixtures]]
     [dev.onionpancakes.chassis.core :as chassis]
@@ -171,19 +173,146 @@
         (is (= "good" (connector/api-key marketplace scenarios/workspace (get-in before [:input :secret-ref]))))))))
 
 
+(defn restarted
+  "The same context after a process restart: nothing is in flight."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [ctx]
+  (assoc-in ctx [:bel/system :resources :marketplace :in-flight] (atom {})))
+
+
 (deftest abandoned-secret-is-destroyed-on-the-next-attempt
   (with-context
     (fn [ctx marketplace]
       (let [key-of    #(connector/api-key marketplace scenarios/workspace (get-in % [:input :secret-ref]))
             abandoned (act ctx ::web/connect connect-form)]
         (is (= "good" (key-of abandoned)) "sealed, and its command never ran")
-        (let [connected (act ctx ::web/connect (assoc connect-form :connection-id "c-2"))]
+        (let [connected (act (restarted ctx) ::web/connect (assoc connect-form :connection-id "c-2"))]
           (is (nil? (key-of abandoned)))
           (is (= :conflict (scenarios/rejection #(accept! ctx abandoned))) "a command whose secret is gone is refused")
           (accept! ctx connected)
-          (act ctx ::web/replace-credentials {:connection-id "c-2" :client-id "123" :api-key "good-2"})
-          (act ctx ::web/connect (assoc connect-form :connection-id "c-3" :client-id "456" :api-key "wrong"))
+          (act (restarted ctx) ::web/connect (assoc connect-form :connection-id "c-3" :client-id "456" :api-key "wrong"))
           (is (= "good" (key-of connected)) "a connection's key is never destroyed by another attempt"))))))
+
+
+(deftest in-flight-key-survives-another-attempt
+  (with-context
+    (fn [ctx _]
+      (let [first-admin (act ctx ::web/connect connect-form)]
+        (act ctx ::web/connect (assoc connect-form :connection-id "c-2" :client-id "456"))
+        (is (some? (accept! ctx first-admin)))))))
+
+
+(defn verifying
+  "`ctx` whose provider answers `(verify credentials)`; `calls` counts the questions."
+  {:malli/schema [:=> [:cat :map :any [:fn fn?]] :map]}
+  [ctx calls verify]
+  (assoc-in ctx [:bel/system :resources :marketplace :verify]
+            (fn [input] (swap! calls inc) (verify input))))
+
+
+(deftest a-retry-recovers-the-original-outcome
+  (doseq [verify [(constantly {:verification-outcome "unreachable"})
+                  (constantly {:verification-outcome "rejected"})
+                  #(assoc (fake-verify %) :account-label "Renamed")
+                  #(dissoc (fake-verify %) :key-expires-at)
+                  #(assoc (fake-verify %) :readable-domains ["products"])]]
+    (with-context
+      (fn [ctx marketplace]
+        (let [calls  (atom 0)
+              later  (verifying ctx calls verify)
+              form   (assoc connect-form :command-id "attempt-1")
+              before (act ctx ::web/connect form)
+              result (accept! ctx before)
+              change {:command-id "attempt-2" :connection-id "c-1" :client-id " 123 " :api-key "good-2"}]
+          (runtime/execute! ctx ::stores/archive-store {:command-id "st2" :input {:store-id "s" :revision 1}})
+          (is (= before (act later ::web/connect form)))
+          (is (= result (accept! ctx (act later ::web/connect form))))
+          (let [replaced (act ctx ::web/replace-credentials change)
+                result   (accept! ctx replaced)]
+            (is (= replaced (act later ::web/replace-credentials change)))
+            (is (= result (accept! ctx (act later ::web/replace-credentials change))))
+            (is (= "good-2" (connector/api-key marketplace scenarios/workspace (get-in replaced [:input :secret-ref])))))
+          (is (zero? @calls) "Ozon is not asked again"))))))
+
+
+(deftest a-retry-recovers-an-attempt-that-left-the-outbox
+  (with-context
+    (fn [ctx _]
+      (let [calls    (atom 0)
+            form     (assoc connect-form :command-id "attempt-1")
+            before   (act ctx ::web/connect form)
+            _        (accept! ctx before)
+            outbox   (get-in ctx [:bel/system :stores :catalogue])
+            delivery (some #(when (= "attempt-1" (get-in % [:delivery :command-id])) (:delivery %)) (store/-pending outbox))
+            later    (verifying ctx calls (constantly {:verification-outcome "unreachable"}))]
+        (store/-ack! outbox delivery)
+        (with-redefs [journal/receipt (fn [_ id] (when (= "attempt-1" id) (select-keys delivery [:request :result])))]
+          (is (= before (act later ::web/connect form))))
+        (with-redefs [journal/receipt (constantly nil)]
+          (is (= :journal-unavailable (scenarios/rejection #(act later ::web/connect form)))))
+        (is (zero? @calls))))))
+
+
+(deftest an-attempt-accepted-while-verifying-is-recovered
+  (with-context
+    (fn [ctx _]
+      (let [form   (assoc connect-form :command-id "attempt-1")
+            before (act ctx ::web/connect form)
+            slow   (verifying ctx (atom 0) (fn [_] (accept! ctx before) {:verification-outcome "unreachable"}))]
+        (is (= before (act slow ::web/connect form)))))))
+
+
+(deftest replaying-a-superseded-replacement-seals-nothing
+  (with-context
+    (fn [ctx marketplace]
+      (accept! ctx (act ctx ::web/connect connect-form))
+      (let [calls  (atom 0)
+            key-of #(connector/api-key marketplace scenarios/workspace (get-in % [:input :secret-ref]))
+            form   {:command-id "replace-1" :connection-id "c-1" :client-id "123" :api-key "good"}
+            r1     (act ctx ::web/replace-credentials form)
+            _      (accept! ctx r1)
+            r2     (act ctx ::web/replace-credentials (assoc form :command-id "replace-2" :api-key "good-2"))]
+        (accept! ctx r2)
+        (loop [tries 100]
+          (when (and (key-of r1) (pos? tries)) (Thread/sleep 20) (recur (dec tries))))
+        (is (nil? (key-of r1)) "the second replacement destroyed the first one's key")
+        (let [replay (act (verifying ctx calls fake-verify) ::web/replace-credentials form)]
+          (is (= r1 replay))
+          (accept! ctx replay)
+          (is (nil? (key-of r1)))
+          (is (= "good-2" (key-of r2)))
+          (is (zero? @calls) "Ozon is not asked again"))))))
+
+
+(deftest only-the-same-attempt-recovers
+  (with-context
+    (fn [ctx marketplace]
+      (let [calls (atom 0)
+            later (verifying ctx calls fake-verify)
+            form  (assoc connect-form :command-id "attempt-1")
+            other (random-uuid)]
+        (accept! ctx (act ctx ::web/connect form))
+        (doseq [[ctx form] [[later (assoc form :api-key "good-2")]
+                            [later (assoc form :client-id "456")]
+                            [later (assoc form :connection-id "c-2")]
+                            [(runtime/prepare-context (assoc later :user-id scenarios/member)) form]]]
+          (is (= :idempotency-conflict (scenarios/rejection #(act ctx ::web/connect form)))))
+        (is (= 409 (first (web/problems :idempotency-conflict))))
+        (is (= :idempotency-conflict
+               (scenarios/rejection #(act later ::web/replace-credentials
+                                          {:command-id "attempt-1" :connection-id "c-1" :client-id "123" :api-key "good"})))
+            "another command")
+        (is (= :forbidden (scenarios/rejection #(act (assoc later :memberships [{:workspace-id scenarios/workspace :role :member}])
+                                                     ::web/connect form)))
+            "not a manager any more")
+        (is (zero? @calls))
+        (let [elsewhere (-> (runtime/prepare-context (assoc later :workspace-id other :memberships [{:workspace-id other :role :admin}]))
+                            (assoc-in [:request :tover/identity :workspace-id] other))
+              fresh     (act elsewhere ::web/connect (assoc form :workspace-id other))]
+          (is (= 1 @calls) "another workspace verifies its own attempt")
+          (is (not (contains? (:input fresh) :secret-ref)))
+          (is (= ["good"] (keep #(connector/api-key marketplace % (:secret-ref (runtime/read-model ctx ::model/connections {:connection-id "c-1"})))
+                                [scenarios/workspace other]))))))))
 
 
 (deftest other-currency

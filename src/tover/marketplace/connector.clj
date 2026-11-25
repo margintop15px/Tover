@@ -113,6 +113,33 @@
   (str (UUID/nameUUIDFromBytes (mac/hash (pr-str [command-id client-id api-key]) {:key key :alg :hmac+sha256}))))
 
 
+(def ^:private in-flight-millis
+  "How long a sealed key waits for its command before another attempt may destroy it."
+  120000)
+
+
+(defn- now-millis
+  {:malli/schema [:=> [:cat :map] :int]}
+  [{:keys [clock]}]
+  (if clock (clock) (System/currentTimeMillis)))
+
+
+(defn- recent
+  {:malli/schema [:=> [:cat [:maybe :map] :int] :map]}
+  [sealed now]
+  (into {} (filter (fn [[_ at]] (<= (- now at) in-flight-millis))) sealed))
+
+
+(defn- in-flight!
+  "Remember that a key is about to be sealed. Kept in this process only: after a crash nothing is in flight."
+  {:malli/schema [:=> [:cat :map :string] :nil]}
+  [{:keys [in-flight] :as connector} secret-ref]
+  (when in-flight
+    (let [now (now-millis connector)]
+      (swap! in-flight #(assoc (recent % now) secret-ref now))))
+  nil)
+
+
 (defn store-secret!
   "Seal `api-key` under `secret-ref` (or a new reference) in the workspace's secret graph; returns the reference."
   {:malli/schema [:function
@@ -122,6 +149,8 @@
    (store-secret! connector workspace-id (str (random-uuid)) api-key))
   ([connector workspace-id secret-ref api-key]
    (let [{:keys [repo key]} (configured! connector)]
+     ;; Before the commit that makes it visible, so no sweep sees the key without seeing it in flight.
+     (in-flight! connector secret-ref)
      ;; A reference stands for one key, so sealing it twice only adds another ciphertext of that key.
      (rdf/with-transaction [conn {:repo repo :level :serializable}]
        (rdf/add! conn (graph workspace-id) (subject secret-ref) sealed-key (seal key api-key))))
@@ -136,24 +165,27 @@
 
 
 (defn destroy-unreferenced!
-  "Destroy the workspace's sealed keys that are neither in `referenced` nor named by any stored record: their
-  command was not accepted. Serializable with the command that would name one; when another commit wins, the
-  next attempt destroys them."
+  "Destroy the workspace's sealed keys that are neither in `referenced`, in flight, nor named by any stored
+  record: their command was not accepted. Serializable with the command that would name one; when another commit
+  wins, the next attempt destroys them."
   {:malli/schema [:=> [:cat [:maybe :map] :uuid [:set :string]] :nil]}
   [connector workspace-id referenced]
-  (let [{:keys [repo]} (configured! connector)
-        prefix         (str (subject ""))]
+  (let [{:keys [repo in-flight]} (configured! connector)
+        prefix                   (str (subject ""))]
     (try
       (adapter/transact repo :serializable
                         (fn [conn]
-                          (doseq [secret (distinct (map :secret (rdf/select conn '{:select [?secret] :where [[?secret ?p ?key]]}
-                                                                            {:p sealed-key})))
-                                  :let   [secret-ref (subs (str secret) (count prefix))]
-                                  :when  (and (sealed? conn workspace-id secret-ref)
-                                              (not (contains? referenced secret-ref))
-                                              (empty? (rdf/select conn '{:select [?record] :where [[?record ?p ?ref]]}
-                                                                  {:ref secret-ref})))]
-                            (rdf/remove! conn (graph workspace-id) (subject secret-ref) nil nil))))
+                          (let [secrets (mapv :secret (rdf/select conn '{:select [?secret] :where [[?secret ?p ?key]]}
+                                                                  {:p sealed-key}))
+                                ;; Read after the list: every listed key was registered before it was visible.
+                                kept    (into referenced (keys (recent (some-> in-flight deref) (now-millis connector))))]
+                            (doseq [secret (distinct secrets)
+                                    :let   [secret-ref (subs (str secret) (count prefix))]
+                                    :when  (and (sealed? conn workspace-id secret-ref)
+                                                (not (contains? kept secret-ref))
+                                                (empty? (rdf/select conn '{:select [?record] :where [[?record ?p ?ref]]}
+                                                                    {:ref secret-ref})))]
+                              (rdf/remove! conn (graph workspace-id) (subject secret-ref) nil nil)))))
       (catch clojure.lang.ExceptionInfo error
         (when-not (= :conflict (:type (ex-data error))) (throw error))
         (mu/log ::unreferenced-secrets-kept))))
@@ -312,7 +344,9 @@
   "Integrant: the `:marketplace` resource. Without a connector key connecting reports a configuration error."
   {:malli/schema [:=> [:cat [:map [:repo :any] [:connector-key {:optional true} [:maybe :string]]]] Connector]}
   [{:keys [repo connector-key]}]
-  (cond-> {:verify (partial ozon-verify http-post) :repo  repo
+  (cond-> {:verify    (partial ozon-verify http-post) :repo  repo
            ;; The sync fetcher's transport (30 s per try) and its per-Client-Id request pacing.
-           :post   #(http-post %1 %2 %3 30)        :pacer (atom {}) :last-look (atom nil)}
+           :post      #(http-post %1 %2 %3 30)        :pacer (atom {}) :last-look (atom nil)
+           ;; Keys sealed by this process whose command may still be running.
+           :in-flight (atom {})}
     connector-key (assoc :key (tover.marketplace.connector/connector-key connector-key))))

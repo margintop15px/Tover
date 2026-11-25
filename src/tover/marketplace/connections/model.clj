@@ -16,6 +16,7 @@
   (:require
     [bel.core :refer [defcommand defevent defmodel defreadmodel]]
     [bel.runtime :as runtime]
+    [bel.store :as store]
     [bel.validation :as validation]
     [clojure.string :as str]
     [tover.catalogues.records :as records]
@@ -403,6 +404,36 @@
                        key-expires-at (assoc :key-expires-at key-expires-at))}]
      ;; The superseded key is destroyed right after commit; Bel writes only mapped event fields in the commit.
      :fx     [[::destroy-secret {:secret-ref previous}]]}))
+
+
+;; Attempts
+
+
+(defmethod runtime/coeffect ::accepted-request
+  [_ context {:keys [command-id]}]
+  ;; As Bel's own recovery: the outbox while the delivery is pending, then the journal's receipt.
+  (when-let [accepted (runtime/with-store context :catalogue :repeatable-read
+                        (fn [{:keys [tx scope] :as context}]
+                          (store/-accepted (store/store context :catalogue) tx (store/store-scope scope) command-id)))]
+    (:request (or (:pending accepted)
+                  (runtime/coeffect :bel/receipt context {:command-id command-id})
+                  (throw (ex-info "Accepted command is not available in the journal; retry without changing its identity"
+                                  {:type :journal-unavailable :retryable? true :command-id command-id}))))))
+
+
+;; The recorded input of an accepted connect or replace attempt, for the same manager, workspace and entered values
+;; (the API key through its secret reference); nil before acceptance. Server-side only: it names the secret.
+(defreadmodel accepted-attempt
+  {:input  [:map [:command-id :string] [:command :qualified-keyword] [:entered [:map-of :keyword :any]]]
+   :output [:maybe :map]
+   :policy ::manager
+   :cofx   [[:request ::accepted-request (fn [_ input] (select-keys input [:command-id]))]]}
+  [{:keys [request scope actor]} {:keys [command entered]}]
+  (when request
+    (when-not (and (= {:command command :scope scope :actor actor} (dissoc request :input))
+                   (= entered (select-keys (:input request) (keys entered))))
+      (fail! :idempotency-conflict "This command identifier belongs to another request"))
+    (:input request)))
 
 
 ;; Reads
