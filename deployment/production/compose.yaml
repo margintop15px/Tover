@@ -135,6 +135,8 @@ services:
       TOVER_SMTP_FROM: ${SMTP_ADMIN_EMAIL}
       TOVER_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-Tover}
       TOVER_SESSION_KEY: ${SESSION_ENCRYPTION_KEY:?Configure private .env}
+      # Optional: without it marketplace accounts cannot be connected (docs/identity-deployment.md).
+      TOVER_CONNECTOR_KEY: ${TOVER_CONNECTOR_KEY:-}
       TOVER_PORT: 3030
       TOVER_INVENTORY_PATH: /var/lib/tover/inventory
       # Reserve the other 2 GiB in the container for native memory and mapped RDF data.

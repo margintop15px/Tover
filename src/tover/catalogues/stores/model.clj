@@ -103,10 +103,24 @@
   [:map [:store-id Id] [:revision [:int {:min 1}]]])
 
 
+(defmethod runtime/coeffect ::connections
+  [_ context {:keys [store-id]}]
+  ;; Chapter 40's model names stores, so it is reached through its coeffect and not required here.
+  (filterv #(= store-id (:store-id %)) (runtime/coeffect :tover.marketplace.connections.model/all context {})))
+
+
+;; The store's active marketplace connections are paused in the same commit; restoring resumes none of them.
 (defcommand archive-store
-  {:input Reviewed :policy ::records/workspace-member :cofx [[:record ::stores by-id]] :emits #{::store-archived}}
-  [facts input]
-  (records/archive spec facts input))
+  {:input Reviewed :policy ::records/workspace-member
+   :cofx  [[:record ::stores by-id] [:connections ::connections by-id]]
+   :emits #{::store-archived :tover.marketplace.connections.model/marketplace-connection-paused}}
+  [{:keys [actor now connections] :as facts} input]
+  (update (records/archive spec facts input) :events into
+          (for [{:keys [connection-id sync-state]} connections
+                :when (= "active" sync-state)]
+            {:type :tover.marketplace.connections.model/marketplace-connection-paused
+             :data {:connection-id connection-id :sync-state "paused"  :reason "store archived"
+                    :paused-by     (str actor)   :paused-at  (str now)}})))
 
 
 (defcommand restore-store

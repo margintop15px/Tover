@@ -1225,15 +1225,183 @@
                             :memberships [{:workspace-id workspace :role :owner}]}))
 
 
+(def listed-states
+  "What a supply list has to ask for."
+  #{"DATA_FILLING" "READY_TO_SUPPLY" "ACCEPTED_AT_SUPPLY_WAREHOUSE" "IN_TRANSIT" "ACCEPTANCE_AT_STORAGE_WAREHOUSE"
+    "REPORTS_CONFIRMATION_AWAITING" "REPORT_REJECTED" "COMPLETED" "REJECTED_AT_SUPPLY_WAREHOUSE" "CANCELLED" "OVERDUE"})
+
+
+(defn account
+  "A small seller account answering every call in the verified shapes of the Ozon reference; a request Ozon refuses
+  gets a 400. One FBO warehouse, 77, is named by stock, analytics, postings and a supply, and listed nowhere."
+  {:malli/schema [:=> [:cat :string :map] :map]}
+  [path {:keys [cursor last_id limit filter] :as body}]
+  (let [pages   (fn [first-page second-page]
+                  (when (and (= 100 limit) (= "ASC" (:sort_dir body)) (:since filter) (:to filter) (nil? (:offset body)))
+                    (if (= "" cursor)
+                      {:postings first-page :has_next true :cursor "p2"}
+                      {:postings second-page :has_next false})))
+        fbo     (fn [status fields]
+                  {:result (merge {:posting_number (:posting_number body)
+                                   :status         status
+                                   :in_process_at  "2026-11-20T08:00:00Z"
+                                   :analytics_data {:warehouse_id 77 :warehouse_name "KHOROGRAD"}
+                                   :products       [{:sku 100 :offer_id "A-1" :quantity 1 :price "900.00" :currency_code "RUB"}]
+                                   :financial_data {:products [{:product_id 100 :price 850.5 :currency_code "RUB" :quantity 1}]}}
+                                  fields)})
+        fbs     (fn [status fields]
+                  {:result (merge {:posting_number       (:posting_number body)
+                                   :status               status
+                                   :shipment_date        "2026-11-21T08:00:00Z"
+                                   :tpl_integration_type "ozon"
+                                   :delivery_method      {:id 5 :warehouse_id 1 :warehouse "FBS 1"}
+                                   :analytics_data       {:warehouse_id 1 :warehouse "FBS 1"}
+                                   :products             [{:sku 100 :offer_id "A-1" :quantity 2 :price "900.00" :currency_code "RUB"}]}
+                                  fields)})
+        removal (fn [id fields]
+                  {:returns_summary_report_rows
+                   (if (= "" last_id)
+                     [(merge {:return_id id :box_id 8 :sku 100 :quantity_for_return 1 :return_state "Done" :given_out_date "" :utilization_date ""}
+                             fields)]
+                     [])
+                   :last_id ""})
+        listed  (fn [item]
+                  (when (= 1000 limit)
+                    {:items (if (= "" cursor) [item] []) :total_items 1 :cursor (if (= "" cursor) "c2" "")}))
+        answer
+        (case path
+          "/v2/warehouse/list" {:warehouses [{:warehouse_id 1 :name "FBS 1" :status "created" :is_rfbs false}
+                                             {:warehouse_id 3 :name "rFBS 3" :status "created" :is_rfbs true}]
+                                :has_next   false
+                                :cursor     ""}
+          "/v1/warehouse/fbo/seller/list" {:warehouses [{:seller_warehouse_id 2 :seller_warehouse_name "Origin" :is_active true :is_pickup false}]}
+          "/v3/product/list" (if (= "" last_id)
+                               {:result {:items [{:product_id 9001 :offer_id "A-1"}] :total 1 :last_id "abc"}}
+                               {:result {:items [] :total 1 :last_id ""}})
+          "/v3/product/info/list" {:items [{:id          9001              :name                    "Tee"                  :offer_id "A-1" :sku 100 :sources [{:sku 100 :source "sds"}]
+                                            :barcodes    ["4600000000017"] :description_category_id 200                    :type_id  300
+                                            :is_archived false             :updated_at              "2026-11-20T08:00:00Z"}]}
+          "/v1/product/related-sku/get" {:items  [{:sku 100 :product_id 9001 :deleted_at nil}
+                                                  {:sku 101 :product_id 9001 :deleted_at "2026-01-01T00:00:00Z"}]
+                                         :errors []}
+          "/v4/product/info/attributes" {:result  (if (= "" last_id)
+                                                    [{:id                 9001 :attributes [{:id 85 :complex_id 0 :values [{:dictionary_value_id 0 :value "Brand"}]}]
+                                                      :complex_attributes []}]
+                                                    [])
+                                         :last_id (if (= "" last_id) "a2" "")
+                                         :total   1}
+          "/v1/description-category/attribute" {:result [{:id                   85    :name                  "Brand" :type            "String" :is_aspect true :is_required true :dictionary_id 0
+                                                          :category_dependent   false :is_collection         false   :max_value_count 1
+                                                          :attribute_complex_id 0     :complex_is_collection false   :group_id        0}]}
+          "/v5/product/info/prices" (listed {:offer_id "A-1" :product_id 9001 :price {:currency_code "RUB" :net_price 350.5 :price 900}})
+          "/v4/product/info/stocks"
+          (listed {:offer_id "A-1" :product_id 9001
+                   :stocks   [{:present 10 :reserved 3 :sku 100 :type "fbo" :warehouse_ids [] :shipment_type "SHIPMENT_TYPE_GENERAL"}
+                              {:present 4 :reserved 0 :sku 100 :type "fbs" :warehouse_ids [] :shipment_type "SHIPMENT_TYPE_GENERAL"}]})
+          "/v1/product/info/stocks-by-warehouse/fbo"
+          (when (and (= 1000 limit) (every? string? (:skus body)))
+            {:products [{:offer_id "A-1" :product_id 9001 :sku 100 :present 10 :reserved 3 :warehouse_id 77}] :has_next false :cursor ""})
+          "/v2/product/info/stocks-by-warehouse/fbs"
+          (when (and (= 1000 limit) (every? string? (:sku body)))
+            {:products [{:offer_id "A-1" :product_id 9001 :sku 100 :present 4 :reserved 0 :free_stock 4 :warehouse_id 1 :warehouse_name "FBS 1"}]
+             :has_next false
+             :cursor   ""})
+          "/v1/analytics/stocks"
+          {:items [{:sku 100 :offer_id "A-1" :warehouse_id 77 :warehouse_name "KHOROGRAD" :cluster_id 4 :available_stock_count 7}]}
+          "/v4/posting/fbs/list" (pages [{:posting_number "S-1" :status "delivered"}] [{:posting_number "S-2"} {:posting_number "S-3"}])
+          "/v3/posting/fbs/get" (case (:posting_number body)
+                                  "S-1" (fbs "delivered" {:fact_delivery_date "2026-11-21T10:00:00Z" :delivering_date "2026-11-21T10:00:00Z"})
+                                  "S-2" (fbs "awaiting_deliver" {:fact_delivery_date nil})
+                                  "S-3" (fbs "cancelled" {:cancellation {:cancelled_after_ship true}}))
+          "/v3/posting/fbo/list" (pages [{:posting_number "F-1"}] [{:posting_number "F-2"} {:posting_number "F-3"}])
+          "/v2/posting/fbo/get" (case (:posting_number body)
+                                  "F-1" (fbo "delivering" {:fact_delivery_date "2026-11-21T09:00:00Z"})
+                                  "F-2" (fbo "awaiting_packaging" {})
+                                  "F-3" (fbo "cancelled" {}))
+          "/v1/returns/list" {:returns  [{:id                  7
+                                          :schema              "Fbo"
+                                          :posting_number      "F-1"
+                                          :visual              {:status {:id 34 :sys_name "ReturnedToOzon"}}
+                                          :logistic            {:final_moment "2026-11-24T10:00:00Z"}
+                                          :place               {:id 55 :name "Returns centre"}
+                                          :target_place        {:id 56 :name ""}
+                                          :compensation_status {:status {:id 1 :sys_name "Received"} :change_moment "2026-11-24T10:00:00Z"}
+                                          :product             {:sku 100 :offer_id "A-1" :quantity 1}}]
+                              :has_next false}
+          "/v2/returns/rfbs/list" {:returns (if (= 0 last_id) [{:return_id 70 :posting_number "S-1"}] [])}
+          "/v2/returns/rfbs/get" {:returns {:return_id 70 :posting_number "S-1" :state {:state "MoneyReturned"} :product {:sku 100 :offer_id "A-1"}}}
+          "/v3/supply-order/list"
+          (when (and (= listed-states (set (:states filter))) (= 100 limit)
+                     (= ["ORDER_STATE_UPDATED_AT" "DESC"] [(:sort_by body) (:sort_dir body)]))
+            (if (= "" last_id) {:order_ids [500] :last_id "500"} {:order_ids []}))
+          "/v3/supply-order/get"
+          {:orders [{:order_id           500
+                     :state              "COMPLETED"
+                     :state_updated_date "2026-11-20T08:00:00Z"
+                     :dropoff_warehouse  {:warehouse_id 9 :name "Drop-off"}
+                     :order_tags         {:seller_warehouse_id 2}
+                     :supplies           [{:supply_id         600
+                                           :bundle_id         "b"
+                                           :state             "COMPLETED"
+                                           :storage_warehouse {:warehouse_id 77 :name "KHOROGRAD" :arrival_date "2026-11-19T08:00:00Z"}}]}]}
+          "/v1/supply-order/bundle" {:items [{:sku 100 :offer_id "A-1" :product_id 9001 :quantity 5}] :total_count 1 :last_id "" :has_next false}
+          "/v1/supply-order/act/product/get"
+          {:supply_id    600
+           :supply_acts  [{:act_id                1
+                           :type                  "ACCEPTANCE"
+                           :unidentified_quantity 0
+                           :items                 [{:sku_info          {:sku 100 :offer_id "A-1" :name "Tee"}
+                                                    :declared_quantity 5
+                                                    :fact_quantity     5
+                                                    :approved_quantity 5
+                                                    :fact_amount       0
+                                                    :approved_amount   0}]}]
+           :skus_defects []}
+          "/v1/removal/from-stock/list" (removal 80 {:given_out_date "2026-11-22T10:00:00Z"})
+          "/v1/removal/from-supply/list" (removal 81 {:utilization_date "2026-11-22T10:00:00Z"}))]
+    (if answer (fake/ok answer) {:status 400 :body {}})))
+
+
 (deftest sync-through-the-store
   (support/with-store
     (fn [repo _]
-      (let [marketplace {:verify (constantly nil) :repo repo :key key-bytes :pacer (atom {}) :last-look (atom nil)
-                         :post   (fn [path body _headers] (update (ozon path body) :body json/write-json-str))}
-            system      (support/bel-system {:repo repo :marketplace marketplace})
+      (let [calls       (atom [])
+            interrupt   (atom nil)
+            marketplace (fn []
+                          {:verify (constantly nil) :repo repo :key key-bytes :pacer (atom {}) :last-look (atom nil) :attempts (atom {})
+                           :post   (fn [path body _headers]
+                                     (when (= path @interrupt)
+                                       (reset! interrupt nil)
+                                       (throw (InterruptedException. "the application stops")))
+                                     (swap! calls conj path)
+                                     (update (account path body) :body json/write-json-str))})
+            boot        #(support/bel-system {:repo repo :marketplace (marketplace)})
+            system      (boot)
             ctx         (context system)
-            secret      (connector/store-secret! marketplace workspace "api-key")
-            read        #(runtime/read-model ctx ::sync/sync-status-and-coverage {:connection-id c})]
+            in-scope    (assoc ctx :scope scope)
+            secret      (connector/store-secret! (marketplace) workspace "api-key")
+            read        #(runtime/read-model ctx ::sync/sync-status-and-coverage {:connection-id c})
+            row         #(runtime/read-model ctx ::connections/connections {:connection-id c})
+            run-row     #(runtime/coeffect ::sync/run in-scope {:run-id (:run-id (row))})
+            rows        #(records/all-records in-scope %1 %2)
+            products    #(rows ::sync/external-products :external-product-id)
+            warehouses  #(rows ::sync/external-warehouses :external-warehouse-id)
+            operations  #(rows ::sync/source-operations :source-operation-id)
+            fields      #(rows ::sync/field-definitions :field-definition-id)
+            tick        #(runtime/run-processors! %)
+            finish      (fn [system]
+                          (loop [n 120]
+                            (when (and (pos? n) (= "open" (:run-state (row)))) (tick system) (recur (dec n)))))
+            positions   #(runtime/coeffect ::sync/connection-positions in-scope {:connection-id c})
+            recorded    (fn []
+                          [(set (rows ::sync/source-revisions :source-revision-id))
+                           (for [[read id-key] [[products :external-product-id] [warehouses :external-warehouse-id]
+                                                [operations :source-operation-id] [fields :field-definition-id]]]
+                             (into {} (map (juxt id-key :revision)) (read)))])
+            state       (fn [] [(row) (positions) (recorded) @calls])
+            sync-now    (fn [run-id]
+                          (runtime/execute! ctx ::sync/start-marketplace-sync
+                                            {:command-id run-id :input {:attempt-id run-id :run-id run-id :connection-id c :trigger "member"}}))]
         (runtime/execute! ctx ::stores/register-store {:command-id "st1" :input {:store-id "s" :name "Ozon shop"}})
         (runtime/execute! ctx ::connections/connect-marketplace-account
                           {:command-id "connect-1"
@@ -1241,61 +1409,118 @@
                                         :verification-outcome "verified" :account-currency "RUB" :readable-domains all-domains}})
 
         (testing "never synced: the scheduler starts a run as the connector"
-          (runtime/run-processors! system)
+          (tick system)
           (let [status (read)]
             (is (= "schedule" (get-in status [:current-run :trigger])))
             (is (= (str "connector:" c) (get-in status [:current-run :triggered-by])))))
 
         (testing "two members press Sync now during the run: nothing new starts"
           (let [run-id (get-in (read) [:current-run :run-id])]
-            (runtime/execute! ctx ::sync/start-marketplace-sync
-                              {:command-id "now-1" :input {:attempt-id "now-1" :run-id (str (random-uuid)) :connection-id c :trigger "member"}})
-            (runtime/execute! ctx ::sync/start-marketplace-sync
-                              {:command-id "now-2" :input {:attempt-id "now-2" :run-id (str (random-uuid)) :connection-id c :trigger "member"}})
+            (sync-now "now-1")
+            (sync-now "now-2")
             (is (= run-id (get-in (read) [:current-run :run-id])))))
 
         (testing "a pause stops the fetcher at the next checkpoint and Resume continues the same run"
-          (runtime/run-processors! system)
+          (tick system)
           (runtime/execute! ctx ::connections/pause-marketplace-connection {:command-id "pause-1" :input {:connection-id c}})
-          (let [before (read)]
-            (dotimes [_ 3] (runtime/run-processors! system))
-            (is (= (:current-run before) (:current-run (read))) "reads nothing more; the open run keeps its positions"))
+          (let [before (state)]
+            (dotimes [_ 3] (tick system))
+            (is (= before (state)) "reads nothing more; the open run keeps its positions"))
           (runtime/execute! ctx ::connections/resume-marketplace-connection {:command-id "resume-1" :input {:connection-id c}}))
 
-        (testing "the fetcher traverses every domain and completes the run"
-          (dotimes [_ 60] (runtime/run-processors! system))
+        (testing "an application stopped in the middle resumes the same run where it was"
+          (let [run-id (:run-id (row))
+                path   "/v2/posting/fbo/get"]
+            (reset! interrupt path)
+            (loop [n 120] (when (and (pos? n) @interrupt) (tick system) (recur (dec n))))
+            (is (nil? @interrupt))
+            (is (= "fbo-postings" (first (:unfinished-domains (sync/coverage (run-row))))))
+            (is (not-any? #{path} @calls))
+            (finish (boot))
+            (is (= [run-id "completed"] ((juxt :run-id :run-state) (row))))
+            (is (= {"/v2/warehouse/list" 1 "/v3/product/info/list" 1 "/v3/posting/fbs/get" 3 "/v3/posting/fbo/list" 2 path 3}
+                   (select-keys (frequencies @calls) ["/v2/warehouse/list" "/v3/product/info/list" "/v3/posting/fbs/get" "/v3/posting/fbo/list" path]))
+                "nothing recorded before is read again")))
+
+        (testing "all 15 domains are covered by the one run"
           (let [status (read)]
+            (is (= 15 (count all-domains)))
+            (is (= ozon/allowlist (set @calls)) "through every call of the board's table")
             (is (nil? (:current-run status)))
             (is (= "completed" (:last-outcome status)))
-            (is (= {:listings 1 :warehouses 4 :operations 2} (:found-counts status)))
-            (is (every? :covered-until (:covered-until status)) "every domain covered until the run start")
+            (is (= all-domains (map :domain (filter :covered-until (:covered-until status)))))
+            (is (= (set all-domains) (set (map :domain (rows ::sync/stock-passes :pass-id)))))
+            (is (= {:finished-domains all-domains :unavailable-domains [] :unfinished-domains []}
+                   (dissoc (sync/coverage (run-row)) :run-id)))
+            (is (= {:listings 1 :warehouses 4 :operations 11}
+                   (update-vals {:listings (products) :warehouses (warehouses) :operations (operations)} count)
+                   (:found-counts status)))
             (is (some? (:next-sync-at status)))))
 
         (testing "source records are evidence, stored per connection"
-          (let [product (get (runtime/coeffect ::sync/existing (assoc ctx :scope scope)
-                                               {:connection-id c :observations [{:kind "product" :source-id "9001"}]})
-                             (str c ":9001"))]
-            (is (= [4 "Tee" "350.5" "RUB"] ((juxt :revision :name :cost :cost-currency) product))
+          (let [product (first (products))]
+            (is (= [(str c ":9001") 4 "Tee" "350.5" "RUB"] ((juxt :external-product-id :revision :name :cost :cost-currency) product))
                 "aliases, attributes and cost each added a revision")
             (is (some #(= {:type "barcode" :value "4600000000017"} (select-keys % [:type :value]))
-                      (json/read-json (:identifiers product) :key-fn keyword)))))
+                      (json/read-json (:identifiers product) :key-fn keyword)))
+            (is (= [["85" "Brand" true]] (map (juxt :attribute-id :name :separates-variants) (fields))))
+            (is (= #{["fulfilment-totals" "fbo" 10] ["fulfilment-totals" "fbs" 4] ["warehouse-stock" "fbo" 10] ["warehouse-stock" "fbs" 4]
+                     ["warehouse-analytics" "fbo" 7]}
+                   (set (map (juxt :source :fulfilment-type :present) (rows ::sync/source-stock :stock-id)))))))
 
-        (testing "one row per warehouse identity"
-          (let [rows    (records/all-records (assoc ctx :scope scope) ::sync/external-warehouses :external-warehouse-id)
-                posts   (records/all-records (assoc ctx :scope scope) ::sync/source-operations :source-operation-id)
-                posting {:kind           "operation"           :operation-kind "fbs-posting" :source-id "X"
-                         :from-warehouse {:type "fbs" :id "1"}}]
-            (is (= [["fbo:2" "fbo" nil true] ["fbo:77" "fbo" nil true] ["fbs:1" "fbs" "FBS 1" true] ["supply-origin:2" "supply-origin" "FBO" true]]
-                   (sort-by first (map (juxt #(subs (:external-warehouse-id %) (inc (count c))) :warehouse-type :name :active) rows))))
-            (is (= #{["fbs-posting" (str c ":fbs:1") true "2026-11-26T10:00:00Z" "2026-11-26T10:00:00Z" nil nil nil]
-                     ["return" nil false "2026-11-26T10:00:00Z" nil "[\"receiving warehouse\"]" "fbo" false]}
-                   (set (map (juxt :kind :from-warehouse :complete :occurred-at :handed-over-at :missing :return-schema :compensated) posts))))
-            (is (contains? (runtime/coeffect ::sync/existing (assoc ctx :scope scope) {:connection-id c :observations [posting]})
-                           (str c ":fbs:1"))
+        (testing "one FBO warehouse is discovered, which no list states; one row per warehouse identity"
+          (let [posting {:kind "operation" :operation-kind "fbs-posting" :source-id "X" :from-warehouse {:type "fbs" :id "1"}}]
+            (is (= [["fbo:77" "fbo" "KHOROGRAD" true] ["fbs:1" "fbs" "FBS 1" true]
+                    ["rfbs:3" "rfbs" "rFBS 3" true] ["supply-origin:2" "supply-origin" "Origin" true]]
+                   (sort-by first (map (juxt #(subs (:external-warehouse-id %) (inc (count c))) :warehouse-type :name :active) (warehouses)))))
+            (is (contains? (runtime/coeffect ::sync/existing in-scope {:connection-id c :observations [posting]}) (str c ":fbs:1"))
                 "a posting's warehouse is loaded to tell FBS from rFBS")))
 
+        (testing "only a handed-over posting is complete"
+          (let [operations (operations)]
+            (is (= {"fbs-posting" 3 "fbo-posting" 3 "return" 1 "rfbs-return" 1 "supply" 1 "removal" 2} (frequencies (map :kind operations)))
+                "every kind")
+            (is (= #{["fbs-posting" "S-1" "2026-11-21T10:00:00Z" "2026-11-21T10:00:00Z" (str c ":fbs:1")]
+                     ["fbo-posting" "F-1" "2026-11-21T09:00:00Z" "2026-11-21T09:00:00Z" (str c ":fbo:77")]}
+                   (set (map (juxt :kind :source-id :occurred-at :handed-over-at :from-warehouse) (filter :complete operations)))))
+            (is (every? #(seq (json/read-json (:missing %))) (remove :complete operations)) "any other says what is missing")
+            (is (= [["fbo" true "[\"receiving warehouse\"]"]]
+                   (map (juxt :return-schema :compensated :missing) (filter #(= "return" (:kind %)) operations))))))
+
         (testing "history shows the connector principal as Ozon · account"
-          (is (= "Ozon · 123" (:actor-label (first (actors/enrich ctx [{:actor (str "connector:" c)}]))))))))))
+          (is (= "Ozon · 123" (:actor-label (first (actors/enrich ctx [{:actor (str "connector:" c)}]))))))
+
+        (testing "a second identical run adds no revisions"
+          (let [before (recorded)]
+            (sync-now "R2")
+            (finish system)
+            (is (= ["R2" "completed"] ((juxt :run-id :run-state) (row))))
+            (is (= {:listings 0 :warehouses 0 :operations 0} (:found-counts (read))))
+            (is (= before (recorded)))))
+
+        (testing "archiving the store pauses the connection and the running sync stops recording"
+          (sync-now "R3")
+          (dotimes [_ 4] (tick system))
+          (is (= "open" (:run-state (row))))
+          (let [request (sync/marketplace-fetcher (first (runtime/coeffect ::sync/runs-to-fetch {:bel/system system} {})))
+                _       (runtime/execute! ctx ::stores/archive-store {:command-id "archive" :input {:store-id "s" :revision 1}})
+                before  (state)]
+            (is (= ["paused" "store archived" "R3" "open"] ((juxt :sync-state :reason :run-id :run-state) (row))))
+            (is (= ::sync/record-source-observations (:id request)))
+            (is (= :connection-paused
+                   (rejection #(runtime/execute! (merge (:scope request) {:bel/system system           :bel/service ::sync/marketplace-fetcher
+                                                                          :user-id    (:actor request)})
+                                                 (:id request) {:command-id "late" :input (:input request)})))
+                "a page read before the archive is not recorded")
+            (dotimes [_ 3] (tick system))
+            (is (= before (state)))
+            (runtime/execute! ctx ::stores/restore-store {:command-id "restore" :input {:store-id "s" :revision 2}})
+            (dotimes [_ 3] (tick system))
+            (is (= before (state)) "restoring does not resume")
+            (runtime/execute! ctx ::connections/resume-marketplace-connection {:command-id "resume-3" :input {:connection-id c}})
+            (finish system)
+            (is (= ["R3" "completed"] ((juxt :run-id :run-state) (row))) "Resume continues the run")
+            (is (= (nth before 2) (recorded)))))))))
 
 
 (deftest figures-belong-to-their-run

@@ -474,3 +474,63 @@
           (is (= :store-not-available (rejection #(execute! ctx ::model/connect-marketplace-account "attempt-4"
                                                             (assoc connect-input :connection-id (str (random-uuid)) :client-id "9"
                                                                    :store-id "old"))))))))))
+
+
+;; Chapter 12 slice 6 · Archive the store
+
+
+(deftest archiving-a-store-pauses-its-connections
+  (let [archive  (fn [connections]
+                   (decide ::stores/archive-store {:record active-store :connections connections} {:store-id "s" :revision 1}))
+        paused   (assoc connection :connection-id "c2" :sync-state "paused" :reason "manager" :paused-by "someone")
+        rejected (assoc connection :connection-id "c3" :credentials-state "rejected")
+        pause    (fn [id] {:type ::model/marketplace-connection-paused
+                           :data {:connection-id id :sync-state "paused" :reason "store archived" :paused-by admin-id :paused-at at}})
+        archived {:type ::stores/store-archived :data {:store-id "s" :status "archived" :revision 2}}]
+    (is (= [archived (pause c)] (data (archive [connection paused]))) "an already paused connection is untouched")
+    (is (= [archived (pause c) (pause "c3")] (data (archive [connection rejected]))) "sync active, whatever its credentials")
+    (is (= [archived] (data (archive []))))))
+
+
+(deftest restoring-does-not-resume
+  (is (= [::stores/store-restored]
+         (map :type (:events (decide ::stores/restore-store {:record (assoc active-store :status "archived")} {:store-id "s" :revision 1}))))))
+
+
+(deftest archiving-through-the-store
+  (support/with-store
+    (fn [repo _]
+      (let [owner   (context repo :admin)
+            ctx     (context repo :member)
+            connect (fn [id store-id client-id]
+                      (execute! owner ::model/connect-marketplace-account (str "connect-" id)
+                                (assoc connect-input :connection-id id :store-id store-id :client-id client-id)))
+            row     #(runtime/read-model ctx ::model/connections {:connection-id %})
+            state   #((juxt :sync-state :reason :paused-by) (row %))
+            store   #(runtime/read-model ctx ::stores/stores {:store-id "s"})]
+        (connector/store-secret! {:repo repo :key (byte-array 32)} workspace secret "api-key")
+        (execute! owner ::stores/register-store "st1" {:store-id "s" :name "Ozon shop"})
+        (execute! owner ::stores/register-store "st2" {:store-id "other" :name "Other shop"})
+        (connect "c1" "s" "1")
+        (connect "c2" "s" "2")
+        (connect "c3" "other" "3")
+        (execute! owner ::model/pause-marketplace-connection "pause" {:connection-id "c2"})
+        (testing "a rejected attempt pauses nothing"
+          (is (= :stale-catalogue (rejection #(execute! ctx ::stores/archive-store "stale" {:store-id "s" :revision 9}))))
+          (is (= "active" (:sync-state (row "c1")))))
+        (let [untouched [(row "c2") (row "c3")]
+              archive   #(execute! ctx ::stores/archive-store "archive" {:store-id "s" :revision 1})
+              receipt   (archive)]
+          (is (= "archived" (:status (store))))
+          (is (= ["paused" "store archived" (str member)] (state "c1")) "any member archives; the connection pauses with it")
+          (is (= untouched [(row "c2") (row "c3")]))
+          (is (= receipt (archive)) "a retry returns the recorded outcome"))
+        (is (= :store-archived (rejection #(execute! owner ::model/resume-marketplace-connection "resume-1" {:connection-id "c1"}))))
+        (testing "Restore does not resume"
+          (execute! ctx ::stores/restore-store "restore" {:store-id "s" :revision 2})
+          (is (= "active" (:status (store))))
+          (is (= ["paused" "store archived" (str member)] (state "c1"))))
+        (testing "an Owner or Admin resumes each one"
+          (is (= :forbidden (rejection #(execute! ctx ::model/resume-marketplace-connection "resume-2" {:connection-id "c1"}))))
+          (execute! owner ::model/resume-marketplace-connection "resume-3" {:connection-id "c1"})
+          (is (= ["active" "paused"] (map (comp :sync-state row) ["c1" "c2"]))))))))
