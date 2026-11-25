@@ -256,6 +256,21 @@
       (:provider-as-of observation) (assoc :provider-as-of (:provider-as-of observation)))))
 
 
+(defn contradicts?
+  "Whether a warehouse figure states a part again, with other quantities than `figures` (by id) hold for this run."
+  {:malli/schema [:=> [:cat [:map-of :string :map] :string :string [:sequential :map]] :boolean]}
+  [figures connection-id run-id observations]
+  (boolean
+    (some (fn [{:keys [part present reserved] :as observation}]
+            (some (fn [[p & quantities]] (and (= p (or part "")) (not= quantities [present reserved])))
+                  (for [id    (candidate-stock-ids connection-id run-id observation)
+                        :let  [row (get figures id)]
+                        :when (= run-id (:run-id row))
+                        row   (read-json (:parts row))]
+                    row)))
+          (filter #(= "warehouse-stock" (:source %)) observations))))
+
+
 (defn bindings
   "Identifier bindings after an observation: supplied ones active (first observed kept), others inactive."
   {:malli/schema [:=> [:cat [:maybe [:sequential :map]] [:sequential :map] :string] [:vector :map]]}

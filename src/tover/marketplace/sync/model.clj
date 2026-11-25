@@ -514,6 +514,13 @@
 (declare group-by-model)
 
 
+(defn- stock-ids
+  "Ids of the figures so far that these observations add to: the rows of one listing in one place add up."
+  {:malli/schema [:=> [:cat :string [:maybe :string] [:sequential :map]] [:vector :string]]}
+  [connection-id run-id observations]
+  (into [] (comp (filter #(= "stock" (:kind %))) (mapcat #(observations/candidate-stock-ids connection-id run-id %))) observations))
+
+
 (defmethod runtime/coeffect ::existing
   [_ context {:keys [connection-id run-id observations]}]
   (if connection-id
@@ -532,9 +539,7 @@
                         ;; The warehouses it names, to tell FBS from rFBS.
                         (update ::external-warehouses (fnil into [])
                                 (mapcat #(observations/candidate-warehouse-ids connection-id %)) (observations/warehouses o)))
-              ;; The figure so far: the rows of one listing in one place add up.
-              (= "stock" (:kind o))
-              (update ::source-stock (fnil into []) (observations/candidate-stock-ids connection-id run-id o))))
+              (= "stock" (:kind o)) (update ::source-stock (fnil into []) (stock-ids connection-id run-id [o]))))
           {} observations))
 
 
@@ -608,6 +613,9 @@
     (and (= run-id (:run-id position)) (= batch-key (:batch-key position))) {}
     (not= batch-key (current-key run-id position)) (fail! :stale-position "Stale position")
     (personal? observations) (fail! :personal-data-present "Personal data present")
+    ;; The fetcher sees this first and fails the run; nothing overwrites a figure silently.
+    (observations/contradicts? existing (:connection-id run) run-id observations)
+    (fail! :conflicting-figures "Conflicting figures")
     :else
     (let [connection-id     (:connection-id run)
           at                (str now)
@@ -952,14 +960,16 @@
 
 (def FetchItem
   [:map [:workspace-id :string] [:run :map] [:positions [:map-of :string :map]] [:env [:maybe ozon/Env]]
-   [:products [:fn fn?]]])
+   [:products [:fn fn?]]
+   ;; Stored figures, by id, that observations of the run may add to.
+   [:figures {:optional true} [:fn fn?]]])
 
 
 (defn fetch-request
   "Check the run's remaining work and read its next batch: the command that records it, marks a setback or
   closes the run. Reads the provider outside any store transaction."
   {:malli/schema [:=> [:cat FetchItem] bel/ProcessorRequest]}
-  [{:keys [workspace-id run positions env products]}]
+  [{:keys [workspace-id run positions env products figures] :or {figures (constantly {})}}]
   (let [connection-id (:connection-id run)
         run-id (:run-id run)
         request (fn [id input] {:type  :command :id id :scope {:workspace-id (parse-uuid workspace-id)}
@@ -973,6 +983,9 @@
         (try
           (when-not env (ozon/fail! :credentials-rejected))
           (let [{:keys [observations state finished?]} (ozon/step domain env context state)]
+            (when (and (= "stock-by-warehouse" domain)
+                       (observations/contradicts? (figures observations) connection-id run-id observations))
+              (ozon/fail! :incomplete-page))
             (request ::record-source-observations
                      {:run-id          run-id :domain          domain       :batch-key       batch-key
                       :next-position   (merge {:cursor (pr-str state)}
@@ -1016,6 +1029,7 @@
                                (catch Exception error
                                  (mu/log ::credentials-unavailable :error-type (.getName (class error)))
                                  nil))
+            :figures      #(load-rows context ::source-stock (stock-ids (:connection-id connection) (:run-id run) %))
             :products     #(into {} (filter (fn [[_ p]] (= (:connection-id connection) (:connection-id p))))
                                  (map (juxt :external-product-id identity)
                                       (records/all-records context ::external-products :external-product-id)))}))))

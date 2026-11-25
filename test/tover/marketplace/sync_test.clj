@@ -627,6 +627,24 @@
           "the latest figure only: an earlier run's parts do not add"))))
 
 
+(deftest contradicting-stock-rows-over-two-pages
+  (let [row     {:sku 100 :product_id 9001 :warehouse_id 77 :present 10 :reserved 3}
+        stored  (figures {} [(figure {:part "100" :present 10 :reserved 3})] {})
+        domains (connections/encode-domains (take-while #(not= "stock-by-warehouse" %) all-domains))
+        fetch   (fn [stored row]
+                  (sync/fetch-request
+                    (assoc (item (run {:finished-domains domains}) {"stock-by-warehouse" {:run-id r :finished false :cursor "{:phase :fbo :pending [\"100\"] :cursor \"c1\"}"}}
+                                 [(fake/ok {:has_next false :products [row]})])
+                           :figures (constantly stored))))
+        failed  {:run-id r :outcome "failed" :failed-domain "stock-by-warehouse" :reason "incomplete page" :unavailable-domains []}]
+    (is (= failed (:input (fetch stored (assoc row :present 11)))))
+    (is (= failed (:input (fetch stored (assoc row :reserved 4)))))
+    (doseq [[stored row] [[stored row] [{} (assoc row :present 11)] [(update-vals stored #(assoc % :run-id "R0")) (assoc row :present 11)]]]
+      (is (= ::sync/record-source-observations (:id (fetch stored row)))))
+    (is (= :conflicting-figures (rejection #(figures stored [(figure {:part "100" :present 11 :reserved 3})] {})))
+        "nothing is recorded either when a batch reaches the command")))
+
+
 (deftest cost-is-a-listing-fact
   (let [observe (fn [row o] (record {:existing {p row}} {:domain "prices" :observations [o]}))
         seen    #(event % ::sync/external-product-observed)
@@ -1046,6 +1064,55 @@
           (is (= {"warehouse-stock" 4 "warehouse-analytics" 1 "fulfilment-totals" 1}
                  (frequencies (map :source (records/all-records ctx ::sync/source-stock :stock-id))))
               "the other views keep the latest figures only"))))))
+
+
+(deftest parts-of-a-figure-add-up-through-the-store
+  (support/with-store
+    (fn [repo _]
+      (let [marketplace {:verify (constantly nil) :repo repo :key key-bytes}
+            system      (support/bel-system {:repo repo :marketplace marketplace})
+            ctx         (assoc (context system) :scope scope)
+            connector   {:bel/system   system    :bel/service ::sync/marketplace-fetcher :user-id (sync/connector-actor c)
+                         :workspace-id workspace}
+            send        (fn [id command input] (runtime/execute! connector command {:command-id id :input input}))
+            start       (fn [run-id]
+                          (runtime/execute! ctx ::sync/start-marketplace-sync
+                                            {:command-id (str "start-" run-id)
+                                             :input      {:attempt-id run-id :run-id run-id :connection-id c :trigger "member"}}))
+            batch       (fn [run-id domain key next observations]
+                          {:run-id          run-id         :domain          domain :batch-key    key
+                           :next-position   {:cursor next} :domain-finished false  :observations observations
+                           :adapter-version "ozon-1"})
+            one         (fn [run-id] (batch run-id "stock-by-warehouse" "" "{:p 1}" [(figure {:part "100" :present 10 :reserved 3})]))
+            two         (fn [run-id] (batch run-id "stock-by-warehouse" "{:p 1}" "{:p 2}" [(figure {:part "101" :present 4})]))
+            stated      (fn [run-id] (mapv (juxt :present :reserved) (sync/stock-figures ctx c run-id)))]
+        (runtime/execute! ctx ::stores/register-store {:command-id "st1" :input {:store-id "s" :name "Ozon shop"}})
+        (runtime/execute! ctx ::connections/connect-marketplace-account
+                          {:command-id "connect-1"
+                           :input      {:connection-id        c :store-id                  "s"   :provider         "ozon"      :client-id "123"
+                                        :secret-ref           (connector/store-secret! marketplace workspace "k")
+                                        :verification-outcome "verified" :account-currency "RUB" :readable-domains all-domains}})
+        (start "R1")
+        (send "products" ::sync/record-source-observations (batch "R1" "products" "" "{:p 1}" [(product "A-1")]))
+        (send "one" ::sync/record-source-observations (one "R1"))
+        (is (= [[10 3]] (stated "R1")))
+        (send "two" ::sync/record-source-observations (two "R1"))
+        (is (= [[14 3]] (stated "R1")) "the part of the earlier page is loaded")
+        (testing "replays change nothing"
+          (send "two" ::sync/record-source-observations (two "R1"))
+          (send "two-again" ::sync/record-source-observations (two "R1"))
+          (send "one" ::sync/record-source-observations (one "R1"))
+          (is (= :stale-position (rejection #(send "one-again" ::sync/record-source-observations (one "R1")))))
+          (is (= [[14 3]] (stated "R1"))))
+        (testing "the fetcher's lookup finds the recorded figures"
+          (let [item (first (runtime/coeffect ::sync/runs-to-fetch {:bel/system system} {}))]
+            (is (= [14] (map :present (vals ((:figures item) (:observations (one "R1")))))))))
+        (testing "a later run does not add to it"
+          (send "close" ::sync/complete-marketplace-sync {:run-id "R1" :outcome "failed" :failed-domain "returns" :reason "incomplete page"})
+          (start "R2")
+          (send "later" ::sync/record-source-observations (one "R2"))
+          (is (= [[10 3]] (stated "R2")))
+          (is (= [[14 3]] (stated "R1"))))))))
 
 
 (deftest replaced-credentials-start-a-new-scheduled-run

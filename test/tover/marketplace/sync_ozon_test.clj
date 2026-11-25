@@ -393,12 +393,17 @@
            (map :body @calls)))))
 
 
+(def one-listing
+  "SKUs 1 and 2 of listing 1 are asked for; SKU 3 is listing 2's and is not."
+  {:skus (constantly ["1" "2"]) :sku->product (constantly {"1" "1" "2" "1" "3" "2"})})
+
+
 (deftest repeated-page-cursor-fails
   (doseq [[domain state body] [["prices" {:cursor "c1"} {:cursor "c1" :items [{:product_id 1 :price {}}]}]
                                ["stock-totals" {:cursor "c1"} {:cursor "c1" :items [{:product_id 1 :stocks []}]}]
                                ["stock-by-warehouse" {:phase :fbo :pending ["1"] :cursor "c1"}
                                 {:cursor "c1" :has_next true :products [{:product_id 1 :sku 1 :warehouse_id 2 :present 1}]}]]]
-    (is (= :repeated-cursor (:type (thrown #(ozon/step domain (:env (env [(ok body)])) {:skus (constantly ["1"])} state)))) domain)))
+    (is (= :repeated-cursor (:type (thrown #(ozon/step domain (:env (env [(ok body)])) one-listing state)))) domain)))
 
 
 (deftest unreadable-price-and-stock-rows-are-incomplete
@@ -406,10 +411,53 @@
                          ["stock-by-warehouse" {:has_next false}]
                          ["stock-by-warehouse" {:has_next true :products []}]
                          ["stock-by-warehouse" {:cursor "x" :products []}]
-                         ["stock-by-warehouse" {:has_next false :products [{:product_id 1 :warehouse_id 2}]}]
-                         ["stock-by-warehouse" {:has_next false :products [{:product_id 1 :warehouse_id 0 :present 1}]}]
-                         ["stock-by-warehouse" {:has_next false :products [{:warehouse_id 2 :present 1}]}]]]
-    (is (= :incomplete-page (:type (thrown #(ozon/step domain (:env (env [(ok body)])) {:skus (constantly ["1"])} {})))) (pr-str body))))
+                         ["stock-by-warehouse" {:has_next false :products [{:product_id 1 :sku 1 :warehouse_id 2}]}]
+                         ["stock-by-warehouse" {:has_next false :products [{:product_id 1 :sku 1 :warehouse_id 0 :present 1}]}]]]
+    (is (= :incomplete-page (:type (thrown #(ozon/step domain (:env (env [(ok body)])) one-listing {})))) (pr-str body))))
+
+
+(defn warehouse-rows
+  "What one FBO and one FBS page with these rows give: the figures, or the failure."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:vector :any]]}
+  [rows]
+  (vec (for [phase [:fbo :fbs]
+             :let  [read #(ozon/step "stock-by-warehouse" (:env (env [(ok {:has_next false :products rows})])) one-listing
+                                     {:phase phase :pending ["1" "2"]})]]
+         (or (:type (thrown read))
+             (mapv (juxt :product-source-id :part :present :reserved) (filter #(= "stock" (:kind %)) (:observations (read))))))))
+
+
+(def stock-row
+  {:sku 1 :product_id 1 :warehouse_id 2 :present 5 :reserved 1})
+
+
+(deftest stock-row-without-sku
+  (doseq [sku [nil "" 0 "0"]]
+    (is (= [:incomplete-page :incomplete-page] (warehouse-rows [(assoc stock-row :sku sku)])))))
+
+
+(deftest stock-row-of-a-sku-not-asked-for
+  (is (= [:incomplete-page :incomplete-page] (warehouse-rows [{:sku 3 :product_id 2 :warehouse_id 2 :present 5}]))))
+
+
+(deftest stock-row-of-an-unresolved-sku
+  (is (= :incomplete-page
+         (:type (thrown #(ozon/step "stock-by-warehouse" (:env (env [(ok {:has_next false :products [stock-row]})]))
+                                    (assoc one-listing :sku->product (constantly {})) {}))))))
+
+
+(deftest stock-row-of-another-listing
+  (is (= [:incomplete-page :incomplete-page] (warehouse-rows [(assoc stock-row :product_id 2)])))
+  (is (= [[["1" "1" 5 1]] [["1" "1" 5 1]]] (warehouse-rows [(dissoc stock-row :product_id)])) "the SKU names the listing"))
+
+
+(deftest contradicting-stock-rows-in-one-page
+  (doseq [other [{:present 6} {:reserved 2} {:reserved nil}]]
+    (is (= [:incomplete-page :incomplete-page] (warehouse-rows [stock-row (merge stock-row other)]))))
+  (is (= [["1" "1" 5 1]] (distinct (first (warehouse-rows [stock-row stock-row])))) "an identical repeat is no contradiction")
+  (is (= [["1" "1" 5 1] ["1" "2" 6 1] ["1" "1" 7 1]]
+         (first (warehouse-rows [stock-row (assoc stock-row :sku 2 :present 6) (assoc stock-row :warehouse_id 3 :present 7)])))
+      "another SKU or warehouse is another row"))
 
 
 (deftest fourth-product-is-not-the-stock-cursor
@@ -439,7 +487,7 @@
                      (= "" cursor) {:has_next true :cursor "c1" :products [{:product_id 9001 :sku 1 :present 10 :reserved 3 :warehouse_id 77}]}
                      :else {:has_next false :cursor "c1" :products []}))))
         steps (loop [state {} acc []]
-                (let [s (ozon/step "stock-by-warehouse" env {:skus (constantly skus)} state)]
+                (let [s (ozon/step "stock-by-warehouse" env {:skus (constantly skus) :sku->product (constantly {"1" "9001"})} state)]
                   (if (:finished? s) (conj acc s) (recur (:state s) (conj acc s)))))]
     (is (= [["/v1/product/info/stocks-by-warehouse/fbo" "" 1000] ["/v1/product/info/stocks-by-warehouse/fbo" "c1" 1000]
             ["/v1/product/info/stocks-by-warehouse/fbo" "" 1]

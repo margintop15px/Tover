@@ -54,6 +54,7 @@ Adapter readings where the reference is silent:
 - Without `has_next`, an empty page or a blank cursor ends the list; a non-empty page that repeats its cursor fails. With `has_next: true`, a missing cursor is an incomplete page.
 - A cost is decimal text as received; blank and 0 mean not entered.
 - Rows of one listing in one warehouse (one per SKU) add up to its figure.
+- A stock-by-warehouse row belongs to the listing of its SKU. A row without an asked, resolved SKU, with another `product_id`, or contradicting an earlier row of the same SKU and warehouse in the run is an incomplete page.
 
 ## State and effect rules
 
