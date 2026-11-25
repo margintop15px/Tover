@@ -102,6 +102,33 @@
     (is (= 1 (count @(:journal store))))))
 
 
+(defmethod runtime/policy ::catching-only
+  [_ context _]
+  (= {:service ::catching-processor} (:principal context)))
+
+
+(defcommand record-or-reject
+  {:input [:map [:n :int]] :policy ::catching-only :emits #{::recorded} :scope :workspace}
+  [_ {:keys [n]}]
+  (when (neg? n) (throw (ex-info "Rejected" {:type (if (= -1 n) :validation :other)})))
+  {:events [{:type ::recorded :data {:test/n n}}]})
+
+
+(defprocessor catching-processor
+  {:todo ::due}
+  [n]
+  (let [request {:type :command :id ::record-or-reject :scope {:workspace-id workspace} :actor actor :input {:n n}}]
+    (assoc request :catch (fn [error] (when (= :validation (:type (ex-data error))) (assoc request :input {:n 7}))))))
+
+
+(deftest failed-request-may-name-another
+  (let [[store system] (setup nil [-1 -2 3])]
+    (is (= {:executed 2 :failed 2} (run-only ::catching-processor system)) "-1 becomes 7; nothing replaces -2")
+    (is (= 2 (count @(:journal store))))
+    (is (= {:executed 2 :failed 2} (run-only ::catching-processor system)))
+    (is (= 2 (count @(:journal store))) "the replacement keeps its identity too")))
+
+
 (deftest command-id-is-derived
   (let [req {:id ::record :scope {:workspace-id workspace} :input {:n 1}}
         id  (runtime/processor-command-id ::p req)]

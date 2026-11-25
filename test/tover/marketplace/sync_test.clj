@@ -86,6 +86,11 @@
   (runtime/decide command (merge {:scope scope :actor member :now (t "2026-12-11T06:00:00Z")} facts) input))
 
 
+(def as-connector
+  "The facts of a command sent by C's connector principal."
+  {:actor (parse-uuid c)})
+
+
 (defn rejection
   {:malli/schema [:=> [:cat [:fn fn?]] [:maybe :keyword]]}
   [f]
@@ -198,7 +203,7 @@
 (defn start
   {:malli/schema [:=> [:cat :map :map] :map]}
   [facts input]
-  (decide ::sync/start-marketplace-sync (merge {:connection connection :positions {}} facts)
+  (decide ::sync/start-marketplace-sync (merge {:connection connection :positions {}} (when-not (= "member" (:trigger input)) as-connector) facts)
           (merge {:attempt-id "a1" :run-id r :connection-id c :trigger "schedule"} input)))
 
 
@@ -206,8 +211,7 @@
   (let [plan (start {:connection (assoc connection :last-completed-sync-at "2026-12-10T05:00:00Z" :run-state "completed")} {})]
     (is (= {:run-id             r :connection-id                  c      :trigger "schedule" :triggered-by (str "connector:" c)
             :domains            (connections/encode-domains all-domains)
-            :starting-positions (json/write-json-str (into (sorted-map) (for [d ["fbs-postings" "fbo-postings" "returns" "rfbs-returns"
-                                                                                 "supplies" "removals"]]
+            :starting-positions (json/write-json-str (into (sorted-map) (for [d ["fbs-postings" "fbo-postings" "returns" "rfbs-returns" "removals"]]
                                                                           [d "2026-11-11T06:00:00Z"])))
             :started-at         "2026-12-11T06:00:00Z" :run-state "open"}
            (event plan ::sync/marketplace-sync-started)))))
@@ -240,8 +244,8 @@
 
 (deftest first-run-reads-30-days
   (let [positions (sync/starting-positions all-domains {} (t "2026-12-01T00:00:00Z"))]
-    (is (= {"fbs-postings" "2026-11-01T00:00:00Z" "fbo-postings" "2026-11-01T00:00:00Z" "returns"  "2026-11-01T00:00:00Z"
-            "rfbs-returns" "2026-11-01T00:00:00Z" "supplies"     "2026-11-01T00:00:00Z" "removals" "2026-11-01T00:00:00Z"}
+    (is (= {"fbs-postings" "2026-11-01T00:00:00Z" "fbo-postings" "2026-11-01T00:00:00Z" "returns" "2026-11-01T00:00:00Z"
+            "rfbs-returns" "2026-11-01T00:00:00Z" "removals"     "2026-11-01T00:00:00Z"}
            positions))))
 
 
@@ -266,19 +270,26 @@
    :products     (constantly {(str c ":9001") {:source-id "9001" :identifiers "[{\"type\":\"sku\",\"value\":\"100\",\"active\":true}]"}})})
 
 
+(declare record complete)
+
+
 (def finished-before-analytics
   (connections/encode-domains (take-while #(not= "stock-analytics" %) all-domains)))
 
 
 (deftest key-loses-a-role
-  (let [request (sync/fetch-request (item (run {:finished-domains finished-before-analytics}) {} [{:status 403}]))]
-    (is (= [::sync/record-fetch-setback {:run-id r :domain "stock-analytics" :setback "unavailable"}]
-           ((juxt :id :input) request)))
+  (let [open    (run {:finished-domains finished-before-analytics})
+        request (sync/fetch-request (item open {} [{:status 403}]))
+        input   (:input request)]
+    (is (= [::sync/record-source-observations "stock-analytics" true [] false]
+           (into [(:id request)] (map input) [:domain :domain-unavailable :observations :domain-finished])))
     (is (= (parse-uuid c) (:actor request)))
-    (let [unavailable (after (run {:finished-domains finished-before-analytics})
-                             (decide ::sync/record-fetch-setback {:run (run {:finished-domains finished-before-analytics})} (:input request))
-                             :run-id)]
-      (is (= "fbs-postings" (first (:unfinished-domains (sync/coverage unavailable)))) "continues with fbs-postings"))))
+    (let [plan        (record {:run open} input)
+          unavailable (after open plan :run-id)]
+      (is (= [::sync/source-domain-unavailable] (events plan)) "the position does not move")
+      (is (= "fbs-postings" (first (:unfinished-domains (sync/coverage unavailable)))) "continues with fbs-postings")
+      (is (= (connections/encode-domains (remove #{"stock-analytics"} all-domains))
+             (:readable-domains (after connection plan :connection-id))) "it leaves the connection's readable domains"))))
 
 
 (deftest credentials-revoked
@@ -315,26 +326,119 @@
 
 (deftest throttled-for-20-minutes
   (let [finished (connections/encode-domains (take-while #(not= "returns" %) all-domains))
-        request  (sync/fetch-request (assoc (item (run {:finished-domains finished}) {} [])
+        position {:run-id r :cursor "{:last-id \"7\"}" :batch-key "" :finished false}
+        request  (sync/fetch-request (assoc (item (run {:finished-domains finished}) {"returns" position} [])
                                             :env (:env (fake/env [{:status 429 :headers {"retry-after" "1200"}}]
                                                                  (.toEpochMilli (t "2026-12-10T06:00:00Z"))))))
-        plan     (decide ::sync/record-fetch-setback {:run (run {})} (:input request))]
-    (is (= "throttled" (get-in request [:input :setback])))
-    (is (= [::sync/provider-throttled] (events plan)))
+        input    (:input request)
+        plan     (record {:position position} input)]
+    (is (= [::sync/record-source-observations "{:last-id \"7\"}" "{:last-id \"7\"}" []]
+           [(:id request) (get-in input [:next-position :cursor]) (:batch-key input) (:observations input)]))
+    (is (= [::sync/provider-throttled] (events plan)) "the position does not move")
     (let [throttled (after (assoc connection :run-state "open" :started-at "2026-12-10T06:00:00Z") plan :connection-id)]
       (is (= "open" (:run-state throttled)) "R stays open")
       (is (= "2026-12-10T06:20:00Z" (:resume-not-before throttled)) "20 minutes ahead")
       (is (not (connections/due? throttled (t "2026-12-10T06:10:00Z"))))
-      (is (connections/due? throttled (t "2026-12-10T06:20:00Z")) "continues after that time"))))
+      (is (connections/due? throttled (t "2026-12-10T06:20:00Z")) "continues after that time"))
+    (doseq [[facts type] [[{:connection (assoc connection :sync-state "paused")} :connection-paused]
+                          [{:run (run {:run-state "failed"})} :run-not-open]
+                          [{:position (assoc position :cursor "{:last-id \"8\"}")} :stale-position]]]
+      (is (= type (rejection #(record (merge {:position position} facts) input)))))
+    (is (= :validation (rejection #(record {:position position}
+                                           (assoc input :observations [{:kind "warehouse" :warehouse-type "fbs" :source-id "1"}]))))
+        "set with no observations only")))
+
+
+(deftest unavailable-leaves-the-readable-domains
+  (let [unavailable (fn [marked]
+                      (record {:run (run {:unavailable-domains marked}) :connection (assoc connection :readable-domains "products supplies")}
+                              {:domain "supplies" :domain-unavailable true}))]
+    (is (= [["prices supplies" "products"]]
+           (map (comp (juxt :unavailable-domains :readable-domains) :data) (:events (unavailable "prices")))))
+    (is (nothing? (unavailable "supplies")) "a repeat records nothing new")))
+
+
+(deftest another-connections-connector-is-refused
+  (let [other {:actor #uuid "00000000-0000-0000-0000-00000000c002"}]
+    (is (= :not-permitted (rejection #(record other {}))))
+    (is (= :not-permitted (rejection #(record other {:resume-not-before "2026-12-11T06:20:00Z"}))))
+    (is (= :not-permitted (rejection #(complete other {:outcome "failed" :failed-domain "returns" :reason "incomplete page"}))))
+    (is (= :not-permitted (rejection #(start other {}))))
+    (is (some? (start {} {:trigger "member"})) "a member starts as a member")))
+
+
+(deftest batch-read-before-a-setback-is-kept
+  (let [open     (run {:finished-domains (connections/encode-domains (take-while #(not= "fbs-postings" %) all-domains))})
+        position {:run-id r :cursor "{:started? true, :pending [\"A\" \"B\" \"C\"]}" :finished false}
+        fetch    (fn [answer]
+                   (sync/fetch-request
+                     (item open {"fbs-postings" position}
+                           (fn [_ body]
+                             (if (= "A" (:posting_number body))
+                               (fake/ok {:result {:posting_number "A" :status "delivering"}})
+                               answer)))))
+        requests (fetch {:status 429 :headers {"retry-after" "1200"}})
+        batch    (get requests 0)
+        throttle (get requests 1)
+        cursor   (get-in batch [:input :next-position :cursor])]
+    (is (= 2 (count requests)))
+    (is (= ["A"] (map :source-id (get-in batch [:input :observations]))))
+    (is (= "{:started? true, :pending [\"B\" \"C\"]}" cursor))
+    (is (= [cursor cursor []] (map #(get-in throttle %) [[:input :batch-key] [:input :next-position :cursor] [:input :observations]]))
+        "from the new position")
+    (is (some? (get-in throttle [:input :resume-not-before])))
+    (is (= {:run-id r :outcome "failed" :failed-domain "fbs-postings" :reason "unexpected provider response" :unavailable-domains []}
+           (get-in (fetch {:status 404}) [1 :input])) "the run fails after the batch is recorded")
+    (is (true? (get-in (fetch {:status 403}) [1 :input :domain-unavailable])))))
+
+
+(deftest unreadable-page-fails-the-run
+  (let [open   (run {:finished-domains "warehouses"})
+        fetch  #(sync/fetch-request (item open {} %))
+        failed {:run-id r :outcome "failed" :failed-domain "products" :reason "unexpected provider response" :unavailable-domains []}]
+    (testing "a page that cannot be translated"
+      (is (= failed (:input (sync/fetch-request (item (run {:finished-domains "warehouses"})
+                                                      {"products" {:run-id r :cursor "{:pending [\"9001\"]}" :finished false}}
+                                                      [(fake/ok {:items [{:id 9001 :barcodes 5}]})]))))))
+    (testing "a position that does not move"
+      (with-redefs [ozon/step (fn [& _] {:observations [] :state {:last-id "a"} :finished? false})]
+        (is (= "repeated cursor"
+               (get-in (sync/fetch-request (item open {"products" {:run-id r :cursor "{:last-id \"a\"}" :finished false}} []))
+                       [:input :reason])))))
+    (testing "the store and a shutdown are not the provider's fault"
+      (is (= ::sync/lookup-failed
+             (rejection #(sync/fetch-request (assoc (item (run {:finished-domains "warehouses products"}) {} [])
+                                                    :products (fn [] (throw (RuntimeException. "store down"))))))))
+      (let [attempts (atom {})
+            try-it   #(try (sync/fetch-request (assoc (item (run {:finished-domains "warehouses products"}) {} [])
+                                                      :attempts attempts :products (fn [] (throw (RuntimeException. "store down")))))
+                           (catch clojure.lang.ExceptionInfo _ nil))]
+        (is (= [nil nil nil "retries exhausted"] (map #(get-in % [:input :reason]) (doall (repeatedly 4 try-it))))
+            "but it does not go on forever"))
+      (with-redefs [ozon/step (fn [& _] (throw (InterruptedException.)))]
+        (is (thrown? InterruptedException (fetch [])))))))
+
+
+(deftest batch-that-cannot-be-recorded-fails-the-run
+  (let [attempts (atom {})
+        request  #(sync/fetch-request (assoc (item (run {:finished-domains "warehouses"}) {} [(fake/ok {:result {:items [] :last_id ""}})])
+                                             :attempts attempts))
+        failed   (fn [error] (when-let [f (:catch (request))] (get-in (f error) [:input :reason])))]
+    (is (= "unexpected provider response" (failed (ex-info "Payload text" {:type :validation}))))
+    (is (= "unexpected provider response" (failed (ex-info "Personal data present" {:type :personal-data-present}))))
+    (is (= "incomplete page" (failed (ex-info "Conflicting figures" {:type :conflicting-figures}))))
+    (doseq [type [:run-not-open :connection-paused :stale-position :unknown-run :not-permitted]]
+      (is (= [nil] (distinct (repeatedly 6 #(failed (ex-info "x" {:type type}))))) "nothing is wrong with the batch"))
+    (is (= [nil nil nil "retries exhausted"] (vec (repeatedly 4 #(failed (RuntimeException. "store")))))
+        "one position is tried 4 times")
+    (when-let [f (:catch (request))]
+      (is (= {:run-id r :outcome "failed" :failed-domain "products" :reason "unexpected provider response" :unavailable-domains []}
+             (:input (f (ex-info "Payload text" {:type :validation})))) "no payload or error text"))))
 
 
 (deftest pause-between-batches
   (let [paused (assoc connection :sync-state "paused" :run-state "open")]
-    (is (= :connection-paused
-           (rejection #(decide ::sync/record-source-observations
-                               {:run (run {}) :connection paused :position nil :existing {}}
-                               {:run-id       r  :domain          "warehouses" :batch-key "" :next-position {:cursor "{}"} :domain-finished false
-                                :observations [] :adapter-version "ozon-1"}))))))
+    (is (= :connection-paused (rejection #(record {:connection paused} {:domain "warehouses"}))))))
 
 
 ;; Slice 4 · Record source observations
@@ -344,7 +448,7 @@
   {:malli/schema [:=> [:cat :map :map] :map]}
   [facts input]
   (decide ::sync/record-source-observations
-          (merge {:run (run {}) :connection connection :position nil :existing {}} facts)
+          (merge as-connector {:run (run {}) :connection connection :position nil :existing {}} facts)
           (merge {:run-id       r  :domain          "products" :batch-key "" :next-position {:cursor "{}"} :domain-finished false
                   :observations [] :adapter-version "ozon-1"} input)))
 
@@ -641,7 +745,7 @@
 
 (deftest same-barcode-under-two-connections
   (let [one (event (record {} {:observations [(product "A-1")]}) ::sync/external-product-observed)
-        two (event (record {:run (run {:connection-id "c2"})} {:observations [(product "A-1")]}) ::sync/external-product-observed)]
+        two (event (record {:run (run {:connection-id "c2"}) :actor (sync/connector-actor "c2")} {:observations [(product "A-1")]}) ::sync/external-product-observed)]
     (is (= [p "c2:9001"] [(:external-product-id one) (:external-product-id two)]) "one binding per connection")))
 
 
@@ -774,6 +878,7 @@
                         (:first-covered-at (event (record {:position position} {:domain domain :domain-finished true}) ::sync/source-domain-traversed)))]
     (is (= "2026-11-10T06:00:00Z" (first-covered "fbs-postings" nil)) "the window start of a dated domain")
     (is (= "2026-12-10T06:00:00Z" (first-covered "stock-by-warehouse" nil)) "the run start of a full one")
+    (is (= "2026-12-10T06:00:00Z" (first-covered "supplies" nil)) "supplies are read in full")
     (is (= "2026-10-01T00:00:00Z" (first-covered "fbs-postings" {:first-covered-at "2026-10-01T00:00:00Z"})))
     (is (nil? (event (record {} {:domain "fbs-postings"}) ::sync/source-domain-traversed)) "nothing before the domain finished")))
 
@@ -876,13 +981,35 @@
         "P-1 reached a terminal state; P-2 still has a return on the way")))
 
 
+(deftest supplies-of-one-order-are-refetched-apart
+  (let [op  (fn [id terminal] {:kind     "operation" :operation-kind "supply" :source-id   id            :status "x" :terminal terminal
+                               :complete false       :lines          []       :refetch-key (str "5/" id)})
+        ids (fn [previous observations]
+              (:refetch-ids (event (record {:position {:refetch-ids previous}} {:domain "supplies" :observations observations})
+                                   ::sync/source-batch-recorded)))]
+    (is (= ["5/52"] (json/read-json (ids (ids nil [(op "52" false)]) [(op "51" true)]))) "in whichever batch each is read")))
+
+
+(deftest open-removals-widen-the-window
+  (let [finished (connections/encode-domains (remove #{"removals"} all-domains))
+        from     (fn [refetch]
+                   (let [{:keys [env calls]} (fake/env [(fake/ok {:returns_summary_report_rows [] :last_id ""})])]
+                     (sync/fetch-request (assoc (item (run {:finished-domains finished})
+                                                      {"removals" {:run-id           "R0"                   :cursor "{}" :finished true :refetch-ids refetch
+                                                                   :first-covered-at "2026-10-20T06:00:00Z"}} [])
+                                                :env env))
+                     (:date_from (:body (first @calls)))))]
+    (is (= "2026-10-20T06:00:00Z" (from "[\"from-stock/1\"]")))
+    (is (= "2026-11-10T06:00:00Z" (from "[]")))))
+
+
 ;; Slice 6 · Finish the sync run
 
 
 (defn complete
   {:malli/schema [:=> [:cat :map :map] :map]}
   [facts input]
-  (decide ::sync/complete-marketplace-sync (merge {:run (run {}) :connection connection :positions {}} facts)
+  (decide ::sync/complete-marketplace-sync (merge as-connector {:run (run {}) :connection connection :positions {}} facts)
           (merge {:run-id r} input)))
 
 
@@ -1187,6 +1314,75 @@
               "the other views keep the latest figures only"))))))
 
 
+(deftest supplies-are-read-in-full
+  (support/with-store
+    (fn [repo _]
+      (let [orders      (atom {1 "COMPLETED" 2 "IN_TRANSIT" 3 "CANCELLED"})
+            stated      (atom #{1 2 3})
+            updated     (atom (zipmap [1 2 3] (repeat "2026-01-01T00:00:00Z")))
+            calls       (atom [])
+            answer      (fn [path body]
+                          (case path
+                            "/v3/supply-order/list" {:order_ids (if (= "" (:last_id body)) (sort-by #(str (@updated %)) #(compare %2 %1) (keys @orders)) [])
+                                                     :last_id   "end"}
+                            "/v3/supply-order/get" {:orders (for [id (map parse-long (:order_ids body))]
+                                                              {:order_id id :state (@orders id) :state_updated_date (@updated id)
+                                                               :supplies (if (@stated id) [{:supply_id (* 10 id) :bundle_id (str "b" id)}] [])})}
+                            "/v1/supply-order/bundle" {:items [{:sku 100 :quantity 5}] :has_next false}
+                            "/v1/supply-order/act/product/get" {:supply_id (:supply_id body) :supply_acts []}
+                            nil))
+            marketplace {:verify (constantly nil) :repo repo :key key-bytes :pacer (atom {})
+                         :post   (fn [path body _]
+                                   (swap! calls conj [path body])
+                                   (if-let [answer (answer path body)]
+                                     {:status 200 :body (json/write-json-str answer)}
+                                     (update (ozon path body) :body json/write-json-str)))}
+            system      (support/bel-system {:repo repo :marketplace marketplace})
+            ctx         (assoc (context system) :scope scope)
+            row         #(runtime/read-model ctx ::connections/connections {:connection-id c})
+            complete!   (fn [n]
+                          (loop [left 60]
+                            (when (and (pos? left) (= "open" (:run-state (row))))
+                              (runtime/run-processors! system) (recur (dec left))))
+                          (reset! calls [])
+                          (runtime/execute! ctx ::sync/start-marketplace-sync
+                                            {:command-id (str "s" n) :input {:attempt-id n :run-id n :connection-id c :trigger "member"}})
+                          (loop [left 60]
+                            (when (and (pos? left) (= "open" (:run-state (row))))
+                              (runtime/run-processors! system) (recur (dec left))))
+                          (is (= ["completed" n] ((juxt :run-state :run-id) (row))) (pr-str (runtime/read-model ctx ::sync/sync-status-and-coverage {:connection-id c}))))
+            detailed    #(sort (map (comp first :bundle_ids second) (filter (comp #{"/v1/supply-order/bundle"} first) @calls)))
+            listed      #(count (filter (comp #{"/v3/supply-order/list"} first) @calls))
+            position    #(get (runtime/coeffect ::sync/connection-positions ctx {:connection-id c}) "supplies")
+            status      (fn [id] (some #(when (= ["supply" id] ((juxt :kind :source-id) %)) ((juxt :status :terminal) %))
+                                       (records/all-records ctx ::sync/source-operations :source-operation-id)))]
+        (runtime/execute! ctx ::stores/register-store {:command-id "st1" :input {:store-id "s" :name "Ozon shop"}})
+        (runtime/execute! ctx ::connections/connect-marketplace-account
+                          {:command-id "connect-1"
+                           :input      {:connection-id        c :store-id                  "s"   :provider         "ozon"                  :client-id "123"
+                                        :secret-ref           (connector/store-secret! marketplace workspace "k")
+                                        :verification-outcome "verified" :account-currency "RUB" :readable-domains ["products" "supplies"]}})
+        (complete! "R1")
+        (is (= ["b1" "b2" "b3"] (detailed)) "everything is new")
+        (is (= ["2/20"] (json/read-json (:refetch-ids (position)))))
+        (testing "the second run lists all and details the non-terminal one"
+          (complete! "R2")
+          (is (= [["b2"] 2] [(detailed) (listed)])))
+        (testing "and the changed and the new one"
+          (swap! updated assoc 1 (str (Instant/now)) 4 "2026-01-01T00:00:00Z")
+          (swap! orders assoc 4 "COMPLETED")
+          (swap! stated conj 4)
+          (complete! "R3")
+          (is (= [["b1" "b2" "b4"] 2] [(detailed) (listed)])))
+        (testing "a supply of an order cancelled without supply facts is no longer open"
+          (swap! orders assoc 2 "CANCELLED")
+          (swap! stated disj 2)
+          (complete! "R4")
+          (is (= ["CANCELLED" true] (status "20")))
+          (is (= "[]" (:refetch-ids (position)))))
+        (is (= (:started-at (runtime/coeffect ::sync/run ctx {:run-id "R1"})) (:first-covered-at (position))))))))
+
+
 (deftest parts-of-a-figure-add-up-through-the-store
   (support/with-store
     (fn [repo _]
@@ -1238,6 +1434,32 @@
           (send "later" ::sync/record-source-observations (one "R2"))
           (is (= [[10 3]] (stated "R2")))
           (is (= [[14 3]] (stated "R1"))))))))
+
+
+(deftest poison-batch-ends-the-run-through-the-store
+  (support/with-store
+    (fn [repo _]
+      (let [marketplace {:verify (constantly nil) :repo repo :key key-bytes :pacer (atom {}) :last-look (atom nil)
+                         :post   (fn [path body _]
+                                   (update (if (= "/v3/product/info/list" path)
+                                             ;; Longer than a stored name may be.
+                                             (fake/ok {:items [{:id 9001 :name (apply str (repeat 3000 "x"))}]})
+                                             (ozon path body))
+                                           :body json/write-json-str))}
+            system      (support/bel-system {:repo repo :marketplace marketplace})
+            ctx         (context system)
+            row         #(runtime/read-model ctx ::connections/connections {:connection-id c})]
+        (runtime/execute! ctx ::stores/register-store {:command-id "st1" :input {:store-id "s" :name "Ozon shop"}})
+        (runtime/execute! ctx ::connections/connect-marketplace-account
+                          {:command-id "connect-1"
+                           :input      {:connection-id        c :store-id                  "s"   :provider         "ozon"       :client-id "123"
+                                        :secret-ref           (connector/store-secret! marketplace workspace "k")
+                                        :verification-outcome "verified" :account-currency "RUB" :readable-domains ["products"]}})
+        (loop [n 10]
+          (when (and (pos? n) (not= "failed" (:run-state (row)))) (runtime/run-processors! system) (recur (dec n))))
+        (is (= ["failed" 1] ((juxt :run-state :consecutive-failures) (row))))
+        (is (= ["products" "unexpected provider response"]
+               ((juxt :failed-domain :reason) (:last-failure (runtime/read-model ctx ::sync/sync-status-and-coverage {:connection-id c})))))))))
 
 
 (deftest replaced-credentials-start-a-new-scheduled-run

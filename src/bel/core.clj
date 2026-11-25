@@ -341,7 +341,9 @@
    [:id :qualified-keyword]
    [:scope [:map-of [:enum :workspace-id :user-id :session-id] :uuid]]
    [:actor :uuid]
-   [:input :map]])
+   [:input :map]
+   ;; (error) -> the request to run instead of a failed one, or nil to leave it to the next round.
+   [:catch {:optional true} fn?]])
 
 
 (defn attach-processor!

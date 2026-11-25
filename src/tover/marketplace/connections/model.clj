@@ -187,6 +187,7 @@
                                                                             :consecutive-failures :next-attempt-at]}
             :tover.marketplace.sync.model/marketplace-sync-failed    {:set [:run-state :readable-domains :consecutive-failures
                                                                             :next-attempt-at]}
+            :tover.marketplace.sync.model/source-domain-unavailable  {:set [:readable-domains]}
             :tover.marketplace.sync.model/provider-throttled         {:set [:resume-not-before]}}})
 
 

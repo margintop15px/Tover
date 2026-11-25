@@ -454,6 +454,32 @@
     (str "p/" (apply str (map #(format "%02x" (bit-and % 0xff)) digest)))))
 
 
+(defn- run-request!
+  "Execute one processor request; a failed one may name a replacement through its `:catch`."
+  {:malli/schema [:=> [:cat :map :qualified-keyword :map :map] :map]}
+  [system id counts request]
+  (let [error (try
+                (validation/check! core/ProcessorRequest request)
+                (retrying 3 #(execute! (merge (:scope request) {:bel/system system :bel/service id :user-id (:actor request)})
+                                       (:id request) {:command-id (processor-command-id id request) :input (:input request)}))
+                nil
+                (catch Exception error
+                  (mu/log ::processor-failed :processor id :command (:id request)
+                          :error-type (or (:type (ex-data error)) (.getName (class error))))
+                  error))]
+    (if-not error
+      (update counts :executed inc)
+      (let [counts      (update counts :failed inc)
+            replacement (when-let [on-failure (:catch request)]
+                          (try (on-failure error)
+                               (catch Exception error
+                                 (mu/log ::processor-failed :processor id :command (:id request) :error-type (.getName (class error)))
+                                 nil)))]
+        (if replacement
+          (recur system id counts (dissoc replacement :catch))
+          counts)))))
+
+
 (defn- run-processor!
   {:malli/schema [:=> [:cat :map :qualified-keyword :map] :map]}
   [system id {:keys [todo handler]}]
@@ -465,17 +491,7 @@
                                     nil))]
                 (if (nil? requests)
                   (update counts :failed inc)
-                  (reduce (fn [counts request]
-                            (try
-                              (validation/check! core/ProcessorRequest request)
-                              (retrying 3 #(execute! (merge (:scope request) {:bel/system system :bel/service id :user-id (:actor request)})
-                                                     (:id request) {:command-id (processor-command-id id request) :input (:input request)}))
-                              (update counts :executed inc)
-                              (catch Exception error
-                                (mu/log ::processor-failed :processor id :command (:id request)
-                                        :error-type (or (:type (ex-data error)) (.getName (class error))))
-                                (update counts :failed inc))))
-                          counts requests))))
+                  (reduce #(run-request! system id %1 %2) counts requests))))
             {:executed 0 :failed 0} items)))
 
 

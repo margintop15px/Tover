@@ -8,7 +8,9 @@
 
   `step` reads one page or detail batch of a domain from an opaque traversal state and returns sanitized
   observations (only the facts named on the board; no buyer data, selling prices or raw payloads), the next state and
-  whether the domain is finished. Failures are ex-info with `:type` one of `:credentials-rejected`
+  whether the domain is finished. A step makes at most `max-calls` provider calls and ends after one that had to be
+  repeated, so it never holds its caller longer than one slow request; what it read before a failure is returned
+  with the failure as `:setback`. Failures are ex-info with `:type` one of `:credentials-rejected`
   `:unavailable` `:throttled` `:retries-exhausted` `:repeated-cursor` `:incomplete-page` `:unexpected-response`.
 
   Response shapes follow docs/ozon-source-contracts.md. Readers accept the documented root or `result` wrapper
@@ -44,7 +46,23 @@
 (def Env
   "`post` is `connector/http-post` with a 30 s timeout or a test fake; `clock` returns epoch milliseconds."
   [:map [:post [:fn fn?]] [:sleep [:fn fn?]] [:clock [:fn fn?]] [:jitter [:fn fn?]] [:pacer :any]
-   [:client-id :string] [:api-key :string]])
+   [:client-id :string] [:api-key :string]
+   ;; The calls made through a `metered` client.
+   [:calls {:optional true} :any]])
+
+
+(def failures
+  "What a step may meet at the provider. Any other exception is not one of these and is never a setback."
+  #{:credentials-rejected :unavailable :throttled :retries-exhausted :repeated-cursor :incomplete-page :unexpected-response})
+
+
+(defn- met
+  "The ex-data of a provider failure met after progress; any other exception is thrown on."
+  {:malli/schema [:=> [:cat :boolean [:fn #(instance? Throwable %)]] :map]}
+  [progress? error]
+  (if (and progress? (contains? failures (:type (ex-data error))))
+    (ex-data error)
+    (throw error)))
 
 
 (defn fail!
@@ -71,6 +89,26 @@
 
 (def ^:private spacing
   25)
+
+
+(def max-calls
+  "Most provider calls of one step."
+  10)
+
+
+(defn- metered
+  "The client counting its calls, for one step."
+  {:malli/schema [:=> [:cat Env] Env]}
+  [env]
+  (assoc env :calls (atom {:made 0 :repeated? false})))
+
+
+(defn- spent?
+  "Whether the step has to end: its calls are made, or one had to be repeated."
+  {:malli/schema [:=> [:cat Env] :boolean]}
+  [{:keys [calls]}]
+  (let [{:keys [made repeated?]} @calls]
+    (or repeated? (<= max-calls made))))
 
 
 (defn retry-after
@@ -120,6 +158,7 @@
     (throw (ex-info "Not an allowed read-only call" {:type :forbidden :path path})))
   (loop [attempt 1]
     (pace! env)
+    (some-> (:calls env) (swap! #(cond-> (update % :made inc) (< 1 attempt) (assoc :repeated? true))))
     (let [{:keys [status headers] :as response}
           (try (post path body {"Client-Id" client-id "Api-Key" api-key})
                (catch HttpTimeoutException _ {:status 0})
@@ -651,7 +690,8 @@
     (operation (cond-> {:operation-kind "supply" :source-id (required (stated-id supply_id))
                         :status         (or (text state) (text (get order "state")) "unknown")
                         :lines          rows}
-                 order-id (assoc :refetch-key order-id)
+                 ;; Read again by its order; kept per supply, as supplies of one order are recorded apart.
+                 order-id (assoc :refetch-key (str order-id "/" (text supply_id)))
                  from (assoc :from-warehouse from)
                  to (assoc :to-warehouse to))
                (if (and (seq rows) (every? :quantity rows)) [] ["accepted quantity"]))))
@@ -678,8 +718,15 @@
 
 
 (def Context
-  "What a step may know besides its state: the dated window, ids to refetch and lookups over observed listings."
+  "What a step may know besides its state: the dated window, ids to refetch and lookups over observed records.
+  `settled-before`: orders whose state last changed earlier were read by a finished pass. `reread-from`: where open
+  removals are read again from."
   [:map
+   [:settled-before {:optional true} :string]
+   [:reread-from {:optional true} :string]
+   ;; () -> the set of order ids of the stored supplies; (refetch ids) -> the last stated facts of those supplies.
+   [:known-orders {:optional true} [:fn fn?]]
+   [:stored-supplies {:optional true} [:fn fn?]]
    [:window {:optional true} [:map [:from :string] [:to :string]]]
    [:refetch-ids {:optional true} [:sequential :string]]
    [:skus {:optional true} [:fn fn?]]
@@ -689,7 +736,8 @@
 
 
 (def Step
-  [:map [:observations [:vector :map]] [:state :map] [:finished? :boolean]])
+  "`setback`: the ex-data of a failure met after the observations were read; `state` continues at what failed."
+  [:map [:observations [:vector :map]] [:state :map] [:finished? :boolean] [:setback {:optional true} :map]])
 
 
 (defn- page
@@ -706,6 +754,25 @@
     (let [[batch more] (split-at n pending)]
       (page (vec (fetch (vec batch))) (assoc state :pending (vec more)) false))
     (then state)))
+
+
+(defn- walk
+  "Read `items` one by one with `(read env item)` until the step is spent. A failure after the first item ends the
+  walk; what was read before it is kept."
+  {:malli/schema [:=> [:cat Env [:sequential :any] [:fn fn?]]
+                  [:map [:observed [:vector :map]] [:left [:vector :any]] [:setback {:optional true} :map]]]}
+  [env items read]
+  (let [env (metered env)]
+    (loop [left (vec items) observed []]
+      (let [first? (= (count left) (count items))]
+        (if (or (empty? left) (and (not first?) (spent? env)))
+          {:observed observed :left left}
+          (let [{:keys [found setback]} (try {:found (vec (read env (first left)))}
+                                             (catch clojure.lang.ExceptionInfo error
+                                               {:setback (met (not first?) error)}))]
+            (if setback
+              {:observed observed :left left :setback setback}
+              (recur (subvec left 1) (into observed found)))))))))
 
 
 (defmulti step
@@ -857,16 +924,18 @@
 
 (defn- dated
   "Refetch known non-terminal records first, then list the window page by page and detail each page.
-  `list` returns {:ids :next :more?} for a cursor, nil at the start; `detail` maps ids to observations."
-  {:malli/schema [:=> [:cat :map :map :int [:fn fn?] [:fn fn?]] Step]}
-  [{:keys [refetch-ids]} state n list detail]
-  (let [state (if (:started? state) state {:started? true :pending (vec refetch-ids)})]
-    (details state n detail
-             (fn [{:keys [listed? at] :as state}]
-               (if listed?
-                 (page [] state true)
-                 (let [{:keys [ids next more?]} (list at)]
-                   (page [] (assoc state :pending (vec ids) :at next :listed? (not more?)) false)))))))
+  `list` returns {:ids :next :more?} for a cursor, nil at the start; `(detail env id)` gives an id's observations."
+  {:malli/schema [:=> [:cat Env :map :map [:fn fn?] [:fn fn?]] Step]}
+  [env {:keys [refetch-ids]} state list detail]
+  (let [{:keys [pending listed? at] :as state} (if (:started? state) state {:started? true :pending (vec refetch-ids)})]
+    (cond
+      (seq pending)
+      (let [{:keys [observed left setback]} (walk env pending detail)]
+        (cond-> (page observed (assoc state :pending left) false) setback (assoc :setback setback)))
+
+      listed? (page [] state true)
+      :else (let [{:keys [ids next more?]} (list at)]
+              (page [] (assoc state :pending (vec ids) :at next :listed? (not more?)) false)))))
 
 
 (defn- window
@@ -891,22 +960,19 @@
 
 (defmethod step "fbs-postings" [_ env context state]
   (let [window (window context)]
-    (dated context state 50
+    (dated env context state
            #(postings-page env "/v4/posting/fbs/list" window %)
-           (fn [numbers]
-             (for [n numbers]
-               (fbs-posting (result (:body (request! env "/v3/posting/fbs/get" {:posting_number n :with posting-details})))))))))
+           (fn [env n]
+             [(fbs-posting (result (:body (request! env "/v3/posting/fbs/get" {:posting_number n :with posting-details}))))]))))
 
 
 (defmethod step "fbo-postings" [_ env context state]
   (let [window (window context)]
-    (dated context state 50
-           #(postings-page env "/v3/posting/fbo/list" window %)
-           (fn [numbers]
-             (with-named-fbo
-               (for [n numbers]
-                 (fbo-posting (result (:body (request! env "/v2/posting/fbo/get"
-                                                       {:posting_number n :with posting-details}))))))))))
+    (update (dated env context state
+                   #(postings-page env "/v3/posting/fbo/list" window %)
+                   (fn [env n]
+                     [(fbo-posting (result (:body (request! env "/v2/posting/fbo/get" {:posting_number n :with posting-details}))))]))
+            :observations with-named-fbo)))
 
 
 (defn- returns-page
@@ -947,7 +1013,7 @@
 
 (defmethod step "rfbs-returns" [_ env context state]
   (let [{:keys [from to]} (window context)]
-    (dated context state 50
+    (dated env context state
            (fn [last-id]
              (let [{:keys [body]} (request! env "/v2/returns/rfbs/list"
                                             {:filter {:created_at {:from from :to to}} :limit 500 :last_id (if last-id (BigInteger. ^String last-id) 0)})
@@ -955,25 +1021,28 @@
                    next           (some-> (last rows) (get "return_id") text)]
                (next-cursor! last-id next)
                {:ids (keep #(text (get % "return_id")) rows) :next next :more? (boolean (seq rows))}))
-           (fn [ids]
-             (for [id ids]
-               (rfbs-return (required (get (:body (request! env "/v2/returns/rfbs/get" {:return_id id})) "returns"))))))))
+           (fn [env id]
+             [(rfbs-return (required (get (:body (request! env "/v2/returns/rfbs/get" {:return_id id})) "returns")))]))))
 
 
-(defn- bundle-items
-  {:malli/schema [:=> [:cat :map [:maybe :string]] [:vector :map]]}
-  [env bundle-id]
-  (if-not bundle-id
-    []
-    (loop [last-id "" seen #{} acc []]
+(defn- read-bundle
+  "Read on in a supply's bundle, whose part read so far is `bundle` (nil at the start), until it ends or the step is
+  spent; at least one page."
+  {:malli/schema [:=> [:cat Env [:maybe :string] [:maybe :map]] :map]}
+  [env bundle-id bundle]
+  (loop [{:keys [seen last-id] :as bundle} (or bundle {:items [] :seen #{} :last-id "" :done? (nil? bundle-id)})]
+    (if (:done? bundle)
+      bundle
       (let [{:keys [body]}             (request! env "/v1/supply-order/bundle" {:bundle_ids [bundle-id] :limit 100 :last_id last-id})
             {:strs [has_next last_id]} (result body)
-            acc (into acc (required (items body ["items"])))
-            next (further last-id {"has_next" has_next "cursor" last_id})]
-        (cond (nil? next) acc
-              ;; The whole bundle is read in one step, so a cycle would never end.
-              (seen next) (fail! :repeated-cursor)
-              :else (recur next (conj seen next) acc))))))
+            ;; Only what a line is made of: the rest is never stored.
+            rows (into (:items bundle) (map #(select-keys % ["sku" "offer_id" "product_id" "quantity" "price" "currency_code"]))
+                       (required (items body ["items"])))
+            next (further last-id {"has_next" has_next "cursor" last_id})
+            bundle {:items rows :seen (cond-> seen next (conj next)) :last-id next :done? (nil? next)}]
+        ;; A cycle would never end.
+        (when (contains? seen next) (fail! :repeated-cursor))
+        (if (spent? env) bundle (recur bundle))))))
 
 
 (def ^:private supply-states
@@ -987,14 +1056,30 @@
   #{"ACCEPTANCE_AT_STORAGE_WAREHOUSE" "REPORTS_CONFIRMATION_AWAITING" "REPORT_REJECTED" "COMPLETED"})
 
 
-(defn- acts
-  "Every act of an accepted supply; none before acceptance."
-  {:malli/schema [:=> [:cat Env :map :map] [:sequential :map]]}
-  [env order supply]
-  (if (contains? accepted-states (or (text (get supply "state")) (text (get order "state"))))
-    (required (get (:body (request! env "/v1/supply-order/act/product/get" {:supply_id (required (whole (get supply "supply_id")))}))
-                   "supply_acts"))
-    []))
+(defn- accepted?
+  "Whether the supply is accepted, so that it has acts."
+  {:malli/schema [:=> [:cat :map :map] :boolean]}
+  [order supply]
+  (contains? accepted-states (or (text (get supply "state")) (text (get order "state")))))
+
+
+(defn- read-supply
+  "Read on in one supply: its bundle, then the acts of an accepted one. Gives `:bundle` to continue from when the
+  step is spent first, else the `:operation`. Each call reads something."
+  {:malli/schema [:=> [:cat Env :map :map [:maybe :map]] :map]}
+  [env order source bundle]
+  (let [bundle-id (text (get source "bundle_id"))
+        read?     (or (nil? bundle-id) (:done? bundle))
+        bundle    (read-bundle env bundle-id bundle)
+        acts?     (accepted? order source)]
+    (if (or (not (:done? bundle)) (and acts? (not read?) (spent? env)))
+      {:bundle bundle}
+      (let [acts (if acts?
+                   (required (get (:body (request! env "/v1/supply-order/act/product/get" {:supply_id (required (whole (get source "supply_id")))}))
+                                  "supply_acts"))
+                   [])]
+        ;; Acts are limited per second: one call of them ends the step.
+        {:operation (supply order source (:items bundle) acts) :acts? acts?}))))
 
 
 (defn- supplies
@@ -1009,44 +1094,112 @@
       (fail! :incomplete-page))))
 
 
-(defmethod step "supplies" [_ env context state]
-  ;; The list has no date filter: every order is listed and the window only bounds coverage. Newest first (Ozon
-  ;; refuses oldest first with archive states): an order created while paging is read by the next run.
-  (dated context state 50
-         (fn [last-id]
-           (let [{:keys [body]} (request! env "/v3/supply-order/list"
-                                          {:filter   {:states supply-states} :limit   100             :sort_by "ORDER_CREATION"
-                                           :sort_dir "DESC"                  :last_id (or last-id "")})
-                 ids            (keep text (required (items body ["order_ids"])))
-                 ;; The empty last page may state the last id again.
-                 next           (when (seq ids) (next-cursor! last-id (text (get (result body) "last_id"))))]
-             {:ids ids :next next :more? (some? next)}))
-         (fn [ids]
-           (let [{:keys [body]} (request! env "/v3/supply-order/get" {:order_ids ids})
-                 orders         (required (items body ["orders"]))
-                 found          (set (keep #(text (or (get % "order_id") (get % "id"))) orders))]
-             (when-not (every? found ids) (fail! :incomplete-page))
-             (with-named-fbo
-               (for [order orders
-                     each  (supplies order)]
-                 (supply order each (bundle-items env (text (get each "bundle_id"))) (acts env order each))))))))
+(defn- order-id
+  {:malli/schema [:=> [:cat :map] [:maybe :string]]}
+  [order]
+  (text (or (get order "order_id") (get order "id"))))
 
 
-(defmethod step "removals" [_ env context {:keys [phase last-id]}]
-  (let [{:keys [from to]} (window context)
-        phase             (or phase "from-stock")
-        {:keys [body]}    (request! env (str "/v1/removal/" phase "/list")
-                                    {:date_from from :date_to to :limit 500 :last_id (or last-id "")})
-        rows              (required (items body ["returns_summary_report_rows"]))
-        next              (next-cursor! last-id (text (get body "last_id")))
-        more?             (and (seq rows) next)]
-    (page (mapv #(removal % phase) rows)
-          (cond more? {:phase phase :last-id next} (= "from-stock" phase) {:phase "from-supply"} :else {})
-          (and (not more?) (= "from-supply" phase)))))
+(defn- of-order
+  "The open supplies of an order among the refetch ids."
+  {:malli/schema [:=> [:cat :map :string] [:sequential :string]]}
+  [{:keys [refetch-ids]} id]
+  (filter #(= id (first (str/split % #"/"))) refetch-ids))
 
 
-(def dated-domains
-  #{"fbs-postings" "fbo-postings" "returns" "rfbs-returns" "supplies" "removals"})
+(defn- wanted
+  "Predicate of the order ids to detail whatever their last change: unknown ones, and those with an open supply."
+  {:malli/schema [:=> [:cat :map] [:fn fn?]]}
+  [{:keys [known-orders] :as context}]
+  (let [known (if known-orders (known-orders) #{})]
+    #(boolean (or (not (contains? known %)) (seq (of-order context %))))))
+
+
+(defn- settled?
+  "Whether a finished pass read the order after its state last changed."
+  {:malli/schema [:=> [:cat :map :map] :boolean]}
+  [{:keys [settled-before]} order]
+  (let [changed (instant (get order "state_updated_date"))]
+    (boolean (and settled-before changed (.isBefore (Instant/parse changed) (Instant/parse settled-before))))))
+
+
+(defn- closed-supplies
+  "A cancelled order may state no supplies any more: its open ones, as last stated, are cancelled with it."
+  {:malli/schema [:=> [:cat :map :map] [:sequential :map]]}
+  [{:keys [stored-supplies] :as context} order]
+  (let [open (when (= "CANCELLED" (text (get order "state"))) (of-order context (order-id order)))]
+    (if (and (seq open) stored-supplies)
+      (let [stated (set (map #(stated-id (get % "supply_id")) (get order "supplies")))]
+        (for [facts (stored-supplies open)
+              :when (not (stated (:source-id facts)))]
+          (assoc facts :kind "operation" :status "CANCELLED" :terminal true)))
+      [])))
+
+
+(defn- read-orders
+  "Read the pending orders one supply after the other until the step is spent or an act was read. `done` are the
+  supplies read of the first order, `bundle` the part read of its next one. A failure after the first progress ends
+  the step and keeps it."
+  {:malli/schema [:=> [:cat Env :map :map [:map-of :string :map]] Step]}
+  [env context state orders]
+  (loop [{[id & more] :pending :keys [done bundle] :as now} state, observed []]
+    (let [order (get orders id)
+          stop  #(page (with-named-fbo observed) now false)]
+      (if (or (nil? order) (and (not= now state) (spent? env)))
+        (stop)
+        (let [next (try
+                     (if-let [source (first (remove #(contains? (set done) (stated-id (get % "supply_id"))) (supplies order)))]
+                       (let [{:keys [operation acts? bundle]} (read-supply env order source bundle)]
+                         (if operation
+                           {:observed [operation] :stop? acts?
+                            :now      (assoc now :done (conj (vec done) (:source-id operation)) :bundle nil)}
+                           {:stop? true :now (assoc now :bundle bundle)}))
+                       {:observed (closed-supplies context order) :now (assoc now :pending (vec more) :done nil)})
+                     (catch clojure.lang.ExceptionInfo error
+                       {:setback (met (not= now state) error)}))]
+          (cond
+            (:setback next) (assoc (stop) :setback (:setback next))
+            (:stop? next) (page (with-named-fbo (into observed (:observed next))) (:now next) false)
+            :else (recur (:now next) (into observed (:observed next)))))))))
+
+
+(defn- order-details
+  "The next pending orders, up to 50 per call. From the first settled one on, only wanted or changed ones are read."
+  {:malli/schema [:=> [:cat Env :map :map] Step]}
+  [env context {:keys [pending] :as state}]
+  (let [env     (metered env)
+        batch   (vec (take 50 pending))
+        rows    (required (items (:body (request! env "/v3/supply-order/get" {:order_ids batch})) ["orders"]))
+        orders  (into {} (map (juxt order-id identity)) rows)
+        _       (when-not (every? #(contains? orders %) batch) (fail! :incomplete-page))
+        settled (filterv #(settled? context (orders %)) batch)
+        skip?   (if (seq settled) (let [wanted? (wanted context)] #(not (wanted? %))) (constantly false))
+        kept    (remove #(and (some #{%} settled) (skip? %)) batch)
+        later   (cond->> (drop 50 pending) (seq settled) (remove skip?))
+        next    (cond-> (assoc state :pending (into (vec kept) later)) (seq settled) (assoc :settled? true))]
+    (if (empty? kept)
+      (page [] next false)
+      (read-orders env context next orders))))
+
+
+(defmethod step "supplies" [_ env context {:keys [pending listed? settled? at] :as state}]
+  ;; The list has no date filter and states ids only: every run lists every order, the last changed first (Ozon
+  ;; refuses oldest first with archive states). Orders are detailed until one settled before the last finished pass;
+  ;; below it only unknown ones and those with an open supply are. An order created or changed while paging is
+  ;; read by the next run: its change is later than this run's coverage.
+  (cond
+    (seq pending) (order-details env context state)
+    listed? (page [] state true)
+    :else
+    (let [{:keys [body]} (request! env "/v3/supply-order/list"
+                                   {:filter   {:states supply-states} :limit   100        :sort_by "ORDER_STATE_UPDATED_AT"
+                                    :sort_dir "DESC"                  :last_id (or at "")})
+          ids            (keep text (required (items body ["order_ids"])))
+          ;; The empty last page may state the last id again.
+          next           (when (seq ids) (next-cursor! at (text (get (result body) "last_id"))))]
+      (page [] (assoc state :started? true :at next :listed? (nil? next)
+                      :pending (if settled? (filterv (wanted context) ids) (vec ids)))
+            false))))
 
 
 (def first-run-days
@@ -1055,3 +1208,28 @@
 
 (def overlap
   (Duration/ofDays 1))
+
+
+(defmethod step "removals" [_ env context {:keys [phase last-id from] :as state}]
+  ;; There is no read by id: open removals are found again by listing from where they were first covered, in
+  ;; ranges no longer than the first run asks for.
+  (let [start          (or (:reread-from context) (:from (window context)))
+        start          (or (:start state) start)
+        to             (:to (window context))
+        from           (or from start)
+        phase          (or phase "from-stock")
+        until          (str (.plus (Instant/parse from) first-run-days))
+        until          (if (.isBefore (Instant/parse until) (Instant/parse to)) until to)
+        {:keys [body]} (request! env (str "/v1/removal/" phase "/list")
+                                 {:date_from from :date_to until :limit 500 :last_id (or last-id "")})
+        rows           (required (items body ["returns_summary_report_rows"]))
+        next           (next-cursor! last-id (text (get body "last_id")))
+        more?          (and (seq rows) next)
+        next-state     (cond more? {:phase phase :from from :last-id next}
+                             (not= until to) {:phase phase :from until}
+                             (= "from-stock" phase) {:phase "from-supply" :from start})]
+    (page (mapv #(removal % phase) rows) (assoc (or next-state {}) :start start) (nil? next-state))))
+
+
+(def dated-domains
+  #{"fbs-postings" "fbo-postings" "returns" "rfbs-returns" "removals"})

@@ -390,7 +390,7 @@
                                               (:name observation) (assoc :name (:name observation)))
                                 "operation" (cond-> (select-keys observation [:status :terminal :complete :occurred-at :planned-at
                                                                               :provider-updated-at :from-warehouse :to-warehouse
-                                                                              :handed-over-at :return-schema :compensated :disposed])
+                                                                              :handed-over-at :refetch-key :return-schema :compensated :disposed])
                                               true (assoc :kind (:operation-kind observation)
                                                           :lines (write-json (vec (:lines observation))))
                                               (:related-operation observation) (assoc :related-operation (str connection-id ":" (:related-operation observation)))

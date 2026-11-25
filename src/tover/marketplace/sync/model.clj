@@ -154,14 +154,14 @@
 
 (def SourceOperation
   "`handed-over-at` is the handover time last observed on a posting, which its cancelled revisions keep as
-  `occurred-at`."
+  `occurred-at`. `refetch-key` is what the provider looks the operation up by when that is not its source id."
   (into [:map [:source-operation-id [:string {:min 1 :max 700}]]]
         (concat Observed
                 [[:kind observations/OperationKind] [:status :string] [:terminal :boolean]
                  [:occurred-at {:optional true} At] [:planned-at {:optional true} At] [:provider-updated-at {:optional true} At]
                  [:related-operation {:optional true} :string] [:lines Text]
                  [:from-warehouse {:optional true} :string] [:to-warehouse {:optional true} :string]
-                 [:handed-over-at {:optional true} At] [:return-schema {:optional true} [:enum "fbo" "fbs"]]
+                 [:handed-over-at {:optional true} At] [:refetch-key {:optional true} :string] [:return-schema {:optional true} [:enum "fbo" "fbs"]]
                  [:compensated {:optional true} :boolean] [:disposed {:optional true} :boolean]
                  [:complete :boolean] [:missing {:optional true} Text]])))
 
@@ -215,7 +215,7 @@
 
 
 (defevent source-domain-unavailable
-  {:schema [:map [:run-id Ref] [:domain Domain] [:unavailable-domains :string]]})
+  {:schema [:map [:run-id Ref] [:connection-id Ref] [:domain Domain] [:unavailable-domains :string] [:readable-domains connections/Domains]]})
 
 
 (defevent provider-throttled
@@ -305,7 +305,7 @@
    :events {::source-operation-observed {:set (into observed-fields [:kind :status :terminal :occurred-at :planned-at
                                                                      :provider-updated-at :related-operation :lines
                                                                      :from-warehouse :to-warehouse :complete :missing
-                                                                     :handed-over-at :return-schema :compensated :disposed])}
+                                                                     :handed-over-at :refetch-key :return-schema :compensated :disposed])}
             ::source-operation-seen     {:set [:last-observed-at]}}})
 
 
@@ -418,6 +418,21 @@
   ([type message data] (throw (ex-info message (assoc data :type type)))))
 
 
+(defn- own-connector!
+  "The connector principal of one connection never acts for another one."
+  {:malli/schema [:=> [:cat :any :string] :nil]}
+  [actor connection-id]
+  (when (not= actor (connector-actor connection-id)) (fail! :not-permitted "Not permitted")))
+
+
+(defn- readable-without
+  "The connection's readable domains without `unavailable`; one that can read nothing more keeps them."
+  {:malli/schema [:=> [:cat :map [:sequential :string]] connections/Domains]}
+  [connection unavailable]
+  (or (not-empty (encode (remove (set unavailable) (decode (:readable-domains connection)))))
+      (:readable-domains connection)))
+
+
 (defn- instant
   {:malli/schema [:=> [:cat [:maybe :string]] [:maybe validation/Instant]]}
   [text]
@@ -454,7 +469,8 @@
   "Where the run's window of a dated domain starts; nil for a full domain."
   {:malli/schema [:=> [:cat :map :string] [:maybe :string]]}
   [run domain]
-  (get (observations/read-json (:starting-positions run)) (keyword domain)))
+  (when (contains? ozon/dated-domains domain)
+    (get (observations/read-json (:starting-positions run)) (keyword domain))))
 
 
 (defcommand start-marketplace-sync
@@ -466,6 +482,7 @@
   (let [resume (instant (:resume-not-before connection))]
     (cond
       (nil? connection) (fail! :unknown-connection "Unknown connection")
+      (and (= "schedule" trigger) (not= actor (connector-actor connection-id))) (fail! :not-permitted "Not permitted")
       ;; One open run per connection: Sync now joins it, the scheduler resumes it.
       (= "open" (:run-state connection)) {}
       (= "paused" (:sync-state connection)) (fail! :connection-paused "Connection paused")
@@ -483,6 +500,8 @@
 
 
 (def RecordSourceObservations
+  "`resume-not-before` (the provider asks for a long wait) and `domain-unavailable` (it answered 403) come with no
+  observations and leave the position where it is."
   [:map
    [:run-id Ref]
    [:domain Domain]
@@ -491,7 +510,9 @@
    [:domain-finished :boolean]
    [:covered-until {:optional true} At]
    [:observations [:vector observations/Observation]]
-   [:adapter-version [:string {:min 1 :max 50}]]])
+   [:adapter-version [:string {:min 1 :max 50}]]
+   [:resume-not-before {:optional true} At]
+   [:domain-unavailable {:optional true} :boolean]])
 
 
 (def ^:private personal-keys
@@ -657,16 +678,31 @@
    :emits #{::source-batch-recorded ::source-domain-traversed ::external-product-observed ::external-product-seen
             ::external-product-aliases-seen ::external-product-bindings-expired ::external-warehouse-expired
             ::external-warehouse-observed ::external-warehouse-seen ::source-operation-observed ::source-operation-seen
-            ::attribute-definition-observed ::attribute-definition-seen ::source-stock-observed}}
-  [{:keys [now run connection position existing pass-rows named]}
-   {:keys [run-id domain batch-key next-position domain-finished covered-until observations adapter-version]}]
+            ::attribute-definition-observed ::attribute-definition-seen ::source-stock-observed
+            ::source-domain-unavailable ::provider-throttled}}
+  [{:keys [actor now run connection position existing pass-rows named]}
+   {:keys [run-id domain batch-key next-position domain-finished covered-until observations adapter-version
+           resume-not-before domain-unavailable]}]
+  (when-not run (fail! :unknown-run "Unknown run"))
+  (own-connector! actor (:connection-id run))
   (cond
-    (nil? run) (fail! :unknown-run "Unknown run")
     (not= "open" (:run-state run)) (fail! :run-not-open "Run not open")
     (not= "active" (:sync-state connection)) (fail! :connection-paused "Connection paused")
     ;; (run, domain, batch key) was recorded already: a repeat records nothing new.
     (and (= run-id (:run-id position)) (= batch-key (:batch-key position))) {}
     (not= batch-key (current-key run-id position)) (fail! :stale-position "Stale position")
+    (and (or resume-not-before domain-unavailable) (or (seq observations) domain-finished))
+    (fail! :validation "A setback carries no observations")
+    domain-unavailable
+    (let [unavailable (decode (:unavailable-domains run))]
+      (if (some #{domain} unavailable)
+        {}
+        {:events [{:type ::source-domain-unavailable
+                   :data {:run-id              run-id :connection-id (:connection-id run) :domain domain
+                          :unavailable-domains (encode (conj unavailable domain))
+                          :readable-domains    (readable-without connection [domain])}}]}))
+    resume-not-before
+    {:events [{:type ::provider-throttled :data {:connection-id (:connection-id run) :resume-not-before resume-not-before}}]}
     (personal? observations) (fail! :personal-data-present "Personal data present")
     ;; The fetcher sees this first and fails the run; nothing overwrites a figure silently.
     (observations/contradicts? existing (:connection-id run) run-id observations)
@@ -706,24 +742,6 @@
                                                 (spoken-for (or pass-rows {}) (into (set named) (keep (comp :external-product-id :data)) events)))))}))})))
 
 
-(def RecordFetchSetback
-  [:map [:run-id Ref] [:domain Domain] [:setback [:enum "unavailable" "throttled"]] [:resume-not-before {:optional true} At]])
-
-
-(defcommand record-fetch-setback
-  {:input RecordFetchSetback :policy ::connector-principal :cofx [run-cofx]
-   :emits #{::source-domain-unavailable ::provider-throttled}}
-  [{:keys [run]} {:keys [run-id domain setback resume-not-before]}]
-  (cond
-    (nil? run) (fail! :unknown-run "Unknown run")
-    (not= "open" (:run-state run)) {}
-    (= "unavailable" setback)
-    {:events [{:type ::source-domain-unavailable
-               :data {:run-id run-id :domain domain :unavailable-domains (encode (conj (decode (:unavailable-domains run)) domain))}}]}
-    :else
-    {:events [{:type ::provider-throttled :data {:connection-id (:connection-id run) :resume-not-before resume-not-before}}]}))
-
-
 (defn coverage
   "Sync Run Coverage: finished, unavailable and unfinished domains of a run, in domain order."
   {:malli/schema [:=> [:cat :map] [:map [:run-id :string] [:finished-domains [:vector :string]]
@@ -744,8 +762,7 @@
    [:outcome [:enum "completed" "failed"]]
    [:failed-domain {:optional true} Domain]
    [:reason {:optional true} Reason]
-   [:unavailable-domains {:optional true} [:vector Domain]]
-   [:resume-not-before {:optional true} At]])
+   [:unavailable-domains {:optional true} [:vector Domain]]])
 
 
 (def sync-interval
@@ -754,11 +771,11 @@
 
 (defcommand complete-marketplace-sync
   {:input CompleteMarketplaceSync :policy ::connector-principal :cofx [run-cofx run-connection run-positions]
-   :emits #{::marketplace-sync-completed ::marketplace-sync-failed ::connections/connection-credentials-rejected
-            ::provider-throttled}}
-  [{:keys [now run connection positions]} {:keys [run-id outcome failed-domain reason unavailable-domains resume-not-before]}]
+   :emits #{::marketplace-sync-completed ::marketplace-sync-failed ::connections/connection-credentials-rejected}}
+  [{:keys [actor now run connection positions]} {:keys [run-id outcome failed-domain reason unavailable-domains]}]
+  (when-not run (fail! :unknown-run "Unknown run"))
+  (own-connector! actor (:connection-id run))
   (cond
-    (nil? run) (fail! :unknown-run "Unknown run")
     ;; A repeat for a closed run returns the recorded outcome.
     (not= "open" (:run-state run)) {}
     :else
@@ -767,8 +784,7 @@
           unavailable (:unavailable-domains cov)
           connection-id (:connection-id run)
           at (str now)
-          readable (or (not-empty (encode (remove (set unavailable) (decode (:readable-domains connection)))))
-                       (:readable-domains connection))
+          readable (readable-without connection unavailable)
           counts {:found-listings   (:found-listings run 0)   :found-warehouses (:found-warehouses run 0)
                   :found-operations (:found-operations run 0)}]
       (if (= "completed" outcome)
@@ -793,9 +809,7 @@
                                      wait (assoc :next-attempt-at (str (.plus ^Instant now ^Duration wait))))}]
                      (= "credentials rejected" reason)
                      (conj {:type ::connections/connection-credentials-rejected
-                            :data {:connection-id connection-id :run-id run-id :credentials-state "rejected" :rejected-at at}})
-                     resume-not-before
-                     (conj {:type ::provider-throttled :data {:connection-id connection-id :resume-not-before resume-not-before}}))})))))
+                            :data {:connection-id connection-id :run-id run-id :credentials-state "rejected" :rejected-at at}}))})))))
 
 
 ;; Reads
@@ -988,35 +1002,104 @@
 ;; Fetcher
 
 
-(defn- context-for
-  "What a domain step may know: the run's window, refetch ids and lookups over the connection's listings."
-  {:malli/schema [:=> [:cat :map [:maybe :map] [:fn fn?]] ozon/Context]}
-  [run position products]
-  (let [from     (window-start run (:domain position))
-        listings (delay (vals (products)))]
-    (cond-> {:refetch-ids   (vec (observations/read-json (:refetch-ids position)))
-             :skus          (fn [] (mapcat skus @listings))
-             :categories    (fn [] (distinct (for [p     @listings
-                                                   :let  [pair (some-> (:category p) (str/split #"/"))]
-                                                   :when (= 2 (count pair))]
-                                               pair)))
-             :sku->product  (fn [] (into {} (for [p @listings, sku (skus p)] [sku (:source-id p)])))
-             :sku->products (fn [] (sku->products @listings))}
-      from (assoc :window {:from from :to (:started-at run)}))))
+(defn- lookup
+  "`f`, whose failure is the store's and never the provider's."
+  {:malli/schema [:=> [:cat [:fn fn?]] [:fn fn?]]}
+  [f]
+  (fn [& args]
+    (try (apply f args)
+         (catch Exception error
+           (throw (ex-info "Stored records cannot be read" {:type ::lookup-failed} error))))))
 
 
 (def FetchItem
   [:map [:workspace-id :string] [:run :map] [:positions [:map-of :string :map]] [:env [:maybe ozon/Env]]
    [:products [:fn fn?]]
+   [:known-orders {:optional true} [:fn fn?]] [:stored-supplies {:optional true} [:fn fn?]]
    ;; Stored figures, by id, that observations of the run may add to.
-   [:figures {:optional true} [:fn fn?]]])
+   [:figures {:optional true} [:fn fn?]]
+   ;; Failed tries to record a batch, by connection: [[run domain batch key] count].
+   [:attempts {:optional true} :any]])
+
+
+(defn- context-for
+  "What a domain step may know: the run's window, refetch ids and lookups over the connection's records."
+  {:malli/schema [:=> [:cat :map [:maybe :map] FetchItem] ozon/Context]}
+  [run {:keys [domain covered-until first-covered-at refetch-ids]}
+   {:keys [products known-orders stored-supplies] :or {known-orders (constantly #{}) stored-supplies (constantly [])}}]
+  (let [from     (window-start run domain)
+        products (lookup products)
+        listings (delay (vals (products)))
+        refetch  (vec (observations/read-json refetch-ids))]
+    (cond-> {:refetch-ids     refetch
+             :skus            (fn [] (mapcat skus @listings))
+             :categories      (fn [] (distinct (for [p     @listings
+                                                     :let  [pair (some-> (:category p) (str/split #"/"))]
+                                                     :when (= 2 (count pair))]
+                                                 pair)))
+             :sku->product    (fn [] (into {} (for [p @listings, sku (skus p)] [sku (:source-id p)])))
+             :sku->products   (fn [] (sku->products @listings))
+             :known-orders    (lookup known-orders)
+             :stored-supplies (lookup stored-supplies)}
+      from (assoc :window {:from from :to (:started-at run)})
+      covered-until (assoc :settled-before (str (.minus ^Instant (instant covered-until) ^Duration ozon/overlap)))
+      (and first-covered-at (seq refetch)) (assoc :reread-from first-covered-at))))
+
+
+(def ^:private record-tries
+  "A batch is tried as often as one provider request."
+  4)
+
+
+(def ^:private no-fault
+  "Rejections that say nothing about the batch."
+  #{:run-not-open :connection-paused :stale-position :unknown-run :not-permitted})
+
+
+(defn- recording-failure
+  "Why the run fails when its batch cannot be recorded, or the stored records it needs cannot be read; nil to try
+  again. A batch the command refuses is refused every time; any other failure may pass, and ends the run after
+  `record-tries` at one position."
+  {:malli/schema [:=> [:cat [:fn #(instance? Throwable %)] [:maybe :any] :string [:vector :any]] [:maybe :keyword]]}
+  [error attempts connection-id position]
+  (let [type (:type (ex-data error))]
+    (cond
+      (contains? no-fault type) nil
+      (contains? #{:validation :personal-data-present} type) :unexpected-response
+      (= :conflicting-figures type) :incomplete-page
+      attempts (let [[_ n] (get (swap! attempts update connection-id
+                                       (fn [[at n]] [position (if (= at position) (inc n) 1)]))
+                                connection-id)]
+                 (when (<= record-tries n) :retries-exhausted)))))
+
+
+(defn- read-step
+  "One step of a domain, or the failure it met as `:setback` with no observations. A page that cannot be translated
+  is an unexpected provider response; a failure of the store or a shutdown is thrown."
+  {:malli/schema [:=> [:cat :string [:maybe ozon/Env] :map :map [:fn fn?]] :map]}
+  [domain env context state contradicts?]
+  (try
+    (when-not env (ozon/fail! :credentials-rejected))
+    (let [{after :state :keys [observations finished? setback] :as step} (ozon/step domain env context state)]
+      (when (and (not finished?) (not setback) (= state after)) (ozon/fail! :repeated-cursor))
+      (when (contradicts? observations) (ozon/fail! :incomplete-page))
+      step)
+    (catch InterruptedException error (throw error))
+    (catch Exception error
+      (let [{:keys [type] :as data} (ex-data error)]
+        (cond
+          (= ::lookup-failed type) (throw error)
+          (contains? ozon/failures type) {:setback data}
+          :else (do (mu/log ::page-unreadable :domain domain :error-type (.getName (class error)))
+                    {:setback {:type :unexpected-response}}))))))
 
 
 (defn fetch-request
-  "Check the run's remaining work and read its next batch: the command that records it, marks a setback or
-  closes the run. Reads the provider outside any store transaction."
-  {:malli/schema [:=> [:cat FetchItem] bel/ProcessorRequest]}
-  [{:keys [workspace-id run positions env products figures] :or {figures (constantly {})}}]
+  "Check the run's remaining work and read its next batch: the command that records it, or the setback it met, or
+  closes the run; both when the setback came after something was read. Reads the provider outside any store
+  transaction."
+  {:malli/schema [:=> [:cat FetchItem] [:or bel/ProcessorRequest [:vector bel/ProcessorRequest]]]}
+  [{:keys [workspace-id run positions env figures attempts] :or {figures (constantly {})} :as item}]
   (let [connection-id (:connection-id run)
         run-id (:run-id run)
         request (fn [id input] {:type  :command :id id :scope {:workspace-id (parse-uuid workspace-id)}
@@ -1025,30 +1108,59 @@
     (if-let [domain (first unfinished-domains)]
       (let [position  (assoc (get positions domain) :domain domain)
             batch-key (current-key run-id position)
-            state     (if (= "" batch-key) {} (edn/read-string batch-key))
-            context   (context-for run position products)]
-        (try
-          (when-not env (ozon/fail! :credentials-rejected))
-          (let [{:keys [observations state finished?]} (ozon/step domain env context state)]
-            (when (and (= "stock-by-warehouse" domain)
-                       (observations/contradicts? (figures observations) connection-id run-id observations))
-              (ozon/fail! :incomplete-page))
-            (request ::record-source-observations
-                     {:run-id          run-id :domain          domain       :batch-key       batch-key
-                      :next-position   (merge {:cursor (pr-str state)}
-                                              (when-let [{:keys [from to]} (:window context)] {:window-from from :window-to to}))
-                      :domain-finished finished? :observations observations :adapter-version ozon/adapter-version}))
-          (catch clojure.lang.ExceptionInfo error
-            (let [{:keys [type resume-not-before]} (ex-data error)]
-              (case type
-                :unavailable (request ::record-fetch-setback {:run-id run-id :domain domain :setback "unavailable"})
-                :throttled (request ::record-fetch-setback {:run-id            run-id            :domain domain :setback "throttled"
-                                                            :resume-not-before resume-not-before})
-                (:credentials-rejected :retries-exhausted :repeated-cursor :incomplete-page :unexpected-response)
-                (request ::complete-marketplace-sync {:run-id run-id         :outcome             "failed"            :failed-domain domain
-                                                      :reason (reasons type) :unavailable-domains unavailable-domains})
-                (throw error))))))
+            before    (if (= "" batch-key) {} (edn/read-string batch-key))
+            context   (context-for run position item)
+            figures   (lookup figures)
+            fail      (fn [type]
+                        (request ::complete-marketplace-sync {:run-id run-id         :outcome             "failed"            :failed-domain domain
+                                                              :reason (reasons type) :unavailable-domains unavailable-domains}))
+            record    (fn [key cursor input]
+                        (assoc (request ::record-source-observations
+                                        (merge {:run-id          run-id :domain      domain :batch-key key
+                                                :next-position   (merge {:cursor cursor}
+                                                                        (when-let [{:keys [from to]} (:window context)] {:window-from from :window-to to}))
+                                                :domain-finished false :observations []
+                                                :adapter-version ozon/adapter-version}
+                                               input))
+                               :catch #(some-> (recording-failure % attempts connection-id [run-id domain key]) fail)))
+            hold      (fn [key {:keys [type resume-not-before]}]
+                        (case type
+                          :unavailable (record key key {:domain-unavailable true})
+                          :throttled (record key key {:resume-not-before resume-not-before})
+                          (fail type)))
+            {:keys [observations state finished? setback] failed :run-failure}
+            (try (read-step domain env context before
+                            #(and (= "stock-by-warehouse" domain)
+                                  (observations/contradicts? (figures %) connection-id run-id %)))
+                 (catch clojure.lang.ExceptionInfo error
+                   {:run-failure (or (recording-failure error attempts connection-id [run-id domain batch-key]) (throw error))}))]
+        (cond
+          failed (fail failed)
+          (nil? state) (hold batch-key setback)
+          :else
+          (let [cursor (pr-str state)
+                batch  (record batch-key cursor {:domain-finished finished? :observations observations})]
+            (if setback [batch (hold cursor setback)] batch))))
       (request ::complete-marketplace-sync {:run-id run-id :outcome "completed" :unavailable-domains unavailable-domains}))))
+
+
+(defn- known-orders
+  "Order ids of a connection's stored supplies."
+  {:malli/schema [:=> [:cat :map :string] [:set :string]]}
+  [context connection-id]
+  (into #{} (map #(first (str/split % #"/")))
+        (values-where context ::source-operations :refetch-key {:connection-id connection-id :kind "supply"})))
+
+
+(defn- stored-supplies
+  "The last stated facts of a connection's supplies by refetch key."
+  {:malli/schema [:=> [:cat :map :string [:sequential :string]] [:sequential :map]]}
+  [context connection-id refetch-keys]
+  (->> refetch-keys
+       (mapcat #(values-where context ::source-operations :source-revision-id {:connection-id connection-id :kind "supply" :refetch-key %}))
+       (load-rows context ::source-revisions)
+       vals
+       (mapv (comp observations/read-json :facts))))
 
 
 (defn- fetchable?
@@ -1068,23 +1180,26 @@
                :when        (fetchable? connection now)
                :let         [run (get (load-rows context ::sync-runs [(:run-id connection)]) (:run-id connection))]
                :when        (= "open" (:run-state run))]
-           {:workspace-id (str workspace-id)
-            :run          run
-            :positions    (runtime/coeffect ::connection-positions context {:connection-id (:connection-id connection)})
-            :env          (try (some->> (connector/api-key marketplace workspace-id (:secret-ref connection))
-                                        (ozon/env marketplace (:provider-account-id connection)))
-                               (catch Exception error
-                                 (mu/log ::credentials-unavailable :error-type (.getName (class error)))
-                                 nil))
-            :figures      #(load-rows context ::source-stock (stock-ids (:connection-id connection) (:run-id run) %))
-            :products     #(into {} (filter (fn [[_ p]] (= (:connection-id connection) (:connection-id p))))
-                                 (map (juxt :external-product-id identity)
-                                      (records/all-records context ::external-products :external-product-id)))}))))
+           {:workspace-id    (str workspace-id)
+            :run             run
+            :positions       (runtime/coeffect ::connection-positions context {:connection-id (:connection-id connection)})
+            :env             (try (some->> (connector/api-key marketplace workspace-id (:secret-ref connection))
+                                           (ozon/env marketplace (:provider-account-id connection)))
+                                  (catch Exception error
+                                    (mu/log ::credentials-unavailable :error-type (.getName (class error)))
+                                    nil))
+            :attempts        (:attempts marketplace)
+            :known-orders    #(known-orders context (:connection-id connection))
+            :stored-supplies #(stored-supplies context (:connection-id connection) %)
+            :figures         #(load-rows context ::source-stock (stock-ids (:connection-id connection) (:run-id run) %))
+            :products        #(into {} (filter (fn [[_ p]] (= (:connection-id connection) (:connection-id p))))
+                                    (map (juxt :external-product-id identity)
+                                         (records/all-records context ::external-products :external-product-id)))}))))
 
 
-;; ponytail: the fetcher shares the journal-delivery worker thread, one batch per open run per second; move it
-;; to its own executor if provider latency delays journal delivery.
-(defprocessor ^{:malli/schema [:=> [:cat FetchItem] bel/ProcessorRequest]} marketplace-fetcher
+;; ponytail: the fetcher shares the journal-delivery worker thread, one step of at most `ozon/max-calls` calls per
+;; open run per second; move it to its own executor if provider latency delays journal delivery.
+(defprocessor ^{:malli/schema [:=> [:cat FetchItem] [:or bel/ProcessorRequest [:vector bel/ProcessorRequest]]]} marketplace-fetcher
   {:todo ::runs-to-fetch}
   [item]
   (fetch-request item))

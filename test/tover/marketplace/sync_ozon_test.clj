@@ -343,16 +343,30 @@
     (is (= [nil nil] (mapv :quantity (:lines (supply [{"quantity" 1}] [(act 77 nil 1 1)])))) "a line without SKU is never matched")))
 
 
+(defn traverse
+  "Every step of `domain` from `state` until it finishes, meets a setback or `limit` steps passed. Each state goes
+  through text, as the stored position does."
+  {:malli/schema [:=> [:cat :string :map :map :map :int] [:vector :map]]}
+  [domain env context state limit]
+  (loop [state state acc []]
+    (let [s (ozon/step domain env context (read-string (pr-str state)))]
+      (if (or (:finished? s) (:setback s) (<= limit (inc (count acc))))
+        (conj acc s)
+        (recur (:state s) (conj acc s))))))
+
+
 (defn observe-supplies
-  "The detail batch of order 5, its bundles and acts answered by `answer`; with the calls made."
+  "The detail batches of order 5, its bundles and acts answered by `answer`; with the calls made."
   {:malli/schema [:=> [:cat [:sequential :map] [:fn fn?]] [:map [:calls :any] [:observations :any]]]}
   [supplies answer]
   (let [{:keys [env calls]} (env (fn [path body]
                                    (ok (if (= "/v3/supply-order/get" path)
                                          {:orders [{:order_id 5 :state "IN_TRANSIT" :order_tags {:seller_warehouse_id 1} :supplies supplies}]}
-                                         (answer path body)))))]
-    {:observations (:observations (ozon/step "supplies" env {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}}
-                                             {:started? true :pending ["5"]}))
+                                         (answer path body)))))
+        steps               (traverse "supplies" env {} {:started? true :pending ["5"] :listed? true} 30)]
+    (when-let [setback (some :setback steps)]
+      (throw (ex-info "setback" setback)))
+    {:observations (vec (mapcat :observations steps))
      :calls        @calls}))
 
 
@@ -373,7 +387,7 @@
     (is (= [["actual time"] ["actual time" "line quantity" "accepted quantity"]
             ["actual time" "line quantity" "warehouse" "accepted quantity"]]
            (mapv :missing ops)) "a supply without storage warehouse lacks the warehouse, though its origin is stated")
-    (is (= ["5" "5" "5"] (mapv :refetch-key ops)) "supplies are read again by their order")
+    (is (= ["5/51" "5/52" "5/53"] (mapv :refetch-key ops)) "supplies are read again by their order")
     (is (= [{:supply_id 51}] (mapv :body (filter #(= "/v1/supply-order/act/product/get" (:path %)) calls)))
         "acts of the accepted supply only")
     (is (= [["fbo" "2" "Two"] ["fbo" "3" nil]]
@@ -394,8 +408,7 @@
                (let [{:keys [env]} (env (fn [path _]
                                           (ok (if (= "/v3/supply-order/get" path) {:orders [(merge {:order_id 5 :state state} order)]}
                                                   {:items [] :has_next false}))))]
-                 (:observations (ozon/step "supplies" env {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}}
-                                           {:started? true :pending ["5"]}))))]
+                 (:observations (ozon/step "supplies" env {} {:started? true :pending ["5"]}))))]
     (doseq [order [{} {:supplies nil} {:supplies [{:supply_id ""}]} {:supplies [{:supply_id 0}]} {:supplies [{}]}]]
       (doseq [state ["DATA_FILLING" "CANCELLED"]]
         (is (= [] (read state order))))
@@ -451,13 +464,154 @@
                {:orders (for [id (:order_ids body)] {:order_id id :state "DATA_FILLING" :supplies []})})))))
 
 
+(defn order-pages
+  "Orders by id, as [state, time of the last state change, number of supplies]. `limit` answers a call with a
+  failure, or with nil to let it succeed."
+  {:malli/schema [:=> [:cat [:sequential [:tuple :int :any :any :int]] [:fn fn?]] :map]}
+  [orders limit]
+  (let [by-id (into {} (map (juxt first identity)) orders)]
+    (env (fn [path body]
+           (or (limit path body)
+               (ok (case path
+                     "/v3/supply-order/list" {:order_ids (if (= "" (:last_id body)) (map first orders) []) :last_id "end"}
+                     "/v3/supply-order/get" {:orders (for [id   (map parse-long (:order_ids body))
+                                                           :let [[_ state updated n] (by-id id)]]
+                                                       {:order_id id :state state :state_updated_date updated
+                                                        :supplies (for [i (range n)] {:supply_id (+ (* 100 id) i) :bundle_id (str id "-" i)})})}
+                     "/v1/supply-order/bundle" {:items [{:sku 100 :quantity 1}] :has_next false}
+                     {:supply_acts []})))))))
+
+
+(defn paths
+  "How many of the calls went to `path`."
+  {:malli/schema [:=> [:cat :any :string] :int]}
+  [calls path]
+  (count (filter #(= path (:path %)) @calls)))
+
+
+(def act-path
+  "/v1/supply-order/act/product/get")
+
+
+(defn metered
+  "Every step of the supplies domain with the calls it made."
+  {:malli/schema [:=> [:cat :map :any :map] [:vector :map]]}
+  [env calls state]
+  (loop [state state acc []]
+    (reset! calls [])
+    (let [s   (ozon/step "supplies" env {} (read-string (pr-str state)))
+          acc (conj acc (assoc s :calls (count @calls) :acts (paths calls act-path)))]
+      (if (or (:finished? s) (< 300 (count acc))) acc (recur (:state s) acc)))))
+
+
+(deftest one-act-call-per-step
+  (let [{:keys [env calls]} (order-pages (for [id (range 50 0 -1)] [id "COMPLETED" "2026-01-01T00:00:00Z" 2]) (constantly nil))
+        steps               (metered env calls {})
+        ids                 (map :source-id (mapcat :observations steps))]
+    (is (= [100 100] [(count ids) (count (distinct ids))]) "each supply once")
+    (is (= 1 (apply max (map :acts steps))) "no high request rate")
+    (is (>= 10 (apply max (map :calls steps))))))
+
+
+(deftest supply-page-keeps-what-was-read-before-a-429
+  (let [left                (atom 2)
+        {:keys [env calls]} (order-pages [[3 "IN_TRANSIT" nil 1] [2 "COMPLETED" nil 1] [1 "COMPLETED" nil 1]]
+                                         (fn [path _]
+                                           (when (and (= act-path path) (pos? (first (swap-vals! left dec))))
+                                             {:status 429 :headers {"retry-after" "1200"}})))
+        [one]               (traverse "supplies" env {} {:started? true :pending ["3" "2" "1"] :listed? true} 1)]
+    (is (= ["300"] (map :source-id (:observations one))))
+    (is (= :throttled (get-in one [:setback :type])))
+    (is (= ["2" "1"] (:pending (:state one))))
+    (is (= :throttled (:type (thrown #(ozon/step "supplies" env {} (:state one))))) "nothing new was read: only the wait")
+    (reset! calls [])
+    (is (= ["200" "100"] (map :source-id (mapcat :observations (traverse "supplies" env {} (:state one) 10)))))
+    (is (= 2 (paths calls act-path)))))
+
+
+(deftest long-bundle-is-read-over-steps
+  (let [{:keys [env calls]} (env (fn [path body]
+                                   (ok (if (= "/v3/supply-order/get" path)
+                                         {:orders [{:order_id 5 :state "IN_TRANSIT" :supplies [{:supply_id 51 :bundle_id "a"}]}]}
+                                         (let [n (if (= "" (:last_id body)) 0 (parse-long (:last_id body)))]
+                                           {:items [{:sku (inc n) :quantity 1 :name "Tee"}] :last_id (str (inc n)) :has_next (< n 24)})))))
+        steps               (metered env calls {:started? true :pending ["5"] :listed? true})]
+    (is (>= 10 (apply max (map :calls steps))))
+    (is (= [(map str (range 1 26))] (map (fn [o] (map #(get-in % [:identifiers 0 :value]) (:lines o))) (mapcat :observations steps))))))
+
+
+(deftest detail-calls-of-one-step-are-bounded
+  (doseq [[domain path] [["fbs-postings" "/v3/posting/fbs/get"] ["fbo-postings" "/v2/posting/fbo/get"]]
+          :let          [context {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}}
+                         posting (fn [body] (ok {:result {:posting_number (:posting_number body) :status "delivering"}}))]]
+    (let [pending             (mapv str (range 25))
+          {:keys [env calls]} (env (fn [_ body] (posting body)))
+          s                   (ozon/step domain env context {:started? true :pending pending})]
+      (is (= 10 (paths calls path)))
+      (is (= (subvec pending 10) (:pending (:state s)))))
+    (let [slow                (atom 1)
+          {:keys [env calls]} (env (fn [_ body]
+                                     (if (and (= "1" (:posting_number body)) (pos? (first (swap-vals! slow dec))))
+                                       {:status 503}
+                                       (posting body))))
+          s                   (ozon/step domain env context {:started? true :pending ["0" "1" "2"]})]
+      (is (= [["0" "1"] 3] [(map :source-id (filter #(= "operation" (:kind %)) (:observations s))) (count @calls)])
+          "a request that had to be repeated ends the step"))))
+
+
+(deftest only-new-changed-and-open-orders-are-detailed
+  (let [{:keys [env calls]} (order-pages [[9 "COMPLETED" "2026-12-10T05:00:00Z" 1] [8 "COMPLETED" "2026-12-01T00:00:00Z" 1]
+                                          [7 "COMPLETED" "2026-11-30T00:00:00Z" 1] [6 "COMPLETED" "2026-11-29T00:00:00Z" 1]]
+                                         (constantly nil))
+        steps               (traverse "supplies" env {:settled-before "2026-12-09T00:00:00Z"      :refetch-ids ["7/700"]
+                                                      :known-orders   (constantly #{"9" "8" "7"})}
+                                      {} 30)]
+    (is (= ["900" "700" "600"] (map :source-id (mapcat :observations steps))) "8 is known, unchanged and terminal")
+    (is (= ["" "end"] (map (comp :last_id :body) (filter #(= "/v3/supply-order/list" (:path %)) @calls))) "every order is listed")
+    (is (:finished? (last steps)))))
+
+
+(deftest open-order-gone-from-the-list-is-not-asked-for
+  (let [{:keys [env calls]} (order-pages [] (constantly nil))]
+    (is (:finished? (last (traverse "supplies" env {:refetch-ids ["7/700"]} {} 10))))
+    (is (= 0 (paths calls "/v3/supply-order/get")))))
+
+
+(deftest cancelled-order-closes-its-known-supplies
+  (let [facts  {:operation-kind "supply" :source-id "51" :status "IN_TRANSIT" :terminal false :complete false :lines [] :refetch-key "5/51"}
+        asked  (atom [])
+        closed (fn [state n]
+                 (let [{:keys [env]} (order-pages [[5 state nil n]] (constantly nil))]
+                   (filter #(= "51" (:source-id %))
+                           (mapcat :observations
+                                   (traverse "supplies" env {:refetch-ids ["5/51" "6/61"] :stored-supplies (fn [ids] (swap! asked conj ids) [facts])}
+                                             {:started? true :pending ["5"] :listed? true} 5)))))]
+    (is (= [(assoc facts :kind "operation" :status "CANCELLED" :terminal true)] (closed "CANCELLED" 0)))
+    (is (= [["5/51"]] @asked) "its own open supplies only")
+    (is (= [] (closed "DATA_FILLING" 0)))))
+
+
+(deftest open-removals-are-read-again-from-their-first-coverage
+  (let [{:keys [env calls]} (env (fn [_ _] (ok {:returns_summary_report_rows [] :last_id ""})))
+        context             {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"} :reread-from "2026-10-20T06:00:00Z"}
+        dates               (fn [context]
+                              (reset! calls [])
+                              (traverse "removals" env context {} 20)
+                              (for [source ["from-stock" "from-supply"]]
+                                (map (comp (juxt :date_from :date_to) :body)
+                                     (filter #(= (str "/v1/removal/" source "/list") (:path %)) @calls))))
+        ranges              [["2026-10-20T06:00:00Z" "2026-11-19T06:00:00Z"] ["2026-11-19T06:00:00Z" "2026-12-10T06:00:00Z"]]]
+    (is (= [ranges ranges] (dates context)) "no longer range than the first run asks for")
+    (is (= [["2026-12-09T06:00:00Z" "2026-12-10T06:00:00Z"]] (first (dates (dissoc context :reread-from)))))))
+
+
 (defn listed-orders
   "Every order id whose details one run of the supplies domain reads."
   {:malli/schema [:=> [:cat :map :any] :any]}
   [env calls]
   (reset! calls [])
   (loop [state {} n 0]
-    (let [s (ozon/step "supplies" env {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}} state)]
+    (let [s (ozon/step "supplies" env {} state)]
       (when-not (or (:finished? s) (< 20 n)) (recur (:state s) (inc n)))))
   (mapcat (comp :order_ids :body) (filter #(= "/v3/supply-order/get" (:path %)) @calls)))
 
@@ -470,7 +624,7 @@
                                  "ACCEPTANCE_AT_STORAGE_WAREHOUSE" "REPORTS_CONFIRMATION_AWAITING" "REPORT_REJECTED" "COMPLETED"
                                  "REJECTED_AT_SUPPLY_WAREHOUSE" "CANCELLED" "OVERDUE"]}
              :limit    100
-             :sort_by  "ORDER_CREATION"
+             :sort_by  "ORDER_STATE_UPDATED_AT"
              :sort_dir "DESC"
              :last_id  ""}]
            (take 1 (map :body @calls))))

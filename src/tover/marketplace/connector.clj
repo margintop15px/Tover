@@ -47,7 +47,7 @@
 
 (def Connector
   [:map [:verify [:fn fn?]] [:repo {:optional true} :any] [:key {:optional true} bytes?]
-   [:post {:optional true} [:fn fn?]] [:pacer {:optional true} :any] [:last-look {:optional true} :any]])
+   [:post {:optional true} [:fn fn?]] [:pacer {:optional true} :any] [:last-look {:optional true} :any] [:attempts {:optional true} :any]])
 
 
 ;; Sealing
@@ -348,6 +348,8 @@
   (cond-> {:verify    (partial ozon-verify http-post) :repo  repo
            ;; The sync fetcher's transport (30 s per try) and its per-Client-Id request pacing.
            :post      #(http-post %1 %2 %3 30)        :pacer (atom {}) :last-look (atom nil)
+           ;; Failed tries to record the batch at each connection's position.
+           :attempts  (atom {})
            ;; Keys sealed by this process whose command may still be running.
            :in-flight (atom {})}
     connector-key (assoc :key (tover.marketplace.connector/connector-key connector-key))))
