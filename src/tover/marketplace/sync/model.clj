@@ -180,7 +180,7 @@
 
 (def StockPass
   "A finished traversal of one domain by one run. `asked`, JSON source ids of the listings a stock-by-warehouse
-  pass asked for: one of them without a row has 0."
+  pass speaks for: one of them without a row has 0."
   [:map
    [:pass-id Ref] [:run-id Ref] [:connection-id Ref] [:domain Domain] [:traversed-at At] [:asked {:optional true} Text]])
 
@@ -573,6 +573,35 @@
    "stock-by-warehouse" [::external-products :external-product-id]})
 
 
+(defn- values-where
+  "The distinct values of `field` in the rows of `model-id` whose fields hold these texts, found by query rather
+  than by scanning the model."
+  {:malli/schema [:=> [:cat :map :qualified-keyword :keyword [:map-of :keyword :string]] [:vector :string]]}
+  [context model-id field wanted]
+  (let [fields  (:fields (rdf-adapter/vocabulary (bel/get-model model-id)))
+        clauses (for [[i [field value]] (map-indexed vector wanted)]
+                  {:where    ['?row (symbol (str "?field" i)) (symbol (str "?value" i))]
+                   :bindings {(keyword (str "field" i)) (fields field) (keyword (str "value" i)) value}})
+        query   {:select-distinct '[?found] :where (into (mapv :where clauses) '[[?row ?field ?found]])}]
+    (mapv :found (runtime/coeffect :rdf/query context {:query    query
+                                                       :bindings (into {:field (fields field)} (map :bindings) clauses)}))))
+
+
+(defn- run-figures
+  "What holds for the figures of one run."
+  {:malli/schema [:=> [:cat :string :string] [:map-of :keyword :string]]}
+  [connection-id run-id]
+  {:connection-id connection-id :run-id run-id :source "warehouse-stock"})
+
+
+(defmethod runtime/coeffect ::named
+  [_ context {:keys [connection-id run-id domain domain-finished]}]
+  ;; The listings earlier rows of a finishing stock-by-warehouse pass named.
+  (if (and connection-id domain-finished (= "stock-by-warehouse" domain))
+    (set (values-where context ::source-stock :external-product-id (run-figures connection-id run-id)))
+    #{}))
+
+
 (defmethod runtime/coeffect ::pass-rows
   [_ context {:keys [connection-id domain domain-finished]}]
   (if-let [[model id-key] (when (and connection-id domain-finished) (pass-models domain))]
@@ -591,6 +620,25 @@
     (:value b)))
 
 
+(defn- sku->products
+  "Every listing a SKU is active on, as source ids."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:map-of :string [:set :string]]]}
+  [listings]
+  (reduce (fn [acc [sku listing]] (update acc sku (fnil conj #{}) (:source-id listing)))
+          {}
+          (for [listing listings, sku (skus listing)] [sku listing])))
+
+
+(defn- spoken-for
+  "Source ids of the listings a stock-by-warehouse pass speaks for: the only listing of an asked SKU, or named by
+  a row. A SKU active on several listings says nothing of those its rows do not name."
+  {:malli/schema [:=> [:cat [:map-of :string :map] [:set :string]] [:vector :string]]}
+  [listings named]
+  (vec (sort (into (set (keep #(:source-id (listings %)) named))
+                   (mapcat #(when (= 1 (count %)) %))
+                   (vals (sku->products (or (vals listings) [])))))))
+
+
 (defcommand record-source-observations
   {:input RecordSourceObservations :policy ::connector-principal
    :cofx  [run-cofx run-connection
@@ -598,12 +646,14 @@
            [:existing ::existing (fn [{:keys [run]} input] {:connection-id (:connection-id run)  :run-id (:run-id run)
                                                             :observations  (:observations input)})]
            [:pass-rows ::pass-rows (fn [{:keys [run]} input] (assoc (select-keys input [:domain :domain-finished])
-                                                                    :connection-id (:connection-id run)))]]
+                                                                    :connection-id (:connection-id run)))]
+           [:named ::named (fn [{:keys [run]} input] (assoc (select-keys input [:domain :domain-finished])
+                                                            :connection-id (:connection-id run) :run-id (:run-id run)))]]
    :emits #{::source-batch-recorded ::source-domain-traversed ::external-product-observed ::external-product-seen
             ::external-product-aliases-seen ::external-product-bindings-expired ::external-warehouse-expired
             ::external-warehouse-observed ::external-warehouse-seen ::source-operation-observed ::source-operation-seen
             ::attribute-definition-observed ::attribute-definition-seen ::source-stock-observed}}
-  [{:keys [now run connection position existing pass-rows]}
+  [{:keys [now run connection position existing pass-rows named]}
    {:keys [run-id domain batch-key next-position domain-finished covered-until observations adapter-version]}]
   (cond
     (nil? run) (fail! :unknown-run "Unknown run")
@@ -647,8 +697,8 @@
                                        :first-covered-at (or (:first-covered-at position) (window-start run domain) (:started-at run))
                                        :pass-id          (str run-id "/" domain)}
                                 (= "stock-by-warehouse" domain)
-                                (assoc :asked (observations/write-json (vec (sort (keep #(when (seq (skus %)) (:source-id %))
-                                                                                        (vals pass-rows)))))))}))})))
+                                (assoc :asked (observations/write-json
+                                                (spoken-for (or pass-rows {}) (into (set named) (keep (comp :external-product-id :data)) events)))))}))})))
 
 
 (def RecordFetchSetback
@@ -812,24 +862,15 @@
 
 
 (defn- rows-where
-  "Rows of `model-id` whose fields hold these texts, found by query rather than by scanning the model."
+  "Rows of `model-id` whose fields hold these texts."
   {:malli/schema [:=> [:cat :map :qualified-keyword :keyword [:map-of :keyword :string]] [:vector :map]]}
   [context model-id id-key wanted]
-  (let [fields  (:fields (rdf-adapter/vocabulary (bel/get-model model-id)))
-        clauses (for [[i [field value]] (map-indexed vector wanted)]
-                  {:where    ['?row (symbol (str "?field" i)) (symbol (str "?value" i))]
-                   :bindings {(keyword (str "field" i)) (fields field) (keyword (str "value" i)) value}})
-        query   {:select '[?id] :where (into (mapv :where clauses) '[[?row ?field ?id]])}]
-    (->> (runtime/coeffect :rdf/query context {:query query :bindings (into {:field (fields id-key)} (map :bindings) clauses)})
-         (map :id)
-         (load-rows context model-id)
-         vals
-         vec)))
+  (vec (vals (load-rows context model-id (values-where context model-id id-key wanted)))))
 
 
 (defn finished-passes
   "Finished passes of a connection's domain, newest first; a stock-by-warehouse pass names the external products
-  it asked for."
+  it speaks for."
   {:malli/schema [:=> [:cat :map :string :string] [:vector [:map [:run-id Ref] [:observed-at At] [:asked {:optional true} [:set :string]]]]]}
   [context connection-id domain]
   (->> (rows-where context ::stock-passes :pass-id {:connection-id connection-id :domain domain})
@@ -845,12 +886,12 @@
   when `finished-passes` names it."
   {:malli/schema [:=> [:cat :map :string :string] [:vector SourceStock]]}
   [context connection-id run-id]
-  (rows-where context ::source-stock :stock-id {:connection-id connection-id :run-id run-id :source "warehouse-stock"}))
+  (rows-where context ::source-stock :stock-id (run-figures connection-id run-id)))
 
 
 (defn stated-present
-  "What a finished pass states of a listing in a warehouse: its figure, 0 without one, nil when the pass did not
-  ask for the listing or is not finished."
+  "What a finished pass states of a listing in a warehouse: its figure, 0 without one, nil when the pass does not
+  speak for the listing or is not finished."
   {:malli/schema [:=> [:cat [:maybe :map] [:sequential :map] :string :string] [:maybe :int]]}
   [{:keys [run-id asked]} figures external-product-id external-warehouse-id]
   (when (contains? asked external-product-id)
@@ -948,13 +989,14 @@
   [run position products]
   (let [from     (window-start run (:domain position))
         listings (delay (vals (products)))]
-    (cond-> {:refetch-ids  (vec (observations/read-json (:refetch-ids position)))
-             :skus         (fn [] (mapcat skus @listings))
-             :categories   (fn [] (distinct (for [p     @listings
-                                                  :let  [pair (some-> (:category p) (str/split #"/"))]
-                                                  :when (= 2 (count pair))]
-                                              pair)))
-             :sku->product (fn [] (into {} (for [p @listings, sku (skus p)] [sku (:source-id p)])))}
+    (cond-> {:refetch-ids   (vec (observations/read-json (:refetch-ids position)))
+             :skus          (fn [] (mapcat skus @listings))
+             :categories    (fn [] (distinct (for [p     @listings
+                                                   :let  [pair (some-> (:category p) (str/split #"/"))]
+                                                   :when (= 2 (count pair))]
+                                               pair)))
+             :sku->product  (fn [] (into {} (for [p @listings, sku (skus p)] [sku (:source-id p)])))
+             :sku->products (fn [] (sku->products @listings))}
       from (assoc :window {:from from :to (:started-at run)}))))
 
 

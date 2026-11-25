@@ -712,6 +712,34 @@
     (is (nil? (data "stock-by-warehouse" false)))))
 
 
+(deftest zero-is-not-invented-for-another-candidate
+  (let [listing (fn [id & skus]
+                  [(str c ":" id) {:external-product-id (str c ":" id) :source-id id
+                                   :identifiers         (json/write-json-str (for [s skus, role ["primary" "source"]]
+                                                                               {:type "sku" :value s :role role :active true}))}])
+        rows    (into {} [(listing "9001" "100" "101") (listing "9002" "100") (listing "9003" "100") (listing "9004" "100")])
+        data    (fn [facts observations]
+                  (json/read-json (:asked (event (record (merge {:pass-rows rows :existing rows} facts)
+                                                         {:domain       "stock-by-warehouse" :domain-finished true
+                                                          :observations observations})
+                                                 ::sync/source-domain-traversed))))]
+    (is (= ["9001"] (data {} [])) "sole candidate of SKU 101; SKU 100 speaks for none of its candidates")
+    (is (= ["9001" "9002" "9003"] (data {:named #{(str c ":9003")}} [(figure {:product-source-id "9002" :part "100"})]))
+        "a row of the last batch or of an earlier one named it")))
+
+
+(deftest both-candidates-are-read-from-the-store
+  (let [products {(str c ":1") {:source-id "1" :identifiers "[{\"type\":\"sku\",\"value\":\"100\",\"active\":true}]"}
+                  (str c ":2") {:source-id "2" :identifiers "[{\"type\":\"sku\",\"value\":\"100\",\"active\":true,\"role\":\"historical\"}]"}}
+        domains  (connections/encode-domains (take-while #(not= "stock-by-warehouse" %) all-domains))
+        request  (sync/fetch-request (assoc (item (run {:finished-domains domains}) {}
+                                                  [(fake/ok {:has_next false :products [{:sku 100 :product_id 1 :warehouse_id 77 :present 1}
+                                                                                        {:sku 100 :product_id 2 :warehouse_id 77 :present 2}]})])
+                                            :products (constantly products)))]
+    (is (= [["1" 1] ["2" 2]]
+           (map (juxt :product-source-id :present) (filter #(= "stock" (:kind %)) (get-in request [:input :observations])))))))
+
+
 (deftest buyer-data-in-a-batch
   (is (= :personal-data-present
          (rejection #(record {} {:domain       "fbs-postings"
@@ -1104,6 +1132,10 @@
           (send "one" ::sync/record-source-observations (one "R1"))
           (is (= :stale-position (rejection #(send "one-again" ::sync/record-source-observations (one "R1")))))
           (is (= [[14 3]] (stated "R1"))))
+        (testing "a finishing pass knows the listings its earlier rows named"
+          (let [named #(runtime/coeffect ::sync/named ctx (merge {:connection-id c :run-id "R1" :domain "stock-by-warehouse" :domain-finished true} %))]
+            (is (= #{p} (named {})))
+            (is (= #{} (named {:run-id "R2"}) (named {:domain-finished false}) (named {:domain "products"})))))
         (testing "the fetcher's lookup finds the recorded figures"
           (let [item (first (runtime/coeffect ::sync/runs-to-fetch {:bel/system system} {}))]
             (is (= [14] (map :present (vals ((:figures item) (:observations (one "R1")))))))))

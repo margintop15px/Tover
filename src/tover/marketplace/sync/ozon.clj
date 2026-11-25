@@ -398,15 +398,16 @@
 
 (defn warehouse-stock
   "A stocks-by-warehouse row of the `type` call, \"fbo\" or \"fbs\", for an `asked` SKU (a set), resolved to its
-  listing. `present` is the quantity, reserved units included. A row that cannot be attributed leaves the page
-  incomplete: without it an asked listing would read as 0."
-  {:malli/schema [:=> [:cat :string [:set :string] [:map-of :string :string] :map] :map]}
-  [type asked sku->product row]
-  (let [sku      (required (asked (stated-id (get row "sku"))))
-        product  (required (sku->product sku))
-        stated   (stated-id (get row "product_id"))
-        reserved (whole (get row "reserved"))]
-    (when (and stated (not= stated product)) (fail! :incomplete-page))
+  listing. The stated product picks among the listings the SKU is active on; without one the SKU has to name a
+  single listing. `present` is the quantity, reserved units included. A row that cannot be attributed leaves the
+  page incomplete: without it an asked listing would read as 0."
+  {:malli/schema [:=> [:cat :string [:set :string] [:map-of :string [:set :string]] :map] :map]}
+  [type asked sku->products row]
+  (let [sku        (required (asked (stated-id (get row "sku"))))
+        candidates (get sku->products sku #{})
+        stated     (stated-id (get row "product_id"))
+        product    (required (if stated (candidates stated) (when (= 1 (count candidates)) (first candidates))))
+        reserved   (whole (get row "reserved"))]
     (cond-> {:kind      "stock" :source "warehouse-stock" :product-source-id product :part sku
              :warehouse (required (named-warehouse type (get row "warehouse_id") (get row "warehouse_name")))
              :present   (required (whole (get row "present")))}
@@ -414,10 +415,10 @@
 
 
 (defn- agreeing
-  "The figures of a page, unless it states one SKU in one warehouse twice with different quantities."
+  "The figures of a page, unless it states one SKU of a listing in one warehouse twice with different quantities."
   {:malli/schema [:=> [:cat [:vector :map]] [:vector :map]]}
   [figures]
-  (if (apply distinct? nil (map (juxt :part (comp :id :warehouse))
+  (if (apply distinct? nil (map (juxt :product-source-id :part (comp :id :warehouse))
                                 (distinct (map #(update % :warehouse dissoc :name) figures))))
     figures
     (fail! :incomplete-page)))
@@ -586,7 +587,8 @@
    [:refetch-ids {:optional true} [:sequential :string]]
    [:skus {:optional true} [:fn fn?]]
    [:categories {:optional true} [:fn fn?]]
-   [:sku->product {:optional true} [:fn fn?]]])
+   [:sku->product {:optional true} [:fn fn?]]
+   [:sku->products {:optional true} [:fn fn?]]])
 
 
 (def Step
@@ -726,7 +728,7 @@
       (next-cursor! current (required next)))))
 
 
-(defmethod step "stock-by-warehouse" [_ env {:keys [skus sku->product]} {:keys [phase pending cursor]}]
+(defmethod step "stock-by-warehouse" [_ env {:keys [skus sku->products]} {:keys [phase pending cursor]}]
   (let [phase (or phase :fbo)
         pending (or pending (vec (distinct (skus))))
         {:keys [path sku-key type then]} (warehouse-stock-calls phase)
@@ -735,7 +737,7 @@
       (page [] {} true)
       (let [{:keys [body]} (request! env path {sku-key (vec batch) :limit 1000 :cursor (or cursor "")})
             asked          (set batch)
-            lookup         (sku->product)
+            lookup         (sku->products)
             rows           (agreeing (mapv #(warehouse-stock type asked lookup %) (required (items body ["products"]))))
             next           (further cursor (result body))]
         (page (with-fbo-warehouses rows (map :warehouse rows))
