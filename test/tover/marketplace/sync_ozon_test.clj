@@ -184,7 +184,7 @@
 
 
 (deftest supply-act-quantities-kept-apart
-  (let [order    {"order_id" 5 "state" "COMPLETED" "drop_off_warehouse" {"warehouse_id" 2}}
+  (let [order    {"order_id" 5 "state" "COMPLETED" "supplies" [{"storage_warehouse" {"warehouse_id" 2}}]}
         bundle   [{"sku" 100 "quantity" 5} {"sku" 200 "quantity" 3}]
         agreeing (ozon/supply order bundle [{"act_id" 77 "sku" 100 "declared_quantity" 5 "fact_quantity" 5 "approved_quantity" 5}
                                             {"act_id" 77 "sku" 200 "declared_quantity" 3 "fact_quantity" 3 "approved_quantity" 3}])
@@ -219,14 +219,122 @@
            (map (juxt :source-id #(mapv :quantity (:lines %))) (:observations detailed))))))
 
 
-(deftest received-return-is-complete
-  (let [r (ozon/fbo-fbs-return {"id"       9223372036854775807 "posting_number"                  "FBO-1"   "schema" "FBO"
-                                "visual"   {"status" {"sys_name" "ReceivedBySeller"}}
-                                "logistic" {"final_moment" "2026-07-27T10:00:00Z"}       "place" {"id" 98}
-                                "product"  {"sku" 987 "offer_id" "OFFER-1" "quantity" 1}})]
-    (is (:complete r))
-    (is (= "fbo-posting:FBO-1" (:related-operation r)))
-    (is (= "9223372036854775807" (:source-id r)))))
+(def window
+  {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}})
+
+
+(defn observe-detail
+  "Observations of one detail batch of `domain` whose every answer is `body`."
+  {:malli/schema [:=> [:cat :string :map] [:vector :map]]}
+  [domain body]
+  (:observations (ozon/step domain (:env (env (fn [_ _] (ok body)))) window {:started? true :pending ["1"]})))
+
+
+(defn warehouses
+  {:malli/schema [:=> [:cat [:sequential :map]] [:vector :any]]}
+  [observations]
+  (mapv (juxt :warehouse-type :source-id :name) (filter #(= "warehouse" (:kind %)) observations)))
+
+
+(defn observe-fbo-posting
+  {:malli/schema [:=> [:cat :map] [:vector :map]]}
+  [posting]
+  (observe-detail "fbo-postings" {:result (merge {:posting_number "F-1" :status "delivering" :products [{:sku 100 :quantity 1}]}
+                                                 posting)}))
+
+
+(deftest fbo-posting-names-a-new-warehouse
+  (let [observed (observe-fbo-posting {:analytics_data {:warehouse_id 77 :warehouse_name "Hub"}})]
+    (is (some #(= ["warehouse" "fbo" "77"] ((juxt :kind :warehouse-type :source-id) %)) observed))
+    (is (= {:type "fbo" :id "77" :name "Hub"} (:from-warehouse (first observed))))
+    (is (= [["fbo" "9223372036854775807" nil]]
+           (warehouses (observe-fbo-posting {:analytics_data {:warehouse_id 9223372036854775807}})))
+        "int64 kept exact")))
+
+
+(deftest absent-ids-are-no-warehouse
+  (doseq [id [nil "" " " 0 "0"]]
+    (is (nil? (ozon/warehouse-observation "fbo" id "Hub")))
+    (let [observed (observe-fbo-posting {:analytics_data {:warehouse_id id}})]
+      (is (= [] (warehouses observed)))
+      (is (nil? (:from-warehouse (first observed))))
+      (is (some #{"warehouse"} (:missing (first observed)))))
+    (is (= [] (:observations (ozon/step "warehouses" (:env (env [(ok {:warehouses [{:warehouse_id id :name "W"}]})])) {} {:phase :supply-origin}))))))
+
+
+(deftest stock-names-its-warehouse
+  (let [context {:skus (constantly ["100"]) :sku->product (constantly {"100" "9001"})}
+        step    #(:observations (ozon/step "stock-analytics" (:env (env [(ok {:items %})])) context {}))
+        row     {:sku 100 :warehouse_id 2 :warehouse_name "FBO 2" :available_stock_count 6}]
+    (is (= [{:kind "stock" :source "warehouse-analytics" :product-source-id "9001" :warehouse {:type "fbo" :id "2" :name "FBO 2"} :present 6}
+            {:kind "warehouse" :warehouse-type "fbo" :source-id "2" :name "FBO 2"}]
+           (step [row])))
+    (is (= [["fbo" "2" "FBO 2"]] (warehouses (step [row row]))) "once per batch")
+    (is (= [["fbo" "2" "FBO 2"]] (warehouses (step [(assoc row :sku 555)]))) "also when the listing is not resolved")
+    (is (= [] (step [(assoc row :warehouse_id 0)])) "a figure that names no warehouse is no per-warehouse figure")))
+
+
+(deftest supply-names-its-warehouses
+  (let [[operation & more] (observe-detail "supplies"
+                                           {:orders [{:order_id           "1" :state "DATA_FILLING"
+                                                      :drop_off_warehouse {:warehouse_id 5 :name "Drop-off"}
+                                                      :order_tags         {:seller_warehouse_id 1}
+                                                      :supplies           [{:storage_warehouse {:warehouse_id 2 :name "FBO 2"}}]}]
+                                            :items  []})]
+    (is (= [{:type "supply-origin" :id "1"} {:type "fbo" :id "2" :name "FBO 2"}]
+           ((juxt :from-warehouse :to-warehouse) operation)))
+    (is (= [["fbo" "2" "FBO 2"]] (warehouses more)) "supply origins come from the seller's list; a drop-off point is no storage")))
+
+
+(deftest seller-lists-decide-the-type
+  (let [{:keys [env]} (env [(ok {:warehouses [{:warehouse_id 1 :name "A"} {:warehouse_id 3 :name "B" :is_rfbs true}] :has_next false})
+                            (ok {:warehouses [{:warehouse_id 1 :name "A"}]})])
+        listed        (ozon/step "warehouses" env {} {})
+        origins       (ozon/step "warehouses" env {} (:state listed))]
+    (is (= [["fbs" "1" "A"] ["rfbs" "3" "B"]] (warehouses (:observations listed))))
+    (is (= [["supply-origin" "1" "A"]] (warehouses (:observations origins))))))
+
+
+(defn observe-return
+  {:malli/schema [:=> [:cat :map] [:vector :map]]}
+  [row]
+  (let [row (merge {:id       9223372036854775807 :posting_number "FBO-1"
+                    :visual   {:status {:sys_name "ReceivedBySeller"}}
+                    :logistic {:final_moment "2026-07-27T10:00:00Z"}
+                    :product  {:sku 987 :offer_id "OFFER-1" :quantity 1}}
+                   row)]
+    (:observations (ozon/step "returns" (:env (env [(ok {:returns [row] :has_next false})])) window {}))))
+
+
+(defn names-no-place
+  "The return is the only observation, names no warehouse and waits for the receiving one."
+  {:malli/schema [:=> [:cat [:vector :map]] :any]}
+  [observed]
+  (let [[r & more] observed]
+    (is (nil? more))
+    (is (false? (:complete r)))
+    (is (= ["receiving warehouse"] (:missing r)))
+    (is (= [nil nil [nil]] ((juxt :from-warehouse :to-warehouse #(mapv :warehouse (:lines %))) r)))))
+
+
+(deftest fbo-return-received-by-ozon
+  (let [observed (observe-return {:schema "FBO" :place {:id 88} :target_place {:id 89}})]
+    (names-no-place observed)
+    (is (= ["fbo-posting:FBO-1" "9223372036854775807"] ((juxt :related-operation :source-id) (first observed))))))
+
+
+(deftest fbs-return-at-a-pickup-point
+  (names-no-place (observe-return {:schema "FBS" :place {:id 9}})))
+
+
+(deftest pickup-point-is-not-a-warehouse
+  (is (= ["operation"] (map :kind (observe-return {:schema "FBS" :place {:id 9}})))))
+
+
+(deftest rfbs-return-warehouse-is-not-proven
+  (let [observed (observe-detail "rfbs-returns" {:returns {:return_id "R1" :warehouse_id 4 :product {:sku 100}}})]
+    (is (= [] (warehouses observed)))
+    (is (= [nil ["actual time" "line quantity" "receiving warehouse"]] ((juxt :to-warehouse :missing) (first observed))))))
 
 
 (deftest stocks-missing-is-incomplete-empty-is-zero

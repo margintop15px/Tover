@@ -28,6 +28,15 @@
   [:enum "fbs-posting" "fbo-posting" "return" "rfbs-return" "supply" "removal"])
 
 
+(def WarehouseType
+  [:enum "fbo" "fbs" "rfbs" "supply-origin"])
+
+
+(def Warehouse
+  "The warehouse a fact names. The type comes from which fact names it, never from a name."
+  [:map [:type WarehouseType] [:id :string] [:name {:optional true} :string]])
+
+
 (def ValueType
   [:enum "string" "integer" "decimal" "boolean" "date" "dictionary" "unknown"])
 
@@ -52,7 +61,7 @@
    [:approved-quantity {:optional true} :string]
    [:act-id {:optional true} :string]
    [:unit {:optional true} :string]
-   [:warehouse {:optional true} :string]
+   [:warehouse {:optional true} Warehouse]
    [:duplicate {:optional true} :boolean]
    ;; Declared so that a batch still carrying buyer data is refused instead of silently stripped.
    [:buyer {:optional true} :any] [:customer {:optional true} :any] [:addressee {:optional true} :any]
@@ -71,10 +80,11 @@
    [:category {:optional true} [:maybe :string]]
    [:archived {:optional true} :boolean]
    [:provider-updated-at {:optional true} [:maybe :string]]
+   [:warehouse-type {:optional true} WarehouseType]
    [:fulfilment-type {:optional true} [:maybe :string]]
    [:source {:optional true} :string]
    [:product-source-id {:optional true} :string]
-   [:warehouse-source-id {:optional true} :string]
+   [:warehouse {:optional true} Warehouse]
    [:present {:optional true} :int]
    [:reserved {:optional true} :int]
    [:provider-as-of {:optional true} :string]
@@ -86,8 +96,8 @@
    [:related-operation {:optional true} :string]
    [:refetch-key {:optional true} :string]
    [:lines {:optional true} [:vector Line]]
-   [:from-warehouse {:optional true} :string]
-   [:to-warehouse {:optional true} :string]
+   [:from-warehouse {:optional true} Warehouse]
+   [:to-warehouse {:optional true} Warehouse]
    [:complete {:optional true} :boolean]
    [:missing {:optional true} [:vector :string]]
    [:category-id {:optional true} :string]
@@ -118,13 +128,49 @@
     (apply str (map #(format "%02x" (bit-and % 0xff)) digest))))
 
 
+(defn warehouse-id
+  "External warehouse identity: the same provider id under two types is two warehouses."
+  {:malli/schema [:=> [:cat :string :string :string] :string]}
+  [connection-id type source-id]
+  (str connection-id ":" type ":" source-id))
+
+
+(defn warehouses
+  "Every warehouse an observation names, its lines included."
+  {:malli/schema [:=> [:cat :map] [:sequential Warehouse]]}
+  [{:keys [from-warehouse to-warehouse warehouse lines]}]
+  (filter some? (concat [from-warehouse to-warehouse warehouse] (map :warehouse lines))))
+
+
+(defn candidate-warehouse-ids
+  "Ids a named warehouse may be stored under. An FBS posting also names rFBS warehouses; only the seller's
+  warehouse list tells them apart."
+  {:malli/schema [:=> [:cat :string Warehouse] [:vector :string]]}
+  [connection-id {:keys [type id]}]
+  (cond-> [(warehouse-id connection-id type id)]
+    (= "fbs" type) (conj (warehouse-id connection-id "rfbs" id))))
+
+
+(defn- with-warehouse-ids
+  "The observation with warehouse ids in place of the warehouses it names; their names are not its facts."
+  {:malli/schema [:=> [:cat :map :string :map] :map]}
+  [rows connection-id observation]
+  (letfn [(id [warehouse]
+            (let [ids (candidate-warehouse-ids connection-id warehouse)]
+              (or (some #(when (contains? rows %) %) ids) (first ids))))
+          (named [m ks]
+            (reduce #(cond-> %1 (get %1 %2) (update %2 id)) m ks))]
+    (cond-> (named observation [:from-warehouse :to-warehouse :warehouse])
+      (:lines observation) (update :lines (partial mapv #(named % [:warehouse]))))))
+
+
 (defn entity-id
   "Source identity within the connection; names and articles are never identity."
   {:malli/schema [:=> [:cat :string :map] :string]}
-  [connection-id {:keys [kind source-id operation-kind category-id type-id attribute-id product-source-id]}]
+  [connection-id {:keys [kind source-id warehouse-type operation-kind category-id type-id attribute-id product-source-id]}]
   (case kind
     ("product" "product-aliases" "product-attributes") (str connection-id ":" source-id)
-    "warehouse" (str connection-id ":" source-id)
+    "warehouse" (warehouse-id connection-id warehouse-type source-id)
     "operation" (str connection-id ":" operation-kind ":" source-id)
     "attribute-definition" (str connection-id ":" category-id ":" type-id ":" attribute-id)
     "stock" (str connection-id ":" product-source-id)))
@@ -172,21 +218,25 @@
   "One observation against the current rows: [events rows new?]. An unchanged hash only moves last observed."
   {:malli/schema [:=> [:cat :map :map :string :string :string] [:tuple [:vector :map] :map [:maybe :string]]]}
   [rows observation connection-id now adapter]
-  (let [kind (:kind observation)
-        id   (entity-id connection-id observation)
-        row  (get rows id)]
+  (let [kind        (:kind observation)
+        id          (entity-id connection-id observation)
+        row         (get rows id)
+        observation (cond-> (with-warehouse-ids rows connection-id observation)
+                      ;; An FBO fact that names no name keeps the one another fact stated.
+                      (and (= "fbo" (:warehouse-type observation)) (nil? (:name observation)) (:name row))
+                      (assoc :name (:name row)))]
     (case kind
       "stock"
       (if-not row
         ;; ponytail: a figure for a listing not observed yet is skipped; products are fetched before stock.
         [[] rows nil]
-        (let [{:keys [source fulfilment-type warehouse-source-id]} observation
-              stock-id (str id ":" source ":" (or (some->> warehouse-source-id (str "w")) fulfilment-type))]
+        (let [{:keys [source fulfilment-type warehouse]} observation
+              stock-id (str id ":" source ":" (or warehouse fulfilment-type))]
           [[{:type ::sync/source-stock-observed
              :data (cond-> {:stock-id stock-id               :connection-id connection-id :external-product-id id :source source
                             :present  (:present observation) :observed-at   now}
                      fulfilment-type (assoc :fulfilment-type fulfilment-type)
-                     warehouse-source-id (assoc :external-warehouse-id (str connection-id ":" warehouse-source-id))
+                     warehouse (assoc :external-warehouse-id warehouse)
                      (:reserved observation) (assoc :reserved (:reserved observation))
                      (:provider-as-of observation) (assoc :provider-as-of (:provider-as-of observation)))}]
            rows nil]))
@@ -215,17 +265,14 @@
                 data   (merge common
                               {:facts (write-json (canonical facts))}
                               (case kind
-                                "warehouse" (cond-> {:fulfilment-type (:fulfilment-type observation) :active true}
+                                "warehouse" (cond-> {:warehouse-type (:warehouse-type observation) :active true}
                                               (:name observation) (assoc :name (:name observation)))
                                 "operation" (cond-> (select-keys observation [:status :terminal :complete :occurred-at :planned-at
                                                                               :provider-updated-at :from-warehouse :to-warehouse])
                                               true (assoc :kind (:operation-kind observation)
-                                                          :lines (write-json (mapv #(cond-> % (:warehouse %) (update :warehouse (fn [w] (str connection-id ":" w))))
-                                                                                   (:lines observation))))
+                                                          :lines (write-json (vec (:lines observation))))
                                               (:related-operation observation) (assoc :related-operation (str connection-id ":" (:related-operation observation)))
-                                              (seq (:missing observation)) (assoc :missing (write-json (:missing observation)))
-                                              (:from-warehouse observation) (update :from-warehouse #(str connection-id ":" %))
-                                              (:to-warehouse observation) (update :to-warehouse #(str connection-id ":" %)))
+                                              (seq (:missing observation)) (assoc :missing (write-json (:missing observation))))
                                 "attribute-definition" (select-keys observation [:category-id :type-id :attribute-id :name :value-type
                                                                                  :multiple :complex :unit :dictionary-id])))]
             [[{:type event :data data}] (assoc rows id data) (when-not row kind)]))))))
@@ -266,7 +313,8 @@
   "Board decision: after a full pass of products, SKU aliases or warehouses that finished without errors, the
   bindings that pass did not see become inactive. `rows` are the connection's rows after the pass's last batch;
   seen means observed at or after the run started. A partial or failed pass never reaches here: its domain
-  does not finish in the run, and positions restart with each run."
+  does not finish in the run, and positions restart with each run.
+  No list states FBO warehouses, so they never expire."
   {:malli/schema [:=> [:cat :string [:map-of :string :map] :string] [:vector :map]]}
   [domain rows started-at]
   (let [start   (connections/at started-at)
@@ -276,7 +324,7 @@
       (case domain
         "warehouses"
         (for [[id row] (sort rows)
-              :when    (and (not (false? (:active row))) (unseen? (:last-observed-at row)))]
+              :when    (and (not= "fbo" (:warehouse-type row)) (not (false? (:active row))) (unseen? (:last-observed-at row)))]
           {:type ::sync/external-warehouse-expired :data {:external-warehouse-id id :active false}})
 
         ("products" "sku-aliases")

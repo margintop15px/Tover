@@ -147,7 +147,7 @@
 
 (def ExternalWarehouse
   (into [:map [:external-warehouse-id [:string {:min 1 :max 600}]]]
-        (concat Observed [[:name {:optional true} [:string {:max 2000}]] [:fulfilment-type [:enum "fbo" "fbs" "rfbs"]]
+        (concat Observed [[:name {:optional true} [:string {:max 2000}]] [:warehouse-type observations/WarehouseType]
                           [:active {:optional true} :boolean]])))
 
 
@@ -281,7 +281,7 @@
 
 (defmodel external-warehouses
   {:id     :external-warehouse-id :store :catalogue :schema ExternalWarehouse :policy ::records/workspace-member
-   :events {::external-warehouse-observed {:set (into observed-fields [:name :fulfilment-type :active])}
+   :events {::external-warehouse-observed {:set (into observed-fields [:name :warehouse-type :active])}
             ::external-warehouse-seen     {:set [:last-observed-at :active]}
             ::external-warehouse-expired  {:set [:active]}}})
 
@@ -502,7 +502,12 @@
 (defn- group-by-model
   {:malli/schema [:=> [:cat :string [:sequential :map]] [:map-of :qualified-keyword [:vector :string]]]}
   [connection-id observations]
-  (reduce (fn [acc o] (update acc (first (entity-models (:kind o))) (fnil conj []) (observations/entity-id connection-id o)))
+  (reduce (fn [acc o]
+            (-> acc
+                (update (first (entity-models (:kind o))) (fnil conj []) (observations/entity-id connection-id o))
+                ;; The warehouses it names, to tell FBS from rFBS.
+                (update ::external-warehouses (fnil into [])
+                        (mapcat #(observations/candidate-warehouse-ids connection-id %)) (observations/warehouses o))))
           {} observations))
 
 

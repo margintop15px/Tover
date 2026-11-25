@@ -16,6 +16,7 @@
     [tover.marketplace.connector :as connector]
     [tover.marketplace.sync-ozon-test :as fake]
     [tover.marketplace.sync.model :as sync]
+    [tover.marketplace.sync.observations :as observations]
     [tover.support :as support])
   (:import
     [java.time Instant]
@@ -429,6 +430,69 @@
            (keep #(when (= ::sync/external-warehouse-expired (:type %)) (:data %)) (:events plan))))))
 
 
+(defn warehouse
+  {:malli/schema [:=> [:cat :string :string [:maybe :string]] :map]}
+  [type id name]
+  {:kind "warehouse" :warehouse-type type :source-id id :name name})
+
+
+(deftest same-id-two-types-are-two-warehouses
+  (is (= ["c:fbs:1" "c:supply-origin:1"] (map #(observations/warehouse-id "c" % "1") ["fbs" "supply-origin"])))
+  (let [plan (record {} {:domain "warehouses" :observations [(warehouse "fbs" "1" "A") (warehouse "supply-origin" "1" "A")]})]
+    (is (= [[(str c ":fbs:1") "fbs" "1"] [(str c ":supply-origin:1") "supply-origin" "1"]]
+           (keep #(when (= ::sync/external-warehouse-observed (:type %))
+                    ((juxt :external-warehouse-id :warehouse-type :source-id) (:data %)))
+                 (:events plan))))
+    (is (= 2 (:found-warehouses (event plan ::sync/source-batch-recorded))))))
+
+
+(deftest fbo-warehouses-never-expire
+  (let [row  #(assoc (event (record {} {:observations [(warehouse % "1" "W")]}) ::sync/external-warehouse-observed)
+                     :last-observed-at "2026-12-01T06:00:00Z")
+        rows (into {} (map (juxt :external-warehouse-id identity)) (map row ["fbo" "fbs" "rfbs" "supply-origin"]))
+        plan (record {:pass-rows rows} {:domain "warehouses" :domain-finished true})]
+    (is (= (mapv #(str c ":" %) ["fbs:1" "rfbs:1" "supply-origin:1"])
+           (keep #(when (= ::sync/external-warehouse-expired (:type %)) (:external-warehouse-id (:data %))) (:events plan)))
+        "a full pass that does not state the FBO warehouse leaves it active")))
+
+
+(deftest unnamed-fbo-fact-keeps-the-known-name
+  (let [named (event (record {} {:observations [(warehouse "fbo" "77" "Hub")]}) ::sync/external-warehouse-observed)
+        plan  (record {:existing {(str c ":fbo:77") named}} {:observations [(warehouse "fbo" "77" nil)]})]
+    (is (= [::sync/external-warehouse-seen ::sync/source-batch-recorded] (events plan)) "a blank states no new name")))
+
+
+(deftest fbo-posting-handed-over
+  (let [hub     {:type "fbo" :id "77" :name "Hub"}
+        posting {:kind           "operation" :operation-kind "fbo-posting" :source-id "P" :status "delivering" :terminal false :complete false
+                 :from-warehouse hub
+                 :lines          [{:line-key "1" :identifiers [{:type "sku" :value "100"}] :quantity "1" :warehouse hub}]}
+        plan    (record {} {:domain "fbo-postings" :observations [posting (warehouse "fbo" "77" "Hub")]})
+        data    (event plan ::sync/source-operation-observed)
+        found   (event plan ::sync/external-warehouse-observed)
+        id      (str c ":fbo:77")]
+    (is (= id (:external-warehouse-id found)) "observed if new")
+    (is (= [id [id]] [(:from-warehouse data) (map :warehouse (json/read-json (:lines data) :key-fn keyword))]))
+    (is (= [::sync/source-operation-seen ::sync/external-warehouse-seen ::sync/source-batch-recorded]
+           (events (record {:existing {(:source-operation-id data) data id found}}
+                           {:domain       "fbo-postings"
+                            :observations [(assoc-in posting [:from-warehouse :name] "Hub 2") (warehouse "fbo" "77" "Hub")]})))
+        "a warehouse's name is no part of the operation")))
+
+
+(deftest rfbs-posting-names-the-listed-warehouse
+  (let [posting {:kind           "operation"           :operation-kind "fbs-posting" :source-id "P" :status "x" :terminal false :complete false :lines []
+                 :from-warehouse {:type "fbs" :id "3"}}
+        from    (fn [& ids]
+                  (:from-warehouse (event (record {:existing (zipmap ids (repeat {}))} {:observations [posting]})
+                                          ::sync/source-operation-observed)))
+        fbs     (str c ":fbs:3")
+        rfbs    (str c ":rfbs:3")]
+    (is (= fbs (from)))
+    (is (= rfbs (from rfbs)) "the seller's list names warehouse 3 as rFBS")
+    (is (= fbs (from rfbs fbs)))))
+
+
 (deftest same-barcode-under-two-connections
   (let [one (event (record {} {:observations [(product "A-1")]}) ::sync/external-product-observed)
         two (event (record {:run (run {:connection-id "c2"})} {:observations [(product "A-1")]}) ::sync/external-product-observed)]
@@ -444,8 +508,8 @@
   (let [plan   (record {:existing {p {:external-product-id p}}}
                        {:domain       "stock-totals"
                         :observations [{:kind "stock" :source "fulfilment-totals" :product-source-id "9001" :fulfilment-type "fbo" :present 10}
-                                       {:kind "stock" :source "warehouse-analytics" :product-source-id "9001" :warehouse-source-id "1" :present 6}
-                                       {:kind "stock" :source "warehouse-analytics" :product-source-id "9001" :warehouse-source-id "2" :present 4}]})
+                                       {:kind "stock" :source "warehouse-analytics" :product-source-id "9001" :warehouse {:type "fbo" :id "1"} :present 6}
+                                       {:kind "stock" :source "warehouse-analytics" :product-source-id "9001" :warehouse {:type "fbo" :id "2"} :present 4}]})
         stocks (filter #(= ::sync/source-stock-observed (:type %)) (:events plan))]
     (is (= [10 6 4] (map (comp :present :data) stocks)) "no figure of 20 is derived")
     (is (= 3 (count (distinct (map (comp :stock-id :data) stocks)))))))
@@ -727,7 +791,7 @@
           (let [status (read)]
             (is (nil? (:current-run status)))
             (is (= "completed" (:last-outcome status)))
-            (is (= {:listings 1 :warehouses 2 :operations 1} (:found-counts status)))
+            (is (= {:listings 1 :warehouses 3 :operations 1} (:found-counts status)))
             (is (every? :covered-until (:covered-until status)) "every domain covered until the run start")
             (is (some? (:next-sync-at status)))))
 
@@ -738,6 +802,18 @@
             (is (= [3 "Tee"] ((juxt :revision :name) product)) "aliases and attributes each added a revision")
             (is (some #(= {:type "barcode" :value "4600000000017"} (select-keys % [:type :value]))
                       (json/read-json (:identifiers product) :key-fn keyword)))))
+
+        (testing "one row per warehouse identity"
+          (let [rows    (records/all-records (assoc ctx :scope scope) ::sync/external-warehouses :external-warehouse-id)
+                posts   (records/all-records (assoc ctx :scope scope) ::sync/source-operations :source-operation-id)
+                posting {:kind           "operation"           :operation-kind "fbs-posting" :source-id "X"
+                         :from-warehouse {:type "fbs" :id "1"}}]
+            (is (= [["fbo:2" "fbo" nil true] ["fbs:1" "fbs" "FBS 1" true] ["supply-origin:2" "supply-origin" "FBO" true]]
+                   (sort-by first (map (juxt #(subs (:external-warehouse-id %) (inc (count c))) :warehouse-type :name :active) rows))))
+            (is (= [(str c ":fbs:1")] (map :from-warehouse posts)))
+            (is (contains? (runtime/coeffect ::sync/existing (assoc ctx :scope scope) {:connection-id c :observations [posting]})
+                           (str c ":fbs:1"))
+                "a posting's warehouse is loaded to tell FBS from rFBS")))
 
         (testing "history shows the connector principal as Ozon · account"
           (is (= "Ozon · 123" (:actor-label (first (actors/enrich ctx [{:actor (str "connector:" c)}]))))))))))

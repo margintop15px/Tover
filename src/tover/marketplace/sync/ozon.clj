@@ -15,7 +15,8 @@
   accept the documented root or `result` wrapper and treat a missing required field as an incomplete page."
   (:require
     [charred.api :as json]
-    [clojure.string :as str])
+    [clojure.string :as str]
+    [tover.marketplace.sync.observations :as observations])
   (:import
     [java.io IOException]
     [java.net.http HttpTimeoutException]
@@ -162,8 +163,8 @@
     (when-not (str/blank? s) s)))
 
 
-(defn- sku
-  "SKU \"0\" means not available."
+(defn- stated-id
+  "An id as exact text; blank and 0 mean not available."
   {:malli/schema [:=> [:cat :any] [:maybe :string]]}
   [value]
   (let [s (text value)] (when-not (= "0" s) s)))
@@ -229,7 +230,7 @@
   "`/v3/product/info/list` item: identity, name, typed identifiers, category, archived flag."
   {:malli/schema [:=> [:cat :map] :map]}
   [item]
-  (let [main (sku (get item "sku"))]
+  (let [main (stated-id (get item "sku"))]
     {:kind                "product"
      :source-id           (required (text (get item "id")))
      :name                (text (get item "name"))
@@ -238,7 +239,7 @@
                                               (identifier "article" (text (get item "offer_id")))
                                               (identifier "sku" main "primary")]
                                              (for [source (get item "sources")
-                                                   :let   [s (sku (get source "sku"))]]
+                                                   :let   [s (stated-id (get source "sku"))]]
                                        ;; A source SKU other than the current one was observed earlier.
                                                (identifier "sku" s (if (= s main) "source" "historical")))
                                              (for [barcode (concat (get item "barcodes") [(get item "barcode")])]
@@ -295,13 +296,42 @@
   (#{"fbo" "fbs" "rfbs"} (some-> (text value) str/lower-case)))
 
 
-(defn warehouse
-  {:malli/schema [:=> [:cat :map :string] :map]}
-  [row default-type]
-  {:kind            "warehouse"
-   :source-id       (required (text (or (get row "warehouse_id") (get row "id"))))
-   :name            (text (get row "name"))
-   :fulfilment-type (if (get row "is_rfbs") "rfbs" default-type)})
+(defn warehouse-observation
+  "One external warehouse; nil when the id is absent."
+  {:malli/schema [:=> [:cat :string :any :any] [:maybe observations/Observation]]}
+  [type id name]
+  (when-let [id (stated-id id)]
+    {:kind "warehouse" :warehouse-type type :source-id id :name (text name)}))
+
+
+(defn- named-warehouse
+  "The warehouse a fact names; nil when the id is absent."
+  {:malli/schema [:=> [:cat :string :any :any] [:maybe observations/Warehouse]]}
+  [type id name]
+  (when-let [id (stated-id id)]
+    (cond-> {:type type :id id} (text name) (assoc :name (text name)))))
+
+
+(defn- with-fbo-warehouses
+  "Observations followed by the FBO warehouses `named` by them, each once. No list states these."
+  {:malli/schema [:=> [:cat [:sequential :map] [:sequential observations/Warehouse]] [:vector :map]]}
+  [observed named]
+  (into (vec observed)
+        (comp (filter #(= "fbo" (:type %))) (map #(warehouse-observation "fbo" (:id %) (:name %))) (distinct))
+        named))
+
+
+(defn- with-named-fbo
+  {:malli/schema [:=> [:cat [:sequential :map]] [:vector :map]]}
+  [operations]
+  (with-fbo-warehouses operations (mapcat observations/warehouses operations)))
+
+
+(defn- listed-warehouse
+  "A row of one of the seller's warehouse lists."
+  {:malli/schema [:=> [:cat :map :string] [:maybe :map]]}
+  [row type]
+  (warehouse-observation type (or (stated-id (get row "warehouse_id")) (get row "id")) (get row "name")))
 
 
 (defn stock-totals
@@ -318,14 +348,23 @@
              (whole (get s "reserved")) (assoc :reserved (whole (get s "reserved"))))))))
 
 
+(defn- analytics-warehouse
+  {:malli/schema [:=> [:cat :map] [:maybe observations/Warehouse]]}
+  [row]
+  (named-warehouse "fbo" (get row "warehouse_id") (get row "warehouse_name")))
+
+
 (defn stock-analytics
-  "`/v1/analytics/stocks` row, resolved to a listing by SKU within the connection; nil when unresolved."
+  "`/v1/analytics/stocks` row, resolved to a listing by SKU within the connection; nil when unresolved or when
+  it names no warehouse."
   {:malli/schema [:=> [:cat :map [:map-of :string :string]] [:maybe :map]]}
   [row sku->product]
-  (when-let [product (get sku->product (sku (get row "sku")))]
-    {:kind                "stock" :source "warehouse-analytics" :product-source-id product
-     :warehouse-source-id (required (text (get row "warehouse_id")))
-     :present             (required (whole (get row "available_stock_count")))}))
+  (let [product   (get sku->product (stated-id (get row "sku")))
+        warehouse (analytics-warehouse row)]
+    (when (and product warehouse)
+      {:kind      "stock" :source "warehouse-analytics" :product-source-id product
+       :warehouse warehouse
+       :present   (required (whole (get row "available_stock_count")))})))
 
 
 (def ^:private terminal-statuses
@@ -341,11 +380,11 @@
 
 (defn- lines
   "Every product line, never collapsed; lines with the same identifiers are flagged."
-  {:malli/schema [:=> [:cat [:maybe [:sequential :map]] [:maybe :string]] [:vector :map]]}
+  {:malli/schema [:=> [:cat [:maybe [:sequential :map]] [:maybe observations/Warehouse]] [:vector :map]]}
   [products warehouse]
   (let [rows   (vec (for [[i p] (map-indexed vector products)]
                       (cond-> {:line-key    (str (inc i))
-                               :identifiers (vec (keep identity [(identifier "sku" (sku (get p "sku")))
+                               :identifiers (vec (keep identity [(identifier "sku" (stated-id (get p "sku")))
                                                                  (identifier "article" (text (get p "offer_id")))
                                                                  (identifier "product-id" (text (get p "product_id")))]))}
                         (text (get p "quantity")) (assoc :quantity (text (get p "quantity")))
@@ -357,10 +396,11 @@
 (defn- operation
   "Common completeness: the actual time, every line with a quantity and the warehouse."
   {:malli/schema [:=> [:cat :map [:vector :string]] :map]}
-  [{:keys [occurred-at lines from-warehouse to-warehouse] :as op} unconfirmed]
+  [{:keys [operation-kind occurred-at lines from-warehouse to-warehouse] :as op} unconfirmed]
   (let [missing (vec (concat (when-not occurred-at ["actual time"])
                              (when (or (empty? lines) (some #(nil? (:quantity %)) lines)) ["line quantity"])
-                             (when-not (or from-warehouse to-warehouse (every? :warehouse lines)) ["warehouse"])
+                             (when-not (or from-warehouse to-warehouse (every? :warehouse lines))
+                               [(if (#{"return" "rfbs-return"} operation-kind) "receiving warehouse" "warehouse")])
                              unconfirmed))
         missing (vec (distinct missing))]
     (cond-> (assoc op :kind "operation" :terminal (terminal? (:status op)) :complete (empty? missing))
@@ -371,7 +411,7 @@
   "`/v3/posting/fbs/get` result. `delivering_date` is the handover time; `shipment_date` is only planned."
   {:malli/schema [:=> [:cat :map] :map]}
   [posting]
-  (let [warehouse (text (get-in posting ["delivery_method" "warehouse_id"]))]
+  (let [warehouse (named-warehouse "fbs" (get-in posting ["delivery_method" "warehouse_id"]) nil)]
     (operation (cond-> {:operation-kind "fbs-posting" :source-id (required (text (get posting "posting_number")))
                         :status         (or (text (get posting "status")) "unknown")
                         :lines          (lines (get posting "products") nil)}
@@ -385,7 +425,8 @@
   "`/v2/posting/fbo/get` result. FBO dispatch time is unconfirmed (board decision), so it stays incomplete."
   {:malli/schema [:=> [:cat :map] :map]}
   [posting]
-  (let [warehouse (text (get-in posting ["analytics_data" "warehouse_id"]))]
+  (let [{:strs [warehouse_id warehouse_name]} (get posting "analytics_data")
+        warehouse (named-warehouse "fbo" warehouse_id warehouse_name)]
     (operation (cond-> {:operation-kind "fbo-posting" :source-id (required (text (get posting "posting_number")))
                         :status         (or (text (get posting "status")) "unknown")
                         :lines          (lines (get posting "products") nil)}
@@ -394,33 +435,31 @@
 
 
 (defn fbo-fbs-return
-  "`/v1/returns/list` row: receipt needs the received state, final moment, quantity and receiving place."
+  "`/v1/returns/list` row: the place (pickup point, returns centre or blank) is never a
+  warehouse, so the receiving warehouse is always missing."
   {:malli/schema [:=> [:cat :map] :map]}
   [row]
   (let [status   (or (text (get-in row ["visual" "status" "sys_name"])) "unknown")
-        place    (text (or (get-in row ["place" "id"]) (get-in row ["target_place" "id"])))
         received (= "receivedbyseller" (str/lower-case status))
         moment   (when received (instant (get-in row ["logistic" "final_moment"])))
         posting  (text (get row "posting_number"))
         kind     (if (= "fbo" (some-> (text (get row "schema")) str/lower-case)) "fbo-posting" "fbs-posting")]
     (operation (cond-> {:operation-kind "return" :source-id (required (text (get row "id"))) :status status
-                        :lines          (lines [(get row "product")] place)}
+                        :lines          (lines [(get row "product")] nil)}
                  moment (assoc :occurred-at moment)
-                 place (assoc :to-warehouse place)
                  posting (assoc :related-operation (str kind ":" posting) :refetch-key posting))
                [])))
 
 
 (defn rfbs-return
-  "`/v2/returns/rfbs/get` return: receipt time and quantity are unconfirmed (board decision)."
+  "`/v2/returns/rfbs/get` return: receipt time and quantity are unconfirmed (board decision) and its warehouse is
+  not proven as receiving."
   {:malli/schema [:=> [:cat :map] :map]}
   [ret]
-  (let [warehouse (text (get ret "warehouse_id"))
-        posting   (text (get ret "posting_number"))]
+  (let [posting (text (get ret "posting_number"))]
     (operation (cond-> {:operation-kind "rfbs-return" :source-id (required (text (or (get ret "return_id") (get ret "id"))))
                         :status         (or (text (get-in ret ["state" "state"])) (text (get ret "state")) "unknown")
-                        :lines          (mapv #(dissoc % :quantity) (lines [(get ret "product")] warehouse))}
-                 warehouse (assoc :to-warehouse warehouse)
+                        :lines          (mapv #(dissoc % :quantity) (lines [(get ret "product")] nil))}
                  posting (assoc :related-operation (str "fbs-posting:" posting)))
                ["actual time" "line quantity"])))
 
@@ -448,19 +487,23 @@
                   [:=> [:cat :map [:sequential :map] [:sequential :map]] :map]]}
   ([order bundle-items] (supply order bundle-items []))
   ([order bundle-items act-items]
-   (let [to       (text (or (get-in order ["drop_off_warehouse" "warehouse_id"])
-                            (get-in order ["supplies" 0 "storage_warehouse_id"])))
-         by-sku   (group-by #(sku (get % "sku")) act-items)
-         planned  (lines bundle-items to)
-         line-sku #(some (fn [{:keys [type value]}] (when (= "sku" type) value)) (:identifiers %))
-         extra    (remove #(contains? (set (keep line-sku planned)) (sku (get % "sku"))) act-items)
-         rows     (concat (map #(act-line % (first (by-sku (line-sku %)))) planned)
-                          (map #(act-line (first (lines [%] to)) %) extra))
-         rows     (vec (map-indexed #(assoc %2 :line-key (str (inc %1))) rows))
-         agreed?  (and (seq rows) (every? :quantity rows))]
+   (let [from         (named-warehouse "supply-origin" (get-in order ["order_tags" "seller_warehouse_id"]) nil)
+         first-supply (first (get order "supplies"))
+         storage      (get first-supply "storage_warehouse")
+         to           (named-warehouse "fbo" (or (stated-id (get storage "warehouse_id")) (get first-supply "storage_warehouse_id"))
+                                       (get storage "name"))
+         by-sku       (group-by #(stated-id (get % "sku")) act-items)
+         planned      (lines bundle-items to)
+         line-sku     #(some (fn [{:keys [type value]}] (when (= "sku" type) value)) (:identifiers %))
+         extra        (remove #(contains? (set (keep line-sku planned)) (stated-id (get % "sku"))) act-items)
+         rows         (concat (map #(act-line % (first (by-sku (line-sku %)))) planned)
+                              (map #(act-line (first (lines [%] to)) %) extra))
+         rows         (vec (map-indexed #(assoc %2 :line-key (str (inc %1))) rows))
+         agreed?      (and (seq rows) (every? :quantity rows))]
      (operation (cond-> {:operation-kind "supply" :source-id (required (text (or (get order "order_id") (get order "id"))))
                          :status         (or (text (get order "state")) "unknown")
                          :lines          rows}
+                  from (assoc :from-warehouse from)
                   to (assoc :to-warehouse to))
                 (cond-> ["actual time"] (not agreed?) (conj "accepted quantity"))))))
 
@@ -474,7 +517,7 @@
                 :status         (if (or (text (get row "given_out_date")) (text (get row "utilization_date")))
                                   "completed"
                                   (or (text (get row "return_state")) (text (get row "state")) "requested"))
-                :lines          [{:line-key "1" :identifiers (vec (keep identity [(identifier "sku" (sku (get row "sku")))]))}]}
+                :lines          [{:line-key "1" :identifiers (vec (keep identity [(identifier "sku" (stated-id (get row "sku")))]))}]}
                ["actual time" "handed-over quantity"])))
 
 
@@ -520,15 +563,16 @@
 (defn- seller-warehouses
   {:malli/schema [:=> [:cat :map :map] Step]}
   [env {:keys [cursor phase] :as state}]
-  (if (= :fbo phase)
+  (if (= :supply-origin phase)
     (let [{:keys [body]} (request! env "/v1/warehouse/fbo/seller/list" {})
           rows           (required (items body ["warehouses" "result"]))]
-      (page (mapv #(warehouse % "fbo") rows) state true))
+      (page (vec (keep #(listed-warehouse % "supply-origin") rows)) state true))
     (let [{:keys [body]} (request! env "/v2/warehouse/list" (cond-> {:limit 200} cursor (assoc :cursor cursor)))
           rows           (required (items body ["warehouses"]))
           next           (next-cursor! cursor (text (get (result body) "cursor")))
           more?          (and (get (result body) "has_next") next (seq rows))]
-      (page (mapv #(warehouse % "fbs") rows) (if more? {:cursor next} {:phase :fbo}) false))))
+      (page (vec (keep #(listed-warehouse % (if (get % "is_rfbs") "rfbs" "fbs")) rows))
+            (if more? {:cursor next} {:phase :supply-origin}) false))))
 
 
 (defmethod step "warehouses" [_ env _ state] (seller-warehouses env state))
@@ -568,7 +612,7 @@
                  (for [[product rows] (group-by #(text (get % "product_id")) (or (items body ["items"]) []))
                        :when          product]
                    {:kind    "product-aliases" :source-id product
-                    :aliases (vec (keep #(identifier "sku" (sku (get % "sku"))
+                    :aliases (vec (keep #(identifier "sku" (stated-id (get % "sku"))
                                                      (if (text (get % "deleted_at")) "historical" "source"))
                                         rows))})))
              #(page [] % true))))
@@ -605,8 +649,9 @@
     (details state 100
              (fn [batch]
                (let [{:keys [body]} (request! env "/v1/analytics/stocks" {:skus batch})
-                     lookup         (sku->product)]
-                 (keep #(stock-analytics % lookup) (required (items body ["items"])))))
+                     lookup         (sku->product)
+                     rows           (required (items body ["items"]))]
+                 (with-fbo-warehouses (keep #(stock-analytics % lookup) rows) (keep analytics-warehouse rows))))
              #(page [] % true))))
 
 
@@ -656,9 +701,10 @@
                {:ids   (keep #(text (get % "posting_number")) rows) :next (+ offset (count rows))
                 :more? (boolean (and (seq rows) (or (get (result body) "has_next") (= 1000 (count rows)))))}))
            (fn [numbers]
-             (for [n numbers]
-               (fbo-posting (result (:body (request! env "/v2/posting/fbo/get"
-                                                     {:posting_number n :with {:analytics_data true}})))))))))
+             (with-named-fbo
+               (for [n numbers]
+                 (fbo-posting (result (:body (request! env "/v2/posting/fbo/get"
+                                                       {:posting_number n :with {:analytics_data true}}))))))))))
 
 
 (defn- returns-page
@@ -750,9 +796,10 @@
                  orders         (required (items body ["orders"]))
                  found          (set (keep #(text (or (get % "order_id") (get % "id"))) orders))]
              (when-not (every? found ids) (fail! :incomplete-page))
-             (for [order orders]
-               (supply order (bundle-items env (text (get-in order ["supplies" 0 "bundle_id"])))
-                       (act-items env order)))))))
+             (with-named-fbo
+               (for [order orders]
+                 (supply order (bundle-items env (text (get-in order ["supplies" 0 "bundle_id"])))
+                         (act-items env order))))))))
 
 
 (defmethod step "removals" [_ env context {:keys [phase last-id]}]
