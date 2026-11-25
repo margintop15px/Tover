@@ -1,11 +1,10 @@
 (ns tover.workspaces.select.web
   "Board chapter 07: the workspace chooser and `Select Workspace` for this sign-in. The page also offers
-  chapter 04's create form and the sign-out control."
+  chapter 04's create form."
   (:require
     [bel.core :as bel :refer [defaction defpage]]
     [clojure.string :as str]
     [tover.identity.access :as access]
-    [tover.identity.sign-out.web :as sign-out]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.web.core :as web]
@@ -57,9 +56,7 @@
                     (create/select-form request (:workspace-id membership) return-to (i18n/t "Open"))]]))]]
         [:div.management-empty
          [:p (i18n/t "No workspaces yet.")]
-         [:p (i18n/t "Create a workspace or open an invitation you received.")]])]
-     [:footer.management-footer
-      (sign-out/sign-out-form {:request request})]]))
+         [:p (i18n/t "Create a workspace or open an invitation you received.")]])]]))
 
 
 (defpage page

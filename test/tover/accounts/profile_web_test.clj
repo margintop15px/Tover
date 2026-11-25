@@ -8,6 +8,7 @@
     [tover.fixtures :as fixtures]
     [tover.identity.access :as access]
     [tover.identity.session :as session]
+    [tover.identity.sign-in-test :refer [sign-in!]]
     [tover.support :as support]))
 
 
@@ -275,4 +276,38 @@
           (let [body (:body ((:request! browser) :get "/account/profile"))]
             (is (str/includes? body "Could not load your profile."))
             (is (str/includes? body "Retry"))
-            (is (not (str/includes? body "name=\"display-name\"")))))))))
+            (is (not (str/includes? body "name=\"display-name\"")))
+            (is (str/includes? body "owner@example.test"))
+            (is (str/includes? body (bel/action-url :tover.identity.sign-out.web/sign-out)))))))))
+
+
+(deftest sign-out-is-offered-before-a-name-is-saved
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (let [session  (support/sign-in! services browser "unnamed@example.test" {:uri "/account/profile"})
+            body     (:body ((:request! browser) :get "/account/profile"))
+            form     (second (re-find #"(?s)<form class=\"sign-out\"(.*?)</form>" body))
+            response ((:request! browser) :post (bel/action-url :tover.identity.sign-out.web/sign-out)
+                                          {"session-id" (form-value form "session-id")})]
+        (is (str/includes? body "unnamed@example.test"))
+        (is (not (str/includes? (second (re-find #"(?s)<form class=\"profile-form\"(.*?)</form>" body)) "sign-out")))
+        (is (= "/auth/login" (get-in response [:headers "location"])))
+        (is (nil? (access/current-identity services (:key session))))
+        (is (nil? (get-in @state [:db :profiles fixtures/unnamed-id :display_name])))))))
+
+
+(deftest sign-out-is-offered-without-a-workspace
+  (support/with-application
+    (fn [{:keys [browser] :as services}]
+      (support/sign-in! services browser "other@example.test" {:uri "/account/profile"})
+      (is (str/includes? (:body ((:request! browser) :get "/account/profile")) (bel/action-url :tover.identity.sign-out.web/sign-out))))))
+
+
+(deftest sign-out-from-the-profile-keeps-no-destination
+  (support/with-application
+    (fn [{:keys [browser] :as services}]
+      (let [session  (support/sign-in! services browser "owner@example.test" {:uri "/account/profile"})
+            response ((:request! browser) :post (bel/action-url :tover.identity.sign-out.web/sign-out)
+                                          {"session-id" (str (:session-id session)) "return-to" "/account/profile"})]
+        (is (= "/auth/login" (get-in response [:headers "location"])))
+        (is (= "/workspace" (get-in (sign-in! browser "owner@example.test" fixtures/password) [:headers "location"])))))))

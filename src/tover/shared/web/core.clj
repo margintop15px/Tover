@@ -22,7 +22,7 @@
     [:meta {:name "tover-context" :content (str (get-in request [:tover/identity :auth-version]))}]
     [:title title]
     [:script {:src "/theme.js?v=2"}]
-    [:script {:src "/identity.js?v=2" :defer true}]
+    [:script {:src "/identity.js?v=3" :defer true}]
     [:link {:rel "stylesheet" :href "/app.css"}]
     [:link {:rel "stylesheet" :href "/stock.css?v=operations-1"}]
     [:link {:rel "stylesheet" :href "/inventory.css?v=workflow-2"}]

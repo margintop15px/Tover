@@ -17,7 +17,7 @@
     [tover.identity.sign-in.web :as sign-in]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
-    [tover.shared.ui.forms :refer [field form]]
+    [tover.shared.ui.forms :refer [field form password-field]]
     [tover.shared.web.core :as web])
   (:import
     [clojure.lang ExceptionInfo]))
@@ -84,8 +84,7 @@
          (sign-in/hidden "_tover-context" context)]
         (concat (for [[name value] fields] (sign-in/hidden name value))
                 [[:p (i18n/t "Resetting your password ends your other sign-ins.")]
-                 [:label (i18n/t "New password")
-                  [:input {:name "password" :type "password" :required true :autocomplete "new-password"}]]
+                 (password-field {:label (i18n/t "New password") :autocomplete "new-password"})
                  [:button {:type "submit"} (i18n/t "Reset password")]])))
 
 

@@ -9,6 +9,7 @@
     [ring.util.codec :as codec]
     [tover.fixtures :as fixtures]
     [tover.identity.session :as session]
+    [tover.identity.sign-in-test :refer [sign-in!]]
     [tover.invitations.accept.web :as accept]
     [tover.invitations.fixtures :as invitations]
     [tover.support :as support])
@@ -284,17 +285,75 @@
           (is (str/includes? (page ((:request! browser) :get (accept/review-path id))) "You are already a member")))))))
 
 
-(deftest another-account-sees-safe-mismatch-guidance
+(defn- opened-in-another-account
+  "An invitation to other@example.test opened by member@example.test: its id and page."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [{:keys [browser] :as services}]
+  (let [id      (invited services)
+        session (support/sign-in! services browser "member@example.test" {:workspace-id fixtures/workspace-id :uri "/workspace"})]
+    {:id id :session session :body (page ((:request! browser) :get (accept/review-path id)))}))
+
+
+(defn- sign-out-there!
+  "Submit the page's own Sign Out form and follow it; returns the Sign In page."
+  {:malli/schema [:=> [:cat :map :map] :map]}
+  [browser {:keys [body]}]
+  (let [form  (second (re-find #"(?s)<form class=\"sign-out\"(.*?)</form>" body))
+        value #(second (re-find (re-pattern (str "name=\"" % "\" value=\"([^\"]*)\"")) form))
+        left  ((:request! browser) :post (bel/action-url :tover.identity.sign-out.web/sign-out)
+                                   {"session-id" (value "session-id") "return-to" (value "return-to")})
+        gate  (follow browser left)]
+    (is (= "/auth/login" (get-in gate [:headers "location"])))
+    (follow browser gate)))
+
+
+(deftest invitation-opened-in-another-account
   (support/with-application
     (fn [{:keys [browser state] :as services}]
-      (let [id (invited services)]
-        (support/sign-in! services browser "member@example.test" {:workspace-id fixtures/workspace-id :uri "/workspace"})
-        (let [body (page ((:request! browser) :get (accept/review-path id)))]
-          (is (str/includes? body "This invitation is not available to member@example.test."))
-          (is (str/includes? body "/auth/sign-out"))
-          (is (not (str/includes? body "Development workspace ·"))))
+      (let [{:keys [id body]} (opened-in-another-account services)]
+        (is (str/includes? body "This invitation is not available to member@example.test."))
+        (is (str/includes? body "This invitation may have been sent to another email."))
+        (is (str/includes? body "Signing out leads to the sign-in page."))
+        (is (str/includes? body (bel/action-url :tover.identity.sign-out.web/sign-out)))
+        (is (str/includes? body "Back to workspaces"))
+        (is (not (str/includes? body "other@example.test")))
+        (is (not (str/includes? body (str "Development workspace <span>"))))
         (accept! (:request! browser) id)
         (is (= "pending" (:status (offer-for state "other@example.test"))))))))
+
+
+(deftest sign-out-and-return-with-the-right-account
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (let [{:keys [id] :as opened} (opened-in-another-account services)
+            login                   (sign-out-there! browser opened)]
+        (is (= 200 (:status login)))
+        (is (not (str/includes? (:body login) (str id))))
+        (is (not (str/includes? (page login) "other@example.test")))
+        (let [response (sign-in! browser "other@example.test" fixtures/password)]
+          (is (= (accept/review-path id) (get-in response [:headers "location"])))
+          (is (str/includes? (page (follow browser response)) (bel/action-url ::accept/accept))))
+        (is (= "pending" (:status (offer-for state "other@example.test"))))))))
+
+
+(deftest sign-in-to-the-wrong-account-again
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (let [opened (opened-in-another-account services)]
+        (sign-out-there! browser opened)
+        (is (str/includes? (page (follow browser (sign-in! browser "member@example.test" fixtures/password)))
+                           "This invitation is not available to member@example.test."))
+        (is (= "pending" (:status (offer-for state "other@example.test"))))))))
+
+
+(deftest back-to-workspaces-keeps-the-account-and-drops-the-destination
+  (support/with-application
+    (fn [{:keys [browser session-store] :as services}]
+      (let [{:keys [session]} (opened-in-another-account services)]
+        (sign-in! browser "member@example.test" fixtures/password)
+        (is (= 303 (:status ((:request! browser) :post (bel/action-url ::accept/leave) {}))))
+        (is (= (:key session) (support/session-key browser)))
+        (is (nil? (get-in (session/session session-store (:key session)) [:data :identity/return-to])))))))
 
 
 (deftest cancellation-during-accept

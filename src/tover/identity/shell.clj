@@ -23,7 +23,7 @@
     [:title title]
     [:link {:rel "stylesheet" :href "/app.css"}]
     [:script {:src "/theme.js" :defer true}]
-    [:script {:src "/identity.js" :defer true}]]
+    [:script {:src "/identity.js?v=3" :defer true}]]
    [:body.identity-document
     (into [:main.identity [:div.identity-theme (ui/language-switch {:request request}) (ui/theme-toggle)]] children)]])
 

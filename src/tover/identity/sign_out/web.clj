@@ -55,11 +55,15 @@
 
 
 (defn public-destination
-  "Only a public identity screen (such as an unconsumed confirmation link) survives sign-out; else Sign In."
+  "Only a public identity screen (such as an unconsumed confirmation link) or an invitation survives sign-out;
+  else Sign In. The access gate keeps the invitation and shows Sign In without its content."
   {:malli/schema [:=> [:cat :any] :string]}
   [return-to]
   (let [path (access/local-path return-to)]
-    (if (and (str/starts-with? path "/auth/") (not (str/starts-with? path "/auth/password"))) path "/auth/login")))
+    (if (or (and (str/starts-with? path "/auth/") (not (str/starts-with? path "/auth/password")))
+            (re-matches #"/invitations/\p{XDigit}{8}(?:-\p{XDigit}{4}){3}-\p{XDigit}{12}" path))
+      path
+      "/auth/login")))
 
 
 (defn- signed-out

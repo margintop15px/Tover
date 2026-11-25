@@ -16,7 +16,7 @@
     [tover.identity.sign-out.web :as sign-out]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
-    [tover.shared.ui.forms :refer [field form]]
+    [tover.shared.ui.forms :refer [field form password-field]]
     [tover.shared.web.address :as address]
     [tover.shared.web.core :as web]))
 
@@ -200,7 +200,7 @@
             (invitation-hint request)
             (form request (bel/action-url ::sign-in) (i18n/t "Sign in")
                   (field request "email" (i18n/t "Email") "email")
-                  (field request "password" (i18n/t "Password") "password")
+                  (password-field {:label (i18n/t "Password") :autocomplete "current-password"})
                   (when-let [return-to (model/destination (get-in request [:params :return-to]))]
                     (hidden "return-to" return-to)))
             [:p [:a {:href "/auth/signup"} (i18n/t "Create an account")] " · "

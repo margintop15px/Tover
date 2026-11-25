@@ -12,7 +12,7 @@
     [tover.identity.sign-in.web :as sign-in]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
-    [tover.shared.ui.forms :refer [field form]]
+    [tover.shared.ui.forms :refer [field form password-field]]
     [tover.shared.web.core :as web]))
 
 
@@ -60,7 +60,7 @@
             (sign-in/invitation-hint request)
             (form request (bel/action-url ::register) (i18n/t "Create account")
                   (field request "email" (i18n/t "Email") "email")
-                  (field request "password" (i18n/t "Password") "password"))
+                  (password-field {:label (i18n/t "Password") :autocomplete "new-password"}))
             [:p (i18n/t "Already have an account?") " " [:a {:href "/auth/login"} (i18n/t "Sign in")]]])})
 
 

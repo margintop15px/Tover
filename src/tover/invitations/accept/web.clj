@@ -5,6 +5,7 @@
   (:require
     [bel.core :as bel :refer [defaction defpage]]
     [bel.runtime :as runtime]
+    [tover.identity.sign-out.web :as sign-out]
     [tover.invitations.accept.model :as model]
     [tover.invitations.team.web :as team]
     [tover.shared.i18n :as i18n]
@@ -122,8 +123,10 @@
               (not available?)
               (card
                 [:p (i18n/t "This invitation is not available to {email}." {:email (get-in request [:tover/identity :user :email] "")})]
-                [:p (i18n/t "If it was sent to another address, sign out and sign in with that account.")]
-                (actions [:a {:href "/auth/sign-out"} (i18n/t "Sign out")] (leave-form request (i18n/t "Back to workspaces"))))
+                [:p (i18n/t "This invitation may have been sent to another email.") " "
+                 (i18n/t "Signing out leads to the sign-in page. Sign in with the right account to return to this invitation.")]
+                (actions (sign-out/sign-out-form {:request request :return-to (review-path invitation-id)})
+                         (leave-form request (i18n/t "Back to workspaces"))))
 
               (= "active" membership)
               (card

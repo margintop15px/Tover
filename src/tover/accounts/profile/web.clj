@@ -8,6 +8,7 @@
     [com.brunobonacci.mulog :as mu]
     [tover.accounts.profile.model :as model]
     [tover.identity.access :as access]
+    [tover.identity.sign-out.web :as sign-out]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.forms :refer [csrf-field]])
@@ -98,7 +99,7 @@
    :parent     :tover.shared.web.core/shell
    :route-data {:tover/access :profile}
    :query      query-profile}
-  [{:keys [request profile] :as props}]
+  [{:keys [request profile email] :as props}]
   {:type :elements
    :html [:section.management-page {:aria-labelledby "profile-title"}
           [:header.management-header [:h1#profile-title {:tabindex -1} (i18n/t "Profile")]]
@@ -106,7 +107,9 @@
             (profile-form props)
             [:div.management-empty {:role "alert"}
              [:p (i18n/t "Could not load your profile.")]
-             [:p [:a {:href (str (:uri request) (some->> (:query-string request) (str "?")))} (i18n/t "Retry")]]])]})
+             [:p [:a {:href (str (:uri request) (some->> (:query-string request) (str "?")))} (i18n/t "Retry")]]
+             [:p (i18n/t "You are signed in as {email}." {:email (or email "")})]])
+          [:footer.management-footer (sign-out/sign-out-form {:request request})]]})
 
 
 (defn- problems

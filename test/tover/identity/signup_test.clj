@@ -270,3 +270,37 @@
       (let [body (:body ((:request! browser) :get "/auth/resend"))]
         (is (str/includes? body "You are signed in as owner@example.test."))
         (is (str/includes? body "tover.identity.sign-out.web/sign-out"))))))
+
+
+(deftest every-password-field-has-a-show-control
+  (support/with-application
+    (fn [{:keys [browser handler] :as services}]
+      (let [recovering (support/browser handler)]
+        (support/sign-in! services recovering "owner@example.test" {:password-required? true :uri "/auth/password"})
+        (doseq [[{:keys [request!]} uri autocomplete] [[browser "/auth/login" "current-password"]
+                                                       [browser "/auth/signup" "new-password"]
+                                                       [browser "/auth/confirm?token_hash=abc&type=recovery" "new-password"]
+                                                       [recovering "/auth/password" "new-password"]]
+                :let                                  [[path query] (str/split uri #"\?")
+                                                       body (:body (if query
+                                                                     (request! :get path {"token_hash" "abc" "type" "recovery"})
+                                                                     (request! :get path)))]]
+          (is (= 1 (count (re-seq #"type=\"password\"" body)) (count (re-seq #"class=\"password-toggle\"" body))) uri)
+          (is (str/includes? body (str "autocomplete=\"" autocomplete "\"")) uri)
+          (is (re-find #"<button[^>]*class=\"password-toggle\"[^>]*>" body) uri)
+          (is (str/includes? (re-find #"<button[^>]*class=\"password-toggle\"[^>]*>" body) "type=\"button\"") uri)
+          (is (str/includes? (re-find #"<button[^>]*class=\"password-toggle\"[^>]*>" body) "aria-pressed=\"false\"") uri))))))
+
+
+(deftest signing-out-of-an-invitation-survives-signup-and-profile-setup
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (let [path    (str "/invitations/" (random-uuid))
+            session (support/sign-in! services browser "owner@example.test" {:uri "/workspace"})]
+        ((:request! browser) :post (bel/action-url :tover.identity.sign-out.web/sign-out)
+                             {"session-id" (str (:session-id session)) "return-to" path})
+        ((:request! browser) :get path)
+        (register! browser alice "a-good-password")
+        (let [response (confirm! browser (link state alice))]
+          (is (= (str "/account/profile?return-to=" (java.net.URLEncoder/encode path "UTF-8"))
+                 (get-in response [:headers "location"]))))))))

@@ -65,7 +65,7 @@ async function signUp(page, email, password) {
 }
 
 async function logout(page) {
-  await page.goto('/workspace');
+  await page.goto('/account/profile');
   await page.locator('form.sign-out').getByRole('button', { name: 'Sign out', exact: true }).click();
   await page.goto('/');
   await expect(page).toHaveURL(/\/auth\/login$/);
@@ -181,6 +181,7 @@ test('Russian signup and recovery preserve account language across real sessions
     } finally { await otherContext.close(); }
     await page.goto('/workspace');
     await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
+    await page.goto('/account/profile');
     await page.locator('form.sign-out').getByRole('button', { name: 'Выйти', exact: true }).click();
     await page.goto('/auth/recover');
     await page.getByLabel('Электронная почта', { exact: true }).fill(email);
@@ -196,4 +197,28 @@ test('Russian signup and recovery preserve account language across real sessions
     await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
     expect(errors).toEqual([]);
   } finally { await context.close(); }
+});
+
+test('the password control shows and hides by keyboard without submitting', async ({ page }) => {
+  for (const [path, label] of [['/auth/login', 'Password'], ['/auth/signup', 'Password'], ['/auth/confirm?token_hash=x&type=recovery', 'New password']]) {
+    await page.goto(path);
+    const url = page.url();
+    const input = page.getByLabel(label, { exact: true });
+    const toggle = page.getByRole('button', { name: 'Show password', exact: true });
+    await input.fill('visible secret');
+    await expect(input).toHaveAttribute('type', 'password');
+    await input.focus();
+    await page.keyboard.press('Tab');
+    await expect(toggle).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(input).toHaveAttribute('type', 'text');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Space');
+    await expect(input).toHaveAttribute('type', 'password');
+    await expect(input).toHaveValue('visible secret');
+    expect(page.url()).toBe(url);
+    await toggle.click();
+    await page.reload();
+    await expect(page.getByLabel(label, { exact: true })).toHaveAttribute('type', 'password');
+  }
 });

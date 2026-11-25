@@ -53,8 +53,16 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .identity form:not(.language-switch) { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 16px 0; }
 .identity label { display: flex; flex-direction: column; gap: 5px; color: var(--iw-muted); }
 .identity input, .identity select, .identity textarea { min-height: 34px; max-width: 100%; padding: 6px 9px; color: var(--iw-ink); background-color: var(--iw-bg); border: 1px solid var(--iw-line); border-radius: 3px; }
-.identity button:not(.theme-toggle):not(.language-toggle), .navigation-notice button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--iw-line); border-radius: 3px; background: var(--iw-soft); }
+.identity button:not(.theme-toggle):not(.language-toggle):not(.password-toggle), .navigation-notice button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--iw-line); border-radius: 3px; background: var(--iw-soft); }
 .identity button[type=submit]:not(.language-toggle) { background: var(--iw-ink); color: var(--iw-bg); border-color: var(--iw-ink); }
+.identity .password { display: flex; flex-direction: column; gap: 5px; }
+.password-field { position: relative; display: block; }
+.identity .password-field input { width: 100%; padding-right: 40px; }
+.password-toggle { position: absolute; inset: 0 0 0 auto; display: grid; place-items: center; width: 36px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--iw-muted); cursor: pointer; }
+.password-toggle:hover { color: var(--iw-ink); }
+.password-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.password-toggle[aria-pressed=false] .password-shown { display: none; }
+@media (scripting: none) { .password-toggle { display: none; } }
 .identity ul { padding: 0; list-style: none; }
 .identity li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0; padding: 12px 0; border-bottom: 1px solid var(--iw-line); }
 .identity li form { margin: 0; }
@@ -127,7 +135,7 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
   .app-nav-pages a { padding: 8px; }
   .identity { margin: 12px auto; padding: 16px; }
   .identity form:not(.language-switch) { align-items: stretch; }
-  .identity label { width: 100%; }
+  .identity label, .identity .password { width: 100%; }
   .identity input, .identity select { font-size: 16px; }
   .management-page { padding-top: 16px; }
   .management-form form { align-items: stretch; }

@@ -101,7 +101,11 @@
             landing  "/auth/confirm?token_hash=abc&type=signup"
             response (sign-out! browser session {"return-to" landing})]
         (is (= landing (get-in response [:headers "location"])))
-        (is (= "/auth/login" (web/public-destination "/workspace")))
+        (doseq [path ["/workspace" "/stock" "//host" "/invitations/x" (str "/invitations/" (random-uuid) "/joined")
+                      (str "/invitations/" (random-uuid) "?problem=x")]]
+          (is (= "/auth/login" (web/public-destination path)) path))
+        (let [invitation (str "/invitations/" (random-uuid))]
+          (is (= invitation (web/public-destination invitation))))
         (is (= "/auth/login" (web/public-destination "https://evil.example/auth/confirm")))
         (is (str/includes? (:body ((:request! browser) :get "/auth/confirm" {"token_hash" "abc" "type" "signup"}))
                            "Confirm this email address"))))))

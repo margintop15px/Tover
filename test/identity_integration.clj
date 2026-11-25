@@ -195,7 +195,7 @@
                 (is (= user-id (:user-id (deref result 30000 nil)))))
               (is (not= (:refresh-token before) (get-in (session/session session-store key) [:tokens :refresh-token])))))
           (testing "Sign Out ends this sign-in"
-            (let [body (:body (request! :get "/workspace"))
+            (let [body (:body (request! :get "/account/profile"))
                   form (second (re-find #"(?s)<form class=\"sign-out\"(.*?)</form>" body))]
               (is (= "/auth/login" (get-in (request! :post (bel/action-url :tover.identity.sign-out.web/sign-out)
                                                      {"session-id" (hidden-value form "session-id")})

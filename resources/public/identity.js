@@ -8,6 +8,15 @@ if (context && localStorage.getItem('tover-context') !== context) {
   channel?.postMessage('changed');
 }
 
+// Delegated, so a control that a patch replaced still works.
+document.addEventListener('click', event => {
+  const toggle = event.target.closest?.('.password-toggle');
+  if (!toggle) return;
+  const shown = toggle.getAttribute('aria-pressed') !== 'true';
+  toggle.setAttribute('aria-pressed', String(shown));
+  toggle.parentElement.querySelector('input').type = shown ? 'text' : 'password';
+});
+
 if (csrf) {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {

@@ -63,6 +63,7 @@ for (const locale of ['en', 'ru']) {
     await expect(page.locator('.management-table')).toHaveCount(0);
     await assertTranslated(page, locale);
 
+    await page.goto('/account/profile');
     await formFor(page, 'tover.identity.sign-out.web/sign-out').locator('button').click();
     await login(page, 'member@example.test', locale);
     await page.goto('/workspace');
@@ -77,6 +78,7 @@ for (const locale of ['en', 'ru']) {
     await expect(page.locator('.management-current')).toHaveText(t('Current workspace'));
     await expect(page.getByRole('link', { name: t('Team'), exact: true })).toHaveCount(0);
 
+    await page.goto('/account/profile');
     await formFor(page, 'tover.identity.sign-out.web/sign-out').locator('button').click();
     await login(page, 'owner@example.test', locale);
     await page.goto('/workspace');
@@ -116,14 +118,14 @@ for (const locale of ['en', 'ru']) {
     }
     await assertTranslated(page, locale);
 
-    await page.goto('/workspace');
+    await page.goto('/account/profile');
     await formFor(page, 'tover.identity.sign-out.web/sign-out').locator('button').click();
     await login(page, 'admin@example.test', locale);
     await open(page, 'Management workspace', t);
     await page.goto('/team');
     await expect(page.getByRole('heading', { name: t('Team'), exact: true })).toBeVisible();
     await expect(formFor(page, 'tover.invitations.issue.web/invite')).toHaveCount(1);
-    await page.goto('/workspace');
+    await page.goto('/account/profile');
     await formFor(page, 'tover.identity.sign-out.web/sign-out').locator('button').click();
     await login(page, 'member@example.test', locale);
     await open(page, 'Development workspace', t);
@@ -228,7 +230,7 @@ for (const locale of ['en', 'ru']) {
     await expect(rowFor(page, person('owner')).locator('form')).toHaveCount(0);
     await expect(member('suspend', person('member'))).toHaveCount(1);
     await expect(member('grant-ownership', person('member'))).toHaveCount(0);
-    await page.goto('/workspace');
+    await page.goto('/account/profile');
     await formFor(page, 'tover.identity.sign-out.web/sign-out').locator('button').click();
 
     await login(page, person('owner'), locale);
