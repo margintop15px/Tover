@@ -94,7 +94,7 @@
 
 
 (deftest explicit-services-compose-without-development-reload-components
-  (let [services      (assoc (select-keys (fixtures/system) [:provider :session-store])
+  (let [services      (assoc (select-keys (fixtures/system) [:provider :session-store :limits])
                              :origin "http://localhost:3030" :development? true)
         configuration (app/system-config 3030 ".data/inventory" services)]
     (is (identical? (:provider services) (get-in configuration [::app/provider :instance])))

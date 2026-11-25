@@ -36,6 +36,7 @@
     [clojure.string :as str]
     [ring.util.codec :as codec]
     [tover.identity.access :as access]
+    [tover.identity.limits :as limits]
     [tover.identity.provider :as provider]
     [tover.identity.session :as session]
     [tover.workspaces.persistence :as workspaces])
@@ -187,6 +188,53 @@
           value)))
     (fn [session-id]
       (first (entry (:db @state) :sessions :session_id session-id)))))
+
+
+(defn- now
+  "The fixture clock: tests move it with (swap! state assoc :elapsed seconds). Only the limits read it."
+  {:malli/schema [:=> [:cat :map] inst?]}
+  [{:keys [elapsed clock-start]}]
+  (.plusSeconds ^Instant clock-start (long (or elapsed 0))))
+
+
+(defrecord MemoryLimits [state]
+  limits/Limits
+  (-start-email! [_ purpose email-key]
+    (locking state
+      (let [at      (now @state)
+            started (get-in @state [:email-limits [purpose email-key]])
+            seconds (if started (limits/remaining at started limits/email-seconds) 0)]
+        (if (pos? seconds)
+          seconds
+          (do (swap! state assoc-in [:email-limits [purpose email-key]] at) nil)))))
+  (-start-attempt! [_ email-key address]
+    (locking state
+      (if-let [seconds (limits/retry-after (now @state) (vec (vals (:attempts @state))) email-key address)]
+        {:retry-after seconds}
+        (let [id (UUID/randomUUID)]
+          (swap! state assoc-in [:attempts id] {:email-key    email-key :address       address :at (now @state) :status "pending"
+                                                :pair-cleared false     :email-cleared false})
+          {:attempt-id id}))))
+  (-settle-attempt! [_ attempt-id outcome]
+    (locking state
+      (let [{:keys [email-key address]} (get-in @state [:attempts attempt-id])
+            failed                      (fn [attempts flag matches?]
+                                          (update-vals attempts #(cond-> % (and (= "failed" (:status %)) (matches? %)) (assoc flag true))))]
+        (if (= :failed outcome)
+          (swap! state assoc-in [:attempts attempt-id :status] "failed")
+          (swap! state update :attempts
+                 #(cond-> (dissoc % attempt-id)
+                    (= :succeeded outcome)
+                    (failed :pair-cleared (fn [row] (and (= email-key (:email-key row)) (= address (:address row)))))))))
+      nil))
+  (-clear-email! [_ email-key]
+    (swap! state update :attempts
+           update-vals #(cond-> % (and (= "failed" (:status %)) (= email-key (:email-key %))) (assoc :email-cleared true)))
+    nil))
+
+
+(alter-meta! #'->MemoryLimits assoc :malli/schema [:=> [:cat :any] :map])
+(alter-meta! #'map->MemoryLimits assoc :malli/schema [:=> [:cat :map] :map])
 
 
 (defrecord FixtureSession [state]
@@ -355,10 +403,11 @@
   "Fresh offline services. Pass the result (plus :repo and :realtime) to tover.app/create-handler."
   {:malli/schema [:=> [:cat] :map]}
   []
-  (let [state    (atom {:db (seed) :journal [] :emails [] :tokens {}})
+  (let [state    (atom {:db (seed) :journal [] :emails [] :tokens {} :attempts {} :clock-start (Instant/now)})
         services {:state         state
                   :provider      (fake-provider state)
                   :session-store (session-store state)
+                  :limits        (->MemoryLimits state)
                   :origin        "http://localhost:3030"
                   :development?  true}]
     (assoc services :bel/system (bel-system services))))
@@ -413,7 +462,7 @@
   "The trusted Bel context a request of this session receives."
   {:malli/schema [:=> [:cat :map :map] :map]}
   [services {:keys [key]}]
-  (merge (select-keys services [:session-store :provider :origin :bel/system])
+  (merge (select-keys services [:session-store :limits :provider :origin :bel/system])
          (assoc (access/current-identity services key) :locale "en")))
 
 

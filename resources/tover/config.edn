@@ -7,6 +7,7 @@
                            :api-key   #tover/required "TOVER_API_KEY"
                            :admin-key #tover/required "TOVER_AUTH_ADMIN_KEY"}
  :tover.app/session-store {:datasource #ig/ref :tover.app/datasource :encryption-key #tover/required "TOVER_SESSION_KEY"}
+ :tover.app/limits        {:datasource #ig/ref :tover.app/datasource}
  :tover.app/realtime      {:provider      #ig/ref :tover.app/provider
                            :session-store #ig/ref :tover.app/session-store
                            :repo          #ig/ref :tover.app/repo
@@ -15,6 +16,8 @@
                            :realtime        #ig/ref :tover.app/realtime
                            :provider        #ig/ref :tover.app/provider
                            :session-store   #ig/ref :tover.app/session-store
+                           :limits          #ig/ref :tover.app/limits
+                           :trusted-proxy?  #tover/flag ["TOVER_TRUSTED_PROXY" false]
                            :logging         #ig/ref :tover.app/logging
                            :bel/system      #ig/ref :tover.app/bel-system
                            :origin          #tover/required "TOVER_ORIGIN"

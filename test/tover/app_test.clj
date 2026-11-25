@@ -35,7 +35,7 @@
 (defn- fixture-services
   {:malli/schema [:=> [:cat] :map]}
   []
-  (assoc (select-keys (fixtures/system) [:provider :session-store])
+  (assoc (select-keys (fixtures/system) [:provider :session-store :limits])
          :origin "http://localhost:3031"
          :development? true))
 

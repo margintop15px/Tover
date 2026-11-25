@@ -15,6 +15,7 @@
     [ring.middleware.session.store :as ring]
     [tover.app :as app]
     [tover.identity.access :as access]
+    [tover.identity.limits :as limits]
     [tover.identity.provider :as provider]
     [tover.identity.session :as session]
     [tover.shared.rdf :as rdf]
@@ -74,6 +75,7 @@
         services {:repo          repo
                   :provider      (provider/client (:provider *options*))
                   :session-store (session/jdbc-store settings)
+                  :limits        (limits/jdbc-limits settings)
                   :origin        "http://localhost:3030"}
         live     (app/realtime services)
         services (assoc services :realtime live)
@@ -241,6 +243,34 @@
         (is (= [{:one 1}] (query settings "select 1 as one")) "Pool recovers after exhaustion")
         (finally (ring/delete-session store key))))
     (is (nil? (:session *options*)) "Hosted JDBC credentials were not configured; provider checks run separately.")))
+
+
+(deftest live-limits-contract
+  (if-let [settings (:session *options*)]
+    (let [store   (limits/jdbc-limits settings)
+          other   (limits/jdbc-limits settings)
+          email   (limits/email-key (str (random-uuid) "@example.test"))
+          address (str "test-" (random-uuid))
+          race    (fn [n f] (mapv deref (mapv (fn [i] (future (f (if (even? i) store other)))) (range n))))]
+      (testing "two requests at once: one starts the limit"
+        (let [answers (race 6 #(limits/-start-email! % :confirmation email))]
+          (is (= 1 (count (filter nil? answers))))
+          (is (every? #(<= 1 % 60) (remove nil? answers)))
+          (is (nil? (limits/-start-email! store :recovery email)))))
+      (testing "eleven attempts at once: ten are allowed"
+        ;; The pool has 8 connections with a 2-second wait; the attempts themselves are short.
+        (let [answers (race 11 #(limits/-start-attempt! % email address))
+              ids     (keep :attempt-id answers)]
+          (is (= 10 (count ids)))
+          (run! #(limits/-settle-attempt! store % :failed) ids)
+          (is (<= 800 (:retry-after (limits/-start-attempt! other email address)) 900))
+          (is (nil? (:retry-after (limits/-start-attempt! other email (str address "-b")))))
+          (limits/-clear-email! store email)
+          (let [{:keys [attempt-id]} (limits/-start-attempt! store email address)]
+            (is (some? attempt-id))
+            (limits/-settle-attempt! store attempt-id :succeeded)
+            (is (empty? (query settings "select 1 as one from app_private.identity_attempts where attempt_id=?" attempt-id)))))))
+    (is (nil? (:session *options*)))))
 
 
 (defn -main [& _]

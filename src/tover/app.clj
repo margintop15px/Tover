@@ -21,6 +21,7 @@
     [ring.middleware.params :refer [wrap-params]]
     [starfederation.datastar.clojure.adapter.http-kit2 :as hk]
     [tover.identity.access :as access]
+    [tover.identity.limits :as limits]
     [tover.identity.provider :as provider]
     [tover.identity.session :as session-store]
     [tover.shared.email :as email]
@@ -48,6 +49,8 @@
    [:realtime realtime/Realtime]
    [:provider provider/Provider]
    [:session-store :any]
+   [:limits :any]
+   [:trusted-proxy? {:optional true} :boolean]
    [:origin schema/Text]
    [:development? {:optional true} :boolean]
    [:identity-health {:optional true} :map]
@@ -130,7 +133,7 @@
   (bel/init! {:scan-ns ['tover] :scan-exclude-ns ['tover.catalogues.rename]})
 
   (let [{:keys [realtime session-store origin development?]} (validation/check! HandlerOptions options)
-        context (select-keys options [:repo :realtime :provider :session-store :origin :bel/system])
+        context (select-keys options [:repo :realtime :provider :session-store :limits :trusted-proxy? :origin :bel/system])
         extra-routes (mapv (fn [[path data]]
                              [path (assoc data :tover/access :workspace)])
                            (realtime/routes realtime))
@@ -172,6 +175,7 @@
   {::repo          {:path path}
    ::provider      {:instance (:provider services)}
    ::session-store {:instance (:session-store services)}
+   ::limits        {:instance (:limits services)}
    ::realtime      {:provider      (ig/ref ::provider)
                     :session-store (ig/ref ::session-store)
                     :repo          (ig/ref ::repo)}
@@ -179,7 +183,8 @@
                           {:repo          (ig/ref ::repo)
                            :realtime      (ig/ref ::realtime)
                            :provider      (ig/ref ::provider)
-                           :session-store (ig/ref ::session-store)})
+                           :session-store (ig/ref ::session-store)
+                           :limits        (ig/ref ::limits)})
    ::server        {:repo          (ig/ref ::repo)
                     :handler       (ig/ref ::handler)
                     :realtime      (ig/ref ::realtime)
@@ -259,6 +264,12 @@
 (defn provider
   {:malli/schema [:=> [:cat :map] provider/Provider]} [{:keys [instance] :as options}]
   (or instance (provider/client options)))
+
+
+(defn limits
+  {:malli/schema [:=> [:cat :map] :map]}
+  [{:keys [instance] :as options}]
+  (or instance (limits/jdbc-limits options)))
 
 
 (defn session-store
