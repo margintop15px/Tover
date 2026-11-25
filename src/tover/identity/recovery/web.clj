@@ -5,6 +5,8 @@
     [bel.core :as bel :refer [defaction defpage]]
     [bel.runtime :as runtime]
     [clojure.string :as str]
+    [tover.identity.input :as input]
+    [tover.identity.limits :as limits]
     [tover.identity.provider :as provider]
     [tover.identity.recovery.model :as model]
     [tover.identity.reset-completion.model :as completion]
@@ -53,20 +55,18 @@
 
 
 (defaction request-recovery
-  ;; Password Recovery Requested is the provider's fact; the answer is the same for every email and nothing
-  ;; changes the password or ends a sign-in.
+  ;; Password Recovery Requested is the provider's fact; the answer is given before the provider is asked, the
+  ;; same for every email, and nothing changes the password or ends a sign-in.
   {:schema     [:map [:email {:optional true} :string]]
    :route-data {:tover/access :optional}}
-  [{:keys [request origin] :as context} {:keys [email]}]
+  [{:keys [request origin limits] :as context} {:keys [email]}]
   (let [email (str/trim (or email ""))]
-    (try
-      (provider/call! context ::provider/recover {:email email :redirect-to (str origin "/auth/confirm")})
-      (check-recovery-email request email nil 200)
-      (catch ExceptionInfo error
-        (let [{:keys [outcome status message]} (sign-in/failure error)]
-          (if (= :invalid outcome)
-            (sign-in/page-response request ::recover status message {"email" email})
-            (check-recovery-email request email message status)))))))
+    (if-let [error (input/email-error email)]
+      (sign-in/page-response request ::recover 422 error {"email" email})
+      (if-let [seconds (limits/-start-email! limits :recovery (limits/email-key email))]
+        (check-recovery-email request email (sign-in/too-soon seconds) 429)
+        (do (provider/call-later! context ::provider/recover {:email email :redirect-to (str origin "/auth/confirm")})
+            (check-recovery-email request email nil 200))))))
 
 
 ;; Set a new password
@@ -159,11 +159,18 @@
    :route-data {:tover/access :optional}}
   [{:keys [request] :as context} {:keys [token-hash password]}]
   (let [retained {"token_hash" token-hash "type" "recovery"}]
-    (if (:tover/identity request)
+    (cond
+      (:tover/identity request)
       ;; Never silently change accounts: keep this sign-in or sign out first; the link stays unused.
       (sign-in/page-response request :tover.identity.confirm.web/confirm 409
                              (i18n/t "You are signed in as {email}." {:email (get-in request [:tover/identity :user :email] "")})
                              retained)
+
+      ;; Refused before the link is used.
+      (input/new-password-error (or password ""))
+      (sign-in/page-response request :tover.identity.confirm.web/confirm 422 (input/new-password-error (or password "")) retained)
+
+      :else
       (let [verified (try {:tokens (provider/call! context ::provider/verify {:token-hash (or token-hash "") :type :recovery})}
                           (catch ExceptionInfo error {:failure (sign-in/failure error)}))]
         (if-let [tokens (:tokens verified)]
@@ -222,7 +229,13 @@
    :route-data {:tover/access :password}}
   [{:keys [request session-store] :as context} {:keys [password]}]
   (let [identity (:tover/identity request)]
-    (if-not (:password-required? identity)
+    (cond
+      (not (:password-required? identity))
       {:status 303 :headers {"location" (sign-in-model/next-step identity nil)} :body ""}
+
+      (input/new-password-error (or password ""))
+      (sign-in/page-response request ::password 422 (input/new-password-error (or password "")) {})
+
+      :else
       (let [row (session/session session-store (:session/key request))]
         (outcome-response context row false (change-password! context row (or password "")))))))

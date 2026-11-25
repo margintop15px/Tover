@@ -13,7 +13,7 @@
     [tover.identity.recovery.web :as web]
     [tover.identity.reset-completion.model :as completion]
     [tover.identity.reset-completion.web :as completion-web]
-    [tover.identity.sign-in-test :refer [alert signed-in-events]]
+    [tover.identity.sign-in-test :refer [alert plain signed-in-events]]
     [tover.support :as support])
   (:import
     [java.time Instant]))
@@ -47,15 +47,15 @@
 
 
 (defn rejecting
-  "The fake provider, except that the password \"weak\" is rejected and \"lost\" has an unknown outcome."
+  "The fake provider, except that the password \"weak-password\" is rejected and \"lost-password\" has an unknown outcome."
   {:malli/schema [:=> [:cat :map] :map]}
   [services]
   (update services :provider
           (fn [{:keys [request!]}]
             {:request! (fn [{:keys [method body] :as options}]
                          (case [method (:password body)]
-                           [:put "weak"] (provider/fail! :weak-password 422 false)
-                           [:put "lost"] (provider/fail! :unavailable 503 true)
+                           [:put "weak-password"] (provider/fail! :weak-password 422 false)
+                           [:put "lost-password"] (provider/fail! :unavailable 503 true)
                            (request! options)))})))
 
 
@@ -130,7 +130,7 @@
     (fn [{:keys [browser handler state] :as services}]
       (let [other (support/sign-in! services (support/browser handler) "owner@example.test")]
         (request-recovery! browser "owner@example.test")
-        (let [response (submit-reset! browser (recovery-token state "owner@example.test") "weak")]
+        (let [response (submit-reset! browser (recovery-token state "owner@example.test") "weak-password")]
           (is (= 422 (:status response)))
           (is (= "Choose a stronger password." (alert (:body response))))
           (is (= fixtures/password (get-in @state [:db :auth.users fixtures/owner-id :password])))
@@ -154,7 +154,7 @@
       (fn [{:keys [browser handler state] :as services}]
         (let [other (support/sign-in! services (support/browser handler) "owner@example.test")]
           (request-recovery! browser "owner@example.test")
-          (let [response (submit-reset! browser (recovery-token state "owner@example.test") "lost")]
+          (let [response (submit-reset! browser (recovery-token state "owner@example.test") "lost-password")]
             (is (= 503 (:status response)))
             (is (str/includes? (:body response) "Password change unconfirmed"))
             (is (str/includes? (:body response) "/auth/recover"))
@@ -210,6 +210,65 @@
         (is (= 400 (:status response)))
         (is (= "This link has expired or has already been used." (alert (:body response))))
         (is (str/includes? (:body response) (bel/action-url ::web/request-recovery)))))))
+
+
+(deftest repeated-recovery-looks-the-same-for-every-email
+  (support/with-application
+    (fn [{:keys [browser state]}]
+      (let [emails ["nobody@example.test" "owner@example.test" "member@example.test"]
+            answer (fn [email] (update (select-keys (request-recovery! browser email) [:status :body]) :body plain email))]
+        (swap! state update-in [:db :auth.users fixtures/member-id] dissoc :email_confirmed_at)
+        (is (= 200 (:status (answer "first@example.test"))))
+        (is (= 1 (count (set (map answer emails)))))
+        (let [again (set (map answer emails))]
+          (is (= 1 (count again)))
+          (is (= 429 (:status (first again))))
+          (is (str/includes? (:body (first again)) "Try again in 60 seconds.")))))))
+
+
+(deftest a-recovery-service-failure-is-not-shown
+  (let [accepted (support/with-application (fn [{:keys [browser]}] (plain (:body (request-recovery! browser "owner@example.test")) "")))]
+    (doseq [[code status uncertain?] [[:rate-limited 429 false] [:unavailable 503 true] [:invalid-input 400 false]]]
+      (support/with-application
+        #(assoc % :provider {:request! (fn [_] (provider/fail! code status uncertain?))})
+        (fn [{:keys [browser]}]
+          (let [response (request-recovery! browser "owner@example.test")]
+            (is (= 200 (:status response)))
+            (is (= accepted (plain (:body response) "")))))))))
+
+
+(deftest recovery-is-counted-apart-from-confirmation
+  (support/with-application
+    (fn [{:keys [browser state]}]
+      ((:request! browser) :get "/auth/resend")
+      ((:request! browser) :post "/_bel/actions/tover.identity.resend.web/resend" {"email" "owner@example.test"})
+      (is (= 200 (:status (request-recovery! browser "owner@example.test"))))
+      (is (some? (recovery-token state "owner@example.test"))))))
+
+
+(deftest an-unacceptable-new-password-keeps-the-recovery-link
+  (support/with-application
+    (fn [{:keys [browser state]}]
+      (request-recovery! browser "owner@example.test")
+      (let [token (recovery-token state "owner@example.test")]
+        (doseq [[password message] [["12345" "Enter a password of at least 6 characters."]
+                                    [(apply str (repeat 37 "я")) "This password is too long. Use a shorter one."]]]
+          (let [response (submit-reset! browser token password)]
+            (is (= 422 (:status response)))
+            (is (= message (alert (:body response))))
+            (is (not (str/includes? (:body response) password)))
+            (is (= token (recovery-token state "owner@example.test")))))
+        (is (= 303 (:status (submit-reset! browser token "a-new-password"))))))))
+
+
+(deftest an-unacceptable-password-of-a-recovery-sign-in-retains-no-attempt
+  (support/with-application
+    (fn [{:keys [browser state] :as services}]
+      (support/sign-in! services browser "owner@example.test" {:password-required? true :uri "/auth/password"})
+      (let [response ((:request! browser) :post (bel/action-url ::web/set-password) {"password" "12345"})]
+        (is (= 422 (:status response)))
+        (is (= "Enter a password of at least 6 characters." (alert (:body response))))
+        (is (empty? (get-in @state [:db :password_resets])))))))
 
 
 ;; Completion decisions without a store

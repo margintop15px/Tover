@@ -30,6 +30,14 @@
   (second (re-find #"role=\"alert\">([^<]*)<" body)))
 
 
+(defn plain
+  "A page body without the parts that differ per request (the CSRF token) and the entered email."
+  {:malli/schema [:=> [:cat :string :string] :string]}
+  [body email]
+  (cond-> (str/replace body #"name=\"__anti-forgery-token\" value=\"[^\"]*\"|value=\"[^\"]*\" name=\"__anti-forgery-token\"" "")
+    (seq email) (str/replace email "EMAIL")))
+
+
 (defn sign-in!
   {:malli/schema [:=> [:cat :map :string :string [:? :map]] :map]}
   ([browser email password] (sign-in! browser email password {}))

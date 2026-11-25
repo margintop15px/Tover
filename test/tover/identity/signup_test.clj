@@ -10,7 +10,7 @@
     [tover.identity.confirm.web :as confirm]
     [tover.identity.provider :as provider]
     [tover.identity.resend.web :as resend]
-    [tover.identity.sign-in-test :refer [alert signed-in-events]]
+    [tover.identity.sign-in-test :refer [alert plain signed-in-events]]
     [tover.identity.signup.web :as signup]
     [tover.support :as support]))
 
@@ -82,26 +82,88 @@
         (is (= before (get-in @state [:db :profiles fixtures/owner-id])))))))
 
 
-(deftest invalid-input-shows-a-field-error-retains-the-email-and-clears-the-password
-  (support/with-application
-    (fn [{:keys [browser state]}]
-      (let [response (register! browser alice "")]
-        (is (= 422 (:status response)))
-        (is (= "Check the entered fields." (alert (:body response))))
-        (is (str/includes? (:body response) (str "value=\"" alice "\"")))
-        (is (nil? (user-row state alice)))))))
-
-
-(deftest a-lost-registration-response-offers-recovery-and-is-not-repeated
+(deftest refused-input-shows-a-field-error-and-does-not-start-the-limit
   (let [calls (atom 0)]
     (support/with-application
-      #(assoc % :provider {:request! (fn [_] (swap! calls inc) (provider/fail! :unavailable 503 true))})
+      (fn [services] (update services :provider (fn [{:keys [request!]}] {:request! #(do (swap! calls inc) (request! %))})))
+      (fn [{:keys [browser state]}]
+        (doseq [[password message] [["" "Enter a password of at least 6 characters."]
+                                    ["12345" "Enter a password of at least 6 characters."]
+                                    [(apply str (repeat 37 "я")) "This password is too long. Use a shorter one."]]]
+          (let [response (register! browser alice password)]
+            (is (= 422 (:status response)))
+            (is (= message (alert (:body response))))
+            (is (str/includes? (:body response) (str "value=\"" alice "\"")))
+            (is (or (= "" password) (not (str/includes? (:body response) password))))))
+        (is (= "Enter a valid email address." (alert (:body (register! browser "alice" "a-good-password")))))
+        (is (zero? @calls))
+        (is (= 200 (:status (register! browser alice "a-good-password"))))
+        (is (some? (user-row state alice)))))))
+
+
+(defn- answer
+  "What a visitor can tell apart about a response, with `email` masked."
+  {:malli/schema [:=> [:cat :map :string] :map]}
+  [response email]
+  (update (select-keys response [:status :body]) :body plain email))
+
+
+(defn- resend!
+  {:malli/schema [:=> [:cat :map :string] :map]}
+  [{:keys [request!]} email]
+  (request! :get "/auth/resend")
+  (request! :post (bel/action-url ::resend/resend) {"email" email}))
+
+
+(deftest repeated-signup-looks-the-same-for-every-email
+  (support/with-application
+    (fn [{:keys [browser state]}]
+      (swap! state update-in [:db :auth.users fixtures/member-id] dissoc :email_confirmed_at)
+      (let [emails  [alice "member@example.test" "owner@example.test"]
+            answers (fn [] (set (map #(answer (register! browser % "a-good-password") %) emails)))
+            account (get-in @state [:db :auth.users fixtures/owner-id])
+            profile (get-in @state [:db :profiles fixtures/owner-id])
+            first?  (answers)
+            again   (answers)]
+        (is (= 1 (count first?) (count again)))
+        (is (= 200 (:status (first first?))))
+        (is (= 429 (:status (first again))))
+        (is (str/includes? (:body (first again)) "Check your email"))
+        (is (str/includes? (:body (first again)) "Try again in 60 seconds."))
+        (is (= account (get-in @state [:db :auth.users fixtures/owner-id])))
+        (is (= profile (get-in @state [:db :profiles fixtures/owner-id])))))))
+
+
+(deftest signup-and-resend-share-the-limit
+  (support/with-application
+    (fn [{:keys [browser]}]
+      (doseq [email [alice "owner@example.test"]]
+        (register! browser email "a-good-password")
+        (is (= 429 (:status (resend! browser (str/upper-case email)))))))))
+
+
+(deftest the-outcome-of-the-provider-is-not-shown
+  (doseq [[submit! label] [[#(register! % alice "a-good-password") "signup"] [#(resend! % alice) "resend"]]
+          :let            [accepted (support/with-application (fn [{:keys [browser]}] (answer (submit! browser) alice)))]
+          [code status uncertain?] [[:rate-limited 429 false] [:unavailable 503 true] [:unavailable 503 false] [:weak-password 422 false]]]
+    (support/with-application
+      #(assoc % :provider {:request! (fn [_] (provider/fail! code status uncertain?))})
       (fn [{:keys [browser]}]
-        (let [response (register! browser alice "a-good-password")]
-          (is (= 503 (:status response)))
-          (is (str/includes? (:body response) "We could not confirm whether this request went through."))
-          (is (str/includes? (:body response) (bel/action-url ::resend/resend)))
-          (is (= 1 @calls)))))))
+        (is (= accepted (answer (submit! browser) alice)) (str label " " code))))))
+
+
+(deftest the-answer-does-not-wait-for-the-provider
+  (let [call-later! provider/call-later!
+        release     (promise)
+        asked       (promise)]
+    (support/with-application
+      #(assoc % :provider {:request! (fn [_] (deliver asked true) (deref release 5000 nil) (provider/fail! :unavailable 503 true))})
+      (fn [{:keys [browser]}]
+        (with-redefs [provider/call-later! call-later!]
+          (try
+            (is (= 200 (:status (register! browser alice "a-good-password"))))
+            (is (= true (deref asked 2000 nil)))
+            (finally (deliver release true))))))))
 
 
 (deftest opening-the-confirmation-link-changes-nothing
@@ -168,36 +230,37 @@
           (is (= fixtures/owner-id (:user-id (access/current-identity services key)))))))))
 
 
-(deftest resend-is-neutral-for-every-email
+(deftest resend-has-the-same-limit-for-every-email
   (support/with-application
     (fn [{:keys [browser state]}]
       (register! browser alice "a-good-password")
-      (let [{:keys [request!]} browser
-            resend!            #(request! :post (bel/action-url ::resend/resend) {"email" %})
-            first-click        (resend! alice)
-            second-click       (resend! alice)
-            unknown            (resend! "nobody@example.test")
-            confirmed          (resend! "owner@example.test")]
-        (doseq [response [first-click second-click unknown confirmed]]
-          (is (= 200 (:status response)))
-          (is (str/includes? (:body response) "If confirmation is needed and the message can be sent"))
-          (is (nil? (alert (:body response)))))
-        (testing "two clicks create no second account and confirmed accounts stay confirmed"
+      (swap! state assoc :elapsed 60)
+      (let [emails  ["nobody@example.test" alice "owner@example.test"]
+            answers (fn [] (set (map #(answer (resend! browser %) %) emails)))
+            first?  (answers)
+            again   (answers)]
+        (is (= 1 (count first?) (count again)))
+        (is (str/includes? (:body (first first?)) "If confirmation is needed and the message can be sent"))
+        (is (= 429 (:status (first again))))
+        (testing "a request over the limit is not sent and the account is unchanged"
+          (is (= 2 (count (filter #(= alice (:email %)) (:emails @state)))))
           (is (= 1 (count (filter #(= alice (:email %)) (vals (get-in @state [:db :auth.users]))))))
-          (is (some? (:email_confirmed_at (user-row state "owner@example.test"))))
-          (is (= 3 (count (filter #(= alice (:email %)) (:emails @state)))))
-          (is (empty? (filter #(#{"nobody@example.test" "owner@example.test"} (:email %)) (:emails @state)))))))))
+          (is (some? (:email_confirmed_at (user-row state "owner@example.test")))))
+        (testing "after the limit the provider is asked again"
+          (swap! state assoc :elapsed 120)
+          (is (= 200 (:status (resend! browser alice))))
+          (is (= 3 (count (filter #(= alice (:email %)) (:emails @state))))))))))
 
 
-(deftest a-throttled-resend-says-when-to-retry-without-claiming-delivery
-  (support/with-application
-    #(assoc % :provider {:request! (fn [_] (provider/fail! :rate-limited 429 false {:retry-after 60}))})
-    (fn [{:keys [browser]}]
-      (let [_        ((:request! browser) :get "/auth/resend")
-            response ((:request! browser) :post (bel/action-url ::resend/resend) {"email" alice})]
-        (is (= 429 (:status response)))
-        (is (str/includes? (:body response) "Too many requests. Try again in 60 seconds."))
-        (is (str/includes? (:body response) "/auth/login"))))))
+(deftest two-clicks-at-once-ask-the-provider-once
+  (let [calls (atom 0)]
+    (support/with-application
+      #(assoc % :provider {:request! (fn [_] (swap! calls inc) {})})
+      (fn [{:keys [handler]}]
+        (let [browsers (mapv (fn [_] (support/browser handler)) (range 2))
+              statuses (mapv (comp :status deref) (mapv #(future (resend! % alice)) browsers))]
+          (is (= [200 429] (sort statuses)))
+          (is (= 1 @calls)))))))
 
 
 (deftest a-signed-in-person-on-the-recovery-screen-sees-only-their-account

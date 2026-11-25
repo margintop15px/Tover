@@ -5,15 +5,15 @@
   (:require
     [bel.core :as bel :refer [defaction defpage]]
     [clojure.string :as str]
+    [tover.identity.input :as input]
+    [tover.identity.limits :as limits]
     [tover.identity.provider :as provider]
     [tover.identity.shell :as shell]
     [tover.identity.sign-in.web :as sign-in]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.forms :refer [field form]]
-    [tover.shared.web.core :as web])
-  (:import
-    [clojure.lang ExceptionInfo]))
+    [tover.shared.web.core :as web]))
 
 
 (defn check-email
@@ -36,6 +36,16 @@
          :status status))
 
 
+(defn request-confirmation!
+  "Start the email's limit shared by signup and resend, ask the provider in the background and answer alike."
+  {:malli/schema [:=> [:cat :map :string :qualified-keyword :map] :map]}
+  [{:keys [request limits] :as context} email effect input]
+  (if-let [seconds (limits/-start-email! limits :confirmation (limits/email-key email))]
+    (check-email-response request email (sign-in/too-soon seconds) 429)
+    (do (provider/call-later! context effect input)
+        (check-email-response request email nil 200))))
+
+
 (defpage signup
   {:route      "/auth/signup"
    :title      "Create an account · Tover"
@@ -55,23 +65,17 @@
 
 
 (defaction register
+  ;; The answer is given before the provider is asked, so it is the same for every email and outcome. A
+  ;; password is never repeated automatically; after the limit the person may sign up again.
   {:schema     [:map [:email {:optional true} :string] [:password {:optional true} :string]]
    :route-data {:tover/access :optional :middleware [sign-in/continue-signed-in]}}
   [{:keys [request origin] :as context} {:keys [email password]}]
-  (let [email (str/trim (or email ""))]
-    (try
-      ;; The new account starts with the language chosen on this screen; an existing account keeps its own.
-      (let [result (provider/call! context ::provider/sign-up {:email       email :password (or password "")
-                                                               :locale      i18n/*locale*
-                                                               :redirect-to (str origin "/auth/confirm")})]
-        (if (:access-token result)
-          ;; The provider confirmed immediately: confirmed account plus usable sign-in, continue to setup.
-          (sign-in/signed-in-response context (sign-in/establish! context result false) nil)
-          (check-email-response request email nil 200)))
-      (catch ExceptionInfo error
-        (let [{:keys [outcome status message]} (sign-in/failure error)]
-          (case outcome
-            :neutral (check-email-response request email nil 200)
-            ;; A lost response is never repeated with the password: offer the recovery choices instead.
-            :unknown (check-email-response request email message status)
-            (sign-in/page-response request ::signup status message {"email" email})))))))
+  (let [email    (str/trim (or email ""))
+        password (or password "")]
+    (if-let [error (or (input/email-error email) (input/new-password-error password))]
+      (sign-in/page-response request ::signup 422 error {"email" email})
+      (request-confirmation! context email ::provider/sign-up
+                             ;; The new account starts with the language chosen on this screen.
+                             {:email       email :password password
+                              :locale      i18n/*locale*
+                              :redirect-to (str origin "/auth/confirm")}))))

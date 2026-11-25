@@ -1,18 +1,17 @@
 (ns tover.identity.resend.web
-  "01a · Recover signup and resend confirmation. Resend Confirmation is a provider effect under the
-  provider's eligibility and frequency limits; Confirmation Email Requested is the provider's fact."
+  "01a · Recover signup and resend confirmation. Resend Confirmation is a provider effect under
+  Tover's email limit, requested after the answer; Confirmation Email Requested is the provider's fact."
   (:require
     [bel.core :as bel :refer [defaction defpage]]
     [clojure.string :as str]
+    [tover.identity.input :as input]
     [tover.identity.provider :as provider]
     [tover.identity.shell :as shell]
     [tover.identity.sign-in.web :as sign-in]
     [tover.identity.signup.web :as signup]
     [tover.shared.i18n :as i18n]
     [tover.shared.ui.forms :refer [field form]]
-    [tover.shared.web.core :as web])
-  (:import
-    [clojure.lang ExceptionInfo]))
+    [tover.shared.web.core :as web]))
 
 
 (defpage recover-signup
@@ -40,12 +39,7 @@
    :route-data {:tover/access :optional}}
   [{:keys [request origin] :as context} {:keys [email]}]
   (let [email (str/trim (or email ""))]
-    (try
-      (provider/call! context ::provider/resend {:email email :redirect-to (str origin "/auth/confirm")})
-      (signup/check-email-response request email nil 200)
-      (catch ExceptionInfo error
-        (let [{:keys [outcome status message]} (sign-in/failure error)]
-          (if (= :invalid outcome)
-            (sign-in/page-response request ::recover-signup status message {"email" email})
-            ;; Throttled, unavailable or unknown: offer retry and sign-in without announcing a sent message.
-            (signup/check-email-response request email message status)))))))
+    (if-let [error (input/email-error email)]
+      (sign-in/page-response request ::recover-signup 422 error {"email" email})
+      (signup/request-confirmation! context email ::provider/resend
+                                    {:email email :redirect-to (str origin "/auth/confirm")}))))

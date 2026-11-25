@@ -55,6 +55,13 @@
                 (i18n/error-message (assoc (select-keys data [:code]) :message "Identity request failed.")))}))
 
 
+(defn too-soon
+  "The email limit's answer, the same for every email."
+  {:malli/schema [:=> [:cat :int] :string]}
+  [seconds]
+  (i18n/t "Too many requests. Try again in {seconds} seconds." {:seconds seconds}))
+
+
 (defn signed-in-choice
   "An already signed-in person keeps that account or explicitly signs out first; `return-to` is where the
   sign-out continues (an unused email link stays unused)."

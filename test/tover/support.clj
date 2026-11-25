@@ -125,7 +125,11 @@
          services (assoc services :realtime realtime)
          services (assoc services :bel/system (fixtures/bel-system services))
          handler  (app/create-handler services)]
-     (try (f (assoc services :handler handler :browser (browser handler)))
+     ;; Provider calls made after the answer run at once here, so tests can read their effects.
+     (try (with-redefs [provider/call-later! (fn [context id input]
+                                               (try (provider/call! context id input) (catch Exception _ nil))
+                                               nil)]
+            (f (assoc services :handler handler :browser (browser handler))))
           (finally
             (realtime/stop! realtime)
             (rdf/close! repo)

@@ -15,6 +15,7 @@
     [bel.validation :as validation]
     [charred.api :as json]
     [clojure.string :as str]
+    [com.brunobonacci.mulog :as mu]
     [org.httpkit.client :as http]
     [tover.identity.session :as session]
     [tover.shared.i18n :as i18n])
@@ -24,7 +25,7 @@
     [java.nio.charset StandardCharsets]
     [java.time Instant]
     [java.util Map UUID]
-    [java.util.concurrent ExecutionException]
+    [java.util.concurrent ExecutionException Semaphore]
     [org.httpkit DynamicBytes]
     [org.httpkit.client IFilter]))
 
@@ -341,6 +342,27 @@
   {:malli/schema [:=> [:cat :map :qualified-keyword :map] :any]}
   [context id input]
   (runtime/effect! id {:resources (get-in context [:bel/system :resources]) ::direct? true} input))
+
+
+(def ^:private background-calls
+  "Bounds the provider calls made after the answer. ponytail: waiting ones queue in memory and are lost on restart."
+  (Semaphore. 16))
+
+
+(defn call-later!
+  "Run a provider effect after the answer, so a public answer reveals nothing by its outcome or timing. The
+  outcome is only logged, as a code: never the input."
+  {:malli/schema [:=> [:cat :map :qualified-keyword :map] :nil]}
+  [context id input]
+  (Thread/startVirtualThread
+    (fn []
+      (try
+        (.acquire ^Semaphore background-calls)
+        (try (call! context id input)
+             (finally (.release ^Semaphore background-calls)))
+        (catch Throwable error
+          (mu/log ::background-call-failed :effect id :code (:code (ex-data error)) :error-type (.getName (class error)))))))
+  nil)
 
 
 (defn- provider!
