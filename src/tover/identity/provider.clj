@@ -110,6 +110,8 @@
 
 (def ^:private error-codes
   {"invalid_credentials"        :invalid-credentials
+   ;; A disabled account looks like a wrong password.
+   "user_banned"                :invalid-credentials
    "email_not_confirmed"        :email-not-confirmed
    "email_exists"               :email-exists
    "user_already_exists"        :email-exists

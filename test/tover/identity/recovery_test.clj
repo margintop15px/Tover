@@ -9,11 +9,12 @@
     [clojure.test :refer [deftest is testing]]
     [tover.fixtures :as fixtures]
     [tover.identity.access :as access]
+    [tover.identity.limits :as limits]
     [tover.identity.provider :as provider]
     [tover.identity.recovery.web :as web]
     [tover.identity.reset-completion.model :as completion]
     [tover.identity.reset-completion.web :as completion-web]
-    [tover.identity.sign-in-test :refer [alert plain signed-in-events]]
+    [tover.identity.sign-in-test :refer [alert plain sign-in! signed-in-events]]
     [tover.support :as support])
   (:import
     [java.time Instant]))
@@ -241,9 +242,46 @@
   (support/with-application
     (fn [{:keys [browser state]}]
       ((:request! browser) :get "/auth/resend")
-      ((:request! browser) :post "/_bel/actions/tover.identity.resend.web/resend" {"email" "owner@example.test"})
+      ((:request! browser) :post (bel/action-url :tover.identity.resend.web/resend) {"email" "owner@example.test"})
       (is (= 200 (:status (request-recovery! browser "owner@example.test"))))
-      (is (some? (recovery-token state "owner@example.test"))))))
+      (is (some? (recovery-token state "owner@example.test")))
+      (testing "the confirmation limit was started"
+        (is (= #{:confirmation :recovery} (set (map first (keys (:email-limits @state))))))))))
+
+
+(defn- at-the-limit!
+  {:malli/schema [:=> [:cat :any :string] :nil]}
+  [limits email]
+  (let [key (limits/email-key email)]
+    (dotimes [_ 10] (limits/-settle-attempt! limits (:attempt-id (limits/-start-attempt! limits key "192.0.2.1")) :failed))))
+
+
+(deftest password-reset-clears-the-email
+  (support/with-application
+    (fn [{:keys [browser handler state limits]}]
+      (at-the-limit! limits "owner@example.test")
+      (is (= 429 (:status (sign-in! (support/browser handler) "owner@example.test" fixtures/password))))
+      (request-recovery! browser "owner@example.test")
+      (is (= 303 (:status (submit-reset! browser (recovery-token state "owner@example.test") "a-new-password"))))
+      (is (= 303 (:status (sign-in! (support/browser handler) "owner@example.test" "a-new-password")))))))
+
+
+(deftest a-resumed-password-reset-clears-the-email
+  (let [failures (atom 1)
+        finish   completion-web/finish!]
+    (with-redefs [completion-web/retry-delays-ms [0 0]
+                  completion-web/finish!         (fn [& args]
+                                                   (if (neg? (swap! failures dec))
+                                                     (apply finish args)
+                                                     (throw (ex-info "database unavailable" {}))))]
+      (support/with-application
+        (fn [{:keys [browser handler state limits]}]
+          (at-the-limit! limits "owner@example.test")
+          (request-recovery! browser "owner@example.test")
+          (is (= 202 (:status (submit-reset! browser (recovery-token state "owner@example.test") "a-new-password"))))
+          (loop [n 0]
+            (when (and (< n 100) (not-every? :email-cleared (vals (:attempts @state)))) (Thread/sleep 20) (recur (inc n))))
+          (is (= 303 (:status (sign-in! (support/browser handler) "owner@example.test" "a-new-password")))))))))
 
 
 (deftest an-unacceptable-new-password-keeps-the-recovery-link

@@ -119,6 +119,8 @@ services:
       TOVER_API_KEY: ${ANON_KEY:?Configure private .env}
       TOVER_AUTH_ADMIN_KEY: ${SERVICE_ROLE_KEY:?Configure private .env}
       TOVER_ORIGIN: ${TOVER_ORIGIN}
+      # Caddy is the only way in and writes the visitor's address last in X-Forwarded-For.
+      TOVER_TRUSTED_PROXY: 'true'
       TOVER_JDBC_URL: jdbc:postgresql://db:5432/postgres
       TOVER_DB_USER: tover_app
       TOVER_DB_PASSWORD: ${TOVER_DB_PASSWORD}

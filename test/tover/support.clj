@@ -80,6 +80,7 @@
               encoded     (if (seq params) (subs (provider/query params) 1) "")
               origin      (if (contains? options :origin) (:origin options) "http://localhost:3030")
               response    (handler (cond-> {:uri     uri :request-method method :scheme :http :server-name "localhost" :server-port 3030
+                                            :remote-addr (:address options "192.0.2.1")
                                             :headers (merge (cond-> {"host" "localhost:3030"}
                                                               (:cookie @state) (assoc "cookie" (:cookie @state))
                                                               origin (assoc "origin" origin)

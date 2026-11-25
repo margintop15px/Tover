@@ -6,7 +6,9 @@
     [bel.handler :as html]
     [bel.runtime :as runtime]
     [clojure.string :as str]
+    [com.brunobonacci.mulog :as mu]
     [tover.identity.access :as access]
+    [tover.identity.limits :as limits]
     [tover.identity.provider :as provider]
     [tover.identity.session :as session]
     [tover.identity.shell :as shell]
@@ -15,6 +17,7 @@
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.forms :refer [field form]]
+    [tover.shared.web.address :as address]
     [tover.shared.web.core :as web]))
 
 
@@ -205,20 +208,63 @@
              [:a {:href "/auth/resend"} (i18n/t "Need a new confirmation email?")]]])})
 
 
+(defn- settle!
+  "Record a reserved attempt's outcome. A failure here never changes the answer: an unsettled attempt stops
+  counting by itself."
+  {:malli/schema [:=> [:cat :any :uuid [:enum :failed :succeeded :discarded]] :nil]}
+  [limits attempt-id outcome]
+  (try (limits/-settle-attempt! limits attempt-id outcome)
+       (catch Exception error
+         (mu/log ::attempt-not-settled :outcome outcome :error-type (.getName (class error)))))
+  nil)
+
+
+(defn- attempt!
+  "Sign in within a reserved attempt. Only credentials the provider rejected count as failed; a service
+  failure, an unknown outcome or a sign-in that could not be recorded does not."
+  {:malli/schema [:=> [:cat :map :uuid [:map [:email :string] [:password :string]]] :map]}
+  [{:keys [limits] :as context} attempt-id credentials]
+  (try
+    (let [row (establish! context (provider/call! context ::provider/sign-in credentials) false)]
+      (settle! limits attempt-id :succeeded)
+      row)
+    (catch Throwable error
+      (settle! limits attempt-id (if (contains? #{:rejected :invalid} (:outcome (failure error))) :failed :discarded))
+      (throw error))))
+
+
+(defn- attempts-exceeded
+  {:malli/schema [:=> [:cat :int] :string]}
+  [seconds]
+  (i18n/t "Too many sign-in attempts. Try again in {minutes} min." {:minutes (quot (+ seconds 59) 60)}))
+
+
 (defaction sign-in
   {:schema     [:map [:email {:optional true} :string] [:password {:optional true} :string]
                 [:return-to {:optional true} :string]]
    :route-data {:tover/access :optional}}
-  [{:keys [request] :as context} {:keys [email password return-to]}]
+  [{:keys [request limits trusted-proxy?] :as context} {:keys [email password return-to]}]
   (if-let [identity (:tover/identity request)]
     ;; An obsolete attempt never replaces the current sign-in; changing accounts needs Sign Out first.
     {:status 303 :headers {"location" (model/next-step identity (requested request return-to))} :body ""}
-    (try
-      (let [tokens (provider/call! context ::provider/sign-in {:email (str/trim (or email "")) :password (or password "")})]
-        (signed-in-response context (establish! context tokens false) return-to))
-      (catch Exception error
-        (let [{:keys [status message]} (failure error)]
-          (page-response request ::login status message {"email" email "return-to" (model/destination return-to)}))))))
+    (let [credentials {:email (str/trim (or email "")) :password (or password "")}
+          refused     (fn [status message]
+                        (page-response request ::login status message
+                                       {"email" email "return-to" (model/destination return-to)}))]
+      (if (some str/blank? (vals credentials))
+        (refused 400 (i18n/t "Invalid email or password."))
+        (try
+          (let [{:keys [attempt-id retry-after]} (limits/-start-attempt! limits (limits/email-key (:email credentials))
+                                                                         (address/visitor request trusted-proxy?))]
+            (if retry-after
+              (refused 429 (attempts-exceeded retry-after))
+              (signed-in-response context (attempt! context attempt-id credentials) return-to)))
+          (catch Exception error
+            (let [{:keys [outcome status message]} (failure error)]
+              (if (= :invalid outcome)
+                ;; Input the provider would not check is a wrong email or password here.
+                (refused 400 (i18n/t "Invalid email or password."))
+                (refused status message)))))))))
 
 
 (defaction continue

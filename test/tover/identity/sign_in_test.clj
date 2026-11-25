@@ -6,6 +6,7 @@
     [clojure.test :refer [deftest is testing]]
     [tover.fixtures :as fixtures]
     [tover.identity.access :as access]
+    [tover.identity.limits :as limits]
     [tover.identity.provider :as provider]
     [tover.identity.session :as session]
     [tover.identity.sign-in.model :as model]
@@ -145,13 +146,170 @@
         (is (= "The service is unavailable. Please try again." (alert (:body response))))))))
 
 
-(deftest repeated-attempts-are-limited-and-say-when-to-retry
+(defn- from
+  "One sign-in attempt from a network address, in a browser of its own."
+  {:malli/schema [:=> [:cat [:fn ifn?] :string :string :string] :map]}
+  [handler address email password]
+  (let [{:keys [request!]} (support/browser handler)]
+    (request! :get "/auth/login")
+    (request! :post sign-in-url {"email" email "password" password} {:address address})))
+
+
+(defn- fail-times!
+  {:malli/schema [:=> [:cat [:fn ifn?] :int :string :string] :nil]}
+  [handler n address email]
+  (dotimes [_ n] (from handler address email "wrong-password")))
+
+
+(defn- record-failures!
+  "Failed attempts straight in the store, for limits too large to reach through pages."
+  {:malli/schema [:=> [:cat :any [:sequential [:tuple :string :string]]] :nil]}
+  [store pairs]
+  (doseq [[email address] pairs]
+    (limits/-settle-attempt! store (:attempt-id (limits/-start-attempt! store (limits/email-key email) address)) :failed)))
+
+
+(defn- counting
+  "Services whose provider calls are counted in `calls`."
+  {:malli/schema [:=> [:cat :any] [:fn ifn?]]}
+  [calls]
+  (fn [services]
+    (update services :provider (fn [{:keys [request!]}] {:request! #(do (swap! calls inc) (request! %))}))))
+
+
+(def ^:private limited
+  "Too many sign-in attempts. Try again in 15 min.")
+
+
+(deftest limit-looks-the-same-for-every-email
   (support/with-application
-    #(assoc % :provider {:request! (fn [_] (provider/fail! :rate-limited 429 false {:retry-after 30}))})
-    (fn [{:keys [browser]}]
-      (let [response (sign-in! browser "owner@example.test" fixtures/password)]
+    (fn [{:keys [handler state]}]
+      (swap! state update-in [:db :auth.users fixtures/member-id] dissoc :email_confirmed_at)
+      (let [answers (fn [email]
+                      (mapv (fn [_] (let [response (from handler "192.0.2.7" email "wrong-password")]
+                                      (update (select-keys response [:status :body]) :body plain email)))
+                            (range 11)))
+            [unknown & others] (map answers ["nobody@example.test" "member@example.test" "owner@example.test"])]
+        (is (every? #{unknown} others))
+        (is (= (conj (vec (repeat 10 400)) 429) (map :status unknown)))
+        (is (= limited (alert (:body (last unknown)))))
+        (is (str/includes? (:body (last unknown)) "/auth/recover"))))))
+
+
+(deftest guessing-many-emails-from-one-address
+  (support/with-application
+    (fn [{:keys [handler limits]}]
+      (record-failures! limits (map (fn [n] [(str "guess" n "@example.test") "192.0.2.7"]) (range 100)))
+      (let [response (from handler "192.0.2.7" "owner@example.test" fixtures/password)]
         (is (= 429 (:status response)))
-        (is (= "Too many requests. Try again in 30 seconds." (alert (:body response))))))))
+        (is (= limited (alert (:body response)))))
+      (is (= 303 (:status (from handler "192.0.2.8" "owner@example.test" fixtures/password)))))))
+
+
+(deftest service-failure-is-not-a-failed-attempt
+  (doseq [[code status uncertain? shown] [[:unavailable 503 false 503] [:unavailable 503 true 503] [:rate-limited 429 false 429]]]
+    (support/with-application
+      #(assoc % :provider {:request! (fn [_] (provider/fail! code status uncertain?))})
+      (fn [{:keys [handler state]}]
+        (dotimes [_ 11]
+          (is (= shown (:status (from handler "192.0.2.7" "owner@example.test" fixtures/password)))))
+        (is (empty? (:attempts @state)))))))
+
+
+(deftest a-sign-in-that-cannot-be-recorded-is-not-a-failed-attempt
+  (support/with-application
+    (fn [{:keys [handler state]}]
+      (with-redefs [web/record! (fn [& _] (throw (ex-info "unavailable" {})))]
+        (is (= 503 (:status (from handler "192.0.2.7" "owner@example.test" fixtures/password)))))
+      (is (empty? (:attempts @state))))))
+
+
+(deftest tenth-failure-from-one-place
+  (let [calls (atom 0)]
+    (support/with-application
+      (counting calls)
+      (fn [{:keys [handler state]}]
+        (fail-times! handler 10 "192.0.2.7" "owner@example.test")
+        (reset! calls 0)
+        (let [response (from handler "192.0.2.7" "  Owner@Example.test " fixtures/password)]
+          (is (= 429 (:status response)))
+          (is (= limited (alert (:body response))))
+          (is (str/includes? (:body response) "Owner@Example.test"))
+          (is (not (str/includes? (:body response) fixtures/password)))
+          (testing "it is not sent to the provider"
+            (is (zero? @calls))))
+        (is (= 303 (:status (from handler "192.0.2.8" "owner@example.test" fixtures/password))))
+        (testing "and is allowed again after the window"
+          (swap! state assoc :elapsed (* 15 60))
+          (is (= 303 (:status (from handler "192.0.2.7" "owner@example.test" fixtures/password)))))))))
+
+
+(deftest one-email-from-many-addresses
+  (support/with-application
+    (fn [{:keys [handler limits]}]
+      (record-failures! limits (map (fn [n] ["owner@example.test" (str "198.51.100." n)]) (range 100)))
+      (is (= 429 (:status (from handler "192.0.2.7" "owner@example.test" fixtures/password)))))))
+
+
+(deftest success-clears-only-its-own-count
+  (support/with-application
+    (fn [{:keys [handler]}]
+      (fail-times! handler 9 "192.0.2.7" "owner@example.test")
+      (fail-times! handler 10 "192.0.2.8" "owner@example.test")
+      (is (= 303 (:status (from handler "192.0.2.7" "owner@example.test" fixtures/password))))
+      (fail-times! handler 9 "192.0.2.7" "owner@example.test")
+      (is (= 303 (:status (from handler "192.0.2.7" "owner@example.test" fixtures/password))))
+      (is (= 429 (:status (from handler "192.0.2.8" "owner@example.test" fixtures/password)))))))
+
+
+(deftest one-ipv6-network
+  (support/with-application
+    (fn [{:keys [handler]}]
+      (doseq [n (range 10)] (from handler (str "2001:db8:1:2::" n) "owner@example.test" "wrong-password"))
+      (is (= 429 (:status (from handler "2001:db8:1:2:ffff::1" "owner@example.test" fixtures/password))))
+      (is (= 303 (:status (from handler "2001:db8:1:3::1" "owner@example.test" fixtures/password)))))))
+
+
+(deftest attempts-at-once
+  (let [calls (atom 0)]
+    (support/with-application
+      #(assoc % :provider {:request! (fn [_] (swap! calls inc) (Thread/sleep 300) (provider/fail! :invalid-credentials 400 false))})
+      (fn [{:keys [handler]}]
+        (let [statuses (mapv deref (mapv (fn [_] (future (:status (from handler "192.0.2.7" "owner@example.test" "wrong-password")))) (range 11)))]
+          (is (= {400 10 429 1} (frequencies statuses)))
+          (is (= 10 @calls)))))))
+
+
+(deftest a-disabled-account-answers-like-a-wrong-password-and-counts
+  (is (= :invalid-credentials (get @#'provider/error-codes "user_banned"))))
+
+
+(deftest input-the-provider-refuses-counts-as-a-wrong-password
+  (support/with-application
+    #(assoc % :provider {:request! (fn [_] (provider/fail! :invalid-input 400 false))})
+    (fn [{:keys [handler state]}]
+      (let [response (from handler "192.0.2.7" "owner@example.test" "x")]
+        (is (= 400 (:status response)))
+        (is (= "Invalid email or password." (alert (:body response)))))
+      (is (= ["failed"] (map :status (vals (:attempts @state))))))))
+
+
+(deftest a-blank-email-or-password-starts-no-attempt
+  (support/with-application
+    (fn [{:keys [handler state]}]
+      (doseq [[email password] [["" "x"] ["owner@example.test" ""]]]
+        (is (= "Invalid email or password." (alert (:body (from handler "192.0.2.7" email password))))))
+      (is (empty? (:attempts @state))))))
+
+
+(deftest an-address-given-by-the-visitor-is-ignored
+  (support/with-application
+    (fn [{:keys [handler state]}]
+      (let [{:keys [request!]} (support/browser handler)]
+        (request! :get "/auth/login")
+        (request! :post sign-in-url {"email" "owner@example.test" "password" "wrong"}
+                  {:address "192.0.2.7" :headers {"x-forwarded-for" "203.0.113.5"}}))
+      (is (= ["192.0.2.7"] (map :address (vals (:attempts @state))))))))
 
 
 (deftest failed-identity-read-keeps-the-sign-in-and-offers-retry

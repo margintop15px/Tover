@@ -5,6 +5,7 @@
     [bel.core :as bel]
     [bel.runtime :as runtime]
     [com.brunobonacci.mulog :as mu]
+    [tover.identity.limits :as limits]
     [tover.identity.reset-completion.model :as model]
     [tover.identity.session :as session]
     [tover.identity.sign-in.web :as sign-in]
@@ -28,11 +29,13 @@
   the sign-in boundary and Password Reset Completed. The resetting sign-in then continues as an ordinary
   sign-in. Every step is idempotent, so a retry repeats none of them."
   {:malli/schema [:=> [:cat :map :string :uuid inst?] :nil]}
-  [{:keys [session-store] :as context} key attempt-id valid-after]
+  [{:keys [session-store limits] :as context} key attempt-id valid-after]
   (let [row (session/session session-store key)]
     (when-not row (session/ended!))
     (runtime/execute! (acting context row) ::model/complete-password-reset
                       {:command-id (model/command-id attempt-id) :input {:attempt-id attempt-id :valid-after valid-after}})
+    ;; The new password works at once, whatever was tried before.
+    (some->> (get-in row [:tokens :user :email]) limits/email-key (limits/-clear-email! limits))
     (let [row (session/update-session!
                 session-store key
                 (fn [row]
