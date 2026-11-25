@@ -25,7 +25,6 @@
     [bel.runtime :as runtime]
     [bel.store :as store]
     [bel.validation :as validation]
-    [charred.api :as json]
     [clojure.edn :as edn]
     [clojure.string :as str]
     [com.brunobonacci.mulog :as mu]
@@ -33,11 +32,11 @@
     [tover.inventory.actors :as actors]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.connector :as connector]
+    [tover.marketplace.sync.observations :as observations]
     [tover.marketplace.sync.ozon :as ozon]
     [tover.shared.rdf :as rdf])
   (:import
     [java.nio.charset StandardCharsets]
-    [java.security MessageDigest]
     [java.time Duration Instant]
     [java.time.temporal ChronoUnit]
     [java.util UUID]))
@@ -84,18 +83,6 @@
   {:malli/schema [:=> [:cat [:maybe :string]] [:vector :string]]}
   [text]
   (let [present (connections/decode-domains text)] (filterv present connector/domains)))
-
-
-(defn- write-json
-  {:malli/schema [:=> [:cat :any] :string]}
-  [value]
-  (json/write-json-str value))
-
-
-(defn- read-json
-  {:malli/schema [:=> [:cat [:maybe :string]] :any]}
-  [text]
-  (when-not (str/blank? text) (json/read-json text :key-fn keyword)))
 
 
 (defn position-id
@@ -164,28 +151,20 @@
                           [:active {:optional true} :boolean]])))
 
 
-(def OperationKind
-  [:enum "fbs-posting" "fbo-posting" "return" "rfbs-return" "supply" "removal"])
-
-
 (def SourceOperation
   (into [:map [:source-operation-id [:string {:min 1 :max 700}]]]
         (concat Observed
-                [[:kind OperationKind] [:status :string] [:terminal :boolean]
+                [[:kind observations/OperationKind] [:status :string] [:terminal :boolean]
                  [:occurred-at {:optional true} At] [:planned-at {:optional true} At] [:provider-updated-at {:optional true} At]
                  [:related-operation {:optional true} :string] [:lines Text]
                  [:from-warehouse {:optional true} :string] [:to-warehouse {:optional true} :string]
                  [:complete :boolean] [:missing {:optional true} Text]])))
 
 
-(def ValueType
-  [:enum "string" "integer" "decimal" "boolean" "date" "dictionary" "unknown"])
-
-
 (def FieldDefinition
   (into [:map [:field-definition-id [:string {:min 1 :max 700}]]]
         (concat Observed
-                [[:category-id :string] [:type-id :string] [:attribute-id :string] [:name :string] [:value-type ValueType]
+                [[:category-id :string] [:type-id :string] [:attribute-id :string] [:name :string] [:value-type observations/ValueType]
                  [:multiple :boolean] [:complex :boolean] [:unit {:optional true} :string] [:dictionary-id {:optional true} :string]])))
 
 
@@ -471,78 +450,8 @@
                    :data {:run-id             run-id :connection-id connection-id :trigger trigger
                           :triggered-by       (if (= "schedule" trigger) (str "connector:" connection-id) (str actor))
                           :domains            (encode domains)
-                          :starting-positions (write-json (starting-positions domains positions now))
+                          :starting-positions (observations/write-json (starting-positions domains positions now))
                           :started-at         (str now) :run-state  "open"}}]}))))
-
-
-(def Identifier
-  [:map [:type [:enum "product-id" "article" "sku" "barcode"]] [:value :string]
-   [:role {:optional true} [:enum "primary" "source" "historical"]]])
-
-
-(def Attribute
-  [:map [:attribute-id :string] [:group-id {:optional true} :string] [:group-index {:optional true} :int]
-   [:values [:vector [:map [:value :string] [:dictionary-id {:optional true} :string]]]]])
-
-
-(def Line
-  [:map
-   [:line-key :string]
-   [:identifiers [:vector Identifier]]
-   [:quantity {:optional true} :string]
-   [:declared-quantity {:optional true} :string]
-   [:fact-quantity {:optional true} :string]
-   [:approved-quantity {:optional true} :string]
-   [:act-id {:optional true} :string]
-   [:unit {:optional true} :string]
-   [:warehouse {:optional true} :string]
-   [:duplicate {:optional true} :boolean]
-   ;; Declared so that a batch still carrying buyer data is refused instead of silently stripped.
-   [:buyer {:optional true} :any] [:customer {:optional true} :any] [:addressee {:optional true} :any]
-   [:address {:optional true} :any]])
-
-
-(def Observation
-  "A sanitized source record as the fetcher translated it (see `tover.marketplace.sync.ozon`)."
-  [:map
-   [:kind [:enum "product" "product-aliases" "product-attributes" "warehouse" "stock" "operation" "attribute-definition"]]
-   [:source-id {:optional true} :string]
-   [:name {:optional true} [:maybe :string]]
-   [:identifiers {:optional true} [:vector Identifier]]
-   [:aliases {:optional true} [:vector Identifier]]
-   [:attributes {:optional true} [:vector Attribute]]
-   [:category {:optional true} [:maybe :string]]
-   [:archived {:optional true} :boolean]
-   [:provider-updated-at {:optional true} [:maybe :string]]
-   [:fulfilment-type {:optional true} [:maybe :string]]
-   [:source {:optional true} :string]
-   [:product-source-id {:optional true} :string]
-   [:warehouse-source-id {:optional true} :string]
-   [:present {:optional true} :int]
-   [:reserved {:optional true} :int]
-   [:provider-as-of {:optional true} :string]
-   [:operation-kind {:optional true} OperationKind]
-   [:status {:optional true} :string]
-   [:terminal {:optional true} :boolean]
-   [:occurred-at {:optional true} :string]
-   [:planned-at {:optional true} :string]
-   [:related-operation {:optional true} :string]
-   [:refetch-key {:optional true} :string]
-   [:lines {:optional true} [:vector Line]]
-   [:from-warehouse {:optional true} :string]
-   [:to-warehouse {:optional true} :string]
-   [:complete {:optional true} :boolean]
-   [:missing {:optional true} [:vector :string]]
-   [:category-id {:optional true} :string]
-   [:type-id {:optional true} :string]
-   [:attribute-id {:optional true} :string]
-   [:value-type {:optional true} ValueType]
-   [:multiple {:optional true} :boolean]
-   [:complex {:optional true} :boolean]
-   [:unit {:optional true} :string]
-   [:dictionary-id {:optional true} :string]
-   [:buyer {:optional true} :any] [:customer {:optional true} :any] [:addressee {:optional true} :any]
-   [:address {:optional true} :any]])
 
 
 (def RecordSourceObservations
@@ -553,7 +462,7 @@
    [:next-position [:map [:cursor Text] [:window-from {:optional true} At] [:window-to {:optional true} At]]]
    [:domain-finished :boolean]
    [:covered-until {:optional true} At]
-   [:observations [:vector Observation]]
+   [:observations [:vector observations/Observation]]
    [:adapter-version [:string {:min 1 :max 50}]]])
 
 
@@ -568,34 +477,6 @@
                  (tree-seq coll? seq observations))))
 
 
-(defn- canonical
-  {:malli/schema [:=> [:cat :any] :any]}
-  [value]
-  (cond (map? value) (into (sorted-map) (map (fn [[k v]] [k (canonical v)])) (remove (comp nil? val) value))
-        (sequential? value) (mapv canonical value)
-        :else value))
-
-
-(defn payload-hash
-  "SHA-256 of the sanitized facts."
-  {:malli/schema [:=> [:cat :any] :string]}
-  [facts]
-  (let [digest (.digest (MessageDigest/getInstance "SHA-256") (.getBytes (pr-str (canonical facts)) StandardCharsets/UTF_8))]
-    (apply str (map #(format "%02x" (bit-and % 0xff)) digest))))
-
-
-(defn entity-id
-  "Source identity within the connection; names and articles are never identity."
-  {:malli/schema [:=> [:cat :string :map] :string]}
-  [connection-id {:keys [kind source-id operation-kind category-id type-id attribute-id product-source-id]}]
-  (case kind
-    ("product" "product-aliases" "product-attributes") (str connection-id ":" source-id)
-    "warehouse" (str connection-id ":" source-id)
-    "operation" (str connection-id ":" operation-kind ":" source-id)
-    "attribute-definition" (str connection-id ":" category-id ":" type-id ":" attribute-id)
-    "stock" (str connection-id ":" product-source-id)))
-
-
 (def ^:private entity-models
   {"product"              [::external-products :external-product-id]
    "product-aliases"      [::external-products :external-product-id]
@@ -606,7 +487,7 @@
    "stock"                [::external-products :external-product-id]})
 
 
-(declare group-by-model observe-product)
+(declare group-by-model)
 
 
 (defmethod runtime/coeffect ::existing
@@ -621,137 +502,8 @@
 (defn- group-by-model
   {:malli/schema [:=> [:cat :string [:sequential :map]] [:map-of :qualified-keyword [:vector :string]]]}
   [connection-id observations]
-  (reduce (fn [acc o] (update acc (first (entity-models (:kind o))) (fnil conj []) (entity-id connection-id o)))
+  (reduce (fn [acc o] (update acc (first (entity-models (:kind o))) (fnil conj []) (observations/entity-id connection-id o)))
           {} observations))
-
-
-(defn- bindings
-  "Identifier bindings after an observation: supplied ones active (first observed kept), others inactive."
-  {:malli/schema [:=> [:cat [:maybe [:sequential :map]] [:sequential :map] :string] [:vector :map]]}
-  [previous supplied now]
-  (let [k       (juxt :type :value :role)
-        before  (into {} (map (juxt k identity)) previous)
-        current (distinct (map #(select-keys % [:type :value :role]) supplied))
-        keys    (set (map k current))]
-    (vec (concat (for [b current]
-                   (assoc b :active true :first-observed (get-in before [(k b) :first-observed] now) :last-observed now))
-                 (for [b previous :when (not (contains? keys (k b)))]
-                   (assoc b :active false))))))
-
-
-(defn- product-facts
-  "A listing's facts merge three provider views: product details, SKU aliases and attributes."
-  {:malli/schema [:=> [:cat [:maybe :map] :map] :map]}
-  [row observation]
-  (let [facts (or (read-json (:facts row)) {})]
-    (case (:kind observation)
-      "product" (assoc facts :base (dissoc observation :kind :source-id))
-      "product-aliases" (assoc facts :aliases (:aliases observation))
-      "product-attributes" (assoc facts :attributes (:attributes observation)))))
-
-
-(defn- observed-common
-  {:malli/schema [:=> [:cat :map [:maybe :map] :map :string :string :string] :map]}
-  [{:keys [id-key]} row facts connection-id source-id now]
-  (let [revision (inc (or (:revision row) 0))]
-    {id-key              (:id facts)                    :connection-id   connection-id    :source-id source-id :revision revision
-     :payload-hash       (:hash facts)                  :adapter-version (:adapter facts)
-     :observed-at        now :last-observed-at now
-     :source-revision-id (str (:id facts) "#" revision) :entity-id       (:id facts)}))
-
-
-(defn- observe
-  "One observation against the current rows: [events rows new?]. An unchanged hash only moves last observed."
-  {:malli/schema [:=> [:cat :map :map :string :string :string] [:tuple [:vector :map] :map [:maybe :string]]]}
-  [rows observation connection-id now adapter]
-  (let [kind (:kind observation)
-        id   (entity-id connection-id observation)
-        row  (get rows id)]
-    (case kind
-      "stock"
-      (if-not row
-        ;; ponytail: a figure for a listing not observed yet is skipped; products are fetched before stock.
-        [[] rows nil]
-        (let [{:keys [source fulfilment-type warehouse-source-id]} observation
-              stock-id (str id ":" source ":" (or (some->> warehouse-source-id (str "w")) fulfilment-type))]
-          [[{:type ::source-stock-observed
-             :data (cond-> {:stock-id stock-id               :connection-id connection-id :external-product-id id :source source
-                            :present  (:present observation) :observed-at   now}
-                     fulfilment-type (assoc :fulfilment-type fulfilment-type)
-                     warehouse-source-id (assoc :external-warehouse-id (str connection-id ":" warehouse-source-id))
-                     (:reserved observation) (assoc :reserved (:reserved observation))
-                     (:provider-as-of observation) (assoc :provider-as-of (:provider-as-of observation)))}]
-           rows nil]))
-
-      ("product-aliases" "product-attributes")
-      (if row (observe-product rows observation connection-id now adapter row) [[] rows nil])
-
-      "product"
-      (observe-product rows observation connection-id now adapter row)
-
-      (let [[model id-key seen event] (case kind
-                                        "warehouse" [::external-warehouses :external-warehouse-id ::external-warehouse-seen
-                                                     ::external-warehouse-observed]
-                                        "operation" [::source-operations :source-operation-id ::source-operation-seen
-                                                     ::source-operation-observed]
-                                        "attribute-definition" [::field-definitions :field-definition-id
-                                                                ::attribute-definition-seen ::attribute-definition-observed])
-            _ model
-            facts (dissoc observation :kind)
-            hash (payload-hash facts)]
-        (if (= hash (:payload-hash row))
-          [[{:type seen :data (cond-> {id-key id :last-observed-at now} (= "warehouse" kind) (assoc :active true))}]
-           (update rows id assoc :last-observed-at now) nil]
-          (let [common (observed-common {:id-key id-key} row {:id id :hash hash :adapter adapter} connection-id
-                                        (or (:source-id observation) (:attribute-id observation)) now)
-                data   (merge common
-                              {:facts (write-json (canonical facts))}
-                              (case kind
-                                "warehouse" (cond-> {:fulfilment-type (:fulfilment-type observation) :active true}
-                                              (:name observation) (assoc :name (:name observation)))
-                                "operation" (cond-> (select-keys observation [:status :terminal :complete :occurred-at :planned-at
-                                                                              :provider-updated-at :from-warehouse :to-warehouse])
-                                              true (assoc :kind (:operation-kind observation)
-                                                          :lines (write-json (mapv #(cond-> % (:warehouse %) (update :warehouse (fn [w] (str connection-id ":" w))))
-                                                                                   (:lines observation))))
-                                              (:related-operation observation) (assoc :related-operation (str connection-id ":" (:related-operation observation)))
-                                              (seq (:missing observation)) (assoc :missing (write-json (:missing observation)))
-                                              (:from-warehouse observation) (update :from-warehouse #(str connection-id ":" %))
-                                              (:to-warehouse observation) (update :to-warehouse #(str connection-id ":" %)))
-                                "attribute-definition" (select-keys observation [:category-id :type-id :attribute-id :name :value-type
-                                                                                 :multiple :complex :unit :dictionary-id])))]
-            [[{:type event :data data}] (assoc rows id data) (when-not row kind)]))))))
-
-
-(defn- observe-product
-  {:malli/schema [:=> [:cat :map :map :string :string :string [:maybe :map]] [:tuple [:vector :map] :map [:maybe :string]]]}
-  [rows observation connection-id now adapter row]
-  (let [id      (entity-id connection-id observation)
-        facts   (product-facts row observation)
-        hash    (payload-hash facts)
-        k       (juxt :type :value :role)
-        active  (set (map k (filter :active (read-json (:identifiers row)))))
-        aliases (when (= "product-aliases" (:kind observation))
-                  {:type ::external-product-aliases-seen :data {:external-product-id id :aliases-observed-at now}})
-        rows    (cond-> rows aliases (assoc-in [id :aliases-observed-at] now))]
-    ;; An unchanged payload whose bindings an earlier pass expired is observed again, reactivating them.
-    (if (and (= hash (:payload-hash row))
-             (every? #(contains? active (k %)) (concat (get-in facts [:base :identifiers]) (:aliases facts))))
-      [(cond-> [{:type ::external-product-seen :data {:external-product-id id :last-observed-at now}}] aliases (conj aliases))
-       (assoc-in rows [id :last-observed-at] now) nil]
-      (let [base     (:base facts)
-            supplied (concat (:identifiers base) (:aliases facts))
-            data     (cond-> (merge (observed-common {:id-key :external-product-id} row {:id id :hash hash :adapter adapter}
-                                                     connection-id (:source-id observation) now)
-                                    {:identifiers (write-json (bindings (read-json (:identifiers row)) supplied now))
-                                     :archived    (boolean (:archived base))
-                                     :facts       (write-json (canonical facts))})
-                       (:name base) (assoc :name (:name base))
-                       (:category base) (assoc :category (:category base))
-                       (:provider-updated-at base) (assoc :provider-updated-at (:provider-updated-at base))
-                       (seq (:attributes facts)) (assoc :attributes (write-json (:attributes facts))))]
-        [(cond-> [{:type ::external-product-observed :data data}] aliases (conj aliases))
-         (update rows id merge data) (when-not row "product")]))))
 
 
 (defn- refetch
@@ -763,7 +515,7 @@
         key      #(or (:refetch-key %) (:source-id %))
         open     (map key (remove :terminal ops))
         terminal (apply disj (set (map key (filter :terminal ops))) open)]
-    (write-json (vec (distinct (remove terminal (concat (read-json previous) open)))))))
+    (observations/write-json (vec (distinct (remove terminal (concat (observations/read-json previous) open)))))))
 
 
 (defn current-key
@@ -791,39 +543,6 @@
     {}))
 
 
-(defn expired-bindings
-  "Board decision: after a full pass of products, SKU aliases or warehouses that finished without errors, the
-  bindings that pass did not see become inactive. `rows` are the connection's rows after the pass's last batch;
-  seen means observed at or after the run started. A partial or failed pass never reaches here: its domain
-  does not finish in the run, and positions restart with each run."
-  {:malli/schema [:=> [:cat :string [:map-of :string :map] :string] [:vector :map]]}
-  [domain rows started-at]
-  (let [start   (instant started-at)
-        unseen? #(or (nil? %) (.isBefore ^Instant (instant %) start))
-        k       (juxt :type :value :role)]
-    (vec
-      (case domain
-        "warehouses"
-        (for [[id row] (sort rows)
-              :when    (and (not (false? (:active row))) (unseen? (:last-observed-at row)))]
-          {:type ::external-warehouse-expired :data {:external-warehouse-id id :active false}})
-
-        ("products" "sku-aliases")
-        (for [[id row] (sort rows)
-              :let     [bindings (read-json (:identifiers row))
-                        facts (read-json (:facts row))
-                        expire (if (= "products" domain)
-                                 (when (unseen? (:last-observed-at row)) (set (map k bindings)))
-                                   ;; Only bindings the aliases view alone supplied.
-                                 (when (unseen? (:aliases-observed-at row))
-                                   (apply disj (set (map k (:aliases facts))) (map k (get-in facts [:base :identifiers])))))
-                        after (mapv #(cond-> % (contains? expire (k %)) (assoc :active false)) bindings)]
-              :when    (not= after bindings)]
-          {:type ::external-product-bindings-expired :data {:external-product-id id :identifiers (write-json after)}})
-
-        []))))
-
-
 (defcommand record-source-observations
   {:input RecordSourceObservations :policy ::connector-principal
    :cofx  [run-cofx run-connection
@@ -849,7 +568,7 @@
     (let [connection-id     (:connection-id run)
           at                (str now)
           [events rows new] (reduce (fn [[events rows new] o]
-                                      (let [[e rows kind] (observe rows o connection-id at adapter-version)]
+                                      (let [[e rows kind] (observations/observe rows o connection-id at adapter-version)]
                                         [(into events e) rows (cond-> new kind (conj kind))]))
                                     [[] existing []] observations)
           found             (frequencies new)
@@ -867,7 +586,7 @@
                                             :recorded-at      at}
                                            (select-keys next-position [:window-from :window-to]))})
                  domain-finished
-                 (into (expired-bindings domain (merge pass-rows (select-keys rows (keys pass-rows))) (:started-at run)))
+                 (into (observations/expired-bindings domain (merge pass-rows (select-keys rows (keys pass-rows))) (:started-at run)))
                  domain-finished
                  (conj {:type ::source-domain-traversed
                         :data {:run-id           run-id :connection-id connection-id :domain domain :covered-until covered
@@ -953,8 +672,8 @@
                          (fail! :validation "A failed run names its domain and reason"))
               failures (min connections/max-failures (inc (or (:consecutive-failures connection) 0)))
               wait     (get connections/failure-waits (dec failures))
-              saved    (write-json (into (sorted-map) (keep (fn [[d row]] (when (:covered-until row) [d (:covered-until row)])))
-                                         positions))]
+              saved    (observations/write-json (into (sorted-map) (keep (fn [[d row]] (when (:covered-until row) [d (:covered-until row)])))
+                                                      positions))]
           {:events (cond-> [{:type ::marketplace-sync-failed
                              :data (cond-> {:run-id    run-id :connection-id   connection-id :failed-domain        failed-domain
                                             :reason    reason :saved-positions saved         :consecutive-failures failures
@@ -1117,20 +836,20 @@
   "What a domain step may know: the run's window, refetch ids and lookups over the connection's listings."
   {:malli/schema [:=> [:cat :map [:maybe :map] [:fn fn?]] ozon/Context]}
   [run position products]
-  (let [from     (get (read-json (:starting-positions run)) (keyword (:domain position)))
+  (let [from     (get (observations/read-json (:starting-positions run)) (keyword (:domain position)))
         listings (delay (vals (products)))
         skus     (fn [] (for [p     @listings
-                              b     (read-json (:identifiers p))
+                              b     (observations/read-json (:identifiers p))
                               :when (and (= "sku" (:type b)) (:active b))]
                           (:value b)))]
-    (cond-> {:refetch-ids  (vec (read-json (:refetch-ids position)))
+    (cond-> {:refetch-ids  (vec (observations/read-json (:refetch-ids position)))
              :skus         skus
              :categories   (fn [] (distinct (for [p     @listings
                                                   :let  [pair (some-> (:category p) (str/split #"/"))]
                                                   :when (= 2 (count pair))]
                                               pair)))
              :sku->product (fn [] (into {} (for [p     @listings
-                                                 b     (read-json (:identifiers p))
+                                                 b     (observations/read-json (:identifiers p))
                                                  :when (and (= "sku" (:type b)) (:active b))]
                                              [(:value b) (:source-id p)])))}
       from (assoc :window {:from from :to (:started-at run)}))))
