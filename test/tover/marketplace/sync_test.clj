@@ -21,7 +21,7 @@
     [tover.marketplace.sync.ozon :as ozon]
     [tover.support :as support])
   (:import
-    [java.time Duration Instant]
+    [java.time Duration Instant LocalDate]
     [java.util Base64]))
 
 
@@ -1027,8 +1027,8 @@
                                                                    :first-covered-at "2026-10-20T06:00:00Z"}} [])
                                                 :env env))
                      (:date_from (:body (first @calls)))))]
-    (is (= "2026-10-20T06:00:00Z" (from "[\"from-stock/1\"]")))
-    (is (= "2026-11-10T06:00:00Z" (from "[]")))))
+    (is (= "2026-10-19" (from "[\"from-stock/1\"]")))
+    (is (= "2026-11-09" (from "[]")))))
 
 
 ;; Slice 6 · Finish the sync run
@@ -1251,11 +1251,17 @@
   [:and :string [:fn #(try (Instant/parse %) (catch Exception _ false))]])
 
 
+(def Day
+  [:and [:re #"\d{4}-\d\d-\d\d"] [:fn #(try (LocalDate/parse %) (catch Exception _ false))]])
+
+
 (def Removals
-  "The longest range Ozon takes is not stated; the adapter asks for 30 days."
+  "Whole days, a period of at most 3 months (live)."
   [:and
-   [:map [:date_from Moment] [:date_to Moment] [:limit [:int {:min 1 :max 500}]] [:last_id [:= ""]]]
-   [:fn (fn [{:keys [date_from date_to]}] (>= 30 (.toDays (Duration/between (Instant/parse date_from) (Instant/parse date_to)))))]])
+   [:map [:date_from Day] [:date_to Day] [:limit [:int {:min 1 :max 500}]] [:last_id [:= ""]]]
+   [:fn (fn [{:keys [date_from date_to]}]
+          (let [from (LocalDate/parse date_from) to (LocalDate/parse date_to)]
+            (not (or (.isAfter from to) (.isAfter to (.plusMonths from 3))))))]])
 
 
 (def requests
@@ -1266,7 +1272,7 @@
    ;; One identifier family per request.
    "/v3/product/info/list"                    [:and [:map [:product_id [:vector {:min 1 :max 1000} Id]]] [:fn #(not-any? % [:offer_id :sku])]]
    "/v1/product/related-sku/get"              [:map [:sku [:vector {:min 1 :max 200} Id]]]
-   "/v4/product/info/attributes"              [:map [:filter [:map [:visibility [:= "ALL"]]]] [:limit [:int {:min 1 :max 1000}]] [:last_id [:enum "" "a2"]]]
+   "/v4/product/info/attributes"              [:map [:filter [:map [:visibility [:= "ALL"]]]] [:limit [:int {:min 1 :max 1000}]] [:last_id :string]]
    "/v1/description-category/attribute"       [:map [:description_category_id Id] [:type_id Id] [:language {:optional true} :string]]
    "/v5/product/info/prices"                  Listed
    "/v4/product/info/stocks"                  Listed
@@ -1353,11 +1359,11 @@
                      fields))
         removal (fn [id fields]
                   {:returns_summary_report_rows
-                   (if (within? (:date_from body) (:date_to body))
+                   (if (not-any? neg? [(compare (subs (str changed) 0 10) (:date_from body)) (compare (:date_to body) (subs (str changed) 0 10))])
                      [(merge {:return_id id :box_id 8 :sku 100 :quantity_for_return 1 :return_state "Done" :given_out_date "" :utilization_date ""}
                              fields)]
                      [])
-                   :last_id ""})
+                   :last_id "r1"})
         of-products (fn [rows]
                       (if-let [ids (:product_id filter)] (filterv #((set ids) (str (:product_id %))) rows) rows))
         listed (fn [item]
@@ -1385,12 +1391,12 @@
                                                            {:sku 101 :product_id 9001 :deleted_at "2026-01-01T00:00:00Z"}]
                                                   :errors []}
                                                  {:items [] :errors []})
+                 ;; The last page states a last_id too, and asking with it is "item not found" (live).
                  "/v4/product/info/attributes"
-                 {:result  (if (= "" last_id)
-                             [{:id 9001 :attributes [{:id 85 :complex_id 0 :values [{:dictionary_value_id 0 :value "Brand"}]}] :complex_attributes []}]
-                             [])
-                  :last_id (if (= "" last_id) "a2" "")
-                  :total   1}
+                 (when (= "" last_id)
+                   {:result  [{:id 9001 :attributes [{:id 85 :complex_id 0 :values [{:dictionary_value_id 0 :value "Brand"}]}] :complex_attributes []}]
+                    :last_id "a2"
+                    :total   1})
                  "/v1/description-category/attribute"
                  {:result (if (= ["200" "300"] (map str [(:description_category_id body) (:type_id body)]))
                             [{:id                   85    :name                  "Brand" :type            "String" :is_aspect true :is_required true :dictionary_id 0
@@ -1497,7 +1503,10 @@
     "/v1/product/related-sku/get" {:sku (vec (repeat 201 "100"))}
     "/v3/product/info/list" {:product_id ["9001"] :sku ["100"]}
     "/v1/returns/list" {:limit 500 :last_id "" :filter {:posting_numbers ["F-1"]}}
-    "/v1/removal/from-stock/list" {:date_from "2026-11-01T00:00:00Z" :date_to "2026-11-02T00:00:00Z" :limit 501 :last_id ""})
+    "/v1/removal/from-stock/list" {:date_from "2026-11-01T00:00:00Z" :date_to "2026-11-02T00:00:00Z" :limit 500 :last_id ""}
+    "/v1/removal/from-stock/list" {:date_from "2026-11-01" :date_to "2026-11-02" :limit 501 :last_id ""}
+    "/v1/removal/from-stock/list" {:date_from "2026-08-01" :date_to "2026-11-02" :limit 500 :last_id ""})
+  (is (= 404 (:status (account "/v4/product/info/attributes" {:filter {:visibility "ALL"} :limit 1000 :last_id "a2"}))))
   (are [path body expected] (= expected (:body (account path body)))
     "/v3/product/info/list" {:product_id ["9"]} {:items []}
     "/v3/supply-order/get" {:order_ids ["5"]} {:orders []}

@@ -3,6 +3,7 @@
   against a fake Ozon. No live provider calls."
   (:require
     [charred.api :as json]
+    [clojure.edn :as edn]
     [clojure.test :refer [are deftest is testing]]
     [tover.marketplace.sync.ozon :as ozon]))
 
@@ -666,9 +667,9 @@
                               (for [source ["from-stock" "from-supply"]]
                                 (map (comp (juxt :date_from :date_to) :body)
                                      (filter #(= (str "/v1/removal/" source "/list") (:path %)) @calls))))
-        ranges              [["2026-10-20T06:00:00Z" "2026-11-19T06:00:00Z"] ["2026-11-19T06:00:00Z" "2026-12-10T06:00:00Z"]]]
+        ranges              [["2026-10-19" "2026-11-18"] ["2026-11-18" "2026-12-11"]]]
     (is (= [ranges ranges] (dates context)) "no longer range than the first run asks for")
-    (is (= [["2026-12-09T06:00:00Z" "2026-12-10T06:00:00Z"]] (first (dates (dissoc context :reread-from)))))))
+    (is (= [["2026-12-08" "2026-12-11"]] (first (dates (dissoc context :reread-from)))))))
 
 
 (defn listed-orders
@@ -720,6 +721,46 @@
     (is (= :incomplete-page (:type (thrown #(read {"" (page 1 true "")})))))
     (is (= :repeated-cursor (:type (thrown #(read {"" (page 1 true "x") "x" (page 2 true "y") "y" (page 3 true "x")}))))
         "a cycle is never followed")))
+
+
+(deftest attributes-end-at-the-stated-total
+  (let [rows  (fn [from n] (mapv #(hash-map :id % :attributes []) (range from (+ from n))))
+        read  (fn [pages]
+                (let [{:keys [env calls]} (env (conj (mapv ok pages) {:status 404 :body {:message "item not found"}}))]
+                  (loop [state {} seen []]
+                    ;; The state is stored between two steps.
+                    (let [{:keys [observations finished? state]} (ozon/step "attributes" env {} (edn/read-string (pr-str state)))
+                          seen (into seen (map :source-id) observations)]
+                      (if finished?
+                        [(count seen) (mapv (comp :last_id :body) @calls)]
+                        (recur state seen))))))
+        ended #(:type (thrown (fn [] (read %))))]
+    (is (= [176 [""]] (read [{:result (rows 0 176) :total 176 :last_id "z"}])) "the last page states a last_id")
+    (is (= [176 ["" "a"]] (read [{:result (rows 0 100) :total "176" :last_id "a"} {:result (rows 100 76) :total "176" :last_id "b"}]))
+        "the rows read count over pages; text total")
+    (is (= [100 ["" "a"]] (read [{:result (rows 0 100) :total 176 :last_id "a"} {:result [] :total 176 :last_id "a"}])) "an empty page")
+    (is (= [100 [""]] (read [{:result (rows 0 100) :total 176}])) "no last_id")
+    (is (= [2 [""]] (read [{:result (rows 0 2) :last_id "a"}])) "total not stated: less than the limit")
+    (is (= [1001 ["" "a"]] (read [{:result (rows 0 1000) :last_id "a"} {:result (rows 1000 1) :last_id "b"}])) "a full page goes on")
+    (is (= :unexpected-response (ended [{:result (rows 0 100) :total 176 :last_id "a"}])) "a 404 is no end")
+    (is (= :repeated-cursor (ended [{:result (rows 0 100) :total 300 :last_id "a"} {:result (rows 100 100) :total 300 :last_id "a"}])))))
+
+
+(deftest removals-end-below-the-limit
+  (let [rows    (fn [from n] (mapv #(hash-map :return_id % :sku 100 :quantity_for_return 1) (range from (+ from n))))
+        context {:window {:from "2026-12-09T23:30:00Z" :to "2026-12-10T06:00:00Z"}}
+        read    (fn [pages]
+                  (let [{:keys [env calls]} (env (mapv #(ok (cond-> {:returns_summary_report_rows (first %)} (second %) (assoc :last_id (second %))))
+                                                       pages))]
+                    [(count (traverse "removals" env context {} 20))
+                     (mapv (juxt #(second (re-find #"from-(\w+)" (:path %))) (comp :last_id :body)) @calls)
+                     (set (map (comp (juxt :date_from :date_to) :body) @calls))]))
+        days    #{["2026-12-08" "2026-12-11"]}]
+    (is (= [["stock" ""] ["supply" ""]] (second (read [[(rows 0 17) "z"] [[] "z"]]))) "a last_id on the last page asks for nothing more")
+    (is (= [["stock" ""] ["stock" "a"] ["supply" ""]] (second (read [[(rows 0 500) "a"] [(rows 500 1) "b"] [[] ""]]))))
+    (is (= [["stock" ""] ["supply" ""]] (second (read [[(rows 0 500) nil] [[] nil]]))) "no last_id")
+    (is (= [["stock" ""] ["stock" "a"] ["supply" ""]] (second (read [[(rows 0 500) "a"] [[] "a"] [[] ""]]))) "no rows")
+    (is (= days (last (read [[[] ""] [[] ""]]))) "whole days, one more on both sides")))
 
 
 (deftest removals-given-out-or-disposed

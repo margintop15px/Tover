@@ -22,7 +22,7 @@
   (:import
     [java.io IOException]
     [java.net.http HttpTimeoutException]
-    [java.time Duration Instant ZonedDateTime]
+    [java.time Duration Instant LocalDate ZoneOffset ZonedDateTime]
     [java.time.format DateTimeFormatter]))
 
 
@@ -841,12 +841,22 @@
              #(page [] % true))))
 
 
-(defmethod step "attributes" [_ env _ {:keys [last-id]}]
+(def ^:private attribute-limit
+  1000)
+
+
+(defmethod step "attributes" [_ env _ {:keys [last-id seen] :or {seen 0}}]
+  ;; The last page states a `last_id` too, and Ozon answers 404 when asked with it: `total` ends the list.
   (let [{:keys [body]} (request! env "/v4/product/info/attributes"
-                                 {:filter {:visibility "ALL"} :limit 1000 :last_id (or last-id "")})
+                                 {:filter {:visibility "ALL"} :limit attribute-limit :last_id (or last-id "")})
         rows           (required (items body ["result" "items"]))
-        next           (next-cursor! last-id (text (get body "last_id")))]
-    (page (mapv attributes rows) {:last-id next} (or (empty? rows) (nil? next)))))
+        seen           (+ seen (count rows))
+        total          (whole (get body "total"))
+        next           (text (get body "last_id"))
+        last?          (or (empty? rows) (nil? next) (if total (>= seen total) (< (count rows) attribute-limit)))]
+    (page (mapv attributes rows)
+          {:last-id (if last? next (next-cursor! last-id next)) :seen seen}
+          last?)))
 
 
 (defmethod step "attribute-definitions" [_ env {:keys [categories]} state]
@@ -1266,24 +1276,37 @@
   (Duration/ofDays 1))
 
 
+(def ^:private removal-limit
+  500)
+
+
+(defn- removal-days
+  "The whole days [from to] that contain a window, with a day more on both sides: which time zone Ozon's days are in
+  is not stated, and a row read twice changes nothing."
+  {:malli/schema [:=> [:cat :string :string] [:tuple :string :string]]}
+  [from to]
+  (let [day #(LocalDate/ofInstant (Instant/parse %) ZoneOffset/UTC)]
+    [(str (.minusDays (day from) 1)) (str (.plusDays (day to) 1))]))
+
+
 (defmethod step "removals" [_ env context {:keys [phase last-id from] :as state}]
   ;; There is no read by id: open removals are found again by listing from where they were first covered, in
-  ;; ranges no longer than the first run asks for.
-  (let [start          (or (:reread-from context) (:from (window context)))
-        start          (or (:start state) start)
-        to             (:to (window context))
-        from           (or from start)
-        phase          (or phase "from-stock")
-        until          (str (.plus (Instant/parse from) first-run-days))
-        until          (if (.isBefore (Instant/parse until) (Instant/parse to)) until to)
-        {:keys [body]} (request! env (str "/v1/removal/" phase "/list")
-                                 {:date_from from :date_to until :limit 500 :last_id (or last-id "")})
-        rows           (required (items body ["returns_summary_report_rows"]))
-        next           (next-cursor! last-id (text (get body "last_id")))
-        more?          (and (seq rows) next)
-        next-state     (cond more? {:phase phase :from from :last-id next}
-                             (not= until to) {:phase phase :from until}
-                             (= "from-stock" phase) {:phase "from-supply" :from start})]
+  ;; ranges no longer than the first run asks for. Ozon takes days, and at most 3 months of them.
+  (let [{window-from :from window-to :to} (window context)
+        [start to] (removal-days (or (:reread-from context) window-from) window-to)
+        start (or (:start state) start)
+        from (or from start)
+        phase (or phase "from-stock")
+        until (str (.plusDays (LocalDate/parse from) (.toDays ^Duration first-run-days)))
+        until (if (.isBefore (LocalDate/parse until) (LocalDate/parse to)) until to)
+        {:keys [body]}                    (request! env (str "/v1/removal/" phase "/list")
+                                                    {:date_from from :date_to until :limit removal-limit :last_id (or last-id "")})
+        rows (required (items body ["returns_summary_report_rows"]))
+        ;; The last page states a `last_id` too.
+        next (when (<= removal-limit (count rows)) (next-cursor! last-id (text (get body "last_id"))))
+        next-state (cond next {:phase phase :from from :last-id next}
+                         (not= until to) {:phase phase :from until}
+                         (= "from-stock" phase) {:phase "from-supply" :from start})]
     (page (mapv #(removal % phase) rows) (assoc (or next-state {}) :start start) (nil? next-state))))
 
 
