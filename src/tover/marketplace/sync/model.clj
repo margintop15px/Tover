@@ -506,7 +506,9 @@
    [:run-id Ref]
    [:domain Domain]
    [:batch-key Text]
-   [:next-position [:map [:cursor Text] [:window-from {:optional true} At] [:window-to {:optional true} At]]]
+   [:next-position [:map [:cursor Text] [:window-from {:optional true} At] [:window-to {:optional true} At]
+                    ;; Refetch ids of records listed and not read yet.
+                    [:pending-ids {:optional true} [:vector :string]]]]
    [:domain-finished :boolean]
    [:covered-until {:optional true} At]
    [:observations [:vector observations/Observation]]
@@ -571,14 +573,15 @@
 
 (defn- refetch
   "Known non-terminal operations of a dated domain stay on the refetch list until terminal. An operation is
-  refetched by its `refetch-key` when the provider looks it up by another id (returns by posting number)."
-  {:malli/schema [:=> [:cat [:maybe :string] [:sequential :map]] :string]}
-  [previous observations]
+  refetched by its `refetch-key` when the provider looks it up by another id (returns by posting number). So do the
+  `pending` ids, until they are read."
+  {:malli/schema [:=> [:cat [:maybe :string] [:sequential :map] [:maybe [:sequential :string]]] :string]}
+  [previous observations pending]
   (let [ops      (filter #(= "operation" (:kind %)) observations)
         key      #(or (:refetch-key %) (:source-id %))
         open     (map key (remove :terminal ops))
         terminal (apply disj (set (map key (filter :terminal ops))) open)]
-    (observations/write-json (vec (distinct (remove terminal (concat (observations/read-json previous) open)))))))
+    (observations/write-json (vec (distinct (concat (remove terminal (concat (observations/read-json previous) open)) pending))))))
 
 
 (defn current-key
@@ -719,9 +722,9 @@
           covered           (later (:covered-until position) (or covered-until (:started-at run)))]
       {:events (cond-> (conj events
                              {:type ::source-batch-recorded
-                              :data (merge {:position-id      (position-id connection-id domain)                  :connection-id connection-id
+                              :data (merge {:position-id      (position-id connection-id domain) :connection-id connection-id
                                             :domain           domain :run-id run-id :cursor (:cursor next-position) :batch-key batch-key
-                                            :refetch-ids      (refetch (:refetch-ids position) observations)
+                                            :refetch-ids      (refetch (:refetch-ids position) observations (:pending-ids next-position))
                                             :finished         domain-finished
                                             :found-listings   (+ (:found-listings run 0) (found "product" 0))
                                             :found-warehouses (+ (:found-warehouses run 0) (found "warehouse" 0))
@@ -1108,17 +1111,15 @@
     (if-let [domain (first unfinished-domains)]
       (let [position  (assoc (get positions domain) :domain domain)
             batch-key (current-key run-id position)
-            before    (if (= "" batch-key) {} (edn/read-string batch-key))
-            context   (context-for run position item)
             figures   (lookup figures)
             fail      (fn [type]
                         (request ::complete-marketplace-sync {:run-id run-id         :outcome             "failed"            :failed-domain domain
                                                               :reason (reasons type) :unavailable-domains unavailable-domains}))
+            from      (window-start run domain)
             record    (fn [key cursor input]
                         (assoc (request ::record-source-observations
                                         (merge {:run-id          run-id :domain      domain :batch-key key
-                                                :next-position   (merge {:cursor cursor}
-                                                                        (when-let [{:keys [from to]} (:window context)] {:window-from from :window-to to}))
+                                                :next-position   (cond-> {:cursor cursor} from (assoc :window-from from :window-to (:started-at run)))
                                                 :domain-finished false :observations []
                                                 :adapter-version ozon/adapter-version}
                                                input))
@@ -1128,18 +1129,21 @@
                           :unavailable (record key key {:domain-unavailable true})
                           :throttled (record key key {:resume-not-before resume-not-before})
                           (fail type)))
-            {:keys [observations state finished? setback] failed :run-failure}
-            (try (read-step domain env context before
+            {:keys [observations state finished? setback pending-ids] failed :run-failure}
+            ;; A stored position that cannot be read is no page of the provider's either.
+            (try (read-step domain env (context-for run position item) (if (= "" batch-key) {} (edn/read-string batch-key))
                             #(and (= "stock-by-warehouse" domain)
                                   (observations/contradicts? (figures %) connection-id run-id %)))
-                 (catch clojure.lang.ExceptionInfo error
+                 (catch InterruptedException error (throw error))
+                 (catch Exception error
                    {:run-failure (or (recording-failure error attempts connection-id [run-id domain batch-key]) (throw error))}))]
         (cond
           failed (fail failed)
           (nil? state) (hold batch-key setback)
           :else
           (let [cursor (pr-str state)
-                batch  (record batch-key cursor {:domain-finished finished? :observations observations})]
+                batch  (cond-> (record batch-key cursor {:domain-finished finished? :observations observations})
+                         pending-ids (assoc-in [:input :next-position :pending-ids] pending-ids))]
             (if setback [batch (hold cursor setback)] batch))))
       (request ::complete-marketplace-sync {:run-id run-id :outcome "completed" :unavailable-domains unavailable-domains}))))
 

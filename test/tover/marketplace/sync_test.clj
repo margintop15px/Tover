@@ -990,6 +990,33 @@
     (is (= ["5/52"] (json/read-json (ids (ids nil [(op "52" false)]) [(op "51" true)]))) "in whichever batch each is read")))
 
 
+(deftest unread-supplies-of-an-order-are-kept-for-the-next-run
+  (is (= ["4/41" "5/52"]
+         (json/read-json (:refetch-ids (event (record {:position {:refetch-ids "[\"4/41\"]"}}
+                                                      {:domain "supplies" :next-position {:cursor "{}" :pending-ids ["5/52"]}})
+                                              ::sync/source-batch-recorded)))))
+  (let [finished (connections/encode-domains (remove #{"supplies"} all-domains))
+        request  (sync/fetch-request
+                   (item (run {:finished-domains finished}) {"supplies" {:run-id r :cursor "{:pending [\"5\"]}" :finished false}}
+                         (fn [path _]
+                           (fake/ok (case path
+                                      "/v3/supply-order/get" {:orders [{:order_id 5 :state "COMPLETED"
+                                                                        :supplies [{:supply_id 51} {:supply_id 52}]}]}
+                                      "/v1/supply-order/act/product/get" {:supply_acts []})))))]
+    (is (= ["5/52"] (get-in request [:input :next-position :pending-ids])))))
+
+
+(deftest unreadable-position-ends-the-run
+  (doseq [position [{:cursor "{:last-id"} {:cursor "#secret/tag 1"} {:cursor "{}" :refetch-ids "[\"x"}]]
+    (let [attempts (atom {})
+          try-it   #(try (sync/fetch-request (assoc (item (run {:finished-domains "warehouses"})
+                                                          {"products" (merge {:run-id r :finished false} position)} [])
+                                                    :attempts attempts))
+                         (catch Exception _ nil))]
+      (is (= [nil nil nil {:run-id r :outcome "failed" :failed-domain "products" :reason "retries exhausted" :unavailable-domains []}]
+             (map :input (doall (repeatedly 4 try-it))))))))
+
+
 (deftest open-removals-widen-the-window
   (let [finished (connections/encode-domains (remove #{"removals"} all-domains))
         from     (fn [refetch]

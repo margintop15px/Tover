@@ -736,8 +736,10 @@
 
 
 (def Step
-  "`setback`: the ex-data of a failure met after the observations were read; `state` continues at what failed."
-  [:map [:observations [:vector :map]] [:state :map] [:finished? :boolean] [:setback {:optional true} :map]])
+  "`setback`: the ex-data of a failure met after the observations were read; `state` continues at what failed.
+  `pending-ids`: refetch ids of records listed beside the observed ones and not read yet."
+  [:map [:observations [:vector :map]] [:state :map] [:finished? :boolean] [:setback {:optional true} :map]
+   [:pending-ids {:optional true} [:vector :string]]])
 
 
 (defn- page
@@ -948,28 +950,36 @@
   {:analytics_data true :financial_data true})
 
 
+(def ^:private posting-age
+  "The longest `since` / `to` span the FBS list takes is about a year."
+  (Duration/ofDays 364))
+
+
 (defn- postings-page
-  "One posting list page of the window, oldest first."
+  "One posting list page under `filter`, oldest first."
   {:malli/schema [:=> [:cat Env :string :map [:maybe :string]] [:map [:ids [:sequential :string]] [:next [:maybe :string]] [:more? :boolean]]]}
-  [env path {:keys [from to]} cursor]
-  (let [{:keys [body]} (request! env path {:filter {:since from :to to} :limit 100 :cursor (or cursor "") :sort_dir "ASC"})
+  [env path filter cursor]
+  (let [{:keys [body]} (request! env path {:filter filter :limit 100 :cursor (or cursor "") :sort_dir "ASC"})
         rows           (required (get body "postings"))
         next           (further cursor body)]
     {:ids (keep #(text (get % "posting_number")) rows) :next next :more? (some? next)}))
 
 
 (defmethod step "fbs-postings" [_ env context state]
-  (let [window (window context)]
+  ;; Postings changed in the window. `since` / `to` are required and bound the creation: a posting created over 364
+  ;; days before the window ends is not listed.
+  (let [{:keys [from to]} (window context)
+        filter            {:since (str (.minus (Instant/parse to) posting-age)) :to to :last_changed_status_date {:from from :to to}}]
     (dated env context state
-           #(postings-page env "/v4/posting/fbs/list" window %)
+           #(postings-page env "/v4/posting/fbs/list" filter %)
            (fn [env n]
              [(fbs-posting (result (:body (request! env "/v3/posting/fbs/get" {:posting_number n :with posting-details}))))]))))
 
 
 (defmethod step "fbo-postings" [_ env context state]
-  (let [window (window context)]
+  (let [{:keys [from to]} (window context)]
     (update (dated env context state
-                   #(postings-page env "/v3/posting/fbo/list" window %)
+                   #(postings-page env "/v3/posting/fbo/list" {:since from :to to} %)
                    (fn [env n]
                      [(fbo-posting (result (:body (request! env "/v2/posting/fbo/get" {:posting_number n :with posting-details}))))]))
             :observations with-named-fbo)))
@@ -1136,44 +1146,90 @@
       [])))
 
 
+(defn- supply-id
+  {:malli/schema [:=> [:cat :map] [:maybe :string]]}
+  [source]
+  (stated-id (get source "supply_id")))
+
+
+(defn- in-progress
+  "The progress in an order; none when it belongs to another one."
+  {:malli/schema [:=> [:cat :map [:maybe :string]] :map]}
+  [{:keys [reading]} id]
+  (if (and reading (= id (:order reading))) reading {:order id :done []}))
+
+
+(defn- unread
+  "The supplies of an order that are not read yet."
+  {:malli/schema [:=> [:cat :map :map] [:sequential :map]]}
+  [{:keys [done]} order]
+  (remove #(contains? (set done) (supply-id %)) (supplies order)))
+
+
+(defn- read-next
+  "Read on in the first order of `now`: what was observed, the state after it and whether the step ends."
+  {:malli/schema [:=> [:cat Env :map :map :map] :map]}
+  [env context {:keys [pending] :as now} order]
+  (let [progress (in-progress now (first pending))]
+    (if-let [source (first (unread progress order))]
+      (let [part {:supply (supply-id source) :bundle-id (text (get source "bundle_id"))}
+            {:keys [operation acts? bundle]}
+            (read-supply env order source (when (= part (select-keys progress [:supply :bundle-id])) (:bundle progress)))]
+        (if operation
+          {:observed [operation] :stop? acts?
+           :now      (assoc now :reading {:order (:order progress) :done (conj (:done progress) (:supply part))})}
+          {:stop? true :now (assoc now :reading (merge progress part {:bundle bundle}))}))
+      {:observed (closed-supplies context order)
+       :now      (-> now (assoc :pending (vec (rest pending))) (dissoc :reading))})))
+
+
+(defn- orders-page
+  "The step's page. The unread supplies of an order in progress become open, so the next run reads them although
+  the recorded ones make their order known."
+  {:malli/schema [:=> [:cat [:vector :map] :map [:map-of :string :map]] Step]}
+  [observed {:keys [pending] :as now} orders]
+  (let [id       (first pending)
+        order    (get orders id)
+        progress (in-progress now id)
+        ids      (if (and order (seq (:done progress)))
+                   (mapv #(str id "/" (supply-id %)) (unread progress order))
+                   [])]
+    (cond-> (page (with-named-fbo observed) now false)
+      (seq ids) (assoc :pending-ids ids))))
+
+
 (defn- read-orders
-  "Read the pending orders one supply after the other until the step is spent or an act was read. `done` are the
-  supplies read of the first order, `bundle` the part read of its next one. A failure after the first progress ends
-  the step and keeps it."
+  "Read the pending orders one supply after the other until the step is spent or an act was read. `reading` is the
+  progress in the first order: its supplies `done`, and the part read of the `bundle` of one `supply`, which counts
+  for that supply and bundle only. A failure after the first progress ends the step and keeps it."
   {:malli/schema [:=> [:cat Env :map :map [:map-of :string :map]] Step]}
   [env context state orders]
-  (loop [{[id & more] :pending :keys [done bundle] :as now} state, observed []]
-    (let [order (get orders id)
-          stop  #(page (with-named-fbo observed) now false)]
+  (loop [now state, observed []]
+    (let [order (get orders (first (:pending now)))]
       (if (or (nil? order) (and (not= now state) (spent? env)))
-        (stop)
-        (let [next (try
-                     (if-let [source (first (remove #(contains? (set done) (stated-id (get % "supply_id"))) (supplies order)))]
-                       (let [{:keys [operation acts? bundle]} (read-supply env order source bundle)]
-                         (if operation
-                           {:observed [operation] :stop? acts?
-                            :now      (assoc now :done (conj (vec done) (:source-id operation)) :bundle nil)}
-                           {:stop? true :now (assoc now :bundle bundle)}))
-                       {:observed (closed-supplies context order) :now (assoc now :pending (vec more) :done nil)})
-                     (catch clojure.lang.ExceptionInfo error
-                       {:setback (met (not= now state) error)}))]
+        (orders-page observed now orders)
+        (let [next (try (read-next env context now order)
+                        (catch clojure.lang.ExceptionInfo error
+                          {:setback (met (not= now state) error)}))
+              seen (into observed (:observed next))]
           (cond
-            (:setback next) (assoc (stop) :setback (:setback next))
-            (:stop? next) (page (with-named-fbo (into observed (:observed next))) (:now next) false)
-            :else (recur (:now next) (into observed (:observed next)))))))))
+            (:setback next) (assoc (orders-page observed now orders) :setback (:setback next))
+            (:stop? next) (orders-page seen (:now next) orders)
+            :else (recur (:now next) seen)))))))
 
 
 (defn- order-details
-  "The next pending orders, up to 50 per call. From the first settled one on, only wanted or changed ones are read."
+  "The next pending orders, up to 50 per call. From the first settled one on, only wanted or changed ones are read;
+  an order in progress is read to its end."
   {:malli/schema [:=> [:cat Env :map :map] Step]}
-  [env context {:keys [pending] :as state}]
+  [env context {:keys [pending reading] :as state}]
   (let [env     (metered env)
         batch   (vec (take 50 pending))
         rows    (required (items (:body (request! env "/v3/supply-order/get" {:order_ids batch})) ["orders"]))
         orders  (into {} (map (juxt order-id identity)) rows)
         _       (when-not (every? #(contains? orders %) batch) (fail! :incomplete-page))
         settled (filterv #(settled? context (orders %)) batch)
-        skip?   (if (seq settled) (let [wanted? (wanted context)] #(not (wanted? %))) (constantly false))
+        skip?   (if (seq settled) (let [wanted? (wanted context)] #(not (or (= % (:order reading)) (wanted? %)))) (constantly false))
         kept    (remove #(and (some #{%} settled) (skip? %)) batch)
         later   (cond->> (drop 50 pending) (seq settled) (remove skip?))
         next    (cond-> (assoc state :pending (into (vec kept) later)) (seq settled) (assoc :settled? true))]

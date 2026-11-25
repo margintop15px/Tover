@@ -3,7 +3,7 @@
   against a fake Ozon. No live provider calls."
   (:require
     [charred.api :as json]
-    [clojure.test :refer [are deftest is]]
+    [clojure.test :refer [are deftest is testing]]
     [tover.marketplace.sync.ozon :as ozon]))
 
 
@@ -428,8 +428,15 @@
                {:result {:posting_number (:posting_number body) :status "delivering"}})))))
 
 
+(def fbs-filter
+  "Changed in the window; `since` / `to` are required and bound the creation, at most a year."
+  {:since                    "2025-12-11T06:00:00Z" :to "2026-12-10T06:00:00Z"
+   :last_changed_status_date {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}})
+
+
 (deftest posting-lists-page-by-cursor
-  (doseq [[domain path] [["fbs-postings" "/v4/posting/fbs/list"] ["fbo-postings" "/v3/posting/fbo/list"]]]
+  (doseq [[domain path listing] [["fbs-postings" "/v4/posting/fbs/list" fbs-filter]
+                                 ["fbo-postings" "/v3/posting/fbo/list" {:since "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}]]]
     (let [{:keys [env calls]} (posting-lists {""  {:has_next true :cursor "x" :postings [{:posting_number "P-1"}]}
                                               "x" {:has_next true :cursor "y" :postings []}
                                               "y" {:has_next false :postings [{:posting_number "P-2"}]}})
@@ -442,7 +449,7 @@
       (is (= ["P-1" "P-2"] (map :source-id (mapcat :observations steps))))
       (is (:finished? (last steps)))
       (is (= (for [cursor ["" "x" "y"]]
-               {:filter {:since "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"} :limit 100 :cursor cursor :sort_dir "ASC"})
+               {:filter listing :limit 100 :cursor cursor :sort_dir "ASC"})
              (map :body listed))))
     (doseq [[type page] {:repeated-cursor {:has_next true :cursor "x" :postings []}
                          :incomplete-page {:has_next true :postings []}}]
@@ -538,6 +545,65 @@
         steps               (metered env calls {:started? true :pending ["5"] :listed? true})]
     (is (>= 10 (apply max (map :calls steps))))
     (is (= [(map str (range 1 26))] (map (fn [o] (map #(get-in % [:identifiers 0 :value]) (:lines o))) (mapcat :observations steps))))))
+
+
+(defn bundles
+  "Orders answered by `(orders ids)`; a bundle is one SKU a page, 25 pages when its id starts with \"long\"."
+  {:malli/schema [:=> [:cat [:fn fn?]] :map]}
+  [orders]
+  (env (fn [path {:keys [order_ids bundle_ids last_id]}]
+         (ok (case path
+               "/v3/supply-order/get" {:orders (orders order_ids)}
+               "/v1/supply-order/bundle" (let [[id] bundle_ids
+                                               n    (if (= "" last_id) 0 (parse-long last_id))]
+                                           {:items    [{:sku (str id "-" n) :quantity 1}]            :last_id (str (inc n))
+                                            :has_next (boolean (and (re-find #"^long" id) (< n 24)))})
+               {:supply_acts []})))))
+
+
+(defn skus-of
+  "Per recorded supply the bundles its lines come from."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:sequential :any]]}
+  [steps]
+  (for [o (mapcat :observations steps)]
+    [(:source-id o) (distinct (map #(re-find #"^\w+" (get-in % [:identifiers 0 :value])) (:lines o)))]))
+
+
+(deftest order-in-progress-is-never-dropped
+  (let [order         (fn [id supplies]
+                        {:order_id id :state "COMPLETED" :state_updated_date "2026-11-01T00:00:00Z"
+                         :supplies (for [[supply bundle] supplies] {:supply_id supply :bundle_id bundle})})
+        {:keys [env]} (bundles (fn [_] [(order 5 [[51 "a"] [52 "long52"]]) (order 4 [[41 "d"]])]))
+        context       {:settled-before "2026-12-09T00:00:00Z" :refetch-ids ["4/41"]}
+        before        (assoc context :known-orders (constantly #{"4"}))
+        after         (assoc context :known-orders (constantly #{"5" "4"}))]
+    (doseq [n [1 2]]
+      (testing (str "recording its first supply makes the order known, seen after step " n)
+        (let [steps (traverse "supplies" env before {:started? true :pending ["5" "4"] :listed? true} n)]
+          (is (= [["51" ["a"]] ["52" ["long52"]] ["41" ["d"]]]
+                 (skus-of (concat steps (traverse "supplies" env after (:state (last steps)) 30))))))))
+    (testing "and the next run knows which of its supplies were not read"
+      (let [[one] (traverse "supplies" env before {:started? true :pending ["5" "4"] :listed? true} 1)]
+        (is (= ["5/52"] (:pending-ids one)))
+        (is (= [["51" ["a"]] ["52" ["long52"]]]
+               (skus-of (traverse "supplies" env (assoc after :refetch-ids (:pending-ids one)) {:started? true :pending ["5" "4"] :listed? true} 30))))))))
+
+
+(deftest part-of-a-bundle-belongs-to-its-supply
+  (let [stated        (atom [[51 "long51"]])
+        {:keys [env]} (bundles (fn [ids] (for [id ids] {:order_id id :state "IN_TRANSIT" :supplies (for [[s b] @stated] {:supply_id s :bundle_id b})})))
+        half          (fn [] (:state (first (traverse "supplies" env {} {:started? true :pending ["5"] :listed? true} 1))))]
+    (doseq [[later read] [[[[50 "b"] [51 "long51"]] [["50" ["b"]] ["51" ["long51"]]]]
+                          [[[51 "new"]] [["51" ["new"]]]]
+                          [[[52 "c"]] [["52" ["c"]]]]]]
+      (reset! stated [[51 "long51"]])
+      (let [state (half)]
+        (reset! stated later)
+        (is (= read (skus-of (traverse "supplies" env {} state 30))))))
+    (reset! stated [[51 "long51"]])
+    (let [state (assoc (half) :pending ["6"])]
+      (reset! stated [[61 "e"]])
+      (is (= [["61" ["e"]]] (skus-of (traverse "supplies" env {} state 30))) "nor to another order"))))
 
 
 (deftest detail-calls-of-one-step-are-bounded
@@ -1032,5 +1098,5 @@
     (is (= ["123-0001-1"] (map :source-id (:observations first-step))))
     (is (= "/v3/posting/fbs/get" (:path (first @calls))))
     (let [listed (ozon/step "fbs-postings" env context (:state first-step))]
-      (is (= {:since "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"} (get-in (last @calls) [:body :filter])))
+      (is (= fbs-filter (get-in (last @calls) [:body :filter])))
       (is (:finished? (ozon/step "fbs-postings" env context (:state listed)))))))
