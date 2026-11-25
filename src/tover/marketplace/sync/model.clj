@@ -126,7 +126,7 @@
   [:map
    [:position-id Ref] [:connection-id Ref] [:domain Domain] [:run-id Ref] [:cursor Text] [:batch-key Text]
    [:window-from {:optional true} At] [:window-to {:optional true} At] [:refetch-ids Text] [:finished :boolean]
-   [:covered-until {:optional true} At]])
+   [:covered-until {:optional true} At] [:first-covered-at {:optional true} At]])
 
 
 (def Observed
@@ -142,6 +142,7 @@
                 [[:name {:optional true} [:string {:max 2000}]] [:identifiers Text] [:category {:optional true} :string]
                  [:attributes {:optional true} Text] [:unit-and-pack {:optional true} :string] [:archived :boolean]
                  [:provider-updated-at {:optional true} At] [:facts Text]
+                 [:cost {:optional true} :string] [:cost-currency {:optional true} :string]
                  [:aliases-observed-at {:optional true} At]])))
 
 
@@ -165,15 +166,23 @@
   (into [:map [:field-definition-id [:string {:min 1 :max 700}]]]
         (concat Observed
                 [[:category-id :string] [:type-id :string] [:attribute-id :string] [:name :string] [:value-type observations/ValueType]
-                 [:multiple :boolean] [:complex :boolean] [:unit {:optional true} :string] [:dictionary-id {:optional true} :string]])))
+                 [:multiple :boolean] [:complex :boolean] [:separates-variants :boolean] [:unit {:optional true} :string] [:dictionary-id {:optional true} :string]])))
 
 
 (def SourceStock
+  "`parts` are the stated rows the figure adds up, as JSON [part present reserved]: one per SKU of the listing."
   [:map
-   [:stock-id [:string {:min 1 :max 800}]] [:connection-id Ref] [:external-product-id :string]
-   [:external-warehouse-id {:optional true} :string] [:source [:enum "fulfilment-totals" "warehouse-analytics"]]
-   [:fulfilment-type {:optional true} [:enum "fbo" "fbs" "rfbs"]] [:present :int] [:reserved {:optional true} :int]
+   [:stock-id [:string {:min 1 :max 2000}]] [:connection-id Ref] [:run-id Ref] [:external-product-id :string]
+   [:external-warehouse-id {:optional true} :string] [:source [:enum "fulfilment-totals" "warehouse-stock" "warehouse-analytics"]]
+   [:fulfilment-type [:enum "fbo" "fbs" "rfbs" "fbp"]] [:present :int] [:reserved {:optional true} :int] [:parts Text]
    [:provider-as-of {:optional true} At] [:observed-at At]])
+
+
+(def StockPass
+  "A finished traversal of one domain by one run. `asked`, JSON source ids of the listings a stock-by-warehouse
+  pass asked for: one of them without a row has 0."
+  [:map
+   [:pass-id Ref] [:run-id Ref] [:connection-id Ref] [:domain Domain] [:traversed-at At] [:asked {:optional true} Text]])
 
 
 (def SourceRevision
@@ -198,7 +207,7 @@
 
 (defevent source-domain-traversed
   {:schema [:map [:run-id Ref] [:connection-id Ref] [:domain Domain] [:covered-until At] [:traversed-at At]
-            [:position-id Ref] [:finished-domains :string]]})
+            [:position-id Ref] [:finished-domains :string] [:first-covered-at At] [:pass-id Ref] [:asked {:optional true} Text]]})
 
 
 (defevent source-domain-unavailable
@@ -267,13 +276,14 @@
   {:id     :position-id :store :catalogue :schema SyncPosition :policy ::records/workspace-member
    :events {::source-batch-recorded   {:set [:connection-id :domain :run-id :cursor :batch-key :window-from :window-to
                                              :refetch-ids :finished]}
-            ::source-domain-traversed {:set [:covered-until]}}})
+            ::source-domain-traversed {:set [:covered-until :first-covered-at]}}})
 
 
 (defmodel external-products
   {:id     :external-product-id :store :catalogue :schema ExternalProduct :policy ::records/workspace-member
    :events {::external-product-observed         {:set (into observed-fields [:name :identifiers :category :attributes :unit-and-pack
-                                                                             :archived :provider-updated-at :facts])}
+                                                                             :archived :provider-updated-at :facts :cost
+                                                                             :cost-currency])}
             ::external-product-seen             {:set [:last-observed-at]}
             ::external-product-aliases-seen     {:set [:aliases-observed-at]}
             ::external-product-bindings-expired {:set [:identifiers]}}})
@@ -297,14 +307,20 @@
 (defmodel field-definitions
   {:id     :field-definition-id :store :catalogue :schema FieldDefinition :policy ::records/workspace-member
    :events {::attribute-definition-observed {:set (into observed-fields [:category-id :type-id :attribute-id :name :value-type
-                                                                         :multiple :complex :unit :dictionary-id])}
+                                                                         :multiple :complex :separates-variants :unit
+                                                                         :dictionary-id])}
             ::attribute-definition-seen     {:set [:last-observed-at]}}})
 
 
 (defmodel source-stock
   {:id     :stock-id :store :catalogue :schema SourceStock :policy ::records/workspace-member
-   :events {::source-stock-observed {:set [:connection-id :external-product-id :external-warehouse-id :source :fulfilment-type
-                                           :present :reserved :provider-as-of :observed-at]}}})
+   :events {::source-stock-observed {:set [:connection-id :run-id :external-product-id :external-warehouse-id :source
+                                           :fulfilment-type :present :reserved :parts :provider-as-of :observed-at]}}})
+
+
+(defmodel stock-passes
+  {:id     :pass-id :store :catalogue :schema StockPass :policy ::records/workspace-member
+   :events {::source-domain-traversed {:create [:run-id :connection-id :domain :traversed-at :asked]}}})
 
 
 (defmodel source-revisions
@@ -429,6 +445,13 @@
    [:trigger Trigger]])
 
 
+(defn- window-start
+  "Where the run's window of a dated domain starts; nil for a full domain."
+  {:malli/schema [:=> [:cat :map :string] [:maybe :string]]}
+  [run domain]
+  (get (observations/read-json (:starting-positions run)) (keyword domain)))
+
+
 (defcommand start-marketplace-sync
   {:input StartMarketplaceSync :policy ::sync-actor
    :cofx  [[:connection ::connection (fn [_ input] (select-keys input [:connection-id]))]
@@ -481,6 +504,7 @@
   {"product"              [::external-products :external-product-id]
    "product-aliases"      [::external-products :external-product-id]
    "product-attributes"   [::external-products :external-product-id]
+   "product-cost"         [::external-products :external-product-id]
    "warehouse"            [::external-warehouses :external-warehouse-id]
    "operation"            [::source-operations :source-operation-id]
    "attribute-definition" [::field-definitions :field-definition-id]
@@ -491,23 +515,26 @@
 
 
 (defmethod runtime/coeffect ::existing
-  [_ context {:keys [connection-id observations]}]
+  [_ context {:keys [connection-id run-id observations]}]
   (if connection-id
     (reduce (fn [acc [model ids]] (merge acc (load-rows context model ids)))
             {}
-            (group-by-model connection-id observations))
+            (group-by-model connection-id run-id observations))
     {}))
 
 
 (defn- group-by-model
-  {:malli/schema [:=> [:cat :string [:sequential :map]] [:map-of :qualified-keyword [:vector :string]]]}
-  [connection-id observations]
+  {:malli/schema [:=> [:cat :string [:maybe :string] [:sequential :map]] [:map-of :qualified-keyword [:vector :string]]]}
+  [connection-id run-id observations]
   (reduce (fn [acc o]
-            (-> acc
-                (update (first (entity-models (:kind o))) (fnil conj []) (observations/entity-id connection-id o))
-                ;; The warehouses it names, to tell FBS from rFBS.
-                (update ::external-warehouses (fnil into [])
-                        (mapcat #(observations/candidate-warehouse-ids connection-id %)) (observations/warehouses o))))
+            (cond-> (-> acc
+                        (update (first (entity-models (:kind o))) (fnil conj []) (observations/entity-id connection-id o))
+                        ;; The warehouses it names, to tell FBS from rFBS.
+                        (update ::external-warehouses (fnil into [])
+                                (mapcat #(observations/candidate-warehouse-ids connection-id %)) (observations/warehouses o)))
+              ;; The figure so far: the rows of one listing in one place add up.
+              (= "stock" (:kind o))
+              (update ::source-stock (fnil into []) (observations/candidate-stock-ids connection-id run-id o))))
           {} observations))
 
 
@@ -532,27 +559,39 @@
         :else (:cursor position)))
 
 
-(def ^:private binding-passes
-  "Domains whose full pass expires the bindings it did not see, with the rows that hold them."
-  {"warehouses"  [::external-warehouses :external-warehouse-id]
-   "products"    [::external-products :external-product-id]
-   "sku-aliases" [::external-products :external-product-id]})
+(def ^:private pass-models
+  "Domains whose finished pass reads every row of a model: to expire the bindings it did not see, or, for
+  stock-by-warehouse, to know the listings it asked for."
+  {"warehouses"         [::external-warehouses :external-warehouse-id]
+   "products"           [::external-products :external-product-id]
+   "sku-aliases"        [::external-products :external-product-id]
+   "stock-by-warehouse" [::external-products :external-product-id]})
 
 
 (defmethod runtime/coeffect ::pass-rows
   [_ context {:keys [connection-id domain domain-finished]}]
-  (if-let [[model id-key] (when (and connection-id domain-finished) (binding-passes domain))]
+  (if-let [[model id-key] (when (and connection-id domain-finished) (pass-models domain))]
     (into {} (for [row   (records/all-records context model id-key)
                    :when (= connection-id (:connection-id row))]
                [(get row id-key) row]))
     {}))
 
 
+(defn- skus
+  "Active SKUs of a listing: what stock is asked by."
+  {:malli/schema [:=> [:cat :map] [:sequential :string]]}
+  [listing]
+  (for [b     (observations/read-json (:identifiers listing))
+        :when (and (= "sku" (:type b)) (:active b))]
+    (:value b)))
+
+
 (defcommand record-source-observations
   {:input RecordSourceObservations :policy ::connector-principal
    :cofx  [run-cofx run-connection
            [:position ::position (fn [{:keys [run]} input] {:connection-id (:connection-id run) :domain (:domain input)})]
-           [:existing ::existing (fn [{:keys [run]} input] {:connection-id (:connection-id run) :observations (:observations input)})]
+           [:existing ::existing (fn [{:keys [run]} input] {:connection-id (:connection-id run)  :run-id (:run-id run)
+                                                            :observations  (:observations input)})]
            [:pass-rows ::pass-rows (fn [{:keys [run]} input] (assoc (select-keys input [:domain :domain-finished])
                                                                     :connection-id (:connection-id run)))]]
    :emits #{::source-batch-recorded ::source-domain-traversed ::external-product-observed ::external-product-seen
@@ -573,7 +612,7 @@
     (let [connection-id     (:connection-id run)
           at                (str now)
           [events rows new] (reduce (fn [[events rows new] o]
-                                      (let [[e rows kind] (observations/observe rows o connection-id at adapter-version)]
+                                      (let [[e rows kind] (observations/observe rows o connection-id run-id at adapter-version)]
                                         [(into events e) rows (cond-> new kind (conj kind))]))
                                     [[] existing []] observations)
           found             (frequencies new)
@@ -594,9 +633,14 @@
                  (into (observations/expired-bindings domain (merge pass-rows (select-keys rows (keys pass-rows))) (:started-at run)))
                  domain-finished
                  (conj {:type ::source-domain-traversed
-                        :data {:run-id           run-id :connection-id connection-id :domain domain :covered-until covered
-                               :traversed-at     at :position-id       (position-id connection-id domain)
-                               :finished-domains (encode (conj finished domain))}}))})))
+                        :data (cond-> {:run-id           run-id :connection-id connection-id :domain domain :covered-until covered
+                                       :traversed-at     at :position-id       (position-id connection-id domain)
+                                       :finished-domains (encode (conj finished domain))
+                                       :first-covered-at (or (:first-covered-at position) (window-start run domain) (:started-at run))
+                                       :pass-id          (str run-id "/" domain)}
+                                (= "stock-by-warehouse" domain)
+                                (assoc :asked (observations/write-json (vec (sort (keep #(when (seq (skus %)) (:source-id %))
+                                                                                        (vals pass-rows)))))))}))})))
 
 
 (def RecordFetchSetback
@@ -756,6 +800,59 @@
   (sync-status connection run positions member?))
 
 
+;; Stock passes and their figures
+
+
+(defn- rows-where
+  "Rows of `model-id` whose fields hold these texts, found by query rather than by scanning the model."
+  {:malli/schema [:=> [:cat :map :qualified-keyword :keyword [:map-of :keyword :string]] [:vector :map]]}
+  [context model-id id-key wanted]
+  (let [fields  (:fields (rdf-adapter/vocabulary (bel/get-model model-id)))
+        clauses (for [[i [field value]] (map-indexed vector wanted)]
+                  {:where    ['?row (symbol (str "?field" i)) (symbol (str "?value" i))]
+                   :bindings {(keyword (str "field" i)) (fields field) (keyword (str "value" i)) value}})
+        query   {:select '[?id] :where (into (mapv :where clauses) '[[?row ?field ?id]])}]
+    (->> (runtime/coeffect :rdf/query context {:query query :bindings (into {:field (fields id-key)} (map :bindings) clauses)})
+         (map :id)
+         (load-rows context model-id)
+         vals
+         vec)))
+
+
+(defn finished-passes
+  "Finished passes of a connection's domain, newest first; a stock-by-warehouse pass names the external products
+  it asked for."
+  {:malli/schema [:=> [:cat :map :string :string] [:vector [:map [:run-id Ref] [:observed-at At] [:asked {:optional true} [:set :string]]]]]}
+  [context connection-id domain]
+  (->> (rows-where context ::stock-passes :pass-id {:connection-id connection-id :domain domain})
+       (sort-by (comp instant :traversed-at) #(compare %2 %1))
+       (mapv (fn [{:keys [run-id traversed-at asked]}]
+               (cond-> {:run-id run-id :observed-at traversed-at}
+                 asked (assoc :asked (into #{} (map #(observations/entity-id connection-id {:kind "product" :source-id %}))
+                                           (observations/read-json asked))))))))
+
+
+(defn stock-figures
+  "The warehouse stock figures of one run, the only view that keeps a figure per run. The run's pass is finished
+  when `finished-passes` names it."
+  {:malli/schema [:=> [:cat :map :string :string] [:vector SourceStock]]}
+  [context connection-id run-id]
+  (rows-where context ::source-stock :stock-id {:connection-id connection-id :run-id run-id :source "warehouse-stock"}))
+
+
+(defn stated-present
+  "What a finished pass states of a listing in a warehouse: its figure, 0 without one, nil when the pass did not
+  ask for the listing or is not finished."
+  {:malli/schema [:=> [:cat [:maybe :map] [:sequential :map] :string :string] [:maybe :int]]}
+  [{:keys [run-id asked]} figures external-product-id external-warehouse-id]
+  (when (contains? asked external-product-id)
+    (or (some #(when (= [run-id external-product-id external-warehouse-id]
+                        ((juxt :run-id :external-product-id :external-warehouse-id) %))
+                 (:present %))
+              figures)
+        0)))
+
+
 ;; Connections due for sync (spans workspaces; read only by the scheduler)
 
 
@@ -841,22 +938,15 @@
   "What a domain step may know: the run's window, refetch ids and lookups over the connection's listings."
   {:malli/schema [:=> [:cat :map [:maybe :map] [:fn fn?]] ozon/Context]}
   [run position products]
-  (let [from     (get (observations/read-json (:starting-positions run)) (keyword (:domain position)))
-        listings (delay (vals (products)))
-        skus     (fn [] (for [p     @listings
-                              b     (observations/read-json (:identifiers p))
-                              :when (and (= "sku" (:type b)) (:active b))]
-                          (:value b)))]
+  (let [from     (window-start run (:domain position))
+        listings (delay (vals (products)))]
     (cond-> {:refetch-ids  (vec (observations/read-json (:refetch-ids position)))
-             :skus         skus
+             :skus         (fn [] (mapcat skus @listings))
              :categories   (fn [] (distinct (for [p     @listings
                                                   :let  [pair (some-> (:category p) (str/split #"/"))]
                                                   :when (= 2 (count pair))]
                                               pair)))
-             :sku->product (fn [] (into {} (for [p     @listings
-                                                 b     (observations/read-json (:identifiers p))
-                                                 :when (and (= "sku" (:type b)) (:active b))]
-                                             [(:value b) (:source-id p)])))}
+             :sku->product (fn [] (into {} (for [p @listings, sku (skus p)] [sku (:source-id p)])))}
       from (assoc :window {:from from :to (:started-at run)}))))
 
 

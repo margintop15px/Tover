@@ -572,6 +572,128 @@
     (is (= 3 (count (distinct (map (comp :stock-id :data) stocks)))))))
 
 
+(defn figure
+  {:malli/schema [:=> [:cat :map] :map]}
+  [fields]
+  (merge {:kind "stock" :source "warehouse-stock" :product-source-id "9001" :warehouse {:type "fbo" :id "77"} :present 10} fields))
+
+
+(defn figures
+  "The figures of one batch over stored `rows`, by id."
+  {:malli/schema [:=> [:cat :map [:vector :map] :map] [:map-of :string :map]]}
+  [rows observations facts]
+  (into {} (comp (filter #(= ::sync/source-stock-observed (:type %))) (map (juxt (comp :stock-id :data) :data)))
+        (:events (record (merge {:existing (merge {p {:external-product-id p}} rows)} facts)
+                         {:domain "stock-by-warehouse" :observations observations :run-id (get-in facts [:run :run-id] r)}))))
+
+
+(deftest figure-ids
+  (is (= {(str p "|warehouse-stock|" c ":fbo:77|" r)  ["fbo" r]
+          (str p "|warehouse-stock|" c ":fbs:77|" r)  ["fbs" r]
+          (str p "|warehouse-stock|" c ":rfbs:3|" r)  ["rfbs" r]
+          (str p "|warehouse-analytics|" c ":fbo:77") ["fbo" r]
+          (str p "|fulfilment-totals|fbp")            ["fbp" r]}
+         (update-vals (figures {rfbs-id {:active true}}
+                               [(figure {}) (figure {:warehouse {:type "fbs" :id "77" :name "X"}}) (figure {:warehouse {:type "fbs" :id "3"}})
+                                (figure {:source "warehouse-analytics"})
+                                (dissoc (figure {:source "fulfilment-totals" :fulfilment-type "fbp"}) :warehouse)] {})
+                      (juxt :fulfilment-type :run-id)))
+      "an unlisted FBS warehouse keeps its figure under fbs; a listed rFBS one is told from the list"))
+
+
+(deftest two-unlisted-warehouses-are-two-figures
+  (is (= {(str c ":fbs:8") 1 (str c ":fbs:9") 2}
+         (into {} (map (juxt :external-warehouse-id :present))
+               (vals (figures {} [(figure {:warehouse {:type "fbs" :id "8"} :present 1})
+                                  (figure {:warehouse {:type "fbs" :id "9"} :present 2})] {}))))))
+
+
+(deftest reserved-is-inside-present
+  (is (= [[10 3]] (map (juxt :present :reserved) (vals (figures {} [(figure {:reserved 3})] {}))))))
+
+
+(deftest skus-of-one-listing-add-up-in-their-warehouse
+  (let [one   (figure {:part "100" :present 10 :reserved 3})
+        two   (figure {:part "101" :present 4})
+        value #(mapv (juxt :present :reserved) (vals %))
+        first (figures {} [one] {})]
+    (is (= [[14 3]] (value (figures {} [one two] {}))) "in one page")
+    (is (= [[14 3]] (value (figures first [two] {}))) "over two pages")
+    (is (= [[10 3]] (value (figures first [one] {}))) "a row stated twice counts once")
+    (is (= [[14 3]] (value (figures (figures first [two] {}) [one] {}))))
+    (let [analytics (figure {:source "warehouse-analytics" :part "100" :present 6})
+          before    (figures {} [analytics] {})]
+      (is (= [[4 nil]] (value (figures before [(assoc analytics :part "101" :present 4)] {:run (run {:run-id "R2"})})))
+          "the latest figure only: an earlier run's parts do not add"))))
+
+
+(deftest cost-is-a-listing-fact
+  (let [observe (fn [row o] (record {:existing {p row}} {:domain "prices" :observations [o]}))
+        seen    #(event % ::sync/external-product-observed)
+        entered {:kind "product-cost" :source-id "9001" :cost "350.10" :cost-currency "RUB"}
+        blank   {:kind "product-cost" :source-id "9001"}
+        priced  (seen (observe @old-row entered))]
+    (is (= [2 "350.10" "RUB" "Tee" (:identifiers @old-row)] ((juxt :revision :cost :cost-currency :name :identifiers) priced)))
+    (is (= [::sync/external-product-seen ::sync/source-batch-recorded] (events (observe priced entered))))
+    (is (= ["350.10" "RUB"] ((juxt :cost :cost-currency) (seen (observe priced (product "A-2"))))) "the other views keep it")
+    (is (= [3 nil nil] ((juxt :revision :cost :cost-currency) (seen (observe priced blank)))) "no longer entered")
+    (is (= [::sync/external-product-seen ::sync/source-batch-recorded] (events (observe @old-row blank))) "no cost, no revision")
+    (is (= [::sync/source-batch-recorded] (events (record {} {:domain "prices" :observations [entered]})))
+        "an unknown listing has no cost")))
+
+
+(deftest cost-does-not-reactivate-bindings
+  (let [expired (assoc @old-row :identifiers (:identifiers (event (record {:pass-rows {p @old-row}} {:domain-finished true})
+                                                                  ::sync/external-product-bindings-expired)))
+        observe (fn [o] (record {:existing {p expired}} {:domain "prices" :observations [o]}))]
+    (is (= (:identifiers expired)
+           (:identifiers (event (observe {:kind "product-cost" :source-id "9001" :cost "350" :cost-currency "RUB"})
+                                ::sync/external-product-observed))))
+    (is (= [::sync/external-product-seen ::sync/source-batch-recorded] (events (observe {:kind "product-cost" :source-id "9001"}))))))
+
+
+(deftest definitions-say-whether-they-separate-variants
+  (let [definition {:kind     "attribute-definition" :category-id "200" :type-id            "300" :attribute-id "85" :name "Size" :value-type "string"
+                    :multiple false                  :complex     false :separates-variants true}
+        data       (event (record {} {:observations [definition]}) ::sync/attribute-definition-observed)]
+    (is (true? (:separates-variants data)))
+    (is (= [2 false] ((juxt :revision :separates-variants)
+                      (event (record {:existing {(:field-definition-id data) data}} {:observations [(assoc definition :separates-variants false)]})
+                             ::sync/attribute-definition-observed))))))
+
+
+(deftest first-coverage-is-set-once
+  (let [first-covered (fn [domain position]
+                        (:first-covered-at (event (record {:position position} {:domain domain :domain-finished true}) ::sync/source-domain-traversed)))]
+    (is (= "2026-11-10T06:00:00Z" (first-covered "fbs-postings" nil)) "the window start of a dated domain")
+    (is (= "2026-12-10T06:00:00Z" (first-covered "stock-by-warehouse" nil)) "the run start of a full one")
+    (is (= "2026-10-01T00:00:00Z" (first-covered "fbs-postings" {:first-covered-at "2026-10-01T00:00:00Z"})))
+    (is (nil? (event (record {} {:domain "fbs-postings"}) ::sync/source-domain-traversed)) "nothing before the domain finished")))
+
+
+(deftest no-row-in-a-finished-pass-is-zero
+  (let [rows  (vec (vals (figures {} [(figure {:present 10 :reserved 3})] {})))
+        pass  {:run-id r :observed-at "2026-12-11T06:00:00Z" :asked #{p (str c ":9002")}}
+        value #(sync/stated-present %1 rows %2 %3)]
+    (is (= 10 (value pass p (str c ":fbo:77"))))
+    (is (= 0 (value pass p (str c ":fbo:78"))))
+    (is (= 0 (value pass (str c ":9002") (str c ":fbo:77"))))
+    (is (nil? (value pass (str c ":9003") (str c ":fbo:77"))) "the pass did not ask for it")
+    (is (nil? (value nil p (str c ":fbo:78"))) "unfinished")
+    (is (nil? (value nil p (str c ":fbo:77"))) "figures of an unfinished pass state nothing")
+    (is (= 0 (value (assoc pass :run-id "R2") p (str c ":fbo:77"))) "another pass's figure is not its own")))
+
+
+(deftest finished-stock-pass-names-the-listings-it-asked-for
+  (let [sku  {:identifiers "[{\"type\":\"sku\",\"value\":\"100\",\"active\":true}]"}
+        gone {:identifiers "[{\"type\":\"sku\",\"value\":\"101\",\"active\":false},{\"type\":\"article\",\"value\":\"A\",\"active\":true}]"}
+        rows {p (assoc sku :source-id "9001") (str c ":9002") (assoc gone :source-id "9002")}
+        data (fn [domain finished] (event (record {:pass-rows rows} {:domain domain :domain-finished finished}) ::sync/source-domain-traversed))]
+    (is (= "[\"9001\"]" (:asked (data "stock-by-warehouse" true))))
+    (is (nil? (:asked (data "stock-analytics" true))))
+    (is (nil? (data "stock-by-warehouse" false)))))
+
+
 (deftest buyer-data-in-a-batch
   (is (= :personal-data-present
          (rejection #(record {} {:domain       "fbs-postings"
@@ -590,8 +712,9 @@
 
 (deftest domain-finished-advances-coverage
   (let [plan (record {:position {:covered-until "2026-12-09T06:00:00Z"}} {:domain-finished true})]
-    (is (= {:run-id       r :connection-id                    c                   :domain           "products" :covered-until "2026-12-10T06:00:00Z"
-            :traversed-at "2026-12-11T06:00:00Z" :position-id (str c "/products") :finished-domains "products"}
+    (is (= {:run-id       r :connection-id c :domain "products" :covered-until "2026-12-10T06:00:00Z"
+            :traversed-at "2026-12-11T06:00:00Z" :position-id      (str c "/products")    :finished-domains "products"
+            :pass-id      (str r "/products")    :first-covered-at "2026-12-10T06:00:00Z"}
            (event plan ::sync/source-domain-traversed)))
     (is (= "2026-12-12T06:00:00Z"
            (:covered-until (event (record {:position {:covered-until "2026-12-12T06:00:00Z"}} {:domain-finished true})
@@ -788,6 +911,11 @@
       "/v4/product/info/attributes" {:result [{:id 9001 :attributes [{:id 85 :values [{:value "Brand"}]}]}] :last_id ""}
       "/v1/description-category/attribute" {:result [{:id 85 :name "Brand" :type "String"}]}
       "/v4/product/info/stocks" {:items [{:product_id 9001 :stocks [{:type "fbo" :present 10 :reserved 1}]}] :cursor ""}
+      "/v5/product/info/prices" {:items [{:product_id 9001 :price {:net_price 350.5 :currency_code "RUB"}}] :cursor ""}
+      "/v1/product/info/stocks-by-warehouse/fbo" {:products [{:product_id 9001 :sku 100 :present 10 :reserved 3 :warehouse_id 77}] :has_next false}
+      "/v2/product/info/stocks-by-warehouse/fbs" {:products [{:product_id   9001 :sku            100     :present 4 :reserved 0 :free_stock 4
+                                                              :warehouse_id 1    :warehouse_name "FBS 1"}]
+                                                  :has_next false}
       "/v1/analytics/stocks" {:items [{:sku 100 :warehouse_id 2 :available_stock_count 6}]}
       "/v4/posting/fbs/list" {:result {:postings [{:posting_number "123-0001-1"}] :has_next false}}
       "/v3/posting/fbs/get" {:result {:posting_number "123-0001-1" :status "delivering" :delivery_method {:warehouse_id 1}
@@ -844,11 +972,11 @@
           (runtime/execute! ctx ::connections/resume-marketplace-connection {:command-id "resume-1" :input {:connection-id c}}))
 
         (testing "the fetcher traverses every domain and completes the run"
-          (dotimes [_ 40] (runtime/run-processors! system))
+          (dotimes [_ 60] (runtime/run-processors! system))
           (let [status (read)]
             (is (nil? (:current-run status)))
             (is (= "completed" (:last-outcome status)))
-            (is (= {:listings 1 :warehouses 3 :operations 1} (:found-counts status)))
+            (is (= {:listings 1 :warehouses 4 :operations 1} (:found-counts status)))
             (is (every? :covered-until (:covered-until status)) "every domain covered until the run start")
             (is (some? (:next-sync-at status)))))
 
@@ -856,7 +984,8 @@
           (let [product (get (runtime/coeffect ::sync/existing (assoc ctx :scope scope)
                                                {:connection-id c :observations [{:kind "product" :source-id "9001"}]})
                              (str c ":9001"))]
-            (is (= [3 "Tee"] ((juxt :revision :name) product)) "aliases and attributes each added a revision")
+            (is (= [4 "Tee" "350.5" "RUB"] ((juxt :revision :name :cost :cost-currency) product))
+                "aliases, attributes and cost each added a revision")
             (is (some #(= {:type "barcode" :value "4600000000017"} (select-keys % [:type :value]))
                       (json/read-json (:identifiers product) :key-fn keyword)))))
 
@@ -865,7 +994,7 @@
                 posts   (records/all-records (assoc ctx :scope scope) ::sync/source-operations :source-operation-id)
                 posting {:kind           "operation"           :operation-kind "fbs-posting" :source-id "X"
                          :from-warehouse {:type "fbs" :id "1"}}]
-            (is (= [["fbo:2" "fbo" nil true] ["fbs:1" "fbs" "FBS 1" true] ["supply-origin:2" "supply-origin" "FBO" true]]
+            (is (= [["fbo:2" "fbo" nil true] ["fbo:77" "fbo" nil true] ["fbs:1" "fbs" "FBS 1" true] ["supply-origin:2" "supply-origin" "FBO" true]]
                    (sort-by first (map (juxt #(subs (:external-warehouse-id %) (inc (count c))) :warehouse-type :name :active) rows))))
             (is (= [(str c ":fbs:1")] (map :from-warehouse posts)))
             (is (contains? (runtime/coeffect ::sync/existing (assoc ctx :scope scope) {:connection-id c :observations [posting]})
@@ -874,6 +1003,49 @@
 
         (testing "history shows the connector principal as Ozon · account"
           (is (= "Ozon · 123" (:actor-label (first (actors/enrich ctx [{:actor (str "connector:" c)}]))))))))))
+
+
+(deftest figures-belong-to-their-run
+  (support/with-store
+    (fn [repo _]
+      (let [marketplace {:verify (constantly nil) :repo repo :key key-bytes :pacer (atom {})
+                         :post   (fn [path body _] (update (ozon path body) :body json/write-json-str))}
+            system      (support/bel-system {:repo repo :marketplace marketplace})
+            ctx         (assoc (context system) :scope scope)
+            row         #(runtime/read-model ctx ::connections/connections {:connection-id c})
+            completed   #(loop [n 60]
+                           (when (and (pos? n) (not= "completed" (:run-state (row)))) (runtime/run-processors! system) (recur (dec n))))
+            passes      #(sync/finished-passes ctx c "stock-by-warehouse")
+            covered     #(:first-covered-at (get (runtime/coeffect ::sync/connection-positions ctx {:connection-id c}) "returns"))
+            full        (juxt :external-warehouse-id :present :reserved :fulfilment-type)]
+        (runtime/execute! ctx ::stores/register-store {:command-id "st1" :input {:store-id "s" :name "Ozon shop"}})
+        (runtime/execute! ctx ::connections/connect-marketplace-account
+                          {:command-id "connect-1"
+                           :input      {:connection-id        c :store-id                  "s"   :provider         "ozon"      :client-id "123"
+                                        :secret-ref           (connector/store-secret! marketplace workspace "k")
+                                        :verification-outcome "verified" :account-currency "RUB" :readable-domains all-domains}})
+        (completed)
+        (let [one   (:run-id (row))
+              first (covered)]
+          (is (some? first))
+          (runtime/execute! ctx ::sync/start-marketplace-sync
+                            {:command-id "now" :input {:attempt-id "now" :run-id "R2" :connection-id c :trigger "member"}})
+          (is (= [one] (map :run-id (passes))) "the open run's pass is not finished")
+          (completed)
+          (is (= ["R2" one] (map :run-id (passes))) "newest first")
+          (is (= [#{p} #{p}] (map :asked (passes))))
+          (is (every? :observed-at (passes)))
+          (is (= [] (sync/finished-passes ctx "other" "stock-by-warehouse")))
+          (is (= first (covered)) "set once")
+          (doseq [run-id [one "R2"]
+                  :let   [rows (sync/stock-figures ctx c run-id)]]
+            (is (= [[(str c ":fbo:77") 10 3 "fbo"] [(str c ":fbs:1") 4 0 "fbs"]] (sort (map full rows))))
+            (is (= #{run-id} (set (map :run-id rows)))))
+          (is (= [] (sync/stock-figures ctx "other" one)))
+          (is (= [] (sync/stock-figures ctx c "R3")))
+          (is (= {"warehouse-stock" 4 "warehouse-analytics" 1 "fulfilment-totals" 1}
+                 (frequencies (map :source (records/all-records ctx ::sync/source-stock :stock-id))))
+              "the other views keep the latest figures only"))))))
 
 
 (deftest replaced-credentials-start-a-new-scheduled-run
@@ -920,6 +1092,6 @@
                                 {:command-id (runtime/processor-command-id ::sync/marketplace-sync-scheduler request)
                                  :input      (:input request)})
               (is (= 2 (runs)) "a retried tick recovers its receipt")
-              (dotimes [_ 40] (runtime/run-processors! system))
+              (dotimes [_ 60] (runtime/run-processors! system))
               (is (= "completed" (:run-state (row))))
               (is (= "fresh" @used)))))))))

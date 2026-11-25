@@ -71,7 +71,8 @@
 (def Observation
   "A sanitized source record as the fetcher translated it (see `tover.marketplace.sync.ozon`)."
   [:map
-   [:kind [:enum "product" "product-aliases" "product-attributes" "warehouse" "stock" "operation" "attribute-definition"]]
+   [:kind [:enum "product" "product-aliases" "product-attributes" "product-cost" "warehouse" "stock" "operation"
+           "attribute-definition"]]
    [:source-id {:optional true} :string]
    [:name {:optional true} [:maybe :string]]
    [:identifiers {:optional true} [:vector Identifier]]
@@ -80,11 +81,14 @@
    [:category {:optional true} [:maybe :string]]
    [:archived {:optional true} :boolean]
    [:provider-updated-at {:optional true} [:maybe :string]]
+   [:cost {:optional true} :string]
+   [:cost-currency {:optional true} :string]
    [:warehouse-type {:optional true} WarehouseType]
    [:fulfilment-type {:optional true} [:maybe :string]]
    [:source {:optional true} :string]
    [:product-source-id {:optional true} :string]
    [:warehouse {:optional true} Warehouse]
+   [:part {:optional true} :string]
    [:present {:optional true} :int]
    [:reserved {:optional true} :int]
    [:provider-as-of {:optional true} :string]
@@ -106,6 +110,7 @@
    [:value-type {:optional true} ValueType]
    [:multiple {:optional true} :boolean]
    [:complex {:optional true} :boolean]
+   [:separates-variants {:optional true} :boolean]
    [:unit {:optional true} :string]
    [:dictionary-id {:optional true} :string]
    [:buyer {:optional true} :any] [:customer {:optional true} :any] [:addressee {:optional true} :any]
@@ -178,10 +183,11 @@
 
 (defn- resolved
   "The observation with warehouse ids in place of the warehouses it names. An operation naming one that is not
-  listed lacks a warehouse."
+  listed lacks a warehouse; a stock figure keeps it under the type that names it."
   {:malli/schema [:=> [:cat :map :string :map] :map]}
   [rows connection-id observation]
-  (let [ref  #(warehouse-ref rows connection-id %)
+  (let [ref  #(or (warehouse-ref rows connection-id %)
+                  (when (= "stock" (:kind observation)) (warehouse-id connection-id (:type %) (:id %))))
         lack (and (= "operation" (:kind observation)) (some (comp nil? ref) (warehouses observation)))]
     (cond-> (map-warehouses ref observation)
       lack (-> (assoc :complete false)
@@ -204,11 +210,50 @@
   {:malli/schema [:=> [:cat :string :map] :string]}
   [connection-id {:keys [kind source-id warehouse-type operation-kind category-id type-id attribute-id product-source-id]}]
   (case kind
-    ("product" "product-aliases" "product-attributes") (str connection-id ":" source-id)
+    ("product" "product-aliases" "product-attributes" "product-cost") (str connection-id ":" source-id)
     "warehouse" (warehouse-id connection-id warehouse-type source-id)
     "operation" (str connection-id ":" operation-kind ":" source-id)
     "attribute-definition" (str connection-id ":" category-id ":" type-id ":" attribute-id)
     "stock" (str connection-id ":" product-source-id)))
+
+
+(defn stock-id
+  "A figure's identity. `place` is the external warehouse id or the fulfilment type. Warehouse stock keeps one
+  figure per run; the other views keep the latest only."
+  {:malli/schema [:=> [:cat :string :string :string :string] :string]}
+  [external-product-id source place run-id]
+  (str/join "|" (cond-> [external-product-id source place] (= "warehouse-stock" source) (conj run-id))))
+
+
+(defn candidate-stock-ids
+  "Ids the figure may be stored under."
+  {:malli/schema [:=> [:cat :string :string :map] [:vector :string]]}
+  [connection-id run-id {:keys [source warehouse fulfilment-type] :as observation}]
+  (mapv #(stock-id (entity-id connection-id observation) source % run-id)
+        (if warehouse (candidate-warehouse-ids connection-id warehouse) [fulfilment-type])))
+
+
+(defn- stock-figure
+  "A listing's figure in one place. Its rows there (one per SKU) add up over the pages of one run; a row stated
+  twice counts once. `present` includes `reserved`."
+  {:malli/schema [:=> [:cat :map :map :map :map] :map]}
+  [rows stated {:keys [source warehouse] :as observation} {:keys [connection-id run-id now listing]}]
+  (let [type     (cond (nil? warehouse) (:fulfilment-type observation)
+                       ;; The list, not the fact, tells rFBS from FBS.
+                       (= warehouse (warehouse-id connection-id "rfbs" (get-in stated [:warehouse :id]))) "rfbs"
+                       :else (get-in stated [:warehouse :type]))
+        id       (stock-id listing source (or warehouse type) run-id)
+        row      (get rows id)
+        before   (when (= run-id (:run-id row)) (read-json (:parts row)))
+        parts    (into (sorted-map) (map (juxt first identity))
+                       (conj (vec before) [(:part observation "") (:present observation) (:reserved observation)]))
+        reserved (seq (keep peek (vals parts)))]
+    (cond-> {:stock-id        id   :connection-id connection-id :run-id run-id :external-product-id listing :source source
+             :fulfilment-type type :present       (transduce (map second) + (vals parts)) :parts (write-json (vec (vals parts)))
+             :observed-at     now}
+      warehouse (assoc :external-warehouse-id warehouse)
+      reserved (assoc :reserved (reduce + reserved))
+      (:provider-as-of observation) (assoc :provider-as-of (:provider-as-of observation)))))
 
 
 (defn bindings
@@ -226,14 +271,17 @@
 
 
 (defn product-facts
-  "A listing's facts merge three provider views: product details, SKU aliases and attributes."
+  "A listing's facts merge four provider views: product details, SKU aliases, attributes and the entered cost."
   {:malli/schema [:=> [:cat [:maybe :map] :map] :map]}
   [row observation]
   (let [facts (or (read-json (:facts row)) {})]
     (case (:kind observation)
       "product" (assoc facts :base (dissoc observation :kind :source-id))
       "product-aliases" (assoc facts :aliases (:aliases observation))
-      "product-attributes" (assoc facts :attributes (:attributes observation)))))
+      "product-attributes" (assoc facts :attributes (:attributes observation))
+      "product-cost" (if (:cost observation)
+                       (assoc facts :cost (select-keys observation [:cost :cost-currency]))
+                       (dissoc facts :cost)))))
 
 
 (defn- observed-common
@@ -250,9 +298,9 @@
 
 
 (defn observe
-  "One observation against the current rows: [events rows new?]. An unchanged hash only moves last observed."
-  {:malli/schema [:=> [:cat :map :map :string :string :string] [:tuple [:vector :map] :map [:maybe :string]]]}
-  [rows observation connection-id now adapter]
+  "One observation of a run against the current rows: [events rows new?]. An unchanged hash only moves last observed."
+  {:malli/schema [:=> [:cat :map :map :string :string :string :string] [:tuple [:vector :map] :map [:maybe :string]]]}
+  [rows observation connection-id run-id now adapter]
   (let [kind        (:kind observation)
         id          (entity-id connection-id observation)
         row         (get rows id)
@@ -267,18 +315,11 @@
       (if-not row
         ;; ponytail: a figure for a listing not observed yet is skipped; products are fetched before stock.
         [[] rows nil]
-        (let [{:keys [source fulfilment-type warehouse]} observation
-              stock-id (str id ":" source ":" (or warehouse fulfilment-type))]
-          [[{:type ::sync/source-stock-observed
-             :data (cond-> {:stock-id stock-id               :connection-id connection-id :external-product-id id :source source
-                            :present  (:present observation) :observed-at   now}
-                     fulfilment-type (assoc :fulfilment-type fulfilment-type)
-                     warehouse (assoc :external-warehouse-id warehouse)
-                     (:reserved observation) (assoc :reserved (:reserved observation))
-                     (:provider-as-of observation) (assoc :provider-as-of (:provider-as-of observation)))}]
-           rows nil]))
+        (let [figure (stock-figure rows stated observation
+                                   {:connection-id connection-id :run-id run-id :now now :listing id})]
+          [[{:type ::sync/source-stock-observed :data figure}] (assoc rows (:stock-id figure) figure) nil]))
 
-      ("product-aliases" "product-attributes")
+      ("product-aliases" "product-attributes" "product-cost")
       (if row (observe-product rows observation connection-id now adapter row) [[] rows nil])
 
       "product"
@@ -311,7 +352,8 @@
                                               (:related-operation observation) (assoc :related-operation (str connection-id ":" (:related-operation observation)))
                                               (seq (:missing observation)) (assoc :missing (write-json (:missing observation))))
                                 "attribute-definition" (select-keys observation [:category-id :type-id :attribute-id :name :value-type
-                                                                                 :multiple :complex :unit :dictionary-id])))]
+                                                                                 :multiple :complex :separates-variants :unit
+                                                                                 :dictionary-id])))]
             [[{:type event :data data}] (assoc rows id data) (when-not row kind)]))))))
 
 
@@ -322,22 +364,27 @@
         facts   (product-facts row observation)
         hash    (payload-hash facts)
         k       (juxt :type :value :role)
+        ;; A cost states no identifiers: it leaves the bindings as they are.
+        cost?   (= "product-cost" (:kind observation))
         active  (set (map k (filter :active (read-json (:identifiers row)))))
         aliases (when (= "product-aliases" (:kind observation))
                   {:type ::sync/external-product-aliases-seen :data {:external-product-id id :aliases-observed-at now}})
         rows    (cond-> rows aliases (assoc-in [id :aliases-observed-at] now))]
     ;; An unchanged payload whose bindings an earlier pass expired is observed again, reactivating them.
     (if (and (= hash (:payload-hash row))
-             (every? #(contains? active (k %)) (concat (get-in facts [:base :identifiers]) (:aliases facts))))
+             (or cost? (every? #(contains? active (k %)) (concat (get-in facts [:base :identifiers]) (:aliases facts)))))
       [(cond-> [{:type ::sync/external-product-seen :data {:external-product-id id :last-observed-at now}}] aliases (conj aliases))
        (assoc-in rows [id :last-observed-at] now) nil]
       (let [base     (:base facts)
             supplied (concat (:identifiers base) (:aliases facts))
             data     (cond-> (merge (observed-common {:id-key :external-product-id} row {:id id :hash hash :adapter adapter}
                                                      connection-id (:source-id observation) now)
-                                    {:identifiers (write-json (bindings (read-json (:identifiers row)) supplied now))
+                                    {:identifiers (if cost?
+                                                    (:identifiers row)
+                                                    (write-json (bindings (read-json (:identifiers row)) supplied now)))
                                      :archived    (boolean (:archived base))
-                                     :facts       (write-json (canonical facts))})
+                                     :facts       (write-json (canonical facts))}
+                                    (:cost facts))
                        (:name base) (assoc :name (:name base))
                        (:category base) (assoc :category (:category base))
                        (:provider-updated-at base) (assoc :provider-updated-at (:provider-updated-at base))

@@ -7,7 +7,7 @@
   turns a longer wait into `:throttled`. A 401 is `:credentials-rejected`, a 403 `:unavailable`.
 
   `step` reads one page or detail batch of a domain from an opaque traversal state and returns sanitized
-  observations (only the facts named on the board; no buyer data, prices or raw payloads), the next state and
+  observations (only the facts named on the board; no buyer data, selling prices or raw payloads), the next state and
   whether the domain is finished. Failures are ex-info with `:type` one of `:credentials-rejected`
   `:unavailable` `:throttled` `:retries-exhausted` `:repeated-cursor` `:incomplete-page` `:unexpected-response`.
 
@@ -34,7 +34,8 @@
   "The read-only calls of the board's Domains table. Anything else is refused before it is sent."
   #{"/v2/warehouse/list" "/v1/warehouse/fbo/seller/list" "/v3/product/list" "/v3/product/info/list"
     "/v1/product/related-sku/get" "/v4/product/info/attributes" "/v1/description-category/attribute"
-    "/v4/product/info/stocks" "/v1/analytics/stocks" "/v4/posting/fbs/list" "/v3/posting/fbs/get"
+    "/v5/product/info/prices" "/v4/product/info/stocks" "/v1/product/info/stocks-by-warehouse/fbo"
+    "/v2/product/info/stocks-by-warehouse/fbs" "/v1/analytics/stocks" "/v4/posting/fbs/list" "/v3/posting/fbs/get"
     "/v3/posting/fbo/list" "/v2/posting/fbo/get" "/v1/returns/list" "/v2/returns/rfbs/list" "/v2/returns/rfbs/get"
     "/v3/supply-order/list" "/v3/supply-order/get" "/v1/supply-order/bundle" "/v1/supply-order/act/product/get"
     "/v1/removal/from-stock/list" "/v1/removal/from-supply/list"})
@@ -280,20 +281,40 @@
   [category-id type-id row]
   (let [dictionary (text (get row "dictionary_id"))
         dictionary (when-not (= "0" dictionary) dictionary)]
-    (cond-> {:kind         "attribute-definition" :category-id category-id :type-id type-id
-             :attribute-id (required (text (get row "id")))
-             :name         (or (text (get row "name")) "")
-             :value-type   (cond dictionary "dictionary"
-                                 :else (get value-types (some-> (text (get row "type")) str/lower-case) "unknown"))
-             :multiple     (boolean (get row "is_collection"))
-             :complex      (boolean (or (get row "attribute_complex_id") (some-> (whole (get row "group_id")) pos?)))}
+    (cond-> {:kind               "attribute-definition" :category-id category-id :type-id type-id
+             :attribute-id       (required (text (get row "id")))
+             :name               (or (text (get row "name")) "")
+             :value-type         (cond dictionary "dictionary"
+                                       :else (get value-types (some-> (text (get row "type")) str/lower-case) "unknown"))
+             :multiple           (boolean (get row "is_collection"))
+             :complex            (boolean (or (get row "attribute_complex_id") (some-> (whole (get row "group_id")) pos?)))
+             :separates-variants (true? (get row "is_aspect"))}
       dictionary (assoc :dictionary-id dictionary))))
+
+
+(defn cost
+  "The cost the seller entered at Ozon, as exact decimal text; nil when not entered (blank or 0)."
+  {:malli/schema [:=> [:cat :map] [:maybe [:map [:cost :string] [:cost-currency {:optional true} :string]]]]}
+  [price]
+  (let [entered  (some-> (text (get price "net_price"))
+                         (as-> s (try (bigdec s) (catch NumberFormatException _ (fail! :incomplete-page)))))
+        currency (text (get price "currency_code"))]
+    (when (and entered (pos? entered))
+      (cond-> {:cost (text entered)} currency (assoc :cost-currency currency)))))
+
+
+(defn product-cost
+  "`/v5/product/info/prices` item: the entered cost only. Without one the observation says so."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [item]
+  (merge {:kind "product-cost" :source-id (required (stated-id (get item "product_id")))}
+         (cost (required (get item "price")))))
 
 
 (defn- fulfilment
   {:malli/schema [:=> [:cat :any] [:maybe :string]]}
   [value]
-  (#{"fbo" "fbs" "rfbs"} (some-> (text value) str/lower-case)))
+  (#{"fbo" "fbs" "rfbs" "fbp"} (some-> (text value) str/lower-case)))
 
 
 (defn warehouse-observation
@@ -334,6 +355,13 @@
   (required (warehouse-observation type id name)))
 
 
+(defn- part
+  "Which of a listing's rows in one place a figure comes from: its SKU, and what else tells such rows apart."
+  {:malli/schema [:=> [:cat [:* :any]] :string]}
+  [& values]
+  (str/join "/" (keep text (flatten values))))
+
+
 (defn stock-totals
   "`/v4/product/info/stocks` item. Missing `stocks` is incomplete; `stocks: []` states nothing to record."
   {:malli/schema [:=> [:cat :map] [:vector :map]]}
@@ -341,10 +369,11 @@
   (let [stocks (required (get item "stocks"))]
     (vec (for [s     stocks
                :let  [type (fulfilment (get s "type"))]
-               ;; ponytail: types outside fbo | fbs | rfbs (e.g. crossborder) are skipped until the board names them.
+               ;; ponytail: types outside fbo | fbs | rfbs | fbp (e.g. crossborder) are skipped until the board names them.
                :when type]
-           (cond-> {:kind            "stock" :source  "fulfilment-totals"              :product-source-id (required (text (get item "product_id")))
-                    :fulfilment-type type    :present (or (whole (get s "present")) 0)}
+           (cond-> {:kind            "stock" :source "fulfilment-totals"              :product-source-id (required (text (get item "product_id")))
+                    :fulfilment-type type :present   (or (whole (get s "present")) 0)
+                    :part            (part (get s "sku") (get s "shipment_type") (get s "warehouse_ids"))}
              (whole (get s "reserved")) (assoc :reserved (whole (get s "reserved"))))))))
 
 
@@ -362,9 +391,23 @@
   (let [product   (get sku->product (stated-id (get row "sku")))
         warehouse (analytics-warehouse row)]
     (when (and product warehouse)
-      {:kind      "stock" :source "warehouse-analytics" :product-source-id product
-       :warehouse warehouse
+      {:kind      "stock" :source "warehouse-analytics"  :product-source-id product
+       :warehouse warehouse :part (part (get row "sku"))
        :present   (required (whole (get row "available_stock_count")))})))
+
+
+(defn warehouse-stock
+  "A stocks-by-warehouse row of the `type` call, \"fbo\" or \"fbs\". `present` is the quantity, reserved units
+  included; a row without its listing, warehouse or quantity leaves the page incomplete."
+  {:malli/schema [:=> [:cat :string :map] :map]}
+  [type row]
+  (let [reserved (whole (get row "reserved"))]
+    (cond-> {:kind              "stock" :source "warehouse-stock"
+             :product-source-id (required (stated-id (get row "product_id")))
+             :warehouse         (required (named-warehouse type (get row "warehouse_id") (get row "warehouse_name")))
+             :part              (part (get row "sku"))
+             :present           (required (whole (get row "present")))}
+      reserved (assoc :reserved reserved))))
 
 
 (def ^:private terminal-statuses
@@ -635,12 +678,56 @@
              #(page [] % true))))
 
 
-(defmethod step "stock-totals" [_ env _ {:keys [cursor]}]
-  (let [{:keys [body]} (request! env "/v4/product/info/stocks"
-                                 {:filter {:visibility "ALL"} :limit 1000 :cursor (or cursor "") :last_id (or cursor "")})
+(defn- by-cursor
+  "A `cursor` list page of all products. There is no `has_next`: an empty page or a blank cursor ends the list."
+  {:malli/schema [:=> [:cat Env :string [:fn fn?] :map] Step]}
+  [env path translate {:keys [cursor]}]
+  (let [{:keys [body]} (request! env path {:filter {:visibility "ALL"} :limit 1000 :cursor (or cursor "")})
         rows           (required (items body ["items"]))
-        next           (next-cursor! cursor (text (or (get (result body) "cursor") (get (result body) "last_id"))))]
-    (page (vec (mapcat stock-totals rows)) {:cursor next} (or (empty? rows) (nil? next)))))
+        next           (when (seq rows) (next-cursor! cursor (text (get (result body) "cursor"))))]
+    (page (vec (mapcat translate rows)) {:cursor next} (nil? next))))
+
+
+(defmethod step "prices" [_ env _ state]
+  (by-cursor env "/v5/product/info/prices" (comp vector product-cost) state))
+
+
+(defmethod step "stock-totals" [_ env _ state]
+  (by-cursor env "/v4/product/info/stocks" stock-totals state))
+
+
+(def ^:private warehouse-stock-calls
+  "The call of each phase, its name for the SKU list, the type of the warehouses it names and the phase after it."
+  {:fbo {:path "/v1/product/info/stocks-by-warehouse/fbo" :sku-key :skus :type "fbo" :then :fbs}
+   :fbs {:path "/v2/product/info/stocks-by-warehouse/fbs" :sku-key :sku :type "fbs"}})
+
+
+(defn- further
+  "The next cursor of a `has_next` page, nil on the last one. A page that does not say is the last one only
+  without a cursor."
+  {:malli/schema [:=> [:cat [:maybe :string] :map] [:maybe :string]]}
+  [current {:strs [has_next cursor]}]
+  (let [next (text cursor)]
+    (when (or has_next (and (nil? has_next) next))
+      (when (nil? has_next) (fail! :incomplete-page))
+      (next-cursor! current (required next)))))
+
+
+(defmethod step "stock-by-warehouse" [_ env {:keys [skus]} {:keys [phase pending cursor]}]
+  (let [phase (or phase :fbo)
+        pending (or pending (vec (distinct (skus))))
+        {:keys [path sku-key type then]} (warehouse-stock-calls phase)
+        [batch more] (split-at 1000 pending)]
+    (if (empty? batch)
+      (page [] {} true)
+      (let [{:keys [body]} (request! env path {sku-key (vec batch) :limit 1000 :cursor (or cursor "")})
+            rows           (mapv #(warehouse-stock type %) (required (items body ["products"])))
+            next           (further cursor (result body))]
+        (page (with-fbo-warehouses rows (map :warehouse rows))
+              (cond next {:phase phase :pending (vec pending) :cursor next}
+                    (seq more) {:phase phase :pending (vec more)}
+                    :else {:phase then})
+              (not (or next (seq more) then)))))))
 
 
 (defmethod step "stock-analytics" [_ env {:keys [skus sku->product]} state]

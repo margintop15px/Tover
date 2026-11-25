@@ -31,7 +31,8 @@
 
 (def domains
   "Sync domains in board order (chapter 41, Fetch the next source batch)."
-  ["warehouses" "products" "sku-aliases" "attributes" "attribute-definitions" "stock-totals" "stock-analytics"
+  ["warehouses" "products" "sku-aliases" "attributes" "attribute-definitions" "prices" "stock-totals"
+   "stock-by-warehouse" "stock-analytics"
    "fbs-postings" "fbo-postings" "returns" "rfbs-returns" "supplies" "removals"])
 
 

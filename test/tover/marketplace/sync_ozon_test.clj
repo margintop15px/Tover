@@ -101,7 +101,7 @@
 (deftest only-allowlisted-reads
   (let [{:keys [env calls]} (env [(ok {})])]
     (is (= :forbidden (:type (thrown #(ozon/request! env "/v1/product/import" {})))))
-    (is (= :forbidden (:type (thrown #(ozon/request! env "/v5/product/info/prices" {})))) "no prices")
+    (is (= :forbidden (:type (thrown #(ozon/request! env "/v1/product/import/prices" {})))))
     (is (empty? @calls))))
 
 
@@ -148,10 +148,38 @@
 
 
 (deftest attribute-definition-type-is-declared
-  (is (= {:kind       "attribute-definition" :category-id "200" :type-id "300" :attribute-id "85" :name "Brand"
-          :value-type "unknown"              :multiple    false :complex false}
+  (is (= {:kind       "attribute-definition" :category-id "200" :type-id "300" :attribute-id       "85"  :name "Brand"
+          :value-type "unknown"              :multiple    false :complex false :separates-variants false}
          (ozon/attribute-definition "200" "300" {"id" 85 "name" "Brand"})))
   (is (= "dictionary" (:value-type (ozon/attribute-definition "200" "300" {"id" 1 "type" "String" "dictionary_id" 7})))))
+
+
+(deftest aspect-attributes-separate-variants
+  (is (= [true false false]
+         (map #(:separates-variants (ozon/attribute-definition "200" "300" (merge {"id" 85} %)))
+              [{"is_aspect" true} {"is_aspect" false} {}]))))
+
+
+(defn cost
+  "The cost of a provider price as it arrives over HTTP."
+  {:malli/schema [:=> [:cat :any] [:maybe :map]]}
+  [price]
+  (ozon/cost (parse (if (string? price) price (json/write-json-str price)))))
+
+
+(deftest cost-is-kept-only-when-entered
+  (is (= {:cost "350" :cost-currency "RUB"} (cost {:net_price 350 :currency_code "RUB"})))
+  (is (nil? (cost {:net_price 0 :currency_code "RUB"})))
+  (doseq [entered ["0.0" "0.00" "null" "\"\"" "\"0\"" "-1"]]
+    (is (nil? (cost (str "{\"net_price\":" entered ",\"currency_code\":\"RUB\"}"))) entered))
+  (is (nil? (cost {:currency_code "RUB"}))))
+
+
+(deftest cost-text-is-exact
+  (doseq [entered ["350.10" "0.1" "12345678901234567890.123456789" "350.00"]]
+    (is (= entered (:cost (cost (str "{\"net_price\":" entered ",\"currency_code\":\"RUB\"}"))))))
+  (is (= "350" (:cost (cost "{\"net_price\":3.5E2}"))) "no exponent")
+  (is (= :incomplete-page (:type (thrown #(cost {:net_price "many"}))))))
 
 
 (deftest posting-without-actual-handover-time
@@ -269,7 +297,8 @@
   (let [context {:skus (constantly ["100"]) :sku->product (constantly {"100" "9001"})}
         step    #(:observations (ozon/step "stock-analytics" (:env (env [(ok {:items %})])) context {}))
         row     {:sku 100 :warehouse_id 2 :warehouse_name "FBO 2" :available_stock_count 6}]
-    (is (= [{:kind "stock" :source "warehouse-analytics" :product-source-id "9001" :warehouse {:type "fbo" :id "2" :name "FBO 2"} :present 6}
+    (is (= [{:kind      "stock" :source "warehouse-analytics"          :product-source-id "9001" :part "100"
+             :warehouse {:type "fbo" :id "2" :name "FBO 2"} :present 6}
             {:kind "warehouse" :warehouse-type "fbo" :source-id "2" :name "FBO 2"}]
            (step [row])))
     (is (= [["fbo" "2" "FBO 2"]] (warehouses (step [row row]))) "once per batch")
@@ -346,6 +375,87 @@
 
 
 ;; Traversal
+
+
+(deftest prices-page-by-cursor
+  (let [{:keys [env calls]} (env [(ok {:cursor "c1" :total 2 :items [{:product_id 9223372036854775807 :offer_id "A"
+                                                                      :price      {:net_price 350.5 :currency_code "RUB" :price 900}}
+                                                                     {:product_id 9002 :price {:net_price 0 :currency_code "RUB"}}]})
+                                  (ok {:cursor "c1" :items []})])
+        s1                  (ozon/step "prices" env {} {})
+        s2                  (ozon/step "prices" env {} (:state s1))]
+    (is (= [{:kind "product-cost" :source-id "9223372036854775807" :cost "350.5" :cost-currency "RUB"}
+            {:kind "product-cost" :source-id "9002"}]
+           (:observations s1))
+        "a listing without a cost is stated too, so a withdrawn cost clears")
+    (is (= [false [] true] [(:finished? s1) (:observations s2) (:finished? s2)]) "an empty page ends the list")
+    (is (= [{:filter {:visibility "ALL"} :limit 1000 :cursor ""} {:filter {:visibility "ALL"} :limit 1000 :cursor "c1"}]
+           (map :body @calls)))))
+
+
+(deftest repeated-page-cursor-fails
+  (doseq [[domain state body] [["prices" {:cursor "c1"} {:cursor "c1" :items [{:product_id 1 :price {}}]}]
+                               ["stock-totals" {:cursor "c1"} {:cursor "c1" :items [{:product_id 1 :stocks []}]}]
+                               ["stock-by-warehouse" {:phase :fbo :pending ["1"] :cursor "c1"}
+                                {:cursor "c1" :has_next true :products [{:product_id 1 :sku 1 :warehouse_id 2 :present 1}]}]]]
+    (is (= :repeated-cursor (:type (thrown #(ozon/step domain (:env (env [(ok body)])) {:skus (constantly ["1"])} state)))) domain)))
+
+
+(deftest unreadable-price-and-stock-rows-are-incomplete
+  (doseq [[domain body] [["prices" {}] ["prices" {:items [{:product_id 1}]}] ["prices" {:items [{:price {}}]}]
+                         ["stock-by-warehouse" {:has_next false}]
+                         ["stock-by-warehouse" {:has_next true :products []}]
+                         ["stock-by-warehouse" {:cursor "x" :products []}]
+                         ["stock-by-warehouse" {:has_next false :products [{:product_id 1 :warehouse_id 2}]}]
+                         ["stock-by-warehouse" {:has_next false :products [{:product_id 1 :warehouse_id 0 :present 1}]}]
+                         ["stock-by-warehouse" {:has_next false :products [{:warehouse_id 2 :present 1}]}]]]
+    (is (= :incomplete-page (:type (thrown #(ozon/step domain (:env (env [(ok body)])) {:skus (constantly ["1"])} {})))) (pr-str body))))
+
+
+(deftest fourth-product-is-not-the-stock-cursor
+  (let [{:keys [env calls]} (env [(ok {:cursor "c1" :total 5 :items (for [id [1 2 3 4]] {:product_id id :stocks []})})
+                                  (ok {:cursor "" :items [{:product_id 5 :stocks [{:type "fbp" :sku 7 :present 2 :reserved 1}]}]})])
+        s1                  (ozon/step "stock-totals" env {} {})
+        s2                  (ozon/step "stock-totals" env {} (:state s1))]
+    (is (= ["" "c1"] (map (comp :cursor :body) @calls)))
+    (is (not-any? #(contains? (:body %) :last_id) @calls))
+    (is (= [false true] (map :finished? [s1 s2])))
+    (is (= [["fbp" 2 1]] (map (juxt :fulfilment-type :present :reserved) (:observations s2)))))
+  (is (:finished? (ozon/step "stock-totals" (:env (env [(ok {:items [{:product_id 1 :stocks []}] :last_id "x"})])) {} {}))
+      "last_id is no cursor"))
+
+
+(deftest stock-by-warehouse-reads-fbo-then-fbs
+  (let [skus  (mapv str (range 1 1002))
+        {:keys [env calls]}
+        (env (fn [path {:keys [cursor sku skus]}]
+               (ok (cond
+                     (= "/v2/product/info/stocks-by-warehouse/fbs" path)
+                     (if (= 1 (count sku))
+                       {:has_next false :cursor "ignored" :products []}
+                       {:has_next false :cursor "" :products [{:product_id   9001 :sku            1   :present 5 :reserved 2 :free_stock 3
+                                                               :warehouse_id 3    :warehouse_name "W"}]})
+                     (= 1 (count skus)) {:has_next false :products []}
+                     (= "" cursor) {:has_next true :cursor "c1" :products [{:product_id 9001 :sku 1 :present 10 :reserved 3 :warehouse_id 77}]}
+                     :else {:has_next false :cursor "c1" :products []}))))
+        steps (loop [state {} acc []]
+                (let [s (ozon/step "stock-by-warehouse" env {:skus (constantly skus)} state)]
+                  (if (:finished? s) (conj acc s) (recur (:state s) (conj acc s)))))]
+    (is (= [["/v1/product/info/stocks-by-warehouse/fbo" "" 1000] ["/v1/product/info/stocks-by-warehouse/fbo" "c1" 1000]
+            ["/v1/product/info/stocks-by-warehouse/fbo" "" 1]
+            ["/v2/product/info/stocks-by-warehouse/fbs" "" 1000] ["/v2/product/info/stocks-by-warehouse/fbs" "" 1]]
+           (map (fn [{:keys [path body]}] [path (:cursor body) (count (or (:skus body) (:sku body)))]) @calls)))
+    (is (= [#{:skus :cursor :limit} #{:sku :cursor :limit}] (distinct (map (comp set keys :body) @calls))))
+    (is (every? #(every? string? (or (:skus (:body %)) (:sku (:body %)))) @calls))
+    (is (= [{:kind      "stock"                :source  "warehouse-stock" :product-source-id "9001" :part "1"
+             :warehouse {:type "fbo" :id "77"} :present 10                :reserved          3}
+            {:kind "warehouse" :warehouse-type "fbo" :source-id "77" :name nil}
+            {:kind      "stock" :source "warehouse-stock"          :product-source-id "9001" :part "1"
+             :warehouse {:type "fbs" :id "3" :name "W"} :present 5 :reserved          2}]
+           (mapcat :observations steps))))
+  (let [{:keys [env calls]} (env [])]
+    (is (:finished? (ozon/step "stock-by-warehouse" env {:skus (constantly [])} {})))
+    (is (empty? @calls) "no product, nothing to ask")))
 
 
 (deftest repeated-cursor
