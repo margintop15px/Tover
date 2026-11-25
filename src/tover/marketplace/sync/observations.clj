@@ -210,14 +210,6 @@
                               (slots row (read-json (:lines row))))))))
 
 
-(defn after-handover?
-  "Whether a posting in this status was handed over."
-  {:malli/schema [:=> [:cat [:maybe :string]] :boolean]}
-  [status]
-  (contains? #{"delivering" "driver_pickup" "delivered" "client_arbitration" "arbitration" "not_accepted" "sent_by_seller"}
-             (some-> status str/lower-case)))
-
-
 (defn cancelled?
   {:malli/schema [:=> [:cat [:maybe :string]] :boolean]}
   [status]
@@ -225,14 +217,11 @@
 
 
 (defn- with-handover
-  "The posting with the handover time observed so far. A cancelled revision that states none takes it: it is
-  the stored one's, not the provider's, so it is no part of the payload hash."
+  "The posting with the handover time last observed. A cancelled revision that states none takes it as its own:
+  it comes from the stored row, so it is no part of the payload hash."
   {:malli/schema [:=> [:cat [:maybe :map] :map] :map]}
   [row {:keys [operation-kind status occurred-at missing] :as observation}]
-  (let [at (or occurred-at
-               (:handed-over-at row)
-               ;; Recorded before that field: such a time is proven only in a status after handover.
-               (when (after-handover? (:status row)) (:occurred-at row)))]
+  (let [at (or occurred-at (:handed-over-at row))]
     (if-not (and at (#{"fbs-posting" "fbo-posting"} operation-kind))
       observation
       (cond-> (assoc observation :handed-over-at at)

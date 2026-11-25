@@ -595,6 +595,10 @@
         "also when an earlier revision already stopped stating it")
     (is (= [nil false] ((juxt :occurred-at :complete) (after-revision handed (posting-in "delivering" nil))))
         "only cancelled revisions keep it")
+    (let [id (str c ":fbo-posting:P")]
+      (is (nil? (:occurred-at (get (first (revise {id {:source-operation-id id           :revision    1      :payload-hash "x" :adapter-version "ozon-1"
+                                                       :status              "delivering" :occurred-at moment}} cancelled)) id)))
+          "a time no translation of handover observed is not kept"))
     (is (= "2026-11-27T10:00:00Z" (:occurred-at (after-revision handed (posting-in "cancelled" "2026-11-27T10:00:00Z"))))
         "a stated time wins")
     (is (= ["[\"line quantity\"]" false]
@@ -612,15 +616,6 @@
       (is (= [::sync/source-operation-observed] types))
       (is (= [3 moment true nil fbs-id] ((juxt :revision :occurred-at :complete :missing :from-warehouse) (listed id))))
       (is (= [::sync/source-operation-seen] (second (revise listed (posting "cancelled" nil))))))))
-
-
-(deftest earlier-adapter-time-is-kept-only-after-handover
-  (let [id   (str c ":fbs-posting:P")
-        kept (fn [status]
-               (let [row {:source-operation-id id     :revision    1      :payload-hash "x" :adapter-version "ozon-1"
-                          :status              status :occurred-at moment}]
-                 (:occurred-at (get (first (revise {id row} (ozon/fbs-posting {"posting_number" "P" "status" "cancelled" "products" []}))) id))))]
-    (is (= [moment nil nil] (map kept ["delivering" "awaiting_deliver" "cancelled"])))))
 
 
 (deftest new-adapter-observes-an-unchanged-operation-once
@@ -1057,10 +1052,10 @@
                                                               :warehouse_id 1    :warehouse_name "FBS 1"}]
                                                   :has_next false}
       "/v1/analytics/stocks" {:items [{:sku 100 :warehouse_id 2 :available_stock_count 6}]}
-      "/v4/posting/fbs/list" {:result {:postings [{:posting_number "123-0001-1"}] :has_next false}}
+      "/v4/posting/fbs/list" {:postings [{:posting_number "123-0001-1"}] :has_next false}
       "/v3/posting/fbs/get" {:result {:posting_number "123-0001-1" :status "delivering" :fact_delivery_date "2026-11-26T10:00:00Z" :delivery_method {:warehouse_id 1}
                                       :products       [{:sku 100 :offer_id "A-1" :quantity 2}]}}
-      "/v3/posting/fbo/list" {:result []}
+      "/v3/posting/fbo/list" {:postings [] :has_next false}
       "/v1/returns/list" {:returns  [{:id       7 :schema "Fbo" :posting_number "F-1" :visual {:status {:sys_name "ReturnedToOzon"}}
                                       :logistic {:final_moment "2026-11-26T10:00:00Z"} :product {:sku 100 :quantity 1}}]
                           :has_next false}

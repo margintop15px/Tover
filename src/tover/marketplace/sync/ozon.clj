@@ -11,8 +11,8 @@
   whether the domain is finished. Failures are ex-info with `:type` one of `:credentials-rejected`
   `:unavailable` `:throttled` `:retries-exhausted` `:repeated-cursor` `:incomplete-page` `:unexpected-response`.
 
-  Response shapes follow docs/ozon-source-contracts.md. They are unverified against a live account, so readers
-  accept the documented root or `result` wrapper and treat a missing required field as an incomplete page."
+  Response shapes follow docs/ozon-source-contracts.md. Readers accept the documented root or `result` wrapper
+  and treat a missing required field as an incomplete page."
   (:require
     [charred.api :as json]
     [clojure.string :as str]
@@ -490,13 +490,17 @@
        (seq missing) (assoc :missing missing)))))
 
 
+(def ^:private after-handover
+  #{"delivering" "driver_pickup" "delivered" "client_arbitration" "arbitration" "not_accepted" "sent_by_seller"})
+
+
 (defn handed-over?
   "Whether the posting was handed over: its status is after handover or, when cancelled, Ozon says so: by flag for
   FBS, by the handover time for FBO, which states no flag."
   {:malli/schema [:=> [:cat observations/OperationKind :map] :boolean]}
   [kind posting]
   (let [status (text (get posting "status"))]
-    (cond (observations/after-handover? status) true
+    (cond (contains? after-handover (some-> status str/lower-case)) true
           (not (observations/cancelled? status)) false
           (= "fbo-posting" kind) (some? (instant (get posting "fact_delivery_date")))
           :else (true? (get-in posting ["cancellation" "cancelled_after_ship"])))))
@@ -548,10 +552,10 @@
 
 
 (defn- compensated?
+  "Whether a compensation is in force; a cancelled or reversed one is not."
   {:malli/schema [:=> [:cat :map] :boolean]}
   [row]
-  (let [status (get-in row ["compensation_status" "status"])]
-    (boolean (some #(stated-id (get status %)) ["id" "sys_name" "display_name"]))))
+  (contains? #{"Sent" "Received"} (get-in row ["compensation_status" "status" "sys_name"])))
 
 
 (defn- return-schema
@@ -595,7 +599,7 @@
 
 
 (defn- accepted
-  "A supply line with the quantities of its SKU's acceptance `acts`, each summed over them when all state it. The
+  "A supply line with the quantities of its SKU's rows in acceptance acts, `acts`, each summed over them when all state it. The
   line quantity is the approved sum, only when every act's fact and approved quantities agree."
   {:malli/schema [:=> [:cat :map [:sequential :map]] :map]}
   [line acts]
@@ -604,29 +608,45 @@
                               :when     (and (seq stated) (every? some? stated))]
                           [k (text (reduce + stated))]))
         ids    (distinct (keep #(text (get % "act_id")) acts))
-        agree? (fn [act] (some-> (decimal (get act "fact_quantity")) (== (or (decimal (get act "approved_quantity")) -1M))))]
+        agree? (fn [act]
+                 (let [fact     (decimal (get act "fact_quantity"))
+                       approved (decimal (get act "approved_quantity"))]
+                   (and fact approved (== fact approved))))]
     (cond-> (merge (dissoc line :quantity) sums)
       (seq ids) (assoc :act-id (str/join "," ids))
       (and (seq acts) (every? agree? acts)) (assoc :quantity (:approved-quantity sums)))))
 
 
+(defn- acceptance-rows
+  "Items of the ACCEPTANCE acts, each with its act's id. Other acts state no accepted quantity."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:vector :map]]}
+  [acts]
+  (vec (for [act   acts
+             :when (= "ACCEPTANCE" (get act "type"))
+             item  (required (get act "items"))]
+         (merge item (select-keys (get item "sku_info") ["sku" "offer_id"]) (select-keys act ["act_id"])))))
+
+
 (defn supply
-  "One supply of a `/v3/supply-order/get` order with its bundle items and the items of its acts
-  (`/v1/supply-order/act/product/get`). Only ACCEPTANCE acts state accepted quantities; the receipt time is not
-  stated. A sum goes to the one line of its SKU; a SKU the bundle does not list adds a line."
+  "One supply of a `/v3/supply-order/get` order with its bundle items and its acts
+  (`/v1/supply-order/act/product/get`). The receipt time is not stated. An approved sum goes to the one bundle line
+  of its SKU, to none when several list it; a SKU the bundle does not list adds a line."
   {:malli/schema [:=> [:cat :map :map [:sequential :map] [:sequential :map]] :map]}
-  [order {:strs [supply_id state storage_warehouse]} bundle-items act-items]
+  [order {:strs [supply_id state storage_warehouse]} bundle-items acts]
   (let [from     (named-warehouse "supply-origin" (get-in order ["order_tags" "seller_warehouse_id"]) nil)
         to       (named-warehouse "fbo" (get storage_warehouse "warehouse_id") (get storage_warehouse "name"))
         sku      #(stated-id (get % "sku"))
-        acts     (filter #(= "ACCEPTANCE" (some-> (text (get % "act_type")) str/upper-case)) act-items)
-        by-sku   (dissoc (group-by sku acts) nil)
-        listed   (set (keep sku bundle-items))
-        extra    (concat (map #(hash-map "sku" %) (distinct (remove listed (keep sku acts))))
-                         (filter (comp nil? sku) acts))
-        rows     (mapv (fn [item line] (accepted line (if (:duplicate line) [] (get by-sku (sku item) []))))
-                       (concat bundle-items extra)
-                       (lines (concat bundle-items extra) to))
+        accepts  (acceptance-rows acts)
+        by-sku   (dissoc (group-by sku accepts) nil)
+        listed   (frequencies (keep sku bundle-items))
+        extra    (map #(select-keys % ["sku" "offer_id"])
+                      (concat (map #(first (by-sku %)) (distinct (remove listed (keep sku accepts))))
+                              (filter (comp nil? sku) accepts)))
+        stated   (concat bundle-items extra)
+        rows     (mapv (fn [item line]
+                         (accepted line (if (< 1 (listed (sku item) 0)) [] (get by-sku (sku item) []))))
+                       stated
+                       (lines stated to))
         order-id (text (or (get order "order_id") (get order "id")))]
     (operation (cond-> {:operation-kind "supply" :source-id (required (stated-id supply_id))
                         :status         (or (text state) (text (get order "state")) "unknown")
@@ -837,7 +857,7 @@
 
 (defn- dated
   "Refetch known non-terminal records first, then list the window page by page and detail each page.
-  `list` returns {:ids :next :more?} for an offset or cursor; `detail` maps ids to observations."
+  `list` returns {:ids :next :more?} for a cursor, nil at the start; `detail` maps ids to observations."
   {:malli/schema [:=> [:cat :map :map :int [:fn fn?] [:fn fn?]] Step]}
   [{:keys [refetch-ids]} state n list detail]
   (let [state (if (:started? state) state {:started? true :pending (vec refetch-ids)})]
@@ -859,31 +879,29 @@
   {:analytics_data true :financial_data true})
 
 
+(defn- postings-page
+  "One posting list page of the window, oldest first."
+  {:malli/schema [:=> [:cat Env :string :map [:maybe :string]] [:map [:ids [:sequential :string]] [:next [:maybe :string]] [:more? :boolean]]]}
+  [env path {:keys [from to]} cursor]
+  (let [{:keys [body]} (request! env path {:filter {:since from :to to} :limit 100 :cursor (or cursor "") :sort_dir "ASC"})
+        rows           (required (get body "postings"))
+        next           (further cursor body)]
+    {:ids (keep #(text (get % "posting_number")) rows) :next next :more? (some? next)}))
+
+
 (defmethod step "fbs-postings" [_ env context state]
-  (let [{:keys [from to]} (window context)]
+  (let [window (window context)]
     (dated context state 50
-           (fn [offset]
-             (let [offset         (or offset 0)
-                   {:keys [body]} (request! env "/v4/posting/fbs/list"
-                                            {:dir "ASC" :filter {:since from :to to} :limit 1000 :offset offset})
-                   rows           (required (items body ["postings"]))]
-               {:ids   (keep #(text (get % "posting_number")) rows)              :next (+ offset (count rows))
-                :more? (boolean (and (seq rows) (get (result body) "has_next")))}))
+           #(postings-page env "/v4/posting/fbs/list" window %)
            (fn [numbers]
              (for [n numbers]
                (fbs-posting (result (:body (request! env "/v3/posting/fbs/get" {:posting_number n :with posting-details})))))))))
 
 
 (defmethod step "fbo-postings" [_ env context state]
-  (let [{:keys [from to]} (window context)]
+  (let [window (window context)]
     (dated context state 50
-           (fn [offset]
-             (let [offset         (or offset 0)
-                   {:keys [body]} (request! env "/v3/posting/fbo/list"
-                                            {:dir "ASC" :filter {:since from :to to} :limit 1000 :offset offset})
-                   rows           (required (items body ["postings"]))]
-               {:ids   (keep #(text (get % "posting_number")) rows) :next (+ offset (count rows))
-                :more? (boolean (and (seq rows) (or (get (result body) "has_next") (= 1000 (count rows)))))}))
+           #(postings-page env "/v3/posting/fbo/list" window %)
            (fn [numbers]
              (with-named-fbo
                (for [n numbers]
@@ -932,10 +950,10 @@
     (dated context state 50
            (fn [last-id]
              (let [{:keys [body]} (request! env "/v2/returns/rfbs/list"
-                                            {:filter {:created_at {:from from :to to}} :limit 500 :last_id (or last-id 0)})
+                                            {:filter {:created_at {:from from :to to}} :limit 500 :last_id (if last-id (BigInteger. ^String last-id) 0)})
                    rows           (required (items body ["returns"]))
                    next           (some-> (last rows) (get "return_id") text)]
-               (next-cursor! (some-> last-id str) next)
+               (next-cursor! last-id next)
                {:ids (keep #(text (get % "return_id")) rows) :next next :more? (boolean (seq rows))}))
            (fn [ids]
              (for [id ids]
@@ -958,32 +976,51 @@
               :else (recur next (conj seen next) acc))))))
 
 
+(def ^:private supply-states
+  ["DATA_FILLING" "READY_TO_SUPPLY" "ACCEPTED_AT_SUPPLY_WAREHOUSE" "IN_TRANSIT" "ACCEPTANCE_AT_STORAGE_WAREHOUSE"
+   "REPORTS_CONFIRMATION_AWAITING" "REPORT_REJECTED" "COMPLETED" "REJECTED_AT_SUPPLY_WAREHOUSE" "CANCELLED" "OVERDUE"])
+
+
 (def ^:private accepted-states
   "Supply order states after storage acceptance began, when an acceptance act can exist.
   ponytail: from the Ozon state list; a live check may show acts earlier."
   #{"ACCEPTANCE_AT_STORAGE_WAREHOUSE" "REPORTS_CONFIRMATION_AWAITING" "REPORT_REJECTED" "COMPLETED"})
 
 
-(defn- act-items
-  "Items of every act of an accepted supply; none before acceptance."
-  {:malli/schema [:=> [:cat Env :map :map] [:vector :map]]}
+(defn- acts
+  "Every act of an accepted supply; none before acceptance."
+  {:malli/schema [:=> [:cat Env :map :map] [:sequential :map]]}
   [env order supply]
-  (let [state (or (text (get supply "state")) (text (get order "state")))]
-    (if (contains? accepted-states (some-> state str/upper-case))
-      (vec (required (items (:body (request! env "/v1/supply-order/act/product/get" {:supply_id (required (text (get supply "supply_id")))}))
-                            ["items" "products"])))
-      [])))
+  (if (contains? accepted-states (or (text (get supply "state")) (text (get order "state"))))
+    (required (get (:body (request! env "/v1/supply-order/act/product/get" {:supply_id (required (whole (get supply "supply_id")))}))
+                   "supply_acts"))
+    []))
+
+
+(defn- supplies
+  "Supplies of an order. An order being filled in or cancelled may have none yet; any other order states them."
+  {:malli/schema [:=> [:cat :map] [:sequential :map]]}
+  [order]
+  (let [stated (get order "supplies")
+        usable (filter #(stated-id (get % "supply_id")) stated)]
+    (if (or (contains? #{"DATA_FILLING" "CANCELLED"} (get order "state"))
+            (and stated (= (count stated) (count usable))))
+      usable
+      (fail! :incomplete-page))))
 
 
 (defmethod step "supplies" [_ env context state]
-  ;; ponytail: supply lists carry no date filter we rely on; every order is listed and the window only
-  ;; bounds coverage. Act request and field names follow the contract doc; confirm with a live check.
+  ;; The list has no date filter: every order is listed and the window only bounds coverage. Newest first (Ozon
+  ;; refuses oldest first with archive states): an order created while paging is read by the next run.
   (dated context state 50
          (fn [last-id]
-           (let [{:keys [body]} (request! env "/v3/supply-order/list" {:filter {} :limit 100 :last_id (or last-id "")})
+           (let [{:keys [body]} (request! env "/v3/supply-order/list"
+                                          {:filter   {:states supply-states} :limit   100             :sort_by "ORDER_CREATION"
+                                           :sort_dir "DESC"                  :last_id (or last-id "")})
                  ids            (keep text (required (items body ["order_ids"])))
-                 next           (next-cursor! last-id (text (get (result body) "last_id")))]
-             {:ids ids :next next :more? (boolean (and (seq ids) next))}))
+                 ;; The empty last page may state the last id again.
+                 next           (when (seq ids) (next-cursor! last-id (text (get (result body) "last_id"))))]
+             {:ids ids :next next :more? (some? next)}))
          (fn [ids]
            (let [{:keys [body]} (request! env "/v3/supply-order/get" {:order_ids ids})
                  orders         (required (items body ["orders"]))
@@ -991,8 +1028,8 @@
              (when-not (every? found ids) (fail! :incomplete-page))
              (with-named-fbo
                (for [order orders
-                     each  (required (get order "supplies"))]
-                 (supply order each (bundle-items env (text (get each "bundle_id"))) (act-items env order each))))))))
+                     each  (supplies order)]
+                 (supply order each (bundle-items env (text (get each "bundle_id"))) (acts env order each))))))))
 
 
 (defmethod step "removals" [_ env context {:keys [phase last-id]}]

@@ -300,17 +300,21 @@
 
 
 (defn act
+  "An acceptance act of one item, as `/v1/supply-order/act/product/get` states it."
   {:malli/schema [:=> [:cat :any :any :any :any] :map]}
   [id sku fact approved]
-  {"act_id"        id   "act_type"          "ACCEPTANCE" "sku" sku "declared_quantity" approved
-   "fact_quantity" fact "approved_quantity" approved})
+  {"act_id" id "type" "ACCEPTANCE" "unidentified_quantity" 0
+   "items"  [{"sku_info"          {"sku" sku "offer_id" (str "A-" sku) "name" "Tee"}
+              "declared_quantity" approved "fact_quantity" fact
+              "approved_quantity" approved "fact_amount"   1    "approved_amount" 1}]})
 
 
 (deftest approved-quantity-summed-over-acceptance-acts
   (let [supply (partial ozon/supply {"order_id" 5} {"supply_id" 51 "state" "COMPLETED" "storage_warehouse" {"warehouse_id" 2}})
         bundle [{"sku" 100 "quantity" 11}]]
-    (let [s (supply bundle [(act 77 100 4 4) (act 78 100 6 6) (assoc (act 79 100 9 9) "act_type" "DISCREPANCY")
-                            (dissoc (act 80 100 9 9) "act_type")])]
+    (let [s (supply bundle (into [(act 77 100 4 4) (act 78 100 6 6)]
+                                 (map #(assoc (act 79 100 9 9) "type" %))
+                                 ["DEFECT" "SURPLUS" "SHORTCOMING" "UNSPECIFIED" nil]))]
       (is (= [{:quantity "10" :fact-quantity "10" :approved-quantity "10" :act-id "77,78"}]
              (mapv #(select-keys % [:quantity :fact-quantity :approved-quantity :act-id]) (:lines s)))
           "acts of another or no stated type are no acceptance")
@@ -319,16 +323,24 @@
       (is (= {:fact-quantity "9" :approved-quantity "10"}
              (select-keys (first (:lines s)) [:quantity :fact-quantity :approved-quantity])) "no quantity is chosen")
       (is (some #{"accepted quantity"} (:missing s))))
-    (is (some #{"accepted quantity"} (:missing (supply bundle [(act 77 100 5 4) (act 78 100 5 6)])))
-        "acts that differ do not even out")
-    (is (= [nil nil] (mapv :quantity (:lines (supply [{"sku" 100 "quantity" 5} {"sku" 100 "quantity" 6}] [(act 77 100 11 11)]))))
-        "a sum is never given to two lines")
-    (is (= [["100" "4"] ["200" "3"]]
-           (mapv (juxt #(:value (first (:identifiers %))) :quantity)
-                 (:lines (supply bundle [(act 77 100 4 4) (act 77 200 1 1) (act 78 200 2 2)]))))
-        "an accepted SKU the bundle does not list is one line")
-    (is (= [nil nil] (mapv :quantity (:lines (supply [{"quantity" 1}] [(act 77 nil 1 1)])))) "a line without SKU is never matched")
+    (doseq [acts [[(act 77 100 5 4) (act 78 100 5 6)] [(act 77 100 nil 4)] [(act 77 100 4 nil)] [(act 77 100 nil nil)]]]
+      (is (some #{"accepted quantity"} (:missing (supply bundle acts))) "acts that differ do not even out"))
     (is (some #{"accepted quantity"} (:missing (supply bundle []))))))
+
+
+(deftest supply-lines-are-matched-by-sku-once
+  (let [supply (partial ozon/supply {"order_id" 5} {"supply_id" 51 "state" "COMPLETED" "storage_warehouse" {"warehouse_id" 2}})
+        facts  #(mapv (juxt (fn [l] (mapv :value (:identifiers l))) :quantity) (:lines %))]
+    (doseq [second-line [{"sku" 100 "quantity" 6} {"sku" 100 "offer_id" "other" "quantity" 6}]]
+      (let [s (supply [{"sku" 100 "offer_id" "A" "quantity" 5} second-line] [(act 77 100 11 11)])]
+        (is (= [nil nil] (mapv :quantity (:lines s))) "a sum is never given to two lines")
+        (is (some #{"accepted quantity"} (:missing s)))))
+    (let [s (supply [{"sku" 100 "offer_id" "A" "quantity" 5}] [(act 77 100 4 4) (act 77 200 1 1) (act 78 200 2 2)])]
+      (is (= [[["100" "A"] "4"] [["200" "A-200"] "3"]] (facts s)) "an accepted SKU the bundle does not list is one line")
+      (is (every? (comp nil? :price) (:lines s))))
+    (is (= [[["100" "A"] nil] [["200" "A-200"] nil]] (facts (supply [{"sku" 100 "offer_id" "A" "quantity" 5}] [(act 77 200 1 2)])))
+        "without an agreeing act an act-only line has no quantity")
+    (is (= [nil nil] (mapv :quantity (:lines (supply [{"quantity" 1}] [(act 77 nil 1 1)])))) "a line without SKU is never matched")))
 
 
 (defn observe-supplies
@@ -352,7 +364,7 @@
                           (fn [path body]
                             (if (= "/v1/supply-order/bundle" path)
                               {:items [{:sku ({"a" 100 "b" 200 "c" 300} (first (:bundle_ids body))) :quantity 5}] :has_next false}
-                              {:items [(act 9 100 5 5)]})))
+                              {:supply_id (:supply_id body) :supply_acts [(act 9 100 5 5)] :skus_defects []})))
         ops (filterv #(= "operation" (:kind %)) observations)]
     (is (= [["51" "COMPLETED" true "2" "100" "5"] ["52" "IN_TRANSIT" false "3" "200" nil] ["53" "IN_TRANSIT" false nil "300" nil]]
            (mapv (juxt :source-id :status :terminal (comp :id :to-warehouse)
@@ -362,10 +374,115 @@
             ["actual time" "line quantity" "warehouse" "accepted quantity"]]
            (mapv :missing ops)) "a supply without storage warehouse lacks the warehouse, though its origin is stated")
     (is (= ["5" "5" "5"] (mapv :refetch-key ops)) "supplies are read again by their order")
-    (is (= [{:supply_id "51"}] (mapv :body (filter #(= "/v1/supply-order/act/product/get" (:path %)) calls)))
+    (is (= [{:supply_id 51}] (mapv :body (filter #(= "/v1/supply-order/act/product/get" (:path %)) calls)))
         "acts of the accepted supply only")
     (is (= [["fbo" "2" "Two"] ["fbo" "3" nil]]
            (mapv (juxt :warehouse-type :source-id :name) (filter #(= "warehouse" (:kind %)) observations))))))
+
+
+(deftest acts-stated-or-the-page-is-incomplete
+  (let [read (fn [answer]
+               (observe-supplies [{:supply_id 51 :bundle_id "a" :state "COMPLETED"}]
+                                 (fn [path _] (if (= "/v1/supply-order/bundle" path) {:items [{:sku 100 :quantity 5}] :has_next false} answer))))]
+    (doseq [answer [{:supply_id 51} {:supply_acts nil} {:items [{:sku 100}]} {:supply_acts [{:act_id 1 :type "ACCEPTANCE"}]}]]
+      (is (= :incomplete-page (:type (thrown #(read answer))))))
+    (is (some #{"accepted quantity"} (:missing (first (:observations (read {:supply_acts []}))))) "no acts")))
+
+
+(deftest order-without-supply-facts
+  (let [read (fn [state order]
+               (let [{:keys [env]} (env (fn [path _]
+                                          (ok (if (= "/v3/supply-order/get" path) {:orders [(merge {:order_id 5 :state state} order)]}
+                                                  {:items [] :has_next false}))))]
+                 (:observations (ozon/step "supplies" env {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}}
+                                           {:started? true :pending ["5"]}))))]
+    (doseq [order [{} {:supplies nil} {:supplies [{:supply_id ""}]} {:supplies [{:supply_id 0}]} {:supplies [{}]}]]
+      (doseq [state ["DATA_FILLING" "CANCELLED"]]
+        (is (= [] (read state order))))
+      (doseq [state ["READY_TO_SUPPLY" "IN_TRANSIT" "COMPLETED" nil]]
+        (is (= :incomplete-page (:type (thrown #(read state order)))))))
+    (is (= ["51"] (map :source-id (read "CANCELLED" {:supplies [{:supply_id ""} {:supply_id 51}]}))) "what is stated is read")
+    (is (= [] (read "IN_TRANSIT" {:supplies []})) "an empty list is stated")))
+
+
+(defn posting-lists
+  "List pages by cursor, as both posting lists answer; a detail states its number."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [pages]
+  (env (fn [path body]
+         (ok (if (contains? #{"/v4/posting/fbs/list" "/v3/posting/fbo/list"} path)
+               (pages (:cursor body))
+               {:result {:posting_number (:posting_number body) :status "delivering"}})))))
+
+
+(deftest posting-lists-page-by-cursor
+  (doseq [[domain path] [["fbs-postings" "/v4/posting/fbs/list"] ["fbo-postings" "/v3/posting/fbo/list"]]]
+    (let [{:keys [env calls]} (posting-lists {""  {:has_next true :cursor "x" :postings [{:posting_number "P-1"}]}
+                                              "x" {:has_next true :cursor "y" :postings []}
+                                              "y" {:has_next false :postings [{:posting_number "P-2"}]}})
+          context             {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}}
+          ;; Each state goes through text, as the stored position does.
+          steps               (loop [state {} acc []]
+                                (let [s (ozon/step domain env context (read-string (pr-str state)))]
+                                  (if (or (:finished? s) (< 10 (count acc))) (conj acc s) (recur (:state s) (conj acc s)))))
+          listed              (filter #(= path (:path %)) @calls)]
+      (is (= ["P-1" "P-2"] (map :source-id (mapcat :observations steps))))
+      (is (:finished? (last steps)))
+      (is (= (for [cursor ["" "x" "y"]]
+               {:filter {:since "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"} :limit 100 :cursor cursor :sort_dir "ASC"})
+             (map :body listed))))
+    (doseq [[type page] {:repeated-cursor {:has_next true :cursor "x" :postings []}
+                         :incomplete-page {:has_next true :postings []}}]
+      (is (= type (:type (thrown #(ozon/step domain (:env (posting-lists {"x" page}))
+                                             {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}}
+                                             {:started? true :pending [] :at "x"}))))))))
+
+
+(defn supply-list
+  "Order ids newest first, `size` a page, continuing after `last_id`; `before` runs before each list call."
+  {:malli/schema [:=> [:cat :any :int [:fn fn?]] :map]}
+  [orders size before]
+  (env (fn [path body]
+         (ok (if (= "/v3/supply-order/list" path)
+               (do (before body)
+                   (let [after (if (= "" (:last_id body)) @orders (rest (drop-while #(not= (str %) (:last_id body)) @orders)))
+                         ids   (take size after)]
+                     {:order_ids ids :last_id (if (seq ids) (str (last ids)) (:last_id body))}))
+               {:orders (for [id (:order_ids body)] {:order_id id :state "DATA_FILLING" :supplies []})})))))
+
+
+(defn listed-orders
+  "Every order id whose details one run of the supplies domain reads."
+  {:malli/schema [:=> [:cat :map :any] :any]}
+  [env calls]
+  (reset! calls [])
+  (loop [state {} n 0]
+    (let [s (ozon/step "supplies" env {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}} state)]
+      (when-not (or (:finished? s) (< 20 n)) (recur (:state s) (inc n)))))
+  (mapcat (comp :order_ids :body) (filter #(= "/v3/supply-order/get" (:path %)) @calls)))
+
+
+(deftest supplies-are-listed-newest-first
+  (let [orders              (atom [5 4 3 2 1])
+        {:keys [env calls]} (supply-list orders 2 (fn [body] (when (and (= "4" (:last_id body)) (not= 6 (first @orders))) (swap! orders #(into [6] %)))))]
+    (is (= ["5" "4" "3" "2" "1"] (listed-orders env calls)) "an order inserted at the head moves no page: none skipped or read twice")
+    (is (= [{:filter   {:states ["DATA_FILLING" "READY_TO_SUPPLY" "ACCEPTED_AT_SUPPLY_WAREHOUSE" "IN_TRANSIT"
+                                 "ACCEPTANCE_AT_STORAGE_WAREHOUSE" "REPORTS_CONFIRMATION_AWAITING" "REPORT_REJECTED" "COMPLETED"
+                                 "REJECTED_AT_SUPPLY_WAREHOUSE" "CANCELLED" "OVERDUE"]}
+             :limit    100
+             :sort_by  "ORDER_CREATION"
+             :sort_dir "DESC"
+             :last_id  ""}]
+           (take 1 (map :body @calls))))
+    (is (= ["6" "5" "4" "3" "2" "1"] (listed-orders env calls)) "the next run reads the new order"))
+  (let [{:keys [env]} (env [(ok {:order_ids [5] :last_id "x"})])]
+    (is (= :repeated-cursor (:type (thrown #(ozon/step "supplies" env {} {:started? true :pending [] :at "x"})))))))
+
+
+(deftest rfbs-list-continues-from-an-integer
+  (let [{:keys [env calls]} (env [(ok {:returns []})])]
+    (ozon/step "rfbs-returns" env {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"}} {:started? true :pending [] :at "9223372036854775807"})
+    (is (= 9223372036854775807 (:last_id (:body (first @calls)))))))
 
 
 (deftest bundle-pages
@@ -522,7 +639,7 @@
 
 (deftest no-final-moment-no-receipt
   (doseq [moment [nil ""]
-          row    [{} {:type "Cancellation"} {:compensation_status {:status {:id 1 :sys_name "CompensationSent"}}}]]
+          row    [{} {:type "Cancellation"} {:compensation_status {:status {:id 1 :sys_name "Sent"}}}]]
     (is (= ["actual time" "receiving warehouse"]
            (:missing (first (observe-return (merge {:schema "FBO" :logistic {:final_moment moment :return_date "2026-07-26T10:00:00Z"}} row))))))))
 
@@ -530,7 +647,10 @@
 (deftest compensation-is-recorded-beside-the-final-moment
   (are [status compensated] (= [compensated "2026-07-27T10:00:00Z"]
                                ((juxt :compensated :occurred-at) (first (observe-return {:schema "FBO" :compensation_status status}))))
-    {:status {:id 1 :display_name "Sent" :sys_name "CompensationSent"}} true
+    {:status {:id 1 :display_name "Sent" :sys_name "Sent"}} true
+    {:status {:id 2 :display_name "Received" :sys_name "Received"}} true
+    {:status {:id 3 :display_name "Canceled" :sys_name "Canceled"}} false
+    {:status {:id 4 :display_name "Reversed" :sys_name "DecompensationSent"}} false
     {:status {:id 0 :display_name "" :sys_name ""}} false
     nil false))
 
@@ -752,7 +872,7 @@
   (let [{:keys [env calls]} (env (fn [path body]
                                    (case path
                                      "/v3/posting/fbs/get" (ok {:result {:posting_number (:posting_number body) :status "delivering"}})
-                                     "/v4/posting/fbs/list" (ok {:result {:postings [] :has_next false}}))))
+                                     "/v4/posting/fbs/list" (ok {:postings [] :has_next false}))))
         context             {:window {:from "2026-12-09T06:00:00Z" :to "2026-12-10T06:00:00Z"} :refetch-ids ["123-0001-1"]}
         first-step          (ozon/step "fbs-postings" env context {})]
     (is (= ["123-0001-1"] (map :source-id (:observations first-step))))
