@@ -17,7 +17,9 @@
     [tover.marketplace.sync.model :as sync]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
-    [tover.shared.ui.forms :refer [form]]))
+    [tover.shared.ui.forms :refer [form]])
+  (:import
+    [clojure.lang ExceptionInfo]))
 
 
 (def problems
@@ -227,7 +229,7 @@
                           [:td (if last-completed-sync-at (team/moment last-completed-sync-at) (i18n/t "Not yet"))]]))]]
                [:p.management-empty (i18n/t "No marketplace connections yet.")])
              (when (:can-manage? model)
-               [:details.management-disclosure {:open (or (empty? (:connections model)) (contains? (:params request) :store-id))}
+               [:details#connect-account.management-disclosure {:open (or (empty? (:connections model)) (contains? (:params request) :store-id))}
                 [:summary (i18n/t "Connect a seller account")]
                 (if (seq (:selectable-stores model))
                   (connect-form request (:selectable-stores model))
@@ -238,7 +240,11 @@
   {:malli/schema [:=> [:cat :map :map] :map]}
   [{:keys [request] :as context} {:keys [connection-id]}]
   (let [input  {:connection-id connection-id}
-        status (runtime/read-model context ::model/connection-status-and-sync-coverage input)]
+        status (try (runtime/read-model context ::model/connection-status-and-sync-coverage input)
+                    (catch ExceptionInfo error
+                      (if (= :unknown-connection (:type (ex-data error)))
+                        (access/failure 404 :unknown-connection "Unknown connection")
+                        (throw error))))]
     {:request   request
      :status    status
      :paused    (when (= "paused" (:sync-state status)) (runtime/read-model context ::model/paused-connection input))
@@ -275,7 +281,7 @@
    [:h2#sync-title (i18n/t "Sync")]
    (cond
      current-run
-     [:p (i18n/t "Sync running since {time}" {:time (team/moment (:started-at current-run))}) " · "
+     [:p (i18n/t "Sync running since") " " (team/moment (:started-at current-run)) " · "
       (i18n/t "{done} of {total} data kinds read" {:done  (count (:finished-domains current-run))
                                                    :total (+ (count (:finished-domains current-run))
                                                              (count (:unfinished-domains current-run)))})]
@@ -357,7 +363,10 @@
              (when can-manage?
                (list
                  (when (= "active" (:sync-state status)) (action-form request ::pause (i18n/t "Pause") connection-id))
-                 [:details.management-disclosure {:open (some? attention)}
+                 ;; The refresh keeps it open or closed; the id keeps that from reaching another connection's page.
+                 [:details.management-disclosure {:id                 (str "replace-credentials-" connection-id)
+                                                  :open               (some? attention)
+                                                  :data-preserve-attr "open"}
                   [:summary (i18n/t "Replace credentials")]
                   [:div.management-form
                    (apply form request ::replace-credentials (i18n/t "Replace credentials")

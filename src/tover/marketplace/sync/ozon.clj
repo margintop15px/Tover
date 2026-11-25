@@ -1112,7 +1112,7 @@
                    (required (get (:body (request! env "/v1/supply-order/act/product/get" {:supply_id (required (whole (get source "supply_id")))}))
                                   "supply_acts"))
                    [])]
-        ;; Acts are limited per second: one call of them ends the step.
+        ;; Acts are limited to about one call a minute: one call of them ends the step.
         {:operation (supply order source (:items bundle) acts) :acts? acts?}))))
 
 

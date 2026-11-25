@@ -690,6 +690,16 @@
                             :bel.routing-fixture/team {})))))))
 
 
+(deftest error-pages-take-their-path-parameters-from-the-posted-form
+  (core/build-registry! ['bel.routing-fixture])
+  (let [router  (ring/router (handler/routes {} []) {:data {:middleware [wrap-keyword-params]}})
+        respond #(handler/error-page-response {:request-method :post :reitit.core/router router :params %}
+                                              :bel.routing-fixture/item {})]
+    (is (re-find #"<section id=\"item\">42:</section>" (:body (respond {:id "42" :q "blue" :password "secret"}))))
+    (doseq [params [{} {:id ""} {:id ["1" "2"]} {:id "not-a-number"}]]
+      (is (= 422 (:status (respond params))) (str params)))))
+
+
 (deftest structured-action-errors-escape-before-opening-sse
   (core/build-registry! ['bel.routing-fixture])
   (let [error  (ex-info "Cooldown" {:status 429 :code "COOLDOWN"})

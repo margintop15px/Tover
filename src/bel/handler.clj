@@ -347,10 +347,15 @@
 
 
 (defn error-page-response
-  "Render an error destination through its middleware, retaining only explicitly selected fields."
+  "Render an error destination through its middleware, retaining only explicitly selected fields. The posted form
+  names the page's path parameters; the page's own schema checks them."
   {:malli/schema [:=> [:cat :map :qualified-keyword :map] :map]}
   [request id retained-form-params]
-  (dispatch-page (dissoc request :bel/reset-form?) {:type :page :id id} retained-form-params))
+  (let [required    (some-> (:reitit.core/router request) (reitit/match-by-name id) :required)
+        path-params (select-keys (:params request) required)]
+    (if (every? #(let [value (get path-params %)] (and (string? value) (seq value))) required)
+      (dispatch-page (dissoc request :bel/reset-form?) {:type :page :id id :path-params path-params} retained-form-params)
+      (error-response request (ex-info "The error page needs its path parameters" {:type :validation :id id})))))
 
 
 (defn view-handler

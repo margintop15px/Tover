@@ -480,3 +480,26 @@
       (let [html (page (assoc-in ctx [:request :params] {:store-id "s"}) ::web/connections {})]
         (is (re-find #"<details[^>]* open" html))
         (is (not (re-find #"name=\"(?:client-id|api-key)\"[^>]*value=\"[^\"]" html)))))))
+
+
+(deftest times-are-elements
+  (with-context
+    (fn [ctx _]
+      (accept! ctx (act ctx ::web/connect connect-form))
+      (accept! ctx (act ctx ::web/sync-now {:connection-id "c-1"}))
+      (doseq [[locale text] {"en" "Sync running since <time datetime=\"" "ru" "Синхронизация идёт с <time datetime=\""}]
+        (binding [i18n/*locale* locale]
+          (let [html (page ctx ::web/connection {:connection-id "c-1"})]
+            (is (str/includes? html text))
+            (is (not (str/includes? html "[:time")))))))))
+
+
+(deftest the-refresh-keeps-the-credentials-form-as-the-person-left-it
+  (with-context
+    (fn [ctx _]
+      (accept! ctx (act ctx ::web/connect connect-form))
+      (let [details (re-find #"<details[^>]*>" (page ctx ::web/connection {:connection-id "c-1"}))]
+        (is (str/includes? details "data-preserve-attr=\"open\""))
+        (testing "a morph from the list or from another connection must not match it"
+          (is (str/includes? details "id=\"replace-credentials-c-1\""))
+          (is (re-find #"<details[^>]* id=\"connect-account\"" (page ctx ::web/connections {}))))))))
