@@ -102,6 +102,8 @@
    [:provider Provider]
    [:provider-account-id :string]
    [:account-label {:optional true} :string]
+   [:account-currency :string]
+   [:key-expires-at {:optional true} At]
    [:secret-ref Ref]
    [:readable-domains :string]
    [:sync-state SyncState]
@@ -129,6 +131,7 @@
   [:map
    [:connection-id Ref] [:workspace-id Ref] [:store-id records/Id] [:provider Provider]
    [:provider-account-id :string] [:account-label {:optional true} :string] [:secret-ref Ref]
+   [:account-currency :string] [:key-expires-at {:optional true} At]
    [:readable-domains Domains] [:sync-state [:= "active"]] [:credentials-state [:= "valid"]]
    [:connected-by Ref] [:connected-at At]])
 
@@ -149,7 +152,8 @@
 
 (def ConnectionCredentialsReplaced
   "Replacing credentials also resets the consecutive-failure count (chapter 41)."
-  [:map [:connection-id Ref] [:secret-ref Ref] [:readable-domains Domains] [:credentials-state [:= "valid"]]
+  [:map [:connection-id Ref] [:secret-ref Ref] [:account-currency :string] [:key-expires-at {:optional true} At]
+   [:readable-domains Domains] [:credentials-state [:= "valid"]]
    [:replaced-by Ref] [:replaced-at At] [:consecutive-failures {:optional true} [:= 0]]
    [:next-attempt-at {:optional true} At]])
 
@@ -167,13 +171,14 @@
    :schema Connection
    :policy ::records/workspace-member
    :events {::marketplace-account-connected {:create [:workspace-id :store-id :provider :provider-account-id :account-label
-                                                      :secret-ref :readable-domains :sync-state :credentials-state
+                                                      :account-currency :key-expires-at :secret-ref :readable-domains
+                                                      :sync-state :credentials-state
                                                       :connected-by :connected-at]}
             ::marketplace-connection-paused {:set [:sync-state :reason :paused-by :paused-at]}
             ::marketplace-connection-resumed {:set [:sync-state :resumed-by :resumed-at]}
             ::connection-credentials-rejected {:set [:credentials-state :run-id :rejected-at]}
-            ::connection-credentials-replaced {:set [:secret-ref :readable-domains :credentials-state :replaced-by :replaced-at
-                                                     :consecutive-failures :next-attempt-at]}
+            ::connection-credentials-replaced {:set [:secret-ref :account-currency :key-expires-at :readable-domains
+                                                     :credentials-state :replaced-by :replaced-at :consecutive-failures :next-attempt-at]}
             ;; Chapter 41 sync events (declared in tover.marketplace.sync.model).
             :tover.marketplace.sync.model/marketplace-sync-started   {:set [:run-id :run-state :started-at]}
             :tover.marketplace.sync.model/marketplace-sync-completed {:set [:run-state :last-completed-sync-at :readable-domains
@@ -210,6 +215,13 @@
   (records/all-records context ::connections :connection-id))
 
 
+(defmethod runtime/coeffect ::sealed?
+  [_ {:keys [scope] :as context} {:keys [secret-ref]}]
+  (boolean (when secret-ref
+             (runtime/with-store context :catalogue :serializable
+               (fn [{:keys [tx]}] (connector/sealed? tx (:workspace-id scope) secret-ref))))))
+
+
 (defmethod runtime/coeffect ::account-label
   [_ {:keys [actor scope] :as context} {:keys [account-id]}]
   (when account-id
@@ -242,6 +254,10 @@
   [:viewer ::viewer (constantly {})])
 
 
+(def ^:private sealed
+  [:sealed? ::sealed? (fn [_ input] (select-keys input [:secret-ref]))])
+
+
 (def ^:private covered
   [:covered ::covered-until by-connection])
 
@@ -262,11 +278,14 @@
 
 
 (defn- sealed!
-  "Checked last: the action seals a key only when every earlier rule holds."
-  {:malli/schema [:=> [:cat [:maybe :string]] :nil]}
-  [secret-ref]
+  "Checked last: the action seals a key only when every earlier rule holds. A concurrent attempt may have
+  destroyed it as unreferenced since."
+  {:malli/schema [:=> [:cat [:maybe :string] :boolean] :nil]}
+  [secret-ref sealed?]
   (when-not secret-ref
-    (fail! :validation "Verified credentials need a secret reference")))
+    (fail! :validation "Verified credentials need a secret reference"))
+  (when-not sealed?
+    (fail! :conflict "Concurrent change; submit the credentials again")))
 
 
 (defn- check-verification!
@@ -290,41 +309,43 @@
    [:client-id ClientId]
    [:secret-ref {:optional true} Ref]
    [:verification-outcome Outcome]
-   [:provider-account-id {:optional true} :string]
    [:account-label {:optional true} [:string {:max 500}]]
-   [:readable-domains {:optional true} [:vector Domain]]])
+   [:account-currency {:optional true} :string]
+   [:readable-domains {:optional true} [:vector Domain]]
+   [:key-expires-at {:optional true} At]])
 
 
 (defcommand connect-marketplace-account
   {:input ConnectMarketplaceAccount :policy ::manager
    :cofx  [[:store ::stores/stores (fn [_ input] (select-keys input [:store-id]))]
-           [:connections ::all (constantly {})]]
+           [:connections ::all (constantly {})]
+           sealed]
    :emits #{::marketplace-account-connected}}
-  [{:keys [actor now scope store connections]}
-   {:keys [connection-id store-id provider client-id secret-ref provider-account-id account-label readable-domains]
+  [{:keys [actor now scope store connections sealed?]}
+   {:keys [connection-id store-id provider client-id secret-ref account-label account-currency readable-domains key-expires-at]
     :as   input}]
   (when-not (= "active" (:status store))
     (fail! :store-not-available "Store not available"))
   (check-verification! input)
-  (when-not (= client-id provider-account-id)
-    (fail! :credentials-rejected "Credentials rejected"))
-  (when-let [existing (first (filter #(and (= provider (:provider %)) (= provider-account-id (:provider-account-id %)))
+  (when-let [existing (first (filter #(and (= provider (:provider %)) (= client-id (:provider-account-id %)))
                                      connections))]
     (fail! :already-connected "Already connected" {:connection-id (:connection-id existing)}))
-  (sealed! secret-ref)
+  (sealed! secret-ref sealed?)
   {:events [{:type ::marketplace-account-connected
              :data (cond-> {:connection-id       connection-id
                             :workspace-id        (str (:workspace-id scope))
                             :store-id            store-id
                             :provider            provider
-                            :provider-account-id provider-account-id
+                            :provider-account-id client-id
+                            :account-currency    account-currency
                             :secret-ref          secret-ref
                             :readable-domains    (encode-domains readable-domains)
                             :sync-state          "active"
                             :credentials-state   "valid"
                             :connected-by        (str actor)
                             :connected-at        (str now)}
-                     (not (str/blank? account-label)) (assoc :account-label (str/trim account-label)))}]})
+                     (not (str/blank? account-label)) (assoc :account-label (str/trim account-label))
+                     key-expires-at (assoc :key-expires-at key-expires-at))}]})
 
 
 (def ConnectionAttempt
@@ -359,23 +380,27 @@
    [:client-id ClientId]
    [:secret-ref {:optional true} Ref]
    [:verification-outcome Outcome]
-   [:provider-account-id {:optional true} :string]
-   [:readable-domains {:optional true} [:vector Domain]]])
+   [:account-currency {:optional true} :string]
+   [:readable-domains {:optional true} [:vector Domain]]
+   [:key-expires-at {:optional true} At]])
 
 
 (defcommand replace-connection-credentials
-  {:input ReplaceConnectionCredentials :policy ::manager :cofx [connection] :emits #{::connection-credentials-replaced}}
-  [{:keys [actor now connection]} {:keys [connection-id client-id secret-ref provider-account-id readable-domains] :as input}]
+  {:input ReplaceConnectionCredentials :policy ::manager :cofx [connection sealed] :emits #{::connection-credentials-replaced}}
+  [{:keys [actor now connection sealed?]}
+   {:keys [connection-id client-id secret-ref account-currency readable-domains key-expires-at] :as input}]
   (let [{account :provider-account-id previous :secret-ref} (known! connection)]
     (check-verification! input)
-    (when-not (= account client-id provider-account-id)
+    (when-not (= account client-id)
       (fail! :different-seller-account "Different seller account"))
-    (sealed! secret-ref)
+    (sealed! secret-ref sealed?)
     {:events [{:type ::connection-credentials-replaced
-               :data {:connection-id        connection-id :secret-ref secret-ref
-                      :readable-domains     (encode-domains readable-domains)
-                      :credentials-state    "valid" :replaced-by      (str actor) :replaced-at (str now)
-                      :consecutive-failures 0}}]
+               :data (cond-> {:connection-id        connection-id :secret-ref secret-ref
+                              :account-currency     account-currency
+                              :readable-domains     (encode-domains readable-domains)
+                              :credentials-state    "valid" :replaced-by      (str actor) :replaced-at (str now)
+                              :consecutive-failures 0}
+                       key-expires-at (assoc :key-expires-at key-expires-at))}]
      ;; The superseded key is destroyed right after commit; Bel writes only mapped event fields in the commit.
      :fx     [[::destroy-secret {:secret-ref previous}]]}))
 
@@ -481,6 +506,7 @@
 (def ConnectionStatusAndSyncCoverage
   [:map
    [:connection-id Ref] [:provider Provider] [:provider-account-id :string] [:account-label :string] [:store StoreRef]
+   [:account-currency :string] [:key-expires-at {:optional true} validation/Instant]
    [:sync-state SyncState] [:credentials-state CredentialsState]
    [:current-run {:optional true} Ref]
    [:last-completed-sync-at {:optional true} validation/Instant]
@@ -527,11 +553,13 @@
                      (not baseline?) (conj "no baseline"))
          next-at   (next-sync-at connection)]
      (cond-> (assoc (row connection store)
+                    :account-currency (:account-currency connection)
                     :domains (domain-rows connection covered)
                     :unmatched-listings 0 :unmatched-warehouses 0 :baseline-covered? baseline?
                     :automatic-acceptance-possible? (empty? reasons)
                     :blocking-reasons reasons
                     :can-manage? manager?)
+       (:key-expires-at connection) (assoc :key-expires-at (at (:key-expires-at connection)))
        next-at (assoc :next-sync-at next-at)))))
 
 

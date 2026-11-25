@@ -1057,14 +1057,16 @@
 (defn due-rows
   "Connections Due for Sync, oldest due first."
   {:malli/schema [:=> [:cat [:sequential :map] validation/Instant] [:vector [:map [:workspace-id :string] [:connection-id :string]
-                                                                             [:open-run {:optional true} :string] [:due-since :string]]]]}
+                                                                             [:open-run {:optional true} :string]
+                                                                             [:after-run {:optional true} :string] [:due-since :string]]]]}
   [connections now]
   (->> connections
        (keep (fn [c]
                (when (connections/due? c now)
                  (cond-> {:workspace-id (:workspace-id c)                  :connection-id (:connection-id c)
                           :due-since    (str (connections/next-sync-at c))}
-                   (= "open" (:run-state c)) (assoc :open-run (:run-id c))))))
+                   (= "open" (:run-state c)) (assoc :open-run (:run-id c))
+                   (and (:run-id c) (not= "open" (:run-state c))) (assoc :after-run (:run-id c))))))
        (sort-by (juxt #(instant (:due-since %)) :connection-id))
        vec))
 
@@ -1088,20 +1090,23 @@
 
 
 (defn run-id-for
-  "A stable run id for one due period, so repeated ticks and retries propose the same run."
-  {:malli/schema [:=> [:cat :string :string] :string]}
-  [connection-id due-since]
-  (str (UUID/nameUUIDFromBytes (.getBytes (str connection-id "/" due-since) StandardCharsets/UTF_8))))
+  "A stable run id for one due period after the connection's last closed run, so repeated ticks and retries
+  propose the same run. Replacing credentials can make a connection due at the same time as before its failed
+  run; the last run tells the two apart."
+  {:malli/schema [:=> [:cat :string :string [:maybe :string]] :string]}
+  [connection-id due-since after-run]
+  (str (UUID/nameUUIDFromBytes (.getBytes (str connection-id "/" due-since "/" after-run) StandardCharsets/UTF_8))))
 
 
-(defprocessor ^{:malli/schema [:=> [:cat [:map [:workspace-id :string] [:connection-id :string] [:due-since :string]]]
+(defprocessor ^{:malli/schema [:=> [:cat [:map [:workspace-id :string] [:connection-id :string] [:due-since :string]
+                                          [:after-run {:optional true} :string]]]
                                bel/ProcessorRequest]}
   marketplace-sync-scheduler
   {:todo ::due-connections}
-  [{:keys [workspace-id connection-id due-since]}]
+  [{:keys [workspace-id connection-id due-since after-run]}]
   {:type  :command :id ::start-marketplace-sync :scope {:workspace-id (parse-uuid workspace-id)}
    :actor (connector-actor connection-id)
-   :input {:attempt-id    (str "schedule/" due-since) :run-id  (run-id-for connection-id due-since)
+   :input {:attempt-id    (str "schedule/" due-since) :run-id  (run-id-for connection-id due-since after-run)
            :connection-id connection-id               :trigger "schedule"}})
 
 

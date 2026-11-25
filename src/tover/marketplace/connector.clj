@@ -11,8 +11,10 @@
   :repo repository :key bytes :post (fn [path body headers] response) :pacer atom}`. Tests pass their own
   `:verify` and `:post`; nothing here runs at namespace load."
   (:require
+    [bel-rdf.adapter :as adapter]
     [buddy.core.codecs :as codecs]
     [buddy.core.crypto :as crypto]
+    [buddy.core.mac :as mac]
     [buddy.core.nonce :as nonce]
     [charred.api :as json]
     [clojure.string :as str]
@@ -22,11 +24,13 @@
     [java.io IOException]
     [java.net URI]
     [java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers HttpResponse$BodyHandlers HttpTimeoutException]
-    [java.time Duration]))
+    [java.time Duration Instant]
+    [java.time.format DateTimeParseException]
+    [java.util UUID]))
 
 
 (def domains
-  "Sync domains in board order (chapter 41, Fetch the next source batch); each has one read-only probe."
+  "Sync domains in board order (chapter 41, Fetch the next source batch)."
   ["warehouses" "products" "sku-aliases" "attributes" "attribute-definitions" "stock-totals" "stock-analytics"
    "fbs-postings" "fbo-postings" "returns" "rfbs-returns" "supplies" "removals"])
 
@@ -34,9 +38,10 @@
 (def Verification
   [:map
    [:verification-outcome [:enum "verified" "rejected" "unreachable"]]
-   [:provider-account-id {:optional true} :string]
    [:account-label {:optional true} :string]
-   [:readable-domains {:optional true} [:vector (into [:enum] domains)]]])
+   [:account-currency {:optional true} :string]
+   [:readable-domains {:optional true} [:vector (into [:enum] domains)]]
+   [:key-expires-at {:optional true} :string]])
 
 
 (def Connector
@@ -100,15 +105,59 @@
   connector)
 
 
+(defn secret-ref
+  "The reference for `api-key` in attempt `command-id`: the same for a double-click, different for another key.
+  Keyed with the connector key, so it tells nothing about the API key."
+  {:malli/schema [:=> [:cat :map :string :string :string] :string]}
+  [{:keys [key]} command-id client-id api-key]
+  (str (UUID/nameUUIDFromBytes (mac/hash (pr-str [command-id client-id api-key]) {:key key :alg :hmac+sha256}))))
+
+
 (defn store-secret!
-  "Seal `api-key` under a new reference in the workspace's secret graph; returns the reference."
-  {:malli/schema [:=> [:cat [:maybe :map] :uuid :string] :string]}
-  [connector workspace-id api-key]
-  (let [{:keys [repo key]} (configured! connector)
-        secret-ref         (str (random-uuid))]
-    (rdf/with-transaction [conn {:repo repo :level :serializable}]
-      (rdf/add! conn (graph workspace-id) (subject secret-ref) sealed-key (seal key api-key)))
-    secret-ref))
+  "Seal `api-key` under `secret-ref` (or a new reference) in the workspace's secret graph; returns the reference."
+  {:malli/schema [:function
+                  [:=> [:cat [:maybe :map] :uuid :string] :string]
+                  [:=> [:cat [:maybe :map] :uuid :string :string] :string]]}
+  ([connector workspace-id api-key]
+   (store-secret! connector workspace-id (str (random-uuid)) api-key))
+  ([connector workspace-id secret-ref api-key]
+   (let [{:keys [repo key]} (configured! connector)]
+     ;; A reference stands for one key, so sealing it twice only adds another ciphertext of that key.
+     (rdf/with-transaction [conn {:repo repo :level :serializable}]
+       (rdf/add! conn (graph workspace-id) (subject secret-ref) sealed-key (seal key api-key))))
+   secret-ref))
+
+
+(defn sealed?
+  "Whether a reference has a key, read in the caller's transaction so that a concurrent destroy conflicts with it."
+  {:malli/schema [:=> [:cat rdf/Connection :uuid :string] :boolean]}
+  [conn workspace-id secret-ref]
+  (some? (rdf/value-at conn (graph workspace-id) (subject secret-ref) sealed-key)))
+
+
+(defn destroy-unreferenced!
+  "Destroy the workspace's sealed keys that are neither in `referenced` nor named by any stored record: their
+  command was not accepted. Serializable with the command that would name one; when another commit wins, the
+  next attempt destroys them."
+  {:malli/schema [:=> [:cat [:maybe :map] :uuid [:set :string]] :nil]}
+  [connector workspace-id referenced]
+  (let [{:keys [repo]} (configured! connector)
+        prefix         (str (subject ""))]
+    (try
+      (adapter/transact repo :serializable
+                        (fn [conn]
+                          (doseq [secret (distinct (map :secret (rdf/select conn '{:select [?secret] :where [[?secret ?p ?key]]}
+                                                                            {:p sealed-key})))
+                                  :let   [secret-ref (subs (str secret) (count prefix))]
+                                  :when  (and (sealed? conn workspace-id secret-ref)
+                                              (not (contains? referenced secret-ref))
+                                              (empty? (rdf/select conn '{:select [?record] :where [[?record ?p ?ref]]}
+                                                                  {:ref secret-ref})))]
+                            (rdf/remove! conn (graph workspace-id) (subject secret-ref) nil nil))))
+      (catch clojure.lang.ExceptionInfo error
+        (when-not (= :conflict (:type (ex-data error))) (throw error))
+        (mu/log ::unreferenced-secrets-kept))))
+  nil)
 
 
 (defn destroy-secret!
@@ -137,21 +186,28 @@
   "https://api-seller.ozon.ru")
 
 
-(def probes
-  "One read-only request per domain, the smallest each endpoint accepts."
-  {"warehouses"            ["/v2/warehouse/list" {:limit 1}]
-   "products"              ["/v3/product/list" {:filter {} :limit 1}]
-   "sku-aliases"           ["/v1/product/related-sku/get" {:sku []}]
-   "attributes"            ["/v4/product/info/attributes" {:filter {} :limit 1}]
-   "attribute-definitions" ["/v1/description-category/attribute" {}]
-   "stock-totals"          ["/v4/product/info/stocks" {:filter {} :limit 1}]
-   "stock-analytics"       ["/v1/analytics/stocks" {:skus []}]
-   "fbs-postings"          ["/v4/posting/fbs/list" {:limit 1}]
-   "fbo-postings"          ["/v3/posting/fbo/list" {:limit 1}]
-   "returns"               ["/v1/returns/list" {:limit 1}]
-   "rfbs-returns"          ["/v2/returns/rfbs/list" {:limit 1}]
-   "supplies"              ["/v3/supply-order/list" {:limit 1}]
-   "removals"              ["/v1/removal/from-stock/list" {:limit 1}]})
+(def domain-calls
+  "Every Ozon call of each domain (chapter 41, Domains table). A domain is readable when the key lists them all."
+  {"warehouses"            #{"/v2/warehouse/list" "/v1/warehouse/fbo/seller/list"}
+   "products"              #{"/v3/product/list" "/v3/product/info/list"}
+   "sku-aliases"           #{"/v1/product/related-sku/get"}
+   "attributes"            #{"/v4/product/info/attributes"}
+   "attribute-definitions" #{"/v1/description-category/attribute"}
+   "prices"                #{"/v5/product/info/prices"}
+   "stock-totals"          #{"/v4/product/info/stocks"}
+   "stock-by-warehouse"    #{"/v1/product/info/stocks-by-warehouse/fbo" "/v2/product/info/stocks-by-warehouse/fbs"}
+   "stock-analytics"       #{"/v1/analytics/stocks"}
+   "fbs-postings"          #{"/v4/posting/fbs/list" "/v3/posting/fbs/get"}
+   "fbo-postings"          #{"/v3/posting/fbo/list" "/v2/posting/fbo/get"}
+   "returns"               #{"/v1/returns/list"}
+   "rfbs-returns"          #{"/v2/returns/rfbs/list" "/v2/returns/rfbs/get"}
+   "supplies"              #{"/v3/supply-order/list" "/v3/supply-order/get" "/v1/supply-order/bundle"
+                             "/v1/supply-order/act/product/get"}
+   "removals"              #{"/v1/removal/from-stock/list" "/v1/removal/from-supply/list"}})
+
+
+(def ^:private http-client
+  (delay (-> (HttpClient/newBuilder) (.connectTimeout (Duration/ofSeconds 10)) (.build))))
 
 
 (defn http-post
@@ -162,56 +218,94 @@
                   [:=> [:cat :string :map :map :int] [:map [:status :int] [:body :string]]]]}
   ([path body headers] (http-post path body headers 15))
   ([path body headers timeout-seconds]
-   (let [client   (HttpClient/newHttpClient)
-         request  (-> (HttpRequest/newBuilder (URI/create (str origin path)))
+   (let [request  (-> (HttpRequest/newBuilder (URI/create (str origin path)))
                       (.timeout (Duration/ofSeconds timeout-seconds))
                       (.header "Content-Type" "application/json")
                       (as-> builder (reduce-kv (fn [b k v] (.header ^java.net.http.HttpRequest$Builder b k v)) builder headers))
                       (.POST (HttpRequest$BodyPublishers/ofString (json/write-json-str body)))
                       (.build))
-         response (.send client request (HttpResponse$BodyHandlers/ofString))]
+         response (.send ^HttpClient @http-client request (HttpResponse$BodyHandlers/ofString))]
      {:status  (.statusCode response) :body (str (.body response))
       :headers (into {} (keep (fn [[k vs]] (when (seq vs) [(str/lower-case k) (first vs)])))
                      (.map (.headers response)))})))
 
 
 (defn- classify
-  "401/403 and other client errors are a refusal; 429, 5xx and network failures mean the provider could not answer."
+  "Any 4xx but 429 is a refusal; other answers and network failures mean the provider could not answer."
   {:malli/schema [:=> [:cat [:fn fn?]] [:map [:outcome :keyword] [:body {:optional true} :string]]]}
   [request]
   (try
     (let [{:keys [status body]} (request)]
       (cond
         (<= 200 status 299) {:outcome :ok :body body}
-        (or (= 429 status) (<= 500 status)) {:outcome :unreachable}
-        :else {:outcome :refused}))
+        (and (<= 400 status 499) (not= 429 status)) {:outcome :refused}
+        :else {:outcome :unreachable}))
     (catch HttpTimeoutException _ {:outcome :unreachable})
     (catch IOException _ {:outcome :unreachable})))
 
 
+(defn- answer
+  "The JSON object a call answers, or its outcome when there is none."
+  {:malli/schema [:=> [:cat [:fn fn?]] [:map [:outcome :keyword] [:data {:optional true} :map]]]}
+  [request]
+  (let [{:keys [outcome body]} (classify request)
+        data                   (when (= :ok outcome) (try (json/read-json body) (catch Exception _ nil)))]
+    (cond
+      (not= :ok outcome) {:outcome outcome}
+      (map? data) {:outcome :ok :data data}
+      :else {:outcome :unreachable})))
+
+
+(defn- header-text?
+  "Printable ASCII: what a credential may hold to be sent as an HTTP header."
+  {:malli/schema [:=> [:cat :string] :boolean]}
+  [text]
+  (boolean (re-matches #"[\x20-\x7E]+" text)))
+
+
+(defn- text
+  {:malli/schema [:=> [:cat :any] [:maybe :string]]}
+  [value]
+  (when (string? value) (not-empty (str/trim value))))
+
+
+(defn- expiry
+  "A stated key expiry as ISO text; absent when there is none."
+  {:malli/schema [:=> [:cat :any] [:maybe :string]]}
+  [value]
+  (some-> (text value) (as-> s (try (str (Instant/parse s)) (catch DateTimeParseException _ nil)))))
+
+
+(defn- listed-methods
+  {:malli/schema [:=> [:cat :any] [:set :any]]}
+  [roles]
+  (letfn [(rows [value] (when (sequential? value) value))]
+    (into #{} (mapcat #(when (map? %) (rows (get % "methods")))) (rows roles))))
+
+
 (defn ozon-verify
-  "`/v1/seller/info`, then one probe per domain. `post` is `http-post` or a test fake.
-  A refused probe makes that domain unreadable; a probe the provider could not answer makes the whole
-  verification unreachable, so a domain is never wrongly reported as unavailable."
+  "`/v1/seller/info`, then `/v1/roles`: Ozon authenticates the Client-Id and key together, so two answers prove the
+  pair. `post` is `http-post` or a test fake. Only the returned facts leave this function; everything else in
+  the answers (legal details, ratings, other methods) is dropped here."
   {:malli/schema [:=> [:cat [:fn fn?] [:map [:client-id :string] [:api-key :string]]] Verification]}
   [post {:keys [client-id api-key]}]
-  (let [headers {"Client-Id" client-id "Api-Key" api-key}
-        info    (classify #(post "/v1/seller/info" {} headers))]
-    (case (:outcome info)
-      :refused {:verification-outcome "rejected"}
-      :unreachable {:verification-outcome "unreachable"}
-      (let [results (into {} (map (fn [[domain [path body]]] [domain (:outcome (classify #(post path body headers)))])) probes)
-            label   (try (not-empty (str (get-in (json/read-json (:body info)) ["company" "name"])))
-                         (catch Exception _ nil))]
-        (mu/log ::verified :readable (count (filter #{:ok} (vals results))))
-        (if (some #{:unreachable} (vals results))
-          {:verification-outcome "unreachable"}
-          (cond-> {:verification-outcome "verified"
-                   ;; ponytail: Ozon authenticates the Client-Id header itself, so the account is that id;
-                   ;; read a reported id from the body if a live check shows one.
-                   :provider-account-id  client-id
-                   :readable-domains     (filterv #(= :ok (results %)) domains)}
-            label (assoc :account-label label)))))))
+  (let [call     #(answer (fn [] (post % {} {"Client-Id" client-id "Api-Key" api-key})))
+        failed   {:refused {:verification-outcome "rejected"} :unreachable {:verification-outcome "unreachable"}}
+        info     (if (every? header-text? [client-id api-key]) (call "/v1/seller/info") {:outcome :refused})
+        roles    (when (= :ok (:outcome info)) (call "/v1/roles"))
+        company  (get-in info [:data "company"])
+        label    (text (get company "name"))
+        currency (text (get company "currency"))
+        expires  (expiry (get-in roles [:data "expires_at"]))
+        methods  (listed-methods (get-in roles [:data "roles"]))
+        readable (filterv #(every? methods (domain-calls %)) domains)]
+    (mu/log ::verified :info (:outcome info) :roles (:outcome roles) :readable (count readable))
+    (or (failed (:outcome info))
+        (failed (:outcome roles))
+        (when-not currency (failed :unreachable))
+        (cond-> {:verification-outcome "verified" :account-currency currency :readable-domains readable}
+          label (assoc :account-label label)
+          expires (assoc :key-expires-at expires)))))
 
 
 (defn connector

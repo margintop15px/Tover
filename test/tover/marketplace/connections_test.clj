@@ -60,10 +60,10 @@
 
 
 (def connection
-  {:connection-id       c :workspace-id             (str workspace) :store-id     "s"      :provider "ozon"
-   :provider-account-id "123" :secret-ref           secret
+  {:connection-id       c :workspace-id             (str workspace) :store-id         "s"      :provider "ozon"
+   :provider-account-id "123" :secret-ref           secret          :account-currency "RUB"
    :readable-domains    (model/encode-domains all-domains)
-   :sync-state          "active" :credentials-state "valid"         :connected-by admin-id
+   :sync-state          "active" :credentials-state "valid"         :connected-by     admin-id
    :connected-at        (hours-ago 100)})
 
 
@@ -93,13 +93,13 @@
 
 
 (def verified
-  {:verification-outcome "verified" :provider-account-id "123" :secret-ref secret :readable-domains all-domains})
+  {:verification-outcome "verified" :account-currency "RUB" :secret-ref secret :readable-domains all-domains})
 
 
 (defn connect
   {:malli/schema [:=> [:cat :map :map] :map]}
   [facts input]
-  (decide ::model/connect-marketplace-account (merge {:store active-store :connections []} facts)
+  (decide ::model/connect-marketplace-account (merge {:store active-store :connections [] :sealed? true} facts)
           (merge {:connection-id c :store-id "s" :provider "ozon" :client-id " 123 "} verified input)))
 
 
@@ -120,12 +120,13 @@
 
 
 (deftest connect-a-seller-account
-  (let [plan (connect {} {:account-label "Shop LLC"})]
+  (let [plan (connect {} {:account-label "Shop LLC" :key-expires-at "2027-01-01T00:00:00Z"})]
     (is (= [{:type ::model/marketplace-account-connected
-             :data {:connection-id       c :workspace-id             (str workspace) :store-id     "s"      :provider     "ozon"
-                    :provider-account-id "123" :account-label        "Shop LLC"      :secret-ref   secret
+             :data {:connection-id       c :workspace-id             (str workspace)        :store-id     "s"      :provider     "ozon"
+                    :provider-account-id "123" :account-label        "Shop LLC"             :secret-ref   secret
+                    :account-currency    "RUB" :key-expires-at       "2027-01-01T00:00:00Z"
                     :readable-domains    (model/encode-domains all-domains)
-                    :sync-state          "active" :credentials-state "valid"         :connected-by admin-id :connected-at at}}]
+                    :sync-state          "active" :credentials-state "valid"                :connected-by admin-id :connected-at at}}]
            (data plan)))
     (let [status (model/status (after {} plan) active-store true)]
       (is (false? (:automatic-acceptance-possible? status)))
@@ -265,8 +266,8 @@
 (defn replace-credentials
   {:malli/schema [:=> [:cat :map :map] :map]}
   [connection input]
-  (decide ::model/replace-connection-credentials {:connection connection}
-          (merge {:connection-id c :client-id "123"} verified {:secret-ref new-secret} input)))
+  (decide ::model/replace-connection-credentials {:connection connection :sealed? true}
+          (merge {:connection-id c :client-id "123"} verified {:secret-ref new-secret :account-currency "KZT"} input)))
 
 
 (deftest fix-rejected-credentials
@@ -275,7 +276,7 @@
         fixed    (after rejected plan)]
     (is (= [{:type ::model/connection-credentials-replaced
              :data {:connection-id        c       :secret-ref  new-secret :readable-domains (model/encode-domains all-domains)
-                    :credentials-state    "valid" :replaced-by admin-id   :replaced-at      at
+                    :credentials-state    "valid" :replaced-by admin-id   :replaced-at      at :account-currency "KZT"
                     :consecutive-failures 0}}]
            (data plan))
         "replacing credentials also resets chapter 41's failure count")
@@ -292,15 +293,32 @@
 
 
 (deftest another-seller-account
-  (is (= :different-seller-account (rejection #(replace-credentials connection {:client-id "456" :provider-account-id "456"}))))
-  (is (= :different-seller-account (rejection #(replace-credentials connection {:provider-account-id "456"})))))
+  (is (= :different-seller-account (rejection #(replace-credentials connection {:client-id "456"})))))
 
 
 (deftest key-rotation
-  (let [rotated (after connection (replace-credentials connection {}))]
+  (let [rotated (after connection (replace-credentials connection {:account-currency "RUB"}))]
     (is (= (assoc (dissoc connection :secret-ref) :secret-ref new-secret :replaced-by admin-id :replaced-at at
                   :consecutive-failures 0)
            rotated))))
+
+
+(deftest replacing-resets-the-failure-count
+  (let [failed (assoc connection :run-id run :run-state "failed" :consecutive-failures 5)]
+    (doseq [before [failed
+                    (assoc failed :consecutive-failures 2 :next-attempt-at (hours-ago -1))
+                    (assoc failed :sync-state "paused")]]
+      (let [data (:data (first (:events (replace-credentials before {:key-expires-at "2027-01-01T00:00:00Z"}))))]
+        (is (= 0 (:consecutive-failures data)))
+        (is (not (contains? data :next-attempt-at)) "absent clears the failure wait")
+        (is (not (contains? data :sync-state)) "sync state unchanged")
+        (is (= "2027-01-01T00:00:00Z" (:key-expires-at data)))))))
+
+
+(deftest a-destroyed-secret-is-never-referenced
+  (is (= :conflict (rejection #(connect {:sealed? false} {}))))
+  (is (= :conflict (rejection #(decide ::model/replace-connection-credentials {:connection connection :sealed? false}
+                                       (merge {:connection-id c :client-id "123"} verified))))))
 
 
 (deftest replace-rejections-follow-verification
@@ -318,7 +336,7 @@
 (defn context
   {:malli/schema [:=> [:cat :any :keyword] :map]}
   [repo role]
-  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo})      :repo repo :workspace-id workspace
+  (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo :marketplace {:repo repo}}) :repo repo :workspace-id workspace
                             :user-id     (if (= :member role) member admin)
                             :memberships [{:workspace-id workspace :role role}]}))
 
@@ -347,6 +365,8 @@
       (let [ctx    (context repo :admin)
             viewer (context repo :member)
             read   #(runtime/read-model %1 %2 %3)]
+        (doseq [ref [secret new-secret]]
+          (connector/store-secret! {:repo repo :key (byte-array 32)} workspace ref "api-key"))
         (execute! ctx ::stores/register-store "st1" {:store-id "s" :name "Ozon shop"})
         (execute! ctx ::stores/register-store "st2" {:store-id "old" :name "Old shop"})
         (execute! ctx ::stores/archive-store "st3" {:store-id "old" :revision 1})
@@ -374,9 +394,9 @@
 
         (testing "slice 3 · the connection and its sync coverage"
           (let [status (read viewer ::model/connection-status-and-sync-coverage {:connection-id c})]
-            (is (= {:sync-state       "active"        :credentials-state "valid" :automatic-acceptance-possible? false
+            (is (= {:sync-state       "active"        :credentials-state "valid" :automatic-acceptance-possible? false :account-currency "RUB"
                     :blocking-reasons ["no baseline"] :can-manage?       false   :unmatched-listings             0}
-                   (select-keys status [:sync-state :credentials-state :automatic-acceptance-possible? :blocking-reasons
+                   (select-keys status [:sync-state :credentials-state :account-currency :automatic-acceptance-possible? :blocking-reasons
                                         :can-manage? :unmatched-listings])))
             (is (= (count all-domains) (count (:domains status))))
             (is (some? (:next-sync-at status)))
@@ -419,4 +439,4 @@
                                                           (assoc connect-input :connection-id (str (random-uuid)))))))
           (is (= :store-not-available (rejection #(execute! ctx ::model/connect-marketplace-account "attempt-4"
                                                             (assoc connect-input :connection-id (str (random-uuid)) :client-id "9"
-                                                                   :provider-account-id "9" :store-id "old"))))))))))
+                                                                   :store-id "old"))))))))))

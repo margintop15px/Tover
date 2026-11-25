@@ -16,16 +16,18 @@
     [tover.marketplace.sync.model :as sync]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
-    [tover.shared.ui.forms :refer [form]]))
+    [tover.shared.ui.forms :refer [form]]
+    [tover.workspaces.currency.model :as currency]))
 
 
 (def problems
   "Board rejections, shown on the page the form came from."
   (let [changed [409 "This connection changed. Reload the page."]]
-    {:store-not-available      409 :credentials-rejected 422     :could-not-verify  503     :products-not-readable 422
-     :already-connected        409 :unknown-connection   404     :needs-credentials 409     :store-archived        409
-     :different-seller-account 422 :conflict             changed :identity-conflict changed
-     :connection-paused        409 :throttled            409}))
+    {:store-not-available      409 :credentials-rejected 422     :could-not-verify     503     :products-not-readable 422
+     :already-connected        409 :unknown-connection   404     :needs-credentials    409     :store-archived        409
+     :different-seller-account 422 :conflict             changed :identity-conflict    changed
+     :connection-paused        409 :throttled            409     :idempotency-conflict changed
+     :not-configured           503}))
 
 
 (def Command
@@ -35,51 +37,62 @@
 ;; Commands
 
 
+(defn- selected!
+  "The form's workspace must still be the selected one."
+  {:malli/schema [:=> [:cat :map :uuid] :nil]}
+  [{:keys [request]} workspace-id]
+  (when-not (= workspace-id (get-in request [:tover/identity :workspace-id]))
+    (access/failure 409 :workspace-changed "Workspace changed. Reload this page before continuing.")))
+
+
 (defn- descriptor
   "A manager command for the selected workspace; success opens the connection's page."
   {:malli/schema [:=> [:cat :map :qualified-keyword :map] :map]}
-  [{:keys [request]} id {:keys [command-id workspace-id connection-id] :as input}]
-  (when-not (= workspace-id (get-in request [:tover/identity :workspace-id]))
-    (access/failure 409 :workspace-changed "Workspace changed. Reload this page before continuing."))
+  [context id {:keys [command-id workspace-id connection-id] :as input}]
+  (selected! context workspace-id)
   {:type  :command :id id :command-id command-id
    :input (dissoc input :command-id :workspace-id)
    :then  {:type :page :id ::connection :path-params {:connection-id connection-id}}})
 
 
 (defn credentials
-  "Replace `:api-key` with the provider's verification and, when `acceptable?` holds for it, the secret
-  reference of the sealed key."
+  "Replace `:api-key` with the provider's verification and, when `acceptable?` holds for the Client-Id, the
+  secret reference of the sealed key. Keys earlier attempts sealed without an accepted command are destroyed
+  first; without a connector key nothing is sent to the provider."
   {:malli/schema [:=> [:cat :map :map [:fn fn?]] :map]}
-  [context {:keys [workspace-id client-id api-key] :as input} acceptable?]
-  (let [marketplace  (get-in context [:bel/system :resources :marketplace])
-        _            (when-not marketplace
-                       (throw (ex-info "Marketplace connections are not configured" {:type :configuration})))
+  [context {:keys [command-id workspace-id client-id api-key] :as input} acceptable?]
+  (let [_            (selected! context workspace-id)
+        marketplace  (get-in context [:bel/system :resources :marketplace])
+        _            (when-not (:key marketplace)
+                       (throw (ex-info "Marketplace connections are not configured" {:type :not-configured})))
         client-id    (str/trim client-id)
+        secret-ref   (connector/secret-ref marketplace command-id client-id api-key)
+        _            (connector/destroy-unreferenced! marketplace workspace-id #{secret-ref})
         verification ((:verify marketplace) {:client-id client-id :api-key api-key})]
     (cond-> (merge (dissoc input :api-key) {:client-id client-id} verification)
       (and (= "verified" (:verification-outcome verification))
-           (= client-id (:provider-account-id verification))
            (some #{"products"} (:readable-domains verification))
-           (acceptable? verification))
-      (assoc :secret-ref (connector/store-secret! marketplace workspace-id api-key)))))
+           (acceptable? client-id))
+      (assoc :secret-ref (connector/store-secret! marketplace workspace-id secret-ref api-key)))))
 
 
 (def Credentials
-  [:map [:client-id [:string {:min 1 :max 100}]] [:api-key [:string {:min 1 :max 500}]]])
+  [:map [:client-id model/ClientId] [:api-key [:string {:min 1 :max 500}]]])
 
 
 (defaction connect
   {:schema     (into Command (concat [[:connection-id model/Ref] [:store-id :string] [:provider model/Provider]]
                                      (rest Credentials)))
-   :route-data {:tover/access :manager :bel/error-page ::connections :tover/problems problems}}
+   :route-data {:tover/access :manager :bel/error-page ::connections :bel/retain ["store-id"] :tover/problems problems}}
   [context input]
   (let [{:keys [connections selectable-stores]}
         (runtime/read-model context ::model/marketplace-connections-and-requirements {})
-        ;; ponytail: a store archived or an account connected between this read and the commit leaves one
-        ;; unreferenced sealed key; add a sweep of unreferenced secrets if that race shows up.
-        acceptable? (fn [{:keys [provider-account-id]}]
+        ;; The attempt's own connection is no obstacle: a second click recovers the first one's outcome.
+        acceptable? (fn [client-id]
                       (and (some #(= (:store-id input) (:store-id %)) selectable-stores)
-                           (not-any? #(= provider-account-id (:provider-account-id %)) connections)))]
+                           (not-any? #(and (= client-id (:provider-account-id %))
+                                           (not= (:connection-id input) (:connection-id %)))
+                                     connections)))]
     (descriptor context ::model/connect-marketplace-account (credentials context input acceptable?))))
 
 
@@ -90,7 +103,7 @@
   (let [account (:provider-account-id (runtime/read-model context ::model/connection-status-and-sync-coverage
                                                           (select-keys input [:connection-id])))]
     (descriptor context ::model/replace-connection-credentials
-                (credentials context input #(= account (:provider-account-id %))))))
+                (dissoc (credentials context input #(= account %)) :account-label))))
 
 
 (defaction pause
@@ -163,7 +176,7 @@
                       (into [:select {:name "store-id" :required true}]
                             (for [{:keys [store-id name]} stores]
                               [:option {:value store-id :selected (= store-id (:store-id params))} name]))]]
-                    (credential-fields (:client-id params))))
+                    (credential-fields nil)))
      [:p.management-secondary (i18n/t "Ozon is read only: Tover never changes anything in your seller account.")]]))
 
 
@@ -202,7 +215,7 @@
                           [:td (if last-completed-sync-at (team/moment last-completed-sync-at) (i18n/t "Not yet"))]]))]]
                [:p.management-empty (i18n/t "No marketplace connections yet.")])
              (when (:can-manage? model)
-               [:details.management-disclosure {:open (or (empty? (:connections model)) (contains? (:params request) :client-id))}
+               [:details.management-disclosure {:open (or (empty? (:connections model)) (contains? (:params request) :store-id))}
                 [:summary (i18n/t "Connect a seller account")]
                 (if (seq (:selectable-stores model))
                   (connect-form request (:selectable-stores model))
@@ -216,6 +229,7 @@
         status (runtime/read-model context ::model/connection-status-and-sync-coverage input)]
     {:request   request
      :status    status
+     :currency  (:currency (runtime/read-model context ::currency/workspace-currency {}))
      :paused    (when (= "paused" (:sync-state status)) (runtime/read-model context ::model/paused-connection input))
      :attention (when (= "rejected" (:credentials-state status))
                   (runtime/read-model context ::model/connection-needing-attention input))
@@ -267,7 +281,7 @@
    :schema     [:map [:connection-id model/Ref]]
    :route-data {:tover/access :workspace}
    :query      query-connection}
-  [{:keys [request status paused attention sync]}]
+  [{:keys [request status currency paused attention sync]}]
   (let [{:keys [connection-id account-label store can-manage?]} status]
     {:type :elements
      :html [:section.management-page {:aria-labelledby "connection-title" :data-connection-id connection-id}
@@ -285,8 +299,16 @@
                 [:p (i18n/t "Paused by {name}" {:name (or (get-in paused [:paused-by :display-name]) (i18n/t "Unavailable user"))})
                  " " (team/moment (:paused-at paused))]
                 (when (:can-resume? paused) (action-form request ::resume (i18n/t "Resume") connection-id))])
+             (when (not= currency (:account-currency status))
+               [:p {:role "status"}
+                (i18n/t "The seller account uses {account} and the workspace uses {workspace}. Imported prices and costs are left blank."
+                        {:account (:account-currency status) :workspace currency})])
              (sync-panel request sync connection-id)
              [:dl
+              [:dt (i18n/t "Account currency")]
+              [:dd (:account-currency status)]
+              (when-let [at (:key-expires-at status)]
+                (list [:dt (i18n/t "API key expires")] [:dd (team/moment at)]))
               [:dt (i18n/t "Last sync")]
               [:dd (if-let [at (:last-completed-sync-at status)] (team/moment at) (i18n/t "Not yet"))]
               [:dt (i18n/t "Next sync")]

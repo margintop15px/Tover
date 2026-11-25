@@ -9,6 +9,7 @@
     [bel.validation :as validation]
     [charred.api :as json]
     [clojure.test :refer [deftest is testing use-fixtures]]
+    [tover.catalogues.records :as records]
     [tover.catalogues.stores.model :as stores]
     [tover.inventory.actors :as actors]
     [tover.marketplace.connections.model :as connections]
@@ -58,10 +59,10 @@
 
 
 (def connection
-  {:connection-id    c :workspace-id             (str workspace) :store-id     "s"          :provider "ozon" :provider-account-id "123"
-   :account-label    "Shop LLC" :secret-ref      "secret"
+  {:connection-id    c :workspace-id             (str workspace) :store-id         "s"          :provider "ozon" :provider-account-id "123"
+   :account-label    "Shop LLC" :secret-ref      "secret"        :account-currency "RUB"
    :readable-domains (connections/encode-domains all-domains)
-   :sync-state       "active" :credentials-state "valid"         :connected-by (str member)
+   :sync-state       "active" :credentials-state "valid"         :connected-by     (str member)
    :connected-at     "2026-12-01T06:00:00Z"})
 
 
@@ -167,10 +168,22 @@
     (is (= ["c2" "c1"] (map :connection-id (due [c1 c2] "2026-12-11T07:00:00Z"))))))
 
 
+(deftest due-rows-name-the-run-they-follow
+  (is (= [{:workspace-id (str workspace) :connection-id c :due-since "2026-12-01T06:00:00Z" :after-run r}]
+         (due [(assoc connection :run-id r :run-state "failed" :consecutive-failures 0)] "2026-12-01T06:00:00Z")))
+  (let [item    {:workspace-id (str workspace) :connection-id c :due-since "2026-12-01T06:00:00Z"}
+        before  (sync/marketplace-sync-scheduler item)
+        next    (sync/marketplace-sync-scheduler (assoc item :after-run r))
+        command #(runtime/processor-command-id ::sync/marketplace-sync-scheduler %)]
+    (is (= next (sync/marketplace-sync-scheduler (assoc item :after-run r))) "repeated ticks keep their identity")
+    (is (not= (get-in before [:input :run-id]) (get-in next [:input :run-id])))
+    (is (not= (command before) (command next)))))
+
+
 (deftest scheduler-acts-as-the-connector
   (let [request (sync/marketplace-sync-scheduler {:workspace-id (str workspace) :connection-id c :due-since "2026-12-11T06:00:00Z"})]
     (is (= {:type  :command :id ::sync/start-marketplace-sync :scope scope :actor (parse-uuid c)
-            :input {:attempt-id    "schedule/2026-12-11T06:00:00Z" :run-id (sync/run-id-for c "2026-12-11T06:00:00Z")
+            :input {:attempt-id    "schedule/2026-12-11T06:00:00Z" :run-id (sync/run-id-for c "2026-12-11T06:00:00Z" nil)
                     :connection-id c :trigger "schedule"}}
            request))
     (is (= request (sync/marketplace-sync-scheduler {:workspace-id (str workspace) :connection-id c :due-since "2026-12-11T06:00:00Z"}))
@@ -570,8 +583,8 @@
 
 (deftest replacing-credentials-resets-the-failure-count
   (let [stopped (assoc connection :run-state "failed" :consecutive-failures 5 :credentials-state "rejected")
-        plan    (decide ::connections/replace-connection-credentials {:connection stopped}
-                        {:connection-id c    :client-id        "123"       :verification-outcome "verified" :provider-account-id "123"
+        plan    (decide ::connections/replace-connection-credentials {:connection stopped :sealed? true}
+                        {:connection-id c    :client-id        "123"       :verification-outcome "verified" :account-currency "RUB"
                          :secret-ref    "s2" :readable-domains all-domains})]
     (is (connections/due? (after stopped plan :connection-id) (t "2026-12-30T00:00:00Z")))))
 
@@ -684,8 +697,8 @@
         (runtime/execute! ctx ::stores/register-store {:command-id "st1" :input {:store-id "s" :name "Ozon shop"}})
         (runtime/execute! ctx ::connections/connect-marketplace-account
                           {:command-id "connect-1"
-                           :input      {:connection-id        c          :store-id            "s"   :provider         "ozon"      :client-id "123" :secret-ref secret
-                                        :verification-outcome "verified" :provider-account-id "123" :readable-domains all-domains}})
+                           :input      {:connection-id        c          :store-id         "s"   :provider         "ozon"      :client-id "123" :secret-ref secret
+                                        :verification-outcome "verified" :account-currency "RUB" :readable-domains all-domains}})
 
         (testing "never synced: the scheduler starts a run as the connector"
           (runtime/run-processors! system)
@@ -728,3 +741,52 @@
 
         (testing "history shows the connector principal as Ozon · account"
           (is (= "Ozon · 123" (:actor-label (first (actors/enrich ctx [{:actor (str "connector:" c)}]))))))))))
+
+
+(deftest replaced-credentials-start-a-new-scheduled-run
+  (support/with-store
+    (fn [repo _]
+      (let [used        (atom nil)
+            marketplace {:verify (constantly nil) :repo repo :key key-bytes :pacer (atom {})
+                         :post   (fn [path body headers]
+                                   (reset! used (get headers "Api-Key"))
+                                   (if (= "revoked" @used)
+                                     {:status 401 :body "{}"}
+                                     (update (ozon path body) :body json/write-json-str)))}
+            system      (support/bel-system {:repo repo :marketplace marketplace})
+            ctx         (context system)
+            row         #(runtime/read-model ctx ::connections/connections {:connection-id c})
+            runs        #(count (records/all-records (assoc ctx :scope scope) ::sync/sync-runs :run-id))
+            input       {:connection-id        c          :client-id        "123"       :account-currency "RUB"
+                         :verification-outcome "verified" :readable-domains all-domains}]
+        (runtime/execute! ctx ::stores/register-store {:command-id "st1" :input {:store-id "s" :name "Ozon shop"}})
+        (runtime/execute! ctx ::connections/connect-marketplace-account
+                          {:command-id "connect-1"
+                           :input      (assoc input :store-id "s" :provider "ozon"
+                                              :secret-ref (connector/store-secret! marketplace workspace "revoked"))})
+        (loop [n 5]
+          (when (and (pos? n) (= "valid" (:credentials-state (row)))) (runtime/run-processors! system) (recur (dec n))))
+        (let [rejected (row)]
+          (is (= ["rejected" "failed" 1] ((juxt :credentials-state :run-state :consecutive-failures) rejected)))
+          (runtime/run-processors! system)
+          (is (= 1 (runs)) "nothing is due while credentials are rejected")
+          (runtime/execute! ctx ::connections/replace-connection-credentials
+                            {:command-id "replace-1"
+                             :input      (assoc input :secret-ref (connector/store-secret! marketplace workspace "fresh"))})
+          (let [items (sync/due-rows [(row)] (Instant/now))]
+            (is (= [(:run-id rejected)] (map :after-run items)) "due again, at the same time as before the first run")
+            (runtime/run-processors! system)
+            (let [started (row)
+                  request (sync/marketplace-sync-scheduler (first items))]
+              (is (= "open" (:run-state started)))
+              (is (not= (:run-id rejected) (:run-id started)))
+              (is (= (get-in request [:input :run-id]) (:run-id started)))
+              (runtime/execute! (merge (:scope request) {:bel/system system           :bel/service ::sync/marketplace-sync-scheduler
+                                                         :user-id    (:actor request)})
+                                (:id request)
+                                {:command-id (runtime/processor-command-id ::sync/marketplace-sync-scheduler request)
+                                 :input      (:input request)})
+              (is (= 2 (runs)) "a retried tick recovers its receipt")
+              (dotimes [_ 40] (runtime/run-processors! system))
+              (is (= "completed" (:run-state (row))))
+              (is (= "fresh" @used)))))))))
