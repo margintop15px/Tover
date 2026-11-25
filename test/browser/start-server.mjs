@@ -95,7 +95,7 @@ const program = `
                                       (java.time.Instant/parse "2026-01-08T00:00:00Z"))])))))
   ` : ''}
   (def system (system/start! (app/system-config ${port} ${JSON.stringify(join(project, 'inventory'))}
-                           (select-keys services [:provider :session-store :bel/system :origin :development?]))))
+                           (select-keys services [:provider :session-store :limits :bel/system :origin :development?]))))
   ;; The team and invitation reads are SQL coeffects; serve them from the same in-memory fixture state.
   (require '[bel.runtime :as runtime] '[tover.invitations.fixtures :as invitations])
   (doseq [[id coeffect] invitations/coeffects]

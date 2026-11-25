@@ -75,6 +75,14 @@ Validate an existing user's login, memberships, accepted operation IDs, stock to
 4. Change `TOVER_APP_IMAGE` to the verified release, run `production.sh up`, verify readiness and repeat the smoke workflow. Keep the old image and backup.
 5. Roll back the application image only when the new release's data format is compatible. Otherwise restore the complete pre-upgrade backup into a new project and switch the public host after validation. Never combine one backup's RDF directory with another backup's database or secrets.
 
+### Release with migration 003 (identity limits)
+
+1. Apply migration 003 before starting the new application; sign-in, signup, resend and recovery need its tables. It only adds tables. The previous application ignores them, so rollback needs no database change.
+2. Recreate Auth so it reads `GOTRUE_SMTP_MAX_FREQUENCY: 40s`.
+3. After the release, fail one sign-in from each of two different networks and confirm that `app_private.identity_attempts` holds two different public addresses. A Docker gateway address there means every visitor shares one limit: stop and fix the proxy address first.
+4. Publish an AAAA record only after the same check also holds over IPv6.
+5. Emails beyond GoTrue's global 30 per hour are dropped without telling the visitor (see `identity-deployment.md`); watch the `background-call-failed` log entries.
+
 ### One-time cutover from the legacy schema (releases up to v0.3.0)
 
 `001_baseline.sql` refuses a database built by the retired 001–042 chain, so `up` or `migrate` on the old project cannot upgrade it. Move identity to a new project instead; the old project is only read and stays intact for rollback.

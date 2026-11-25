@@ -218,8 +218,8 @@
   (-settle-attempt! [_ attempt-id outcome]
     (locking state
       (let [{:keys [email-key address]} (get-in @state [:attempts attempt-id])
-            failed                      (fn [attempts flag matches?]
-                                          (update-vals attempts #(cond-> % (and (= "failed" (:status %)) (matches? %)) (assoc flag true))))]
+            failed (fn [attempts flag matches?]
+                     (update-vals attempts #(cond-> % (and (= "failed" (:status %)) (matches? %)) (assoc flag true))))]
         (if (= :failed outcome)
           (swap! state assoc-in [:attempts attempt-id :status] "failed")
           (swap! state update :attempts

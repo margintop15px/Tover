@@ -174,7 +174,7 @@ test('Russian signup and recovery preserve account language across real sessions
       await other.goto('/auth/login');
       await other.locator('[name=email]').fill(email);
       await other.locator('[name=password]').fill(password);
-      await other.locator('form[action$="/sign-in"] button').click();
+      await other.locator('form[action$="/sign-in"] button[type=submit]').click();
       await expect(other).toHaveURL(/\/workspace$/);
       await expect(other.locator('html')).toHaveAttribute('lang', 'en');
       await selectLanguage(other, 'ru');

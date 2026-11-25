@@ -94,10 +94,12 @@
 (defrecord JdbcLimits [datasource]
   Limits
   (-start-email! [_ purpose email-key]
+    ;; Outside the transaction below: two requests cleaning up each other's row would wait for each other.
+    (jdbc/execute-one! datasource ["delete from app_private.identity_email_limits where (purpose,email_key) in
+                                    (select purpose,email_key from app_private.identity_email_limits
+                                     where started_at < clock_timestamp() - make_interval(secs => ?) and email_key <> ?
+                                     for update skip locked)" email-seconds email-key])
     (jdbc/with-transaction [tx datasource]
-      (jdbc/execute-one! tx ["delete from app_private.identity_email_limits
-                              where started_at < clock_timestamp() - make_interval(secs => ?) and email_key <> ?"
-                             email-seconds email-key])
       (when-not (jdbc/execute-one!
                   tx ["insert into app_private.identity_email_limits(purpose,email_key) values(?,?)
                        on conflict(purpose,email_key) do update set started_at=excluded.started_at

@@ -257,6 +257,14 @@
           (is (= 1 (count (filter nil? answers))))
           (is (every? #(<= 1 % 60) (remove nil? answers)))
           (is (nil? (limits/-start-email! store :recovery email)))))
+      (testing "two emails with expired limits never wait for each other"
+        ;; Each request cleans up the other's expired row and starts its own.
+        (dotimes [_ 40]
+          (let [emails (vec (repeatedly 4 #(limits/email-key (str (random-uuid) "@example.test"))))]
+            (doseq [email emails]
+              (query settings "insert into app_private.identity_email_limits(purpose,email_key,started_at)
+                               values('confirmation',?,clock_timestamp()-interval '2 minutes') returning 1 as one" email))
+            (is (= [nil nil nil nil] (mapv deref (mapv #(future (limits/-start-email! store :confirmation %)) emails)))))))
       (testing "eleven attempts at once: ten are allowed"
         ;; The pool has 8 connections with a 2-second wait; the attempts themselves are short.
         (let [answers (race 11 #(limits/-start-attempt! % email address))

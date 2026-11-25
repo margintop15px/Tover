@@ -143,8 +143,8 @@
 
 
 (deftest the-outcome-of-the-provider-is-not-shown
-  (doseq [[submit! label] [[#(register! % alice "a-good-password") "signup"] [#(resend! % alice) "resend"]]
-          :let            [accepted (support/with-application (fn [{:keys [browser]}] (answer (submit! browser) alice)))]
+  (doseq [[submit! label]          [[#(register! % alice "a-good-password") "signup"] [#(resend! % alice) "resend"]]
+          :let [accepted (support/with-application (fn [{:keys [browser]}] (answer (submit! browser) alice)))]
           [code status uncertain?] [[:rate-limited 429 false] [:unavailable 503 true] [:unavailable 503 false] [:weak-password 422 false]]]
     (support/with-application
       #(assoc % :provider {:request! (fn [_] (provider/fail! code status uncertain?))})
@@ -281,10 +281,10 @@
                                                        [browser "/auth/signup" "new-password"]
                                                        [browser "/auth/confirm?token_hash=abc&type=recovery" "new-password"]
                                                        [recovering "/auth/password" "new-password"]]
-                :let                                  [[path query] (str/split uri #"\?")
-                                                       body (:body (if query
-                                                                     (request! :get path {"token_hash" "abc" "type" "recovery"})
-                                                                     (request! :get path)))]]
+                :let [[path query] (str/split uri #"\?")
+                      body (:body (if query
+                                    (request! :get path {"token_hash" "abc" "type" "recovery"})
+                                    (request! :get path)))]]
           (is (= 1 (count (re-seq #"type=\"password\"" body)) (count (re-seq #"class=\"password-toggle\"" body))) uri)
           (is (str/includes? body (str "autocomplete=\"" autocomplete "\"")) uri)
           (is (re-find #"<button[^>]*class=\"password-toggle\"[^>]*>" body) uri)

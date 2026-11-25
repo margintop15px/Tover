@@ -1,7 +1,7 @@
 (ns tover.identity.signup.web
   "01 · Create and confirm an account: Create Account and the neutral Check Your Email screen. Register
-  Account is a provider effect; Account Registered is the provider's fact, so nothing is journaled here and
-  no workspace or membership is created."
+  Account is a provider effect; Account Registered is the provider's fact, requested after the answer, so nothing is
+  journaled here and no workspace or membership is created."
   (:require
     [bel.core :as bel :refer [defaction defpage]]
     [clojure.string :as str]

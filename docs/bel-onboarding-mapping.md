@@ -35,7 +35,7 @@ One folder per slice with `model.clj` (declarations) and `web.clj` (screens and 
 - 06 · Accept an invitation (`f6592432-f795-4c86-a363-45142985f7e1`): `tover.invitations.accept.{model,web}`.
 - 07 · Choose a workspace (`13b338e2-18d6-4124-8f98-a4334d5d9c99`): `tover.workspaces.select.{model,web}`.
 
-Shared pieces: `tover.identity.session` (session store, CurrentSession authority), `tover.identity.provider` (GoTrue effects), `tover.identity.shell` (signed-out document), persistence bindings in `tover.{identity,accounts,workspaces,invitations}.persistence`, offline fixtures in `dev/tover/fixtures.clj`.
+Shared pieces: `tover.identity.session` (session store, CurrentSession authority), `tover.identity.provider` (GoTrue effects), `tover.identity.input` (email and new password rules), `tover.identity.limits` (email and sign-in limits), `tover.shared.web.address` (visitor address for counting), `tover.identity.shell` (signed-out document), persistence bindings in `tover.{identity,accounts,workspaces,invitations}.persistence`, offline fixtures in `dev/tover/fixtures.clj`.
 
 ## Delivery and identity boundaries
 

@@ -12,7 +12,7 @@ async function login(page, email, locale) {
   const form = formFor(page, 'tover.identity.sign-in.web/sign-in');
   await form.locator('[name=email]').fill(email);
   await form.locator('[name=password]').fill('tover-development');
-  await Promise.all([page.waitForNavigation(), form.locator('button').click()]);
+  await Promise.all([page.waitForNavigation(), form.locator('button[type=submit]').click()]);
   if (await page.locator('html').getAttribute('lang') !== locale) {
     await Promise.all([page.waitForNavigation(), page.locator(`.language-toggle[value="${locale}"]`).click()]);
   }

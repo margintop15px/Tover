@@ -22,14 +22,14 @@ test('guest language covers every authentication screen and persists after reloa
   await language(page, 'en'); await page.reload();
   await expect(page.getByRole('heading', { name: 'Confirm email link' })).toBeVisible();
   await page.goto('/auth/login'); await language(page, 'ru');
-  await page.locator('form[action$="/sign-in"] button').click();
+  await page.locator('form[action$="/sign-in"] button[type=submit]').click();
   expect(await page.locator('input[name=email]').evaluate(input => input.validationMessage)).toBe('Заполните это поле.');
   await page.locator('input[name=email]').fill('invalid');
-  await page.locator('form[action$="/sign-in"] button').click();
+  await page.locator('form[action$="/sign-in"] button[type=submit]').click();
   expect(await page.locator('input[name=email]').evaluate(input => input.validationMessage)).toBe('Введите корректный адрес электронной почты.');
   await page.locator('input[name=email]').fill('missing@example.test');
   await page.locator('input[name=password]').fill('wrong');
-  await page.locator('form[action$="/sign-in"] button').click();
+  await page.locator('form[action$="/sign-in"] button[type=submit]').click();
   await expect(page.getByRole('alert')).toContainText('Неверная почта или пароль.');
   expect(errors).toEqual([]); await context.close();
 });

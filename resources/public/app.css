@@ -53,7 +53,7 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .identity form:not(.language-switch) { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 16px 0; }
 .identity label { display: flex; flex-direction: column; gap: 5px; color: var(--iw-muted); }
 .identity input, .identity select, .identity textarea { min-height: 34px; max-width: 100%; padding: 6px 9px; color: var(--iw-ink); background-color: var(--iw-bg); border: 1px solid var(--iw-line); border-radius: 3px; }
-.identity button:not(.theme-toggle):not(.language-toggle):not(.password-toggle), .navigation-notice button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--iw-line); border-radius: 3px; background: var(--iw-soft); }
+.identity button:not(.theme-toggle):not(.language-toggle):not(:where(.password-toggle)), .navigation-notice button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--iw-line); border-radius: 3px; background: var(--iw-soft); }
 .identity button[type=submit]:not(.language-toggle) { background: var(--iw-ink); color: var(--iw-bg); border-color: var(--iw-ink); }
 .identity .password { display: flex; flex-direction: column; gap: 5px; }
 .password-field { position: relative; display: block; }
@@ -155,6 +155,8 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 }
 @media (pointer: coarse) {
   .identity button, .app-nav a, .theme-toggle, .language-toggle { min-height: 44px; }
+  .identity .password-field input { min-height: 44px; }
+  .password-toggle { width: 44px; }
   .language-toggle { min-width: 44px; }
   .management-disclosure summary, .management-form input, .management-form select, .management-form button, .management-buttons > a, .management-actions button, .management-footer button { min-height: 44px; }
 }

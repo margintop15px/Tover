@@ -185,10 +185,10 @@
   (support/with-application
     (fn [{:keys [handler state]}]
       (swap! state update-in [:db :auth.users fixtures/member-id] dissoc :email_confirmed_at)
-      (let [answers (fn [email]
-                      (mapv (fn [_] (let [response (from handler "192.0.2.7" email "wrong-password")]
-                                      (update (select-keys response [:status :body]) :body plain email)))
-                            (range 11)))
+      (let [answers            (fn [email]
+                                 (mapv (fn [_] (let [response (from handler "192.0.2.7" email "wrong-password")]
+                                                 (update (select-keys response [:status :body]) :body plain email)))
+                                       (range 11)))
             [unknown & others] (map answers ["nobody@example.test" "member@example.test" "owner@example.test"])]
         (is (every? #{unknown} others))
         (is (= (conj (vec (repeat 10 400)) 429) (map :status unknown)))

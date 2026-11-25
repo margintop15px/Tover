@@ -79,13 +79,13 @@
                                    (assoc "_tover-context" (:context @state))) params)
               encoded     (if (seq params) (subs (provider/query params) 1) "")
               origin      (if (contains? options :origin) (:origin options) "http://localhost:3030")
-              response    (handler (cond-> {:uri     uri :request-method method :scheme :http :server-name "localhost" :server-port 3030
+              response    (handler (cond-> {:uri         uri :request-method method :scheme :http :server-name "localhost" :server-port 3030
                                             :remote-addr (:address options "192.0.2.1")
-                                            :headers (merge (cond-> {"host" "localhost:3030"}
-                                                              (:cookie @state) (assoc "cookie" (:cookie @state))
-                                                              origin (assoc "origin" origin)
-                                                              post? (assoc "content-type" "application/x-www-form-urlencoded"))
-                                                            (:headers options))}
+                                            :headers     (merge (cond-> {"host" "localhost:3030"}
+                                                                  (:cookie @state) (assoc "cookie" (:cookie @state))
+                                                                  origin (assoc "origin" origin)
+                                                                  post? (assoc "content-type" "application/x-www-form-urlencoded"))
+                                                                (:headers options))}
                                      post? (assoc :body (ByteArrayInputStream. (.getBytes encoded "UTF-8")))
                                      (and (not post?) (seq params)) (assoc :query-string encoded)))
               set-cookie  (get-in response [:headers "Set-Cookie"])
