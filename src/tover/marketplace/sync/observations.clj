@@ -151,17 +151,52 @@
     (= "fbs" type) (conj (warehouse-id connection-id "rfbs" id))))
 
 
-(defn- with-warehouse-ids
-  "The observation with warehouse ids in place of the warehouses it names; their names are not its facts."
-  {:malli/schema [:=> [:cat :map :string :map] :map]}
-  [rows connection-id observation]
-  (letfn [(id [warehouse]
-            (let [ids (candidate-warehouse-ids connection-id warehouse)]
-              (or (some #(when (contains? rows %) %) ids) (first ids))))
-          (named [m ks]
-            (reduce #(cond-> %1 (get %1 %2) (update %2 id)) m ks))]
+(defn- warehouse-ref
+  "The stored id of a named warehouse. An FBS-named id is the listed FBS or rFBS warehouse, an active one first;
+  nil when neither is listed."
+  {:malli/schema [:=> [:cat :map :string Warehouse] [:maybe :string]]}
+  [rows connection-id {:keys [type] :as warehouse}]
+  (let [ids (candidate-warehouse-ids connection-id warehouse)]
+    (if (= "fbs" type)
+      (first (sort-by #(false? (:active (rows %))) (filter #(contains? rows %) ids)))
+      (first ids))))
+
+
+(defn- map-warehouses
+  "`f` of every warehouse the observation names, its lines included; a nil result leaves it out."
+  {:malli/schema [:=> [:cat [:fn fn?] :map] :map]}
+  [f observation]
+  (letfn [(named [m ks]
+            (reduce (fn [m k]
+                      (if-let [warehouse (get m k)]
+                        (if-let [value (f warehouse)] (assoc m k value) (dissoc m k))
+                        m))
+                    m ks))]
     (cond-> (named observation [:from-warehouse :to-warehouse :warehouse])
       (:lines observation) (update :lines (partial mapv #(named % [:warehouse]))))))
+
+
+(defn- resolved
+  "The observation with warehouse ids in place of the warehouses it names. An operation naming one that is not
+  listed lacks a warehouse."
+  {:malli/schema [:=> [:cat :map :string :map] :map]}
+  [rows connection-id observation]
+  (let [ref  #(warehouse-ref rows connection-id %)
+        lack (and (= "operation" (:kind observation)) (some (comp nil? ref) (warehouses observation)))]
+    (cond-> (map-warehouses ref observation)
+      lack (-> (assoc :complete false)
+               (update :missing #(vec (distinct (conj (vec %) "warehouse"))))))))
+
+
+(defn- warehouse-gained?
+  "Whether a warehouse the stored revision of the same facts lacks now resolves."
+  {:malli/schema [:=> [:cat :map :map] :boolean]}
+  [row observation]
+  (letfn [(slots [m lines]
+            (into [(:from-warehouse m) (:to-warehouse m)] (map :warehouse) lines))]
+    (boolean (some true? (map #(and (some? %1) (nil? %2))
+                              (slots observation (:lines observation))
+                              (slots row (read-json (:lines row))))))))
 
 
 (defn entity-id
@@ -221,10 +256,12 @@
   (let [kind        (:kind observation)
         id          (entity-id connection-id observation)
         row         (get rows id)
-        observation (cond-> (with-warehouse-ids rows connection-id observation)
-                      ;; An FBO fact that names no name keeps the one another fact stated.
+        ;; The facts as the provider stated them, hashed before any warehouse is resolved. A warehouse's name is
+        ;; no fact of what names it; an FBO fact that names no name keeps the one another fact stated.
+        stated      (cond-> (map-warehouses #(select-keys % [:type :id]) observation)
                       (and (= "fbo" (:warehouse-type observation)) (nil? (:name observation)) (:name row))
-                      (assoc :name (:name row)))]
+                      (assoc :name (:name row)))
+        observation (resolved rows connection-id stated)]
     (case kind
       "stock"
       (if-not row
@@ -255,9 +292,9 @@
                                         "attribute-definition" [::sync/field-definitions :field-definition-id
                                                                 ::sync/attribute-definition-seen ::sync/attribute-definition-observed])
             _ model
-            facts (dissoc observation :kind)
+            facts (dissoc stated :kind)
             hash (payload-hash facts)]
-        (if (= hash (:payload-hash row))
+        (if (and (= hash (:payload-hash row)) (not (and (= "operation" kind) (warehouse-gained? row observation))))
           [[{:type seen :data (cond-> {id-key id :last-observed-at now} (= "warehouse" kind) (assoc :active true))}]
            (update rows id assoc :last-observed-at now) nil]
           (let [common (observed-common {:id-key id-key} row {:id id :hash hash :adapter adapter} connection-id

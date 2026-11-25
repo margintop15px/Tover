@@ -328,10 +328,10 @@
 
 
 (defn- listed-warehouse
-  "A row of one of the seller's warehouse lists."
-  {:malli/schema [:=> [:cat :map :string] [:maybe :map]]}
-  [row type]
-  (warehouse-observation type (or (stated-id (get row "warehouse_id")) (get row "id")) (get row "name")))
+  "A row of one of the seller's warehouse lists; without an id the page is incomplete."
+  {:malli/schema [:=> [:cat :string :any :any] :map]}
+  [type id name]
+  (required (warehouse-observation type id name)))
 
 
 (defn stock-totals
@@ -487,19 +487,18 @@
                   [:=> [:cat :map [:sequential :map] [:sequential :map]] :map]]}
   ([order bundle-items] (supply order bundle-items []))
   ([order bundle-items act-items]
-   (let [from         (named-warehouse "supply-origin" (get-in order ["order_tags" "seller_warehouse_id"]) nil)
-         first-supply (first (get order "supplies"))
-         storage      (get first-supply "storage_warehouse")
-         to           (named-warehouse "fbo" (or (stated-id (get storage "warehouse_id")) (get first-supply "storage_warehouse_id"))
-                                       (get storage "name"))
-         by-sku       (group-by #(stated-id (get % "sku")) act-items)
-         planned      (lines bundle-items to)
-         line-sku     #(some (fn [{:keys [type value]}] (when (= "sku" type) value)) (:identifiers %))
-         extra        (remove #(contains? (set (keep line-sku planned)) (stated-id (get % "sku"))) act-items)
-         rows         (concat (map #(act-line % (first (by-sku (line-sku %)))) planned)
-                              (map #(act-line (first (lines [%] to)) %) extra))
-         rows         (vec (map-indexed #(assoc %2 :line-key (str (inc %1))) rows))
-         agreed?      (and (seq rows) (every? :quantity rows))]
+   (let [from     (named-warehouse "supply-origin" (get-in order ["order_tags" "seller_warehouse_id"]) nil)
+         storage  (get (first (get order "supplies")) "storage_warehouse")
+         to       (named-warehouse "fbo" (get storage "warehouse_id")
+                                   (get storage "name"))
+         by-sku   (group-by #(stated-id (get % "sku")) act-items)
+         planned  (lines bundle-items to)
+         line-sku #(some (fn [{:keys [type value]}] (when (= "sku" type) value)) (:identifiers %))
+         extra    (remove #(contains? (set (keep line-sku planned)) (stated-id (get % "sku"))) act-items)
+         rows     (concat (map #(act-line % (first (by-sku (line-sku %)))) planned)
+                          (map #(act-line (first (lines [%] to)) %) extra))
+         rows     (vec (map-indexed #(assoc %2 :line-key (str (inc %1))) rows))
+         agreed?  (and (seq rows) (every? :quantity rows))]
      (operation (cond-> {:operation-kind "supply" :source-id (required (text (or (get order "order_id") (get order "id"))))
                          :status         (or (text (get order "state")) "unknown")
                          :lines          rows}
@@ -566,12 +565,12 @@
   (if (= :supply-origin phase)
     (let [{:keys [body]} (request! env "/v1/warehouse/fbo/seller/list" {})
           rows           (required (items body ["warehouses" "result"]))]
-      (page (vec (keep #(listed-warehouse % "supply-origin") rows)) state true))
+      (page (mapv #(listed-warehouse "supply-origin" (get % "seller_warehouse_id") (get % "seller_warehouse_name")) rows) state true))
     (let [{:keys [body]} (request! env "/v2/warehouse/list" (cond-> {:limit 200} cursor (assoc :cursor cursor)))
           rows           (required (items body ["warehouses"]))
           next           (next-cursor! cursor (text (get (result body) "cursor")))
           more?          (and (get (result body) "has_next") next (seq rows))]
-      (page (vec (keep #(listed-warehouse % (if (get % "is_rfbs") "rfbs" "fbs")) rows))
+      (page (mapv #(listed-warehouse (if (get % "is_rfbs") "rfbs" "fbs") (get % "warehouse_id") (get % "name")) rows)
             (if more? {:cursor next} {:phase :supply-origin}) false))))
 
 

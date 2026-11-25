@@ -480,17 +480,74 @@
         "a warehouse's name is no part of the operation")))
 
 
+(def fbs-id (str c ":fbs:3"))
+(def rfbs-id (str c ":rfbs:3"))
+
+
+(def fbs-named
+  "A complete posting that names warehouse 3, at operation and line level."
+  {:kind           "operation" :operation-kind "fbs-posting" :source-id "P" :status "delivered" :terminal true :complete true
+   :occurred-at    "2026-12-09T10:00:00Z"
+   :from-warehouse {:type "fbs" :id "3"}
+   :lines          [{:line-key "1" :identifiers [{:type "sku" :value "100"}] :quantity "1" :warehouse {:type "fbs" :id "3"}}]})
+
+
+(defn observe-posting
+  "The events of `fbs-named` over stored `rows`, and the stored posting after them."
+  {:malli/schema [:=> [:cat :map [:maybe :map]] [:tuple [:vector :keyword] :map]]}
+  [rows row]
+  (let [id   (str c ":fbs-posting:P")
+        plan (record {:existing (cond-> rows row (assoc id row))} {:domain "fbs-postings" :observations [fbs-named]})]
+    [(vec (remove #{::sync/source-batch-recorded} (events plan)))
+     (or (event plan ::sync/source-operation-observed) row)]))
+
+
+(defn stored
+  {:malli/schema [:=> [:cat :map] [:vector :any]]}
+  [row]
+  [(:revision row) (:from-warehouse row) (mapv :warehouse (json/read-json (:lines row) :key-fn keyword)) (:complete row)
+   (some-> (:missing row) json/read-json)])
+
+
 (deftest rfbs-posting-names-the-listed-warehouse
-  (let [posting {:kind           "operation"           :operation-kind "fbs-posting" :source-id "P" :status "x" :terminal false :complete false :lines []
-                 :from-warehouse {:type "fbs" :id "3"}}
-        from    (fn [& ids]
-                  (:from-warehouse (event (record {:existing (zipmap ids (repeat {}))} {:observations [posting]})
-                                          ::sync/source-operation-observed)))
-        fbs     (str c ":fbs:3")
-        rfbs    (str c ":rfbs:3")]
-    (is (= fbs (from)))
-    (is (= rfbs (from rfbs)) "the seller's list names warehouse 3 as rFBS")
-    (is (= fbs (from rfbs fbs)))))
+  (let [from (fn [rows] (:from-warehouse (second (observe-posting rows nil))))
+        on   {:active true}
+        off  {:active false}]
+    (is (= fbs-id (from {fbs-id on})))
+    (is (= rfbs-id (from {rfbs-id on})))
+    (is (= rfbs-id (from {rfbs-id off})) "an expired row is still the listed warehouse")
+    (is (= rfbs-id (from {fbs-id off rfbs-id on})) "the active row first")
+    (is (= fbs-id (from {fbs-id on rfbs-id off})))
+    (is (= fbs-id (from {fbs-id on rfbs-id on})))
+    (is (= fbs-id (from {fbs-id off rfbs-id off})))
+    (is (nil? (from {})))))
+
+
+(deftest warehouse-list-change-alone-revises-nothing
+  (let [[_ first-seen] (observe-posting {fbs-id {:active true}} nil)]
+    (is (= [1 fbs-id [fbs-id] true nil] (stored first-seen)))
+    (doseq [rows [{fbs-id {:active true} rfbs-id {:active true}}
+                  {fbs-id {:active false} rfbs-id {:active true}}
+                  {fbs-id {:active false}}]]
+      (is (= [[::sync/source-operation-seen] first-seen] (observe-posting rows first-seen)))))
+  (let [[_ first-seen] (observe-posting {rfbs-id {:active true}} nil)]
+    (is (= [[::sync/source-operation-seen] first-seen]
+           (observe-posting {fbs-id {:active true} rfbs-id {:active false}} first-seen)))))
+
+
+(deftest unlisted-warehouse-is-recovered-once
+  (let [[types unlisted] (observe-posting {} nil)]
+    (is (= [::sync/source-operation-observed] types))
+    (is (= [1 nil [nil] false ["warehouse"]] (stored unlisted)))
+    (is (= [[::sync/source-operation-seen] unlisted] (observe-posting {} unlisted)) "still unlisted")
+    (doseq [id [fbs-id rfbs-id]]
+      (let [[types listed] (observe-posting {id {:active true}} unlisted)]
+        (is (= [::sync/source-operation-observed] types))
+        (is (= [2 id [id] true nil] (stored listed)))
+        (is (= (:payload-hash unlisted) (:payload-hash listed)) "the provider stated nothing new")
+        (is (= [[::sync/source-operation-seen] listed] (observe-posting {id {:active true}} listed)))
+        (is (= [[::sync/source-operation-seen] listed]
+               (observe-posting {fbs-id {:active false} rfbs-id {:active true}} listed)))))))
 
 
 (deftest same-barcode-under-two-connections
@@ -721,7 +778,7 @@
   (fake/ok
     (case path
       "/v2/warehouse/list" {:warehouses [{:warehouse_id 1 :name "FBS 1"}] :has_next false}
-      "/v1/warehouse/fbo/seller/list" {:warehouses [{:warehouse_id 2 :name "FBO"}]}
+      "/v1/warehouse/fbo/seller/list" {:warehouses [{:seller_warehouse_id 2 :seller_warehouse_name "FBO" :is_active true :is_pickup false}]}
       "/v3/product/list" (if (= "" (:last_id body))
                            {:result {:items [{:product_id 9001}] :last_id "abc"}}
                            {:result {:items [] :last_id ""}})

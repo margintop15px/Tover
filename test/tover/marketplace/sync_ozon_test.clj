@@ -259,7 +259,10 @@
       (is (= [] (warehouses observed)))
       (is (nil? (:from-warehouse (first observed))))
       (is (some #{"warehouse"} (:missing (first observed)))))
-    (is (= [] (:observations (ozon/step "warehouses" (:env (env [(ok {:warehouses [{:warehouse_id id :name "W"}]})])) {} {:phase :supply-origin}))))))
+    (doseq [[state row] [[{} {:warehouse_id id :name "W"}]
+                         [{:phase :supply-origin} {:seller_warehouse_id id :seller_warehouse_name "W"}]]]
+      (is (= :incomplete-page (:type (thrown #(ozon/step "warehouses" (:env (env [(ok {:warehouses [row]})])) {} state))))
+          "a list row without an id fails the page, so the pass never finishes"))))
 
 
 (deftest stock-names-its-warehouse
@@ -276,10 +279,10 @@
 
 (deftest supply-names-its-warehouses
   (let [[operation & more] (observe-detail "supplies"
-                                           {:orders [{:order_id           "1" :state "DATA_FILLING"
-                                                      :drop_off_warehouse {:warehouse_id 5 :name "Drop-off"}
-                                                      :order_tags         {:seller_warehouse_id 1}
-                                                      :supplies           [{:storage_warehouse {:warehouse_id 2 :name "FBO 2"}}]}]
+                                           {:orders [{:order_id          "1" :state "DATA_FILLING"
+                                                      :dropoff_warehouse {:warehouse_id 5 :name "Drop-off"}
+                                                      :order_tags        {:seller_warehouse_id 1}
+                                                      :supplies          [{:storage_warehouse {:warehouse_id 2 :name "FBO 2"}}]}]
                                             :items  []})]
     (is (= [{:type "supply-origin" :id "1"} {:type "fbo" :id "2" :name "FBO 2"}]
            ((juxt :from-warehouse :to-warehouse) operation)))
@@ -287,8 +290,8 @@
 
 
 (deftest seller-lists-decide-the-type
-  (let [{:keys [env]} (env [(ok {:warehouses [{:warehouse_id 1 :name "A"} {:warehouse_id 3 :name "B" :is_rfbs true}] :has_next false})
-                            (ok {:warehouses [{:warehouse_id 1 :name "A"}]})])
+  (let [{:keys [env]} (env [(ok {:warehouses [{:warehouse_id 1 :name "A" :is_rfbs false} {:warehouse_id 3 :name "B" :is_rfbs true}] :has_next false})
+                            (ok {:warehouses [{:seller_warehouse_id 1 :seller_warehouse_name "A" :is_active true :is_pickup false}]})])
         listed        (ozon/step "warehouses" env {} {})
         origins       (ozon/step "warehouses" env {} (:state listed))]
     (is (= [["fbs" "1" "A"] ["rfbs" "3" "B"]] (warehouses (:observations listed))))
