@@ -8,7 +8,8 @@
     [bel.runtime :as runtime]
     [bel.validation :as validation]
     [charred.api :as json]
-    [clojure.test :refer [deftest is testing use-fixtures]]
+    [clojure.test :refer [are deftest is testing use-fixtures]]
+    [malli.core :as m]
     [tover.catalogues.records :as records]
     [tover.catalogues.stores.model :as stores]
     [tover.inventory.actors :as actors]
@@ -20,7 +21,7 @@
     [tover.marketplace.sync.ozon :as ozon]
     [tover.support :as support])
   (:import
-    [java.time Instant]
+    [java.time Duration Instant]
     [java.util Base64]))
 
 
@@ -1231,135 +1232,279 @@
     "REPORTS_CONFIRMATION_AWAITING" "REPORT_REJECTED" "COMPLETED" "REJECTED_AT_SUPPLY_WAREHOUSE" "CANCELLED" "OVERDUE"})
 
 
+(def Listed
+  "A `cursor` list of products."
+  [:map [:limit [:int {:min 1 :max 1000}]] [:cursor [:enum "" "c2"]]
+   [:filter [:or [:map [:visibility [:= "ALL"]]] [:map [:product_id [:vector {:min 1 :max 1000} :string]]]]]])
+
+
+(def Skus
+  [:vector {:min 1 :max 1000} :string])
+
+
+(def Id
+  "The reference states no type."
+  [:or :int [:re #"\d+"]])
+
+
+(def Moment
+  [:and :string [:fn #(try (Instant/parse %) (catch Exception _ false))]])
+
+
+(def Removals
+  "The longest range Ozon takes is not stated; the adapter asks for 30 days."
+  [:and
+   [:map [:date_from Moment] [:date_to Moment] [:limit [:int {:min 1 :max 500}]] [:last_id [:= ""]]]
+   [:fn (fn [{:keys [date_from date_to]}] (>= 30 (.toDays (Duration/between (Instant/parse date_from) (Instant/parse date_to)))))]])
+
+
+(def requests
+  "What the account accepts as the JSON body of each call, after the Ozon reference and docs/ozon-source-contracts.md."
+  {"/v2/warehouse/list" [:map [:limit [:int {:min 1 :max 200}]] [:cursor {:optional true} [:= ""]]]
+   "/v1/warehouse/fbo/seller/list"            [:and :map [:fn empty?]]
+   "/v3/product/list" [:map [:filter [:map [:visibility [:= "ALL"]]]] [:limit [:int {:min 1 :max 1000}]] [:last_id [:enum "" "abc"]]]
+   ;; One identifier family per request.
+   "/v3/product/info/list"                    [:and [:map [:product_id [:vector {:min 1 :max 1000} Id]]] [:fn #(not-any? % [:offer_id :sku])]]
+   "/v1/product/related-sku/get"              [:map [:sku [:vector {:min 1 :max 200} Id]]]
+   "/v4/product/info/attributes"              [:map [:filter [:map [:visibility [:= "ALL"]]]] [:limit [:int {:min 1 :max 1000}]] [:last_id [:enum "" "a2"]]]
+   "/v1/description-category/attribute"       [:map [:description_category_id Id] [:type_id Id] [:language {:optional true} :string]]
+   "/v5/product/info/prices"                  Listed
+   "/v4/product/info/stocks"                  Listed
+   "/v1/product/info/stocks-by-warehouse/fbo" [:map [:limit [:int {:min 1 :max 1000}]] [:cursor [:= ""]] [:skus Skus]]
+   "/v2/product/info/stocks-by-warehouse/fbs" [:map [:limit [:int {:min 1 :max 1000}]] [:cursor [:= ""]] [:sku Skus]]
+   "/v1/analytics/stocks" [:map [:skus [:vector {:min 1 :max 100} Id]]]
+   ;; `offset` is ignored by Ozon: a client that sends it pages wrongly.
+   "/v4/posting/fbs/list" [:and
+                           [:map [:filter [:map [:since Moment] [:to Moment]
+                                           [:last_changed_status_date [:map [:from Moment] [:to Moment]]]]]
+                            [:limit [:int {:min 1 :max 100}]] [:cursor [:enum "" "p2"]] [:sort_dir [:= "ASC"]]]
+                           [:fn #(not (contains? % :offset))]
+                           [:fn {:error/message "PERIOD_IS_TOO_LONG"}
+                            (fn [{{:keys [since to]} :filter}]
+                              (>= 365 (.toDays (Duration/between (Instant/parse since) (Instant/parse to)))))]]
+   "/v3/posting/fbs/get" [:map [:posting_number :string] [:with {:optional true} :map]]
+   "/v3/posting/fbo/list" [:and
+                           [:map [:filter [:map [:since Moment] [:to Moment]]]
+                            [:limit [:int {:min 1 :max 100}]] [:cursor [:enum "" "p2"]] [:sort_dir [:= "ASC"]]]
+                           [:fn #(not (contains? % :offset))]]
+   "/v2/posting/fbo/get" [:map [:posting_number :string] [:with {:optional true} :map]]
+   ;; One date filter.
+   "/v1/returns/list" [:map [:limit [:int {:min 1 :max 500}]] [:last_id :int]
+                       [:filter [:or
+                                 [:map [:posting_numbers [:vector {:min 1 :max 50} :string]]]
+                                 [:and [:map [:visual_status_change_moment [:map [:time_from Moment] [:time_to Moment]]]]
+                                  [:fn #(= 1 (count %))]]]]]
+   "/v2/returns/rfbs/list"                    [:map [:filter [:map [:created_at [:map [:from Moment] [:to Moment]]]]] [:limit [:int {:min 1 :max 500}]]
+                                               [:last_id [:enum 0 70]]]
+   "/v2/returns/rfbs/get" [:map [:return_id Id]]
+   "/v3/supply-order/list"                    [:map [:filter [:map [:states [:fn #(= listed-states (set %))]]]] [:limit [:int {:min 1 :max 100}]]
+                                               [:sort_by [:= "ORDER_STATE_UPDATED_AT"]] [:sort_dir [:= "DESC"]] [:last_id [:enum "" "500"]]]
+   "/v3/supply-order/get" [:map [:order_ids [:vector {:min 1 :max 50} Id]]]
+   "/v1/supply-order/bundle"                  [:map [:bundle_ids [:vector {:min 1} :string]] [:limit [:int {:min 1 :max 100}]] [:last_id [:= ""]]]
+   "/v1/supply-order/act/product/get"         [:map [:supply_id :int]]
+   "/v1/removal/from-stock/list"              Removals
+   "/v1/removal/from-supply/list"             Removals})
+
+
+(def changed
+  "When everything in the account last changed: inside the window of a run started now, the first or a later one."
+  (.minus (Instant/now) (Duration/ofHours 2)))
+
+
+(defn- within?
+  {:malli/schema [:=> [:cat :string :string] :boolean]}
+  [from to]
+  (not (or (.isBefore ^Instant changed (Instant/parse from)) (.isAfter ^Instant changed (Instant/parse to)))))
+
+
 (defn account
-  "A small seller account answering every call in the verified shapes of the Ozon reference; a request Ozon refuses
-  gets a 400. One FBO warehouse, 77, is named by stock, analytics, postings and a supply, and listed nowhere."
+  "A small seller account answering every call in the verified shapes of the Ozon reference: 400 for a body outside
+  `requests`, 404 for an unknown posting or return, and otherwise what the ids, window and page asked for hold. One
+  FBO warehouse, 77, is named by stock, analytics, postings and a supply, and listed nowhere."
   {:malli/schema [:=> [:cat :string :map] :map]}
-  [path {:keys [cursor last_id limit filter] :as body}]
-  (let [pages   (fn [first-page second-page]
-                  (when (and (= 100 limit) (= "ASC" (:sort_dir body)) (:since filter) (:to filter) (nil? (:offset body)))
-                    (if (= "" cursor)
-                      {:postings first-page :has_next true :cursor "p2"}
-                      {:postings second-page :has_next false})))
-        fbo     (fn [status fields]
-                  {:result (merge {:posting_number (:posting_number body)
-                                   :status         status
-                                   :in_process_at  "2026-11-20T08:00:00Z"
-                                   :analytics_data {:warehouse_id 77 :warehouse_name "KHOROGRAD"}
-                                   :products       [{:sku 100 :offer_id "A-1" :quantity 1 :price "900.00" :currency_code "RUB"}]
-                                   :financial_data {:products [{:product_id 100 :price 850.5 :currency_code "RUB" :quantity 1}]}}
-                                  fields)})
-        fbs     (fn [status fields]
-                  {:result (merge {:posting_number       (:posting_number body)
-                                   :status               status
-                                   :shipment_date        "2026-11-21T08:00:00Z"
-                                   :tpl_integration_type "ozon"
-                                   :delivery_method      {:id 5 :warehouse_id 1 :warehouse "FBS 1"}
-                                   :analytics_data       {:warehouse_id 1 :warehouse "FBS 1"}
-                                   :products             [{:sku 100 :offer_id "A-1" :quantity 2 :price "900.00" :currency_code "RUB"}]}
-                                  fields)})
+  [path sent]
+  (let [{:keys [cursor last_id filter] :as body} (json/read-json (json/write-json-str sent) :key-fn keyword)
+        asked (fn [k row-key rows]
+                (let [ids (set (map str (get body k)))] (filterv #(ids (str (get % row-key))) rows)))
+        ;; Parts a posting states only when asked for.
+        with (fn [posting]
+               (apply dissoc posting (remove #(get-in body [:with %]) [:analytics_data :financial_data])))
+        postings (fn [from to first-page second-page]
+                   (cond (not (within? from to)) {:postings [] :has_next false}
+                         (= "" cursor) {:postings (mapv #(hash-map :posting_number %) first-page) :has_next true :cursor "p2"}
+                         :else {:postings (mapv #(hash-map :posting_number %) second-page) :has_next false}))
+        fbo (fn [status fields]
+              (merge {:posting_number (:posting_number body)
+                      :status         status
+                      :in_process_at  "2026-11-20T08:00:00Z"
+                      :analytics_data {:warehouse_id 77 :warehouse_name "KHOROGRAD"}
+                      :products       [{:sku 100 :offer_id "A-1" :quantity 1 :price "900.00" :currency_code "RUB"}]
+                      :financial_data {:products [{:product_id 100 :price 850.5 :currency_code "RUB" :quantity 1}]}}
+                     fields))
+        fbs (fn [status fields]
+              (merge {:posting_number       (:posting_number body)
+                      :status               status
+                      :shipment_date        "2026-11-21T08:00:00Z"
+                      :tpl_integration_type "ozon"
+                      :delivery_method      {:id 5 :warehouse_id 1 :warehouse "FBS 1"}
+                      :analytics_data       {:warehouse_id 1 :warehouse "FBS 1"}
+                      :products             [{:sku 100 :offer_id "A-1" :quantity 2 :price "900.00" :currency_code "RUB"}]
+                      :financial_data       {:products [{:product_id 100 :price 1750 :currency_code "RUB" :quantity 2}]}}
+                     fields))
         removal (fn [id fields]
                   {:returns_summary_report_rows
-                   (if (= "" last_id)
+                   (if (within? (:date_from body) (:date_to body))
                      [(merge {:return_id id :box_id 8 :sku 100 :quantity_for_return 1 :return_state "Done" :given_out_date "" :utilization_date ""}
                              fields)]
                      [])
                    :last_id ""})
-        listed  (fn [item]
-                  (when (= 1000 limit)
-                    {:items (if (= "" cursor) [item] []) :total_items 1 :cursor (if (= "" cursor) "c2" "")}))
-        answer
-        (case path
-          "/v2/warehouse/list" {:warehouses [{:warehouse_id 1 :name "FBS 1" :status "created" :is_rfbs false}
-                                             {:warehouse_id 3 :name "rFBS 3" :status "created" :is_rfbs true}]
-                                :has_next   false
-                                :cursor     ""}
-          "/v1/warehouse/fbo/seller/list" {:warehouses [{:seller_warehouse_id 2 :seller_warehouse_name "Origin" :is_active true :is_pickup false}]}
-          "/v3/product/list" (if (= "" last_id)
-                               {:result {:items [{:product_id 9001 :offer_id "A-1"}] :total 1 :last_id "abc"}}
-                               {:result {:items [] :total 1 :last_id ""}})
-          "/v3/product/info/list" {:items [{:id          9001              :name                    "Tee"                  :offer_id "A-1" :sku 100 :sources [{:sku 100 :source "sds"}]
-                                            :barcodes    ["4600000000017"] :description_category_id 200                    :type_id  300
-                                            :is_archived false             :updated_at              "2026-11-20T08:00:00Z"}]}
-          "/v1/product/related-sku/get" {:items  [{:sku 100 :product_id 9001 :deleted_at nil}
-                                                  {:sku 101 :product_id 9001 :deleted_at "2026-01-01T00:00:00Z"}]
-                                         :errors []}
-          "/v4/product/info/attributes" {:result  (if (= "" last_id)
-                                                    [{:id                 9001 :attributes [{:id 85 :complex_id 0 :values [{:dictionary_value_id 0 :value "Brand"}]}]
-                                                      :complex_attributes []}]
-                                                    [])
-                                         :last_id (if (= "" last_id) "a2" "")
-                                         :total   1}
-          "/v1/description-category/attribute" {:result [{:id                   85    :name                  "Brand" :type            "String" :is_aspect true :is_required true :dictionary_id 0
-                                                          :category_dependent   false :is_collection         false   :max_value_count 1
-                                                          :attribute_complex_id 0     :complex_is_collection false   :group_id        0}]}
-          "/v5/product/info/prices" (listed {:offer_id "A-1" :product_id 9001 :price {:currency_code "RUB" :net_price 350.5 :price 900}})
-          "/v4/product/info/stocks"
-          (listed {:offer_id "A-1" :product_id 9001
-                   :stocks   [{:present 10 :reserved 3 :sku 100 :type "fbo" :warehouse_ids [] :shipment_type "SHIPMENT_TYPE_GENERAL"}
-                              {:present 4 :reserved 0 :sku 100 :type "fbs" :warehouse_ids [] :shipment_type "SHIPMENT_TYPE_GENERAL"}]})
-          "/v1/product/info/stocks-by-warehouse/fbo"
-          (when (and (= 1000 limit) (every? string? (:skus body)))
-            {:products [{:offer_id "A-1" :product_id 9001 :sku 100 :present 10 :reserved 3 :warehouse_id 77}] :has_next false :cursor ""})
-          "/v2/product/info/stocks-by-warehouse/fbs"
-          (when (and (= 1000 limit) (every? string? (:sku body)))
-            {:products [{:offer_id "A-1" :product_id 9001 :sku 100 :present 4 :reserved 0 :free_stock 4 :warehouse_id 1 :warehouse_name "FBS 1"}]
-             :has_next false
-             :cursor   ""})
-          "/v1/analytics/stocks"
-          {:items [{:sku 100 :offer_id "A-1" :warehouse_id 77 :warehouse_name "KHOROGRAD" :cluster_id 4 :available_stock_count 7}]}
-          "/v4/posting/fbs/list" (pages [{:posting_number "S-1" :status "delivered"}] [{:posting_number "S-2"} {:posting_number "S-3"}])
-          "/v3/posting/fbs/get" (case (:posting_number body)
-                                  "S-1" (fbs "delivered" {:fact_delivery_date "2026-11-21T10:00:00Z" :delivering_date "2026-11-21T10:00:00Z"})
-                                  "S-2" (fbs "awaiting_deliver" {:fact_delivery_date nil})
-                                  "S-3" (fbs "cancelled" {:cancellation {:cancelled_after_ship true}}))
-          "/v3/posting/fbo/list" (pages [{:posting_number "F-1"}] [{:posting_number "F-2"} {:posting_number "F-3"}])
-          "/v2/posting/fbo/get" (case (:posting_number body)
-                                  "F-1" (fbo "delivering" {:fact_delivery_date "2026-11-21T09:00:00Z"})
-                                  "F-2" (fbo "awaiting_packaging" {})
-                                  "F-3" (fbo "cancelled" {}))
-          "/v1/returns/list" {:returns  [{:id                  7
-                                          :schema              "Fbo"
-                                          :posting_number      "F-1"
-                                          :visual              {:status {:id 34 :sys_name "ReturnedToOzon"}}
-                                          :logistic            {:final_moment "2026-11-24T10:00:00Z"}
-                                          :place               {:id 55 :name "Returns centre"}
-                                          :target_place        {:id 56 :name ""}
-                                          :compensation_status {:status {:id 1 :sys_name "Received"} :change_moment "2026-11-24T10:00:00Z"}
-                                          :product             {:sku 100 :offer_id "A-1" :quantity 1}}]
-                              :has_next false}
-          "/v2/returns/rfbs/list" {:returns (if (= 0 last_id) [{:return_id 70 :posting_number "S-1"}] [])}
-          "/v2/returns/rfbs/get" {:returns {:return_id 70 :posting_number "S-1" :state {:state "MoneyReturned"} :product {:sku 100 :offer_id "A-1"}}}
-          "/v3/supply-order/list"
-          (when (and (= listed-states (set (:states filter))) (= 100 limit)
-                     (= ["ORDER_STATE_UPDATED_AT" "DESC"] [(:sort_by body) (:sort_dir body)]))
-            (if (= "" last_id) {:order_ids [500] :last_id "500"} {:order_ids []}))
-          "/v3/supply-order/get"
-          {:orders [{:order_id           500
-                     :state              "COMPLETED"
-                     :state_updated_date "2026-11-20T08:00:00Z"
-                     :dropoff_warehouse  {:warehouse_id 9 :name "Drop-off"}
-                     :order_tags         {:seller_warehouse_id 2}
-                     :supplies           [{:supply_id         600
-                                           :bundle_id         "b"
-                                           :state             "COMPLETED"
-                                           :storage_warehouse {:warehouse_id 77 :name "KHOROGRAD" :arrival_date "2026-11-19T08:00:00Z"}}]}]}
-          "/v1/supply-order/bundle" {:items [{:sku 100 :offer_id "A-1" :product_id 9001 :quantity 5}] :total_count 1 :last_id "" :has_next false}
-          "/v1/supply-order/act/product/get"
-          {:supply_id    600
-           :supply_acts  [{:act_id                1
-                           :type                  "ACCEPTANCE"
-                           :unidentified_quantity 0
-                           :items                 [{:sku_info          {:sku 100 :offer_id "A-1" :name "Tee"}
-                                                    :declared_quantity 5
-                                                    :fact_quantity     5
-                                                    :approved_quantity 5
-                                                    :fact_amount       0
-                                                    :approved_amount   0}]}]
-           :skus_defects []}
-          "/v1/removal/from-stock/list" (removal 80 {:given_out_date "2026-11-22T10:00:00Z"})
-          "/v1/removal/from-supply/list" (removal 81 {:utilization_date "2026-11-22T10:00:00Z"}))]
-    (if answer (fake/ok answer) {:status 400 :body {}})))
+        of-products (fn [rows]
+                      (if-let [ids (:product_id filter)] (filterv #((set ids) (str (:product_id %))) rows) rows))
+        listed (fn [item]
+                 {:items (if (= "" cursor) (of-products [item]) []) :total_items 1 :cursor (if (= "" cursor) "c2" "")})]
+    (if-not (m/validate (get requests path [:fn (constantly false)]) body)
+      {:status 400 :body {}}
+      (if-let [answer
+               (case path
+                 "/v2/warehouse/list" {:warehouses [{:warehouse_id 1 :name "FBS 1" :status "created" :is_rfbs false}
+                                                    {:warehouse_id 3 :name "rFBS 3" :status "created" :is_rfbs true}]
+                                       :has_next   false
+                                       :cursor     ""}
+                 "/v1/warehouse/fbo/seller/list"
+                 {:warehouses [{:seller_warehouse_id 2 :seller_warehouse_name "Origin" :is_active true :is_pickup false}]}
+                 "/v3/product/list" (if (= "" last_id)
+                                      {:result {:items [{:product_id 9001 :offer_id "A-1"}] :total 1 :last_id "abc"}}
+                                      {:result {:items [] :total 1 :last_id ""}})
+                 "/v3/product/info/list"
+                 {:items (asked :product_id :id
+                                [{:id          9001              :name                    "Tee"                  :offer_id "A-1" :sku 100 :sources [{:sku 100 :source "sds"}]
+                                  :barcodes    ["4600000000017"] :description_category_id 200                    :type_id  300
+                                  :is_archived false             :updated_at              "2026-11-20T08:00:00Z"}])}
+                 "/v1/product/related-sku/get" (if (some #{"100" "101"} (map str (:sku body)))
+                                                 {:items  [{:sku 100 :product_id 9001 :deleted_at nil}
+                                                           {:sku 101 :product_id 9001 :deleted_at "2026-01-01T00:00:00Z"}]
+                                                  :errors []}
+                                                 {:items [] :errors []})
+                 "/v4/product/info/attributes"
+                 {:result  (if (= "" last_id)
+                             [{:id 9001 :attributes [{:id 85 :complex_id 0 :values [{:dictionary_value_id 0 :value "Brand"}]}] :complex_attributes []}]
+                             [])
+                  :last_id (if (= "" last_id) "a2" "")
+                  :total   1}
+                 "/v1/description-category/attribute"
+                 {:result (if (= ["200" "300"] (map str [(:description_category_id body) (:type_id body)]))
+                            [{:id                   85    :name                  "Brand" :type            "String" :is_aspect true :is_required true :dictionary_id 0
+                              :category_dependent   false :is_collection         false   :max_value_count 1
+                              :attribute_complex_id 0     :complex_is_collection false   :group_id        0}]
+                            [])}
+                 "/v5/product/info/prices" (listed {:offer_id "A-1" :product_id 9001 :price {:currency_code "RUB" :net_price 350.5 :price 900}})
+                 "/v4/product/info/stocks"
+                 (listed {:offer_id "A-1" :product_id 9001
+                          :stocks   [{:present 10 :reserved 3 :sku 100 :type "fbo" :warehouse_ids [] :shipment_type "SHIPMENT_TYPE_GENERAL"}
+                                     {:present 4 :reserved 0 :sku 100 :type "fbs" :warehouse_ids [] :shipment_type "SHIPMENT_TYPE_GENERAL"}]})
+                 "/v1/product/info/stocks-by-warehouse/fbo"
+                 {:products (asked :skus :sku [{:offer_id "A-1" :product_id 9001 :sku 100 :present 10 :reserved 3 :warehouse_id 77}])
+                  :has_next false
+                  :cursor   ""}
+                 "/v2/product/info/stocks-by-warehouse/fbs"
+                 {:products (asked :sku :sku [{:offer_id     "A-1" :product_id     9001    :sku 100 :present 4 :reserved 0 :free_stock 4
+                                               :warehouse_id 1     :warehouse_name "FBS 1"}])
+                  :has_next false
+                  :cursor   ""}
+                 "/v1/analytics/stocks"
+                 {:items (asked :skus :sku [{:sku                   100 :offer_id "A-1" :warehouse_id 77 :warehouse_name "KHOROGRAD" :cluster_id 4
+                                             :available_stock_count 7}])}
+                 "/v4/posting/fbs/list" (postings (get-in filter [:last_changed_status_date :from]) (get-in filter [:last_changed_status_date :to])
+                                                  ["S-1"] ["S-2" "S-3"])
+                 "/v3/posting/fbs/get"
+                 (some->> (case (:posting_number body)
+                            "S-1" (fbs "delivered" {:fact_delivery_date "2026-11-21T10:00:00Z" :delivering_date "2026-11-21T10:00:00Z"})
+                            "S-2" (fbs "awaiting_deliver" {:fact_delivery_date nil})
+                            "S-3" (fbs "cancelled" {:cancellation {:cancelled_after_ship true}})
+                            nil)
+                          with (hash-map :result))
+                 "/v3/posting/fbo/list" (postings (:since filter) (:to filter) ["F-1"] ["F-2" "F-3"])
+                 "/v2/posting/fbo/get"
+                 (some->> (case (:posting_number body)
+                            "F-1" (fbo "delivering" {:fact_delivery_date "2026-11-21T09:00:00Z"})
+                            "F-2" (fbo "awaiting_packaging" {})
+                            "F-3" (fbo "cancelled" {})
+                            nil)
+                          with (hash-map :result))
+                 "/v1/returns/list"
+                 (let [{{:keys [time_from time_to]} :visual_status_change_moment :keys [posting_numbers]} filter]
+                   {:returns  (if (and (< last_id 7) (if posting_numbers (some #{"F-1"} posting_numbers) (within? time_from time_to)))
+                                [{:id                  7
+                                  :schema              "Fbo"
+                                  :posting_number      "F-1"
+                                  :visual              {:status {:id 34 :sys_name "ReturnedToOzon"}}
+                                  :logistic            {:final_moment "2026-11-24T10:00:00Z"}
+                                  :place               {:id 55 :name "Returns centre"}
+                                  :target_place        {:id 56 :name ""}
+                                  :compensation_status {:status {:id 1 :sys_name "Received"} :change_moment "2026-11-24T10:00:00Z"}
+                                  :product             {:sku 100 :offer_id "A-1" :quantity 1}}]
+                                [])
+                    :has_next false})
+                 "/v2/returns/rfbs/list" {:returns (if (and (= 0 last_id) (within? (get-in filter [:created_at :from]) (get-in filter [:created_at :to])))
+                                                     [{:return_id 70 :posting_number "S-1"}]
+                                                     [])}
+                 "/v2/returns/rfbs/get"
+                 (when (= "70" (str (:return_id body)))
+                   {:returns {:return_id 70 :posting_number "S-1" :state {:state "MoneyReturned"} :product {:sku 100 :offer_id "A-1"}}})
+                 "/v3/supply-order/list" (if (= "" last_id) {:order_ids [500] :last_id "500"} {:order_ids []})
+                 "/v3/supply-order/get"
+                 {:orders (asked :order_ids :order_id
+                                 [{:order_id           500
+                                   :state              "COMPLETED"
+                                   :state_updated_date (str changed)
+                                   :dropoff_warehouse  {:warehouse_id 9 :name "Drop-off"}
+                                   :order_tags         {:seller_warehouse_id 2}
+                                   :supplies           [{:supply_id         600
+                                                         :bundle_id         "b"
+                                                         :state             "COMPLETED"
+                                                         :storage_warehouse {:warehouse_id 77 :name "KHOROGRAD" :arrival_date "2026-11-19T08:00:00Z"}}]}])}
+                 "/v1/supply-order/bundle"
+                 (let [items (if (= ["b"] (:bundle_ids body)) [{:sku 100 :offer_id "A-1" :product_id 9001 :quantity 5}] [])]
+                   {:items items :total_count (count items) :last_id "" :has_next false})
+                 "/v1/supply-order/act/product/get"
+                 {:supply_id    (:supply_id body)
+                  :supply_acts  (if (= 600 (:supply_id body))
+                                  [{:act_id                1
+                                    :type                  "ACCEPTANCE"
+                                    :unidentified_quantity 0
+                                    :items                 [{:sku_info          {:sku 100 :offer_id "A-1" :name "Tee"}
+                                                             :declared_quantity 5
+                                                             :fact_quantity     5
+                                                             :approved_quantity 5
+                                                             :fact_amount       0
+                                                             :approved_amount   0}]}]
+                                  [])
+                  :skus_defects []}
+                 "/v1/removal/from-stock/list" (removal 80 {:given_out_date "2026-11-22T10:00:00Z"})
+                 "/v1/removal/from-supply/list" (removal 81 {:utilization_date "2026-11-22T10:00:00Z"}))]
+        (fake/ok answer)
+        {:status 404 :body {}}))))
+
+
+(deftest the-account-refuses-wrong-requests
+  (is (= ozon/allowlist (set (keys requests))))
+  (doseq [path ozon/allowlist]
+    (is (= 400 (:status (account path {:wrong 1}))) path)
+    (is (= 400 (:status (account path {:limit 5000}))) path))
+  (are [path body] (= 400 (:status (account path body)))
+    "/v1/supply-order/act/product/get" {:supply_id "600"}
+    "/v3/supply-order/get" {:order_ids (vec (range 51))}
+    "/v1/product/related-sku/get" {:sku (vec (repeat 201 "100"))}
+    "/v3/product/info/list" {:product_id ["9001"] :sku ["100"]}
+    "/v1/returns/list" {:limit 500 :last_id "" :filter {:posting_numbers ["F-1"]}}
+    "/v1/removal/from-stock/list" {:date_from "2026-11-01T00:00:00Z" :date_to "2026-11-02T00:00:00Z" :limit 501 :last_id ""})
+  (are [path body expected] (= expected (:body (account path body)))
+    "/v3/product/info/list" {:product_id ["9"]} {:items []}
+    "/v3/supply-order/get" {:order_ids ["5"]} {:orders []}
+    "/v1/supply-order/act/product/get" {:supply_id 6} {:supply_id 6 :supply_acts [] :skus_defects []}
+    "/v1/analytics/stocks" {:skus ["9"]} {:items []}
+    "/v1/returns/list" {:limit 500 :last_id 0 :filter {:posting_numbers ["F-9"]}} {:returns [] :has_next false}
+    "/v2/returns/rfbs/get" {:return_id "7"} {}))
 
 
 (deftest sync-through-the-store
@@ -1486,6 +1631,14 @@
             (is (every? #(seq (json/read-json (:missing %))) (remove :complete operations)) "any other says what is missing")
             (is (= [["fbo" true "[\"receiving warehouse\"]"]]
                    (map (juxt :return-schema :compensated :missing) (filter #(= "return" (:kind %)) operations))))))
+
+        (testing "what the details, acts and windows state is recorded"
+          (let [line (fn [kind id]
+                       (some #(when (= [kind id] [(:kind %) (:source-id %)]) (first (json/read-json (:lines %) :key-fn keyword))) (operations)))]
+            (is (= [["1" "850.5" "RUB"] ["2" "1750" "RUB"]]
+                   (map (juxt :quantity :price :price-currency) [(line "fbo-posting" "F-1") (line "fbs-posting" "S-1")])))
+            (is (= ["5" "1"] ((juxt :quantity :act-id) (line "supply" "600"))) "the accepted quantity of the supply's own act")
+            (is (some #{{:type "product-id" :value "9001"}} (:identifiers (line "supply" "600"))) "on the line of its own bundle")))
 
         (testing "history shows the connector principal as Ozon · account"
           (is (= "Ozon · 123" (:actor-label (first (actors/enrich ctx [{:actor (str "connector:" c)}]))))))

@@ -534,6 +534,10 @@
            (get c [:bel/system ::app/bel-system])))
     (is (= {:repo (ig/ref ::app/repo) :connector-key nil} (get c :tover.marketplace.connector/connector))
         "without TOVER_CONNECTOR_KEY the connector cannot store credentials")
+    (doseq [blank ["" "   "]]
+      (is (= c (app/config {:profile :dev :environment (assoc environment "TOVER_CONNECTOR_KEY" blank)})) "a blank key is none"))
+    (is (= ["TOVER_SESSION_KEY"]
+           (:missing (error-data #(app/config {:profile :dev :environment (assoc environment "TOVER_SESSION_KEY" "  ")})))))
     (is (= (ig/ref ::app/bel-system) (get-in c [::app/handler :bel/system])))
     (is (empty? (mapcat #(ig/find-derived c %) [::app/journal-datasource ::app/delivery-system :bel.delivery/worker])))))
 

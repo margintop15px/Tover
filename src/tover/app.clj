@@ -195,7 +195,8 @@
 (defn- env
   {:malli/schema [:=> [:cat :map :string] [:maybe :string]]}
   [{:keys [environment]} name]
-  (not-empty (get (or environment (System/getenv)) name)))
+  (let [value (get (or environment (System/getenv)) name)]
+    (when-not (str/blank? value) value)))
 
 
 (defmethod aero/reader 'ig/ref [_ _ key] (ig/ref key))
