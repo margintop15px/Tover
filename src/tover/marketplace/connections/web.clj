@@ -16,8 +16,7 @@
     [tover.marketplace.sync.model :as sync]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
-    [tover.shared.ui.forms :refer [form]]
-    [tover.workspaces.currency.model :as currency]))
+    [tover.shared.ui.forms :refer [form]]))
 
 
 (def problems
@@ -239,7 +238,6 @@
         status (runtime/read-model context ::model/connection-status-and-sync-coverage input)]
     {:request   request
      :status    status
-     :currency  (:currency (runtime/read-model context ::currency/workspace-currency {}))
      :paused    (when (= "paused" (:sync-state status)) (runtime/read-model context ::model/paused-connection input))
      :attention (when (= "rejected" (:credentials-state status))
                   (runtime/read-model context ::model/connection-needing-attention input))
@@ -247,8 +245,7 @@
 
 
 (def ^:private reason-labels
-  {"paused"             "Paused"             "needs credentials"    "Needs credentials"    "no baseline" "No cutover baseline"
-   "unmatched listings" "Unmatched listings" "unmatched warehouses" "Unmatched warehouses"})
+  {"paused" "Paused" "needs credentials" "Needs credentials" "no baseline" "No cutover baseline"})
 
 
 (defn- action-form
@@ -291,7 +288,7 @@
    :schema     [:map [:connection-id model/Ref]]
    :route-data {:tover/access :workspace}
    :query      query-connection}
-  [{:keys [request status currency paused attention sync]}]
+  [{:keys [request status paused attention sync]}]
   (let [{:keys [connection-id account-label store can-manage?]} status]
     {:type :elements
      :html [:section.management-page {:aria-labelledby "connection-title" :data-connection-id connection-id}
@@ -309,10 +306,10 @@
                 [:p (i18n/t "Paused by {name}" {:name (or (get-in paused [:paused-by :display-name]) (i18n/t "Unavailable user"))})
                  " " (team/moment (:paused-at paused))]
                 (when (:can-resume? paused) (action-form request ::resume (i18n/t "Resume") connection-id))])
-             (when (not= currency (:account-currency status))
+             (when (:currency-notice? status)
                [:p {:role "status"}
                 (i18n/t "The seller account uses {account} and the workspace uses {workspace}. Imported prices and costs are left blank."
-                        {:account (:account-currency status) :workspace currency})])
+                        {:account (:account-currency status) :workspace (:workspace-currency status)})])
              (sync-panel request sync connection-id)
              [:dl
               [:dt (i18n/t "Account currency")]
@@ -323,6 +320,16 @@
               [:dd (if-let [at (:last-completed-sync-at status)] (team/moment at) (i18n/t "Not yet"))]
               [:dt (i18n/t "Next sync")]
               [:dd (if-let [at (:next-sync-at status)] (team/moment at) (i18n/t "Not scheduled"))]
+              [:dt (i18n/t "Unmatched listings")]
+              [:dd (:unmatched-listings status)]
+              [:dt (i18n/t "Unmatched warehouses")]
+              [:dd (:unmatched-warehouses status)]
+              [:dt (i18n/t "Scopes without baseline")]
+              [:dd (:scopes-without-baseline status)]
+              [:dt (i18n/t "Imported operations by next step")]
+              [:dd (if-let [steps (seq (:imported-operations-by-next-step status))]
+                     (str/join ", " (map (fn [{:keys [next-step count]}] (str next-step ": " count)) steps))
+                     "0")]
               [:dt (i18n/t "Automatic acceptance")]
               [:dd (if (:automatic-acceptance-possible? status)
                      (i18n/t "On")

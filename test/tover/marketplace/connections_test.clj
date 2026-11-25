@@ -20,7 +20,8 @@
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
   (bel/build-registry! ['tover.catalogues.warehouses.model 'tover.catalogues.stores.model
-                        'tover.marketplace.connections.model 'tover.marketplace.sync.model])
+                        'tover.marketplace.connections.model 'tover.marketplace.sync.model
+                        'tover.workspaces.currency.model])
   (f))
 
 
@@ -128,15 +129,46 @@
                     :readable-domains    (model/encode-domains all-domains)
                     :sync-state          "active" :credentials-state "valid"                :connected-by admin-id :connected-at at}}]
            (data plan)))
-    (let [status (model/status (after {} plan) active-store true)]
+    (let [status (model/status (after {} plan) active-store {:manager? true})]
       (is (false? (:automatic-acceptance-possible? status)))
       (is (= ["no baseline"] (:blocking-reasons status))))))
+
+
+;; Counts come from later chapters; here only what the status does with them.
+(deftest only-three-things-block-the-connection
+  (let [opts   {:manager? true :currency "RUB"}
+        status #(model/status % active-store %2)]
+    (is (= [] (:blocking-reasons (status connection (assoc opts :counts {:baselines 1 :unmatched-listings 9 :unmatched-warehouses 2})))))
+    (is (:automatic-acceptance-possible? (status connection (assoc opts :counts {:baselines 1}))))
+    (is (= ["paused" "needs credentials" "no baseline"]
+           (:blocking-reasons (status (assoc connection :sync-state "paused" :credentials-state "rejected") (assoc opts :counts {:baselines 0})))))
+    (is (= ["no baseline"] (:blocking-reasons (status connection opts))) "counts absent: zeros")
+    (is (:currency-notice? (status (assoc connection :account-currency "KZT") opts)))
+    (is (not (:currency-notice? (status connection opts))))))
+
+
+(deftest coverage-by-next-step
+  (let [counts {:unmatched-listings 3 :unmatched-warehouses 1 :scopes-without-baseline 4 :baselines 2
+                :next-steps         {"Match product" 2 "Confirm" 5 "Skip" 0}}
+        status (model/status connection active-store {:counts counts})]
+    (is (= [3 1 4] ((juxt :unmatched-listings :unmatched-warehouses :scopes-without-baseline) status)))
+    (is (= [{:next-step "Confirm" :count 5} {:next-step "Match product" :count 2}] (:imported-operations-by-next-step status))
+        "sorted by next step; steps with nothing waiting are left out")
+    (is (= [] (:blocking-reasons status)))))
+
+
+(deftest counts-are-zero-until-a-chapter-supplies-them
+  (is (= {:unmatched-listings 0 :unmatched-warehouses 0 :scopes-without-baseline 0 :baselines 0 :next-steps {}}
+         (runtime/coeffect ::model/counts {} {:connection-id c})))
+  (defmethod model/count-part :baselines [_ _ _] 7)
+  (try (is (= 7 (:baselines (runtime/coeffect ::model/counts {} {:connection-id c}))))
+       (finally (remove-method model/count-part :baselines))))
 
 
 (deftest key-without-analytics-access
   (let [domains (vec (remove #{"stock-analytics"} all-domains))
         plan    (connect {} {:readable-domains domains})
-        rows    (:domains (model/status (after {} plan) active-store true))]
+        rows    (:domains (model/status (after {} plan) active-store {:manager? true}))]
     (is (= (model/encode-domains domains) (get-in (data plan) [0 :data :readable-domains])))
     (is (= [{:domain "stock-analytics" :readable? false}] (filterv #(= "stock-analytics" (:domain %)) rows)))
     (is (every? :readable? (remove #(= "stock-analytics" (:domain %)) rows)))))
@@ -198,7 +230,7 @@
   ;; Chapter 40's half: once the pause commits, the connection reads paused and blocks automatic acceptance.
   ;; The automatic path's recheck inside its own commit belongs to chapter 45.
   (let [paused (after connection (decide ::model/pause-marketplace-connection {:connection connection} {:connection-id c}))
-        status (model/status paused active-store true)]
+        status (model/status paused active-store {:manager? true})]
     (is (false? (:automatic-acceptance-possible? status)))
     (is (some #{"paused"} (:blocking-reasons status)))))
 
@@ -394,10 +426,12 @@
 
         (testing "slice 3 · the connection and its sync coverage"
           (let [status (read viewer ::model/connection-status-and-sync-coverage {:connection-id c})]
-            (is (= {:sync-state       "active"        :credentials-state "valid" :automatic-acceptance-possible? false :account-currency "RUB"
-                    :blocking-reasons ["no baseline"] :can-manage?       false   :unmatched-listings             0}
+            (is (= {:sync-state           "active"        :credentials-state       "valid" :automatic-acceptance-possible?   false :account-currency "RUB"
+                    :blocking-reasons     ["no baseline"] :can-manage?             false   :unmatched-listings               0
+                    :unmatched-warehouses 0               :scopes-without-baseline 0       :imported-operations-by-next-step []}
                    (select-keys status [:sync-state :credentials-state :account-currency :automatic-acceptance-possible? :blocking-reasons
-                                        :can-manage? :unmatched-listings])))
+                                        :can-manage? :unmatched-listings :unmatched-warehouses :scopes-without-baseline
+                                        :imported-operations-by-next-step])))
             (is (= (count all-domains) (count (:domains status))))
             (is (some? (:next-sync-at status)))
             (is (not (re-find #"secret" (pr-str status))))))

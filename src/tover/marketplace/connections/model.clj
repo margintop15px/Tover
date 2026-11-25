@@ -22,7 +22,8 @@
     [tover.catalogues.records :as records]
     [tover.catalogues.stores.model :as stores]
     [tover.inventory.actors :as actors]
-    [tover.marketplace.connector :as connector])
+    [tover.marketplace.connector :as connector]
+    [tover.workspaces.currency.model :as currency])
   (:import
     [java.time Duration Instant]))
 
@@ -531,7 +532,8 @@
 
 
 (def BlockingReason
-  [:enum "paused" "needs credentials" "no baseline" "unmatched listings" "unmatched warehouses"])
+  "Unmatched listings and warehouses hold only the operations that name them, never the connection."
+  [:enum "paused" "needs credentials" "no baseline"])
 
 
 (def ConnectionStatusAndSyncCoverage
@@ -543,7 +545,9 @@
    [:last-completed-sync-at {:optional true} validation/Instant]
    [:next-sync-at {:optional true} validation/Instant]
    [:domains [:vector [:map [:domain Domain] [:readable? :boolean] [:covered-until {:optional true} validation/Instant]]]]
-   [:unmatched-listings :int] [:unmatched-warehouses :int] [:baseline-covered? :boolean]
+   [:unmatched-listings :int] [:unmatched-warehouses :int] [:scopes-without-baseline :int]
+   [:imported-operations-by-next-step [:vector [:map [:next-step :string] [:count :int]]]]
+   [:currency-notice? :boolean] [:workspace-currency {:optional true} :string]
    [:automatic-acceptance-possible? :boolean]
    [:blocking-reasons [:vector BlockingReason]]
    [:can-manage? :boolean]])
@@ -569,36 +573,62 @@
     {}))
 
 
+(defmulti count-part
+  "One part of the coverage counts for a connection: `:unmatched-listings`, `:unmatched-warehouses`,
+  `:scopes-without-baseline`, `:baselines` (whole numbers) and `:next-steps` ({next step count}). The chapters
+  that own the data add a method each (42, 43, 44, 45); until then a part is zero."
+  (fn [part _context _connection-id] part))
+
+
+(defmethod count-part :default [_ _ _] 0)
+(defmethod count-part :next-steps [_ _ _] {})
+
+
+(def ^:private count-parts
+  [:unmatched-listings :unmatched-warehouses :scopes-without-baseline :baselines :next-steps])
+
+
+(defmethod runtime/coeffect ::counts
+  [_ context {:keys [connection-id]}]
+  (into {} (map (fn [part] [part (count-part part context connection-id)])) count-parts))
+
+
 (defn status
-  "Connection Status and Sync Coverage. Mappings (42, 43) and the cutover baseline (44) do not exist yet,
-  so counts are zero and `no baseline` always blocks automatic acceptance."
-  {:malli/schema [:function [:=> [:cat :map [:maybe :map] :boolean] ConnectionStatusAndSyncCoverage]
-                  [:=> [:cat :map [:maybe :map] :boolean [:maybe :map]] ConnectionStatusAndSyncCoverage]]}
-  ([connection store manager?] (status connection store manager? {}))
-  ([connection store manager? covered]
-  ;; ponytail: unmatched counts and baseline are constants until chapters 42–44 add their models.
-   (let [baseline? false
-         reasons   (cond-> []
-                     (= "paused" (:sync-state connection)) (conj "paused")
-                     (= "rejected" (:credentials-state connection)) (conj "needs credentials")
-                     (not baseline?) (conj "no baseline"))
-         next-at   (next-sync-at connection)]
-     (cond-> (assoc (row connection store)
-                    :account-currency (:account-currency connection)
-                    :domains (domain-rows connection covered)
-                    :unmatched-listings 0 :unmatched-warehouses 0 :baseline-covered? baseline?
-                    :automatic-acceptance-possible? (empty? reasons)
-                    :blocking-reasons reasons
-                    :can-manage? manager?)
-       (:key-expires-at connection) (assoc :key-expires-at (at (:key-expires-at connection)))
-       next-at (assoc :next-sync-at next-at)))))
+  "Connection Status and Sync Coverage. `counts` (see `count-part`) and `currency` (the workspace's) come from
+  the caller; absent counts are zero. Only three things block automatic acceptance of a connection."
+  {:malli/schema [:=> [:cat :map [:maybe :map] [:maybe :map]] ConnectionStatusAndSyncCoverage]}
+  [connection store {:keys [manager? covered counts currency]}]
+  (let [{:keys [unmatched-listings unmatched-warehouses scopes-without-baseline baselines next-steps]
+         :or   {unmatched-listings 0 unmatched-warehouses 0 scopes-without-baseline 0 baselines 0 next-steps {}}} counts
+        reasons (cond-> []
+                  (= "paused" (:sync-state connection)) (conj "paused")
+                  (= "rejected" (:credentials-state connection)) (conj "needs credentials")
+                  (not (pos? baselines)) (conj "no baseline"))
+        next-at (next-sync-at connection)]
+    (cond-> (assoc (row connection store)
+                   :account-currency (:account-currency connection)
+                   :domains (domain-rows connection covered)
+                   :unmatched-listings unmatched-listings :unmatched-warehouses unmatched-warehouses
+                   :scopes-without-baseline scopes-without-baseline
+                   :imported-operations-by-next-step (->> next-steps (filter (comp pos? val)) (sort-by key)
+                                                          (mapv (fn [[step n]] {:next-step step :count n})))
+                   :currency-notice? (boolean (and currency (not= currency (:account-currency connection))))
+                   :automatic-acceptance-possible? (empty? reasons)
+                   :blocking-reasons reasons
+                   :can-manage? (boolean manager?))
+      currency (assoc :workspace-currency currency)
+      (:key-expires-at connection) (assoc :key-expires-at (at (:key-expires-at connection)))
+      (= "open" (:run-state connection)) (assoc :current-run (:run-id connection))
+      next-at (assoc :next-sync-at next-at))))
 
 
 (defreadmodel connection-status-and-sync-coverage
   {:input ConnectionAttempt :output ConnectionStatusAndSyncCoverage :policy ::records/workspace-member
-   :cofx  [connection [:store ::stores/stores connection-store] viewer covered]}
-  [{:keys [connection store viewer covered]} _]
-  (status (known! connection) store (:manager? viewer) covered))
+   :cofx  [connection [:store ::stores/stores connection-store] viewer covered currency/row-fact
+           [:counts ::counts by-connection]]}
+  [{:keys [connection store viewer covered counts currency-row]} _]
+  (status (known! connection) store {:manager? (:manager? viewer)              :covered covered :counts counts
+                                     :currency (currency/current currency-row)}))
 
 
 (def PausedConnection

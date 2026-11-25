@@ -369,6 +369,24 @@
           (is (str/includes? html "API key expires") "the key's expiry is shown"))))))
 
 
+(deftest coverage-counts-are-text-until-their-pages-exist
+  (with-context
+    (fn [ctx _]
+      (accept! ctx (act ctx ::web/connect connect-form))
+      (defmethod model/count-part :unmatched-listings [_ _ _] 3)
+      (defmethod model/count-part :next-steps [_ _ _] {"Confirm <b>" 5})
+      (try
+        (let [html (page ctx ::web/connection {:connection-id "c-1"})]
+          (is (str/includes? html "Unmatched listings"))
+          (is (str/includes? html "Imported operations by next step"))
+          (is (str/includes? html "Confirm &lt;b&gt;") "text from outside is escaped")
+          (is (not (str/includes? html "Confirm <b>")))
+          (is (not (re-find #"href=\"[^\"]*/(products|warehouses|cutover|operations)" html)) "no links to pages that do not exist")
+          (is (every? #(str/includes? html (str "<td>" % "</td>")) connector/domains) "one row per domain"))
+        (finally (remove-method model/count-part :unmatched-listings)
+                 (defmethod model/count-part :next-steps [_ _ _] {}))))))
+
+
 (deftest missing-connector-key-is-refused-before-contacting-ozon
   (with-context
     (fn [ctx _]
