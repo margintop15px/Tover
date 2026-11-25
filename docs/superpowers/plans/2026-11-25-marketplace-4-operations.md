@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Show every downloaded Ozon operation with exactly one next step, and accept posting Sales and FBO returns without a person.
+**Goal:** Show every downloaded Ozon operation with exactly one next step, and accept posting Sales without a person.
 
 **Architecture:** One pure classifier decides next step, proposal and eligibility for an operation from facts. Processors only turn its answer into commands; every command re-runs it on its own commit's facts.
 
@@ -13,7 +13,8 @@
 ## Global Constraints
 
 All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-every-task). Also:
-- Automatic: Sale from a posting, Customer return from an FBO return. Everything else waits for a member.
+- Automatic: Sale from a posting only. Everything else waits for a member.
+- Return prefill: posting's warehouse; an FBO return in status `ReceivedBySeller` takes the connection's only mapped seller warehouse, else blank. A compensated return carries the finding "Compensated by Ozon".
 - A pending entry exists only for a resolvable operation; otherwise no entry.
 - A source operation is accepted at most once.
 - Discard, set-aside, acceptance and import-entry saves add `::sync/mark-dirty` (plan 2) to their `:fx`; inventory code calls it through `provenance/dirty-fx [connection-ids]`.
@@ -80,6 +81,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
     no-time (baselined)                "waiting for Ozon"
     no-time-terminal (baselined)       "enter missing facts"
     fbs-return (baselined)             "confirm return warehouse"
+    fbo-return (baselined)             "confirm return warehouse"
     fbo-return (posting-undecided)     "accept the sale first"
     posting (balance 2)                "fix shortage"
     posting (paused)                   "connection stopped"

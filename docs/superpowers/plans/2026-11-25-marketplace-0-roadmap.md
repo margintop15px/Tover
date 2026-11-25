@@ -7,7 +7,7 @@ Index for six plans. Each yields working software on its own and starts only aft
 | [1 Connect and sync](2026-11-25-marketplace-1-sync.md) | 40, 41, part of 12 | Branch merged; Ozon data downloaded under the current contracts | Task 1: now. Tasks 2–3: now (40 is `planned`). Tasks 4–8: a person plans 41 slices 3–6 |
 | [2 Matching](2026-11-25-marketplace-2-matching.md) | 42, 43 | Listings and warehouses matched in tables | 42 and 43 slices `planned` |
 | [3 Opening amendment and cutover](2026-11-25-marketplace-3-cutover.md) | 14 (propose, accept, read), 17, 44 | Wrong openings fixable; cutover baselines | those slices `planned` |
-| [4 Operations](2026-11-25-marketplace-4-operations.md) | 45 slices 1–6, a | Every operation listed with a next step; Sales and FBO returns accepted automatically | those slices `planned`; release also needs the live check |
+| [4 Operations](2026-11-25-marketplace-4-operations.md) | 45 slices 1–6, a | Every operation listed with a next step; posting Sales accepted automatically; members confirm every return | those slices `planned`; release also needs the live check |
 | [5 Corrections and moves](2026-11-25-marketplace-5-corrections-moves.md) | 45 slices 7–9, b, c | Ozon changes proposed as amendments; warehouse moves detected | those slices `planned` |
 | [6 Transit](2026-11-25-marketplace-6-transit.md) | 46, `Stock Item Archived` | Shipments travelling and returning | those slices `planned` |
 
@@ -63,7 +63,7 @@ One real account, read-only, with the owner's go-ahead. Record results on slice 
 - `fact_delivery_date` / `delivering_date` equal the physical handover, FBS and FBO;
 - `logistic.final_moment` equals receipt;
 - `present` includes reserved units in `stock-by-warehouse`;
-- `place.id` of an FBO return is a stock warehouse;
+- ~~`place.id` of an FBO return is a stock warehouse~~ (checked 2026-11-25: it is not, so returns wait for a member);
 - cancelled-after-handover postings still carry their date (decision 3).
 
 If a check fails, that kind is recorded incomplete and is not accepted automatically.

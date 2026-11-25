@@ -97,7 +97,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 
 **Interfaces:** Produces
 - `observations/warehouse-id [connection-id type source-id]` → `"<connection>:<type>:<id>"`; model field `:fulfilment-type` renamed `:warehouse-type`, enum `fbo fbs rfbs supply-origin`.
-- `ozon/warehouse-observation [type id name] → Observation`; FBO ones emitted beside the stock, posting, FBO return or supply that names them.
+- `ozon/warehouse-observation [type id name] → Observation`; FBO ones emitted beside the stock, posting, or supply that names them (a return's place is never a warehouse).
 - Operation fields `:from-warehouse`, `:to-warehouse`, line `:warehouse` in observations are `{:type :id :name?}` and are stored as `warehouse-id` text.
 
 - [ ] **Step 1: Failing tests**
@@ -146,8 +146,8 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 **Files:** `sync/ozon.clj`, `sync/observations.clj`; `sync_ozon_test.clj`. Board 41 slice 4 table.
 
 **Interfaces:** Produces
-- `ozon/handed-over? [kind posting] → boolean`: status after handover (`delivering driver_pickup delivered client_arbitration arbitration not_accepted sent_by_seller`), or cancelled with `cancellation.cancelled_after_ship`.
-- Line gains `:price`, `:price-currency`; supply `:source-id` is the supply id; operation gains `:return-schema` (`fbo`|`fbs`) and `:disposed` for removals.
+- `ozon/handed-over? [kind posting] → boolean`: status after handover (`delivering driver_pickup delivered client_arbitration arbitration not_accepted sent_by_seller`), or cancelled with `cancellation.cancelled_after_ship` (FBS) / with `fact_delivery_date` (FBO).
+- Line gains `:price`, `:price-currency`; supply `:source-id` is the supply id; operation gains `:return-schema` (`fbo`|`fbs`), `:compensated` and `:disposed` for removals.
 - `:missing` values, exactly: `"actual time" "line quantity" "warehouse" "receiving warehouse" "accepted quantity"`.
 
 - [ ] **Step 1: Failing tests**
@@ -159,7 +159,8 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
     (p "delivering" :delivering "2026-11-26T09:00:00Z")                              "2026-11-26T09:00:00Z"
     (p "awaiting_deliver" :fact "2026-11-26T10:00:00Z")                              nil))
 (deftest fbo-posting-complete-after-handover ...)   ; complete, warehouse 77
-(deftest fbo-return-complete-without-received-status ...) ; final_moment + place + quantity
+(deftest fbo-return-lacks-receiving-warehouse ...) ; final_moment + quantity, place ignored, missing ["receiving warehouse"]
+(deftest cancelled-fbo-posting-with-fact-date-is-handed-over ...) ; no date -> not handed over; FBS keeps cancelled_after_ship
 (deftest fbs-return-lacks-receiving-warehouse ...)  ; missing ["receiving warehouse"], no to-warehouse
 (deftest one-operation-per-supply ...)              ; order with 2 supplies → 2 operations
 (deftest approved-quantity-summed-over-acceptance-acts ...) ; 4 + 6 → "10"; fact 9 ≠ approved 10 → "accepted quantity" missing
