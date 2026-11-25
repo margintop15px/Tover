@@ -78,10 +78,10 @@ Validate an existing user's login, memberships, accepted operation IDs, stock to
 ### Release with migration 003 (identity limits)
 
 1. Apply migration 003 before starting the new application; sign-in, signup, resend and recovery need its tables. It only adds tables. The previous application ignores them, so rollback needs no database change.
-2. Recreate Auth so it reads `GOTRUE_SMTP_MAX_FREQUENCY: 40s`.
+2. Recreate Auth so it reads `GOTRUE_SMTP_MAX_FREQUENCY: 40s` and `GOTRUE_RATE_LIMIT_EMAIL_SENT: '300'`.
 3. After the release, fail one sign-in from each of two different networks and confirm that `app_private.identity_attempts` holds two different public addresses. A Docker gateway address there means every visitor shares one limit: stop and fix the proxy address first.
 4. Publish an AAAA record only after the same check also holds over IPv6.
-5. Emails beyond GoTrue's global 30 per hour are dropped without telling the visitor (see `identity-deployment.md`); watch the `background-call-failed` log entries.
+5. Emails beyond GoTrue's global 300 per hour, or beyond the SMTP provider's own quota, are dropped without telling the visitor (see `identity-deployment.md`); watch the `background-call-failed` log entries.
 
 ### One-time cutover from the legacy schema (releases up to v0.3.0)
 

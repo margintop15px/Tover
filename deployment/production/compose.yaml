@@ -69,6 +69,8 @@ services:
       GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-Tover}
       # Below Tover's own 60 seconds per email, so a request Tover allows is not dropped (board 01a).
       GOTRUE_SMTP_MAX_FREQUENCY: 40s
+      # Emails per hour for the whole installation (GoTrue's default is 30); keep within the SMTP provider's quota.
+      GOTRUE_RATE_LIMIT_EMAIL_SENT: '300'
       GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://proxy:8080/confirmation.html
       GOTRUE_MAILER_TEMPLATES_INVITE: http://proxy:8080/invite.html
       GOTRUE_MAILER_TEMPLATES_RECOVERY: http://proxy:8080/recovery.html
