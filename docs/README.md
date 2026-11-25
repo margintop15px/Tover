@@ -13,7 +13,7 @@ The Clojure application lives at the repository root. The agreed first tester ve
 - [RDF storage](rdf-machinery.md): records, replay, transactions and quantity lineage.
 - [Identity deployments](identity-deployment.md): local and hosted identity compatibility.
 - [Production deployment](production-deployment.md): HTTPS, SMTP, installation, upgrades and backup/restore.
-- [Marketplace integration execution plan](marketplace-integration-plan.md): approved goods identity/Ozon roadmap, decisions, source research and session checkpoints. M0/M1 are complete; M2 is next.
+- [Marketplace integration execution plan](marketplace-integration-plan.md): goods identity/Ozon decisions, source research and session checkpoints. Execution follows the [marketplace roadmap](superpowers/plans/2026-11-25-marketplace-0-roadmap.md).
 - [Ozon source contracts](ozon-source-contracts.md): M1 endpoint/evidence matrix, synthetic cases and explicit gaps before live conversion.
 
 The 2026-10-21 contracts supersede individual physical-unit identity and browser-simulated submissions. [Legacy contracts](legacy-contracts/README.md) retain selected historical integration behavior. Experiment code has been retired; its findings do not replace the current ledger contract.

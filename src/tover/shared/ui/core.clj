@@ -52,8 +52,9 @@
    [:nav.app-nav {:aria-label (i18n/t "Application")}
     [:div.app-nav-pages
      (when (:workspace-id identity)
-       (for [[url label] [["/" (i18n/t "Stock")] ["/operations" (i18n/t "Operations")] ["/catalogues" (i18n/t "Catalogues")] ["/settings" (i18n/t "Settings")]]
-             :let        [active? (if (= url "/catalogues") (str/starts-with? path "/catalogues") (= url path))]]
+       (for [[url label] [["/" (i18n/t "Stock")] ["/operations" (i18n/t "Operations")] ["/catalogues" (i18n/t "Catalogues")]
+                          ["/marketplace" (i18n/t "Marketplace")] ["/settings" (i18n/t "Settings")]]
+             :let        [active? (if (#{"/catalogues" "/marketplace"} url) (str/starts-with? path url) (= url path))]]
          [:a (nav/link url {:class        (when active? "active")
                             :aria-current (when active? "page")}) label]))]
     [:div.app-nav-tools

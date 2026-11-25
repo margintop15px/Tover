@@ -528,9 +528,12 @@
             :journal   :directory
             :scope     :workspace
             :authority {:store :directory :impl 'tover.identity.session/->CurrentSession}
-            :resources {:realtime      (ig/ref ::app/realtime)      :provider (ig/ref ::app/provider)
-                        :session-store (ig/ref ::app/session-store) :origin   "http://localhost:3030"}}
+            :resources {:realtime      (ig/ref ::app/realtime) :provider (ig/ref ::app/provider)
+                        :session-store (ig/ref ::app/session-store)                    :origin "http://localhost:3030"
+                        :marketplace   (ig/ref :tover.marketplace.connector/connector)}}
            (get c [:bel/system ::app/bel-system])))
+    (is (= {:repo (ig/ref ::app/repo) :connector-key nil} (get c :tover.marketplace.connector/connector))
+        "without TOVER_CONNECTOR_KEY the connector cannot store credentials")
     (is (= (ig/ref ::app/bel-system) (get-in c [::app/handler :bel/system])))
     (is (empty? (mapcat #(ig/find-derived c %) [::app/journal-datasource ::app/delivery-system :bel.delivery/worker])))))
 
@@ -543,7 +546,8 @@
            (get c [:bel-postgres.jdbc/datasource ::app/journal-datasource])))
     (is (= {:directory (ig/ref ::app/journal-directory) :catalogue (ig/ref ::app/journal-catalogue)}
            (get-in c [[:bel/system ::app/delivery-system] :stores])))
-    (is (= {:mailer nil :origin "http://localhost:3030"} (get-in c [[:bel/system ::app/delivery-system] :resources])))
+    (is (= {:mailer nil :origin "http://localhost:3030" :marketplace (ig/ref :tover.marketplace.connector/connector)}
+           (get-in c [[:bel/system ::app/delivery-system] :resources])))
     (is (= (ig/ref ::app/delivery-system) (:bel.delivery/worker c)))
     (is (not (contains? c ::app/mailer)))))
 

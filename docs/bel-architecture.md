@@ -278,17 +278,17 @@ The board was reworked for the stock-item model and the marketplace chapters (08
 | --- | --- | --- |
 | Workspace Directory, Workspace Session, Invitations, Identity | `:directory` | Membership, roles and invitation delivery commit together. |
 | Account Preferences | `:directory` | Per-account settings; chapter 47 keys them by `(account, workspace, table)`. |
-| Marketplace Connections | `:directory` | Connection state, encrypted-secret reference and sync runs; no inventory facts. |
+| Marketplace Connections | `:catalogue` | Connection state, secret reference and sync runs. Store archive with connection pause, and automatic acceptance, each need one commit. |
 | Catalogues, Inventory | `:catalogue` | Acceptance registers catalogue records and writes ledger records in one commit. |
 | Workspace Currency (04a) | `:catalogue` | Review and acceptance read it in the same serializable transaction as the records they value. |
 | Marketplace Source, Marketplace Mappings, Marketplace Cutover | `:catalogue` | Mapping, baseline and "source operation accepted" are rechecked and written inside the acceptance commit. |
 | Email Delivery (chapter 05) | effect `:email/send` | External system: owns no facts. Attempt outcomes are `:directory` facts written by the delivery processor. |
 
-Sync checkpoints are Marketplace Source facts: `Record Source Observations` writes the batch and its cursor to `:catalogue` in one commit, while the run's start and outcome are `:directory` facts on the connection.
+Sync checkpoints are Marketplace Source facts: `Record Source Observations` writes the batch and its cursor to `:catalogue` in one commit; the run's start and outcome are `:catalogue` facts on the connection.
 
 A lane that holds events is never an external system. Facts owned by an external provider (Auth identities, marketplace payloads) enter only as events recorded by a Tover command: an inbound processor fetches, a command records.
 
-The one-store rule holds for every board command under this table. The automatic-acceptance command reads connection state from `:directory` as a fact (§6.4) and writes `:catalogue` only; a pause that commits first is seen because the read happens inside the owning transaction's decision.
+The one-store rule holds for every board command under this table. The automatic-acceptance command reads connection state and writes its records in the same `:catalogue` transaction, so a pause that commits first is seen.
 
 ### 12.2 Identity model
 

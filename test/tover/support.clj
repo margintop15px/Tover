@@ -36,7 +36,7 @@
      :journal   :directory
      :scope     :workspace
      :authority {:store :directory :impl 'tover.identity.session/->CurrentSession}
-     :resources (select-keys resources [:realtime :provider :session-store :origin])}))
+     :resources (select-keys resources [:realtime :provider :session-store :origin :marketplace])}))
 
 
 (defn delivery-system

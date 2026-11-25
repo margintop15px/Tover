@@ -1,8 +1,8 @@
 # Goods identity and Ozon integration execution plan
 
-Status: **M0 and M1 complete; M2 next**. Approved on 2026-11-06. M2–M9 are planned, not implemented.
+Status: **M0 and M1 complete; M2–M9 replaced by the roadmap**. Approved on 2026-11-06.
 
-This is the resumption entry point for work spanning multiple coding sessions. Read it with [AGENTS.md](../AGENTS.md), [product requirements](product-requirements.md), [RDF machinery](rdf-machinery.md), and [client UI](client-ui-spec.md). Requirements describe intended behavior; milestone evidence and deployment checks establish what has actually shipped.
+Execution follows the [marketplace roadmap](superpowers/plans/2026-11-25-marketplace-0-roadmap.md); the decisions, source research and session log below are reference. Read it with [AGENTS.md](../AGENTS.md), [product requirements](product-requirements.md), [RDF machinery](rdf-machinery.md), and [client UI](client-ui-spec.md). Requirements describe intended behavior; milestone evidence and deployment checks establish what has actually shipped.
 
 ## Current checkpoint
 
@@ -26,7 +26,7 @@ This is the resumption entry point for work spanning multiple coding sessions. R
 | Release manifest SHA-256 | `f7c0d1a16a4d7345b7f6607c2d8b84670e1cab2816dd2b7abd133eaa3f4739eb` |
 | M0 documentation commits | `9cff9b4` (plan), `ff78c47` (authenticated catalogue verification) |
 | M1 implementation commit | This commit; resolve with `git log -1 --format=%H --grep='^Define external identity and Ozon source contracts$'` |
-| Next action | Begin M2: persist the external records with bounded identity/conflict lookups, and migrate Goods Store relationships additively |
+| Next action | Follow the [marketplace roadmap](superpowers/plans/2026-11-25-marketplace-0-roadmap.md) |
 
 The catalogue feature was pre-existing uncommitted work when planning began: 33 tracked modifications and 9 new files. All 42 files were committed and published in v0.3.0 before this document was created. This document is a separate documentation change after deployment; the release tag must continue to identify `d96fb3a83d394a75be2098f87c0347d158beabd8`.
 
