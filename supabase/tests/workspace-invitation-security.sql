@@ -25,6 +25,10 @@ END; $$;
 INSERT INTO public.memberships (workspace_id, user_id, role) VALUES
   ('10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000005', 'owner'),
   ('10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000003', 'member');
+INSERT INTO public.workspaces (workspace_id, name) VALUES ('10000000-0000-0000-0000-000000000099', 'Unrelated workspace');
+INSERT INTO auth.users (id, email, email_confirmed_at) VALUES ('20000000-0000-0000-0000-000000000099', 'unrelated@example.test', now());
+INSERT INTO public.memberships (workspace_id, user_id, role) VALUES
+  ('10000000-0000-0000-0000-000000000099', '20000000-0000-0000-0000-000000000099', 'member');
 INSERT INTO public.invitations (invitation_id, workspace_id, email, role, invited_by) VALUES
   ('40000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'Invitee@example.test', 'member',
    '20000000-0000-0000-0000-000000000005'),
@@ -131,10 +135,34 @@ DO $$ DECLARE n integer; BEGIN
     VALUES ('10000000-0000-0000-0000-000000000099', 'new@example.test', 'member', '20000000-0000-0000-0000-000000000005');
     RAISE EXCEPTION 'manager issued an invitation for another workspace';
   EXCEPTION WHEN insufficient_privilege THEN NULL; END;
-  UPDATE public.memberships SET role = 'owner' WHERE user_id = '20000000-0000-0000-0000-000000000003';
+  -- Since 002 a manager changes memberships of the own workspace only (board 34–39). Rolled back each time.
+  BEGIN
+    UPDATE public.memberships SET role = 'owner' WHERE user_id = '20000000-0000-0000-0000-000000000003';
+    GET DIAGNOSTICS n = ROW_COUNT;
+    ASSERT n = 1, 'an owner could not change a membership of the own workspace';
+    RAISE EXCEPTION 'roll back' USING ERRCODE = 'P0099';
+  EXCEPTION WHEN SQLSTATE 'P0099' THEN NULL; END;
+  UPDATE public.memberships SET status = 'suspended' WHERE workspace_id = '10000000-0000-0000-0000-000000000099';
   GET DIAGNOSTICS n = ROW_COUNT;
-  ASSERT n = 0, 'manager changed a membership directly';
+  ASSERT n = 0, 'manager changed a membership of another workspace';
+  BEGIN
+    UPDATE public.memberships SET workspace_id = '10000000-0000-0000-0000-000000000099'
+      WHERE user_id = '20000000-0000-0000-0000-000000000003';
+    RAISE EXCEPTION 'manager moved a membership into another workspace';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
 END; $$;
+RESET ROLE;
+UPDATE public.memberships SET role = 'admin' WHERE user_id = '20000000-0000-0000-0000-000000000005';
+SET ROLE tover_app;
+DO $$ DECLARE n integer; BEGIN
+  BEGIN
+    UPDATE public.memberships SET role = 'owner' WHERE user_id = '20000000-0000-0000-0000-000000000003';
+    RAISE EXCEPTION 'an admin granted ownership';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END; $$;
+RESET ROLE;
+UPDATE public.memberships SET role = 'owner' WHERE user_id = '20000000-0000-0000-0000-000000000005';
+SET ROLE tover_app;
 RESET tover.session_key;
 DO $$ BEGIN
   ASSERT NOT EXISTS (SELECT FROM public.invitations), 'manager rights held without a live sign-in';

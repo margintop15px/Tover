@@ -171,8 +171,8 @@
                     (is (str/includes? (:body response) "Workspace created"))
                     (is (= [{:role "owner" :status "active"}]
                            (query-as settings user-id "select role, status from public.memberships where workspace_id=? and user_id=?" north user-id)))))
-                (let [body  (:body (request! :get "/workspace" {"workspace-id" (str north)}))
-                      offer (second (re-find #"(?s)data-target-workspace-id=\"[^\"]*\">(.*?)</section>" body))]
+                (let [body  (:body (request! :get "/workspace"))
+                      offer (second (re-find (re-pattern (str "(?s)<tr data-workspace-id=\"" north "\">(.*?)</tr>")) body))]
                   (is (= 303 (:status (request! :post (bel/action-url :tover.workspaces.select.web/select)
                                                 (into {} (for [name ["workspace-id" "expected-version" "command-id" "return-to"]]
                                                            [name (hidden-value offer name)])))))))
