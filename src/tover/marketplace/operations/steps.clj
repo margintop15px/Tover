@@ -40,9 +40,10 @@
 (def Facts
   "`proposals/Facts`, and: `connection` the connection row, `guard-facts` the Mapping Guard's catalogue (products,
   stock items, barcodes, definitions; a mapping it finds reasons for counts as suspended), `imports`,
-  `acceptances` and `aside` by source operation id, `catalogue` and `history` as acceptance reviews them, `entries`
-  the pending entries, `now` the review instant. Without `guard-facts` \"mapping\" fails, without `now`
-  \"validation\" fails: an operation is never automatic on facts nobody supplied."
+  `acceptances` and `aside` by source operation id, `catalogue`, `history` and `provenance` (`::provenance/facts`,
+  else the baselines alone) as acceptance reviews them, `history-index` (`index-history`) so each review replays only
+  the pairs it touches, `entries` the pending entries, `now` the review instant. Without `guard-facts` \"mapping\"
+  fails, without `now` \"validation\" fails: an operation is never automatic on facts nobody supplied."
   [:map
    [:connection {:optional true} [:maybe :map]]
    [:products {:optional true} [:sequential :map]]
@@ -58,7 +59,38 @@
    [:history {:optional true} [:maybe [:map [:records [:sequential :map]] [:lines [:sequential :map]]]]]
    [:entries {:optional true} [:sequential :map]]
    [:currency {:optional true} [:maybe :string]]
+   [:provenance {:optional true} [:maybe :map]]
+   [:history-index {:optional true} [:maybe :map]]
    [:now {:optional true} [:maybe inst?]]])
+
+
+(defn index-history
+  "`history` by stock item and warehouse: the record ids with a line on each pair, every revision of each record,
+  and the lines of each revision. Built once per set of facts, so classifying many operations replays only what
+  each one touches."
+  {:malli/schema [:=> [:cat [:maybe :map]] :map]}
+  [{:keys [records lines]}]
+  (let [record-of (into {} (map (juxt :record-revision-id :record-id)) records)]
+    {:by-pair   (reduce (fn [index {:keys [stock-item-id warehouse-id record-revision-id]}]
+                          (update index [stock-item-id warehouse-id] (fnil conj #{}) (record-of record-revision-id)))
+                        {} lines)
+     :revisions (group-by :record-id records)
+     :lines     (group-by :record-revision-id lines)}))
+
+
+(defn- narrowed
+  "The history a review of `entry` needs: every revision, with all its lines, of each record with a line on a pair
+  the entry touches. Quantities on those pairs replay exactly as in the whole history. Without an index, the whole
+  history."
+  {:malli/schema [:=> [:cat :map [:maybe :map]] :map]}
+  [{:keys [history history-index]} entry]
+  (if-not (and history-index entry)
+    (or history {:records [] :lines []})
+    (let [warehouses (distinct (filter some? (concat [(:from-warehouse-id entry) (:to-warehouse-id entry)] (map :warehouse-id (:lines entry)))))
+          pairs      (for [item (distinct (keep :stock-item-id (:lines entry))) warehouse warehouses] [item warehouse])
+          revisions  (vec (mapcat (:revisions history-index) (distinct (mapcat (:by-pair history-index) pairs))))]
+      {:records revisions
+       :lines   (vec (mapcat (comp (:lines history-index) :record-revision-id) revisions))})))
 
 
 (def Group
@@ -222,13 +254,15 @@
 
 (defn- review
   {:malli/schema [:=> [:cat :map :map] :map]}
-  [{:keys [catalogue history currency baselines now]} {:keys [entry-id revision] :as entry}]
+  [{:keys [catalogue history currency baselines provenance now]} {:keys [entry-id revision] :as entry}]
   (acceptance/review (merge catalogue
-                            {:entries    [entry]
-                             :history    (or history {:records [] :lines []})
-                             :currency   currency
-                             :provenance {:cutover-entries {} :baselines (or baselines {})}
-                             :now        (or now Instant/MAX)})
+                            {:entries      [entry]
+                             :history      (or history {:records [] :lines []})
+                             :currency     currency
+                             :provenance   (or provenance {:cutover-entries {} :baselines (or baselines {})})
+                             :now          (or now Instant/MAX)
+                             ;; Classifying never compares a review fingerprint, its costliest part.
+                             :fingerprint? false})
                      {:selection [{:entry-id entry-id :revision revision}] :order [entry-id]}))
 
 
@@ -296,13 +330,16 @@
         own        (when proposal (review-entry facts operation proposal entry))
         mapped     (and (empty? unmatched) (empty? suspended) (empty? warehouses)
                         (usable-references? facts (or (:lines own) itemized) own))
+        facts      (assoc facts :history (narrowed facts own))
         result     (when (and own (empty? missing) mapped) (review facts own))
         connection (:connection facts)]
     {:lines     lines :kind          kind      :proposal   proposal   :entry    entry    :missing missing
      :unmatched unmatched :suspended suspended :warehouses warehouses :itemized itemized :own     own     :mapped mapped :result result
      :active    (and (= "active" (:sync-state connection)) (= "valid" (:credentials-state connection)))
      :edited    (boolean (and entry (not= (str (:saved-by entry)) (str (sync/connector-actor (:connection-id operation))))))
-     :conflict  (boolean (get-in facts [:imports source-operation-id :source-conflict]))}))
+     :conflict  (boolean (get-in facts [:imports source-operation-id :source-conflict]))
+     ;; What the shortage correction replays.
+     :history   (:history facts)}))
 
 
 (defn- failing
@@ -325,11 +362,11 @@
 (defn- table
   "The first row of the board's table that applies, with its group."
   {:malli/schema [:=> [:cat :map :map :map [:vector :string]] [:tuple NextStep Group]]}
-  [facts operation {:keys [kind lines missing unmatched suspended warehouses itemized own result active conflict]} fails]
+  [facts operation {:keys [kind lines missing unmatched suspended warehouses itemized own result active conflict] :as evaluated} fails]
   (let [related    (:related-operation operation)
         returned?  (= "customer-return" kind)
         undecided? (and returned? related (contains? (:operations facts) related) (not (decided? facts related)))
-        short      (when (and result own) (correction facts own result))
+        short      (when (and result own) (correction (assoc facts :history (:history evaluated)) own result))
         incomplete (or (nil? kind) (empty? lines) (seq missing))]
     (cond
       conflict ["resolve conflict" (group "resolve conflict" nil nil)]
@@ -369,7 +406,7 @@
           fails (failing facts operation evaluated)
           done (finished facts operation lines)
           [step grp] (if done [done (group done nil nil)] (table facts operation evaluated fails))
-          shortage (when (= "fix shortage" step) (correction facts own result))]
+          shortage (when (= "fix shortage" step) (correction (assoc facts :history (:history evaluated)) own result))]
       (cond-> {:next-step          step
                :group              grp
                :missing            missing

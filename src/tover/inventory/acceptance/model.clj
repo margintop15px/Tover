@@ -425,7 +425,8 @@
 
 (defn review
   "The exact effects of accepting `selection` in `order` now: before/after per affected pair, required registrations,
-  blocking problems and the fingerprint acceptance must match. Nothing here is stored."
+  blocking problems and the fingerprint acceptance must match (nil when `facts` say `:fingerprint? false`, for a caller
+  that never compares it). Nothing here is stored."
   {:malli/schema [:=> [:cat :map Selection] :map]}
   [{:keys [entries history now] :as facts} {:keys [selection order ordered?] :as input}]
   (let [compact  (fn [m] (into {} (remove (comp nil? val)) m))
@@ -483,7 +484,7 @@
      :lines         usable
      :records       proposed
      :item-events   (item-events facts usable changes)
-     :fingerprint   (fingerprint facts input lines (picked-changes picked) replaced)}))
+     :fingerprint   (when-not (false? (:fingerprint? facts)) (fingerprint facts input lines (picked-changes picked) replaced))}))
 
 
 (defmethod runtime/coeffect ::now
@@ -592,11 +593,15 @@
 (defn plan
   "The events and effects of accepting `input` (`Accept`) reviewed on `facts` (`review-facts` with `:scope` and
   `:now`), recorded as `actor`; rejected like `Accept Reviewed Inventory Changes`. The workspace is checked by the
-  caller."
-  {:malli/schema [:=> [:cat :map :map [:map [:actor :any]]] [:map [:events [:vector :map]] [:fx [:vector :any]]]]}
-  [{:keys [scope now entries provenance] :as facts} {:keys [acceptance-id fingerprint selection order] :as input} {:keys [actor]}]
-  (let [{:keys [problems lines records item-events] :as result} (review (assoc (review-input facts) :now now) (select-keys input [:selection :order :ordered?]))]
-    (when (not= fingerprint (:fingerprint result))
+  caller. `fingerprint?` false skips the review fingerprint, for a caller that decides on the facts of its own
+  commit (board `Accept Imported Operation Automatically`)."
+  {:malli/schema [:=> [:cat :map :map [:map [:actor :any] [:fingerprint? {:optional true} :boolean]]]
+                  [:map [:events [:vector :map]] [:fx [:vector :any]]]]}
+  [{:keys [scope now entries provenance] :as facts} {:keys [acceptance-id fingerprint selection order] :as input}
+   {:keys [actor fingerprint?] :or {fingerprint? true}}]
+  (let [{:keys [problems lines records item-events] :as result} (review (assoc (review-input facts) :now now :fingerprint? fingerprint?)
+                                                                        (select-keys input [:selection :order :ordered?]))]
+    (when (and fingerprint? (not= fingerprint (:fingerprint result)))
       (records/fail! :review-outdated "Something the review saw changed. Review it again." {}))
     (when-let [{:keys [code] :as problem} (first problems)]
       (let [[type message] (rejection code [:review-outdated "Review it again."])]

@@ -10,9 +10,15 @@
   is kept. Edited means the stored entry's `:saved-by` is not the connector.
 
   The command decides from its own facts at commit; its input names only what intake read, so a change since then
-  is refused as stale and evaluated again in the next round."
+  is refused as stale and evaluated again in the next round.
+
+  Slices 3 and 4 · `Automatic Acceptance` accepts, as the connector, each pending proposal whose next step is
+  `automatic`, in occurrence order per connection. `Accept Imported Operation Automatically` rechecks eligibility on
+  the facts of its own commit and plans exactly what `Accept Reviewed Inventory Changes` would, without review
+  fingerprint; its acceptance id is fixed by the source operation and revision, so a source revision is accepted at
+  most once."
   (:require
-    [bel.core :as bel :refer [defcommand defprocessor]]
+    [bel.core :as bel :refer [defcommand defprocessor defreadmodel]]
     [bel.runtime :as runtime]
     [clojure.string :as str]
     [com.brunobonacci.mulog :as mu]
@@ -45,7 +51,9 @@
    :already-accepted  "This operation is already accepted."
    :set-aside         "This operation is set aside."
    :not-resolvable    "A match or baseline is missing."
-   :still-resolvable  "This operation is still resolvable."})
+   :still-resolvable  "This operation is still resolvable."
+   :not-eligible      "This operation waits for a member."
+   :registers         "Automatic acceptance never registers or changes catalogue records."})
 
 
 (defn- fail!
@@ -67,13 +75,17 @@
   "Everything `steps/classify` and the decision read for one connection."
   {:malli/schema [:=> [:cat :map :string] steps/Facts]}
   [context connection-id]
-  (let [input {:connection-id connection-id}]
+  (let [input      {:connection-id connection-id}
+        provenance (runtime/coeffect ::provenance/facts context {})
+        history    (runtime/coeffect ::acceptance/history context {})]
     {:connection         (runtime/coeffect ::sync/connection context input)
      :products           (runtime/coeffect ::products/listings context input)
      :mappings           (runtime/coeffect ::products/mappings context input)
      :guard-facts        (runtime/coeffect ::products/catalogue context input)
      :warehouse-mappings (runtime/coeffect ::warehouses/mappings context input)
-     :baselines          (:baselines (runtime/coeffect ::provenance/facts context {}))
+     ;; As acceptance reads it, so eligibility applies the import rules acceptance applies.
+     :provenance         provenance
+     :baselines          (:baselines provenance)
      :imports            (by-source (records/all-records context ::provenance/imports :source-operation-id))
      :acceptances        (by-source (records/all-records context ::provenance/source-acceptances :source-operation-id))
      :aside              (by-source (records/all-records context ::provenance/asides :source-operation-id))
@@ -81,7 +93,9 @@
      :operations         (by-source (filter #(= connection-id (:connection-id %))
                                             (records/all-records context ::sync/source-operations :source-operation-id)))
      :catalogue          (runtime/coeffect ::entries/catalogue context {})
-     :history            (runtime/coeffect ::acceptance/history context {})
+     :history            history
+     ;; Every operation of the connection is classified: each review replays only the pairs it touches.
+     :history-index      (steps/index-history history)
      :entries            (runtime/coeffect ::entries/pending context {})
      :currency           (currency/current (first (records/all-records context ::currency/workspace-currencies :currency-key)))}))
 
@@ -95,6 +109,47 @@
 (defmethod runtime/coeffect ::facts
   [_ context {:keys [connection-id]}]
   (when connection-id (load-facts context connection-id)))
+
+
+(defn command-facts
+  "`load-facts` for one operation's command: the same connection-wide facts (listings, mappings, guard catalogue,
+  warehouse mappings, catalogue, history, currency), but only the operation and its related one, their import,
+  acceptance and aside rows, its own pending entry, and `::provenance/facts` of that entry, each loaded by id. What
+  `steps/classify`, `assess` and acceptance of this operation read is the same; the cost no longer grows with the
+  connection's other operations and entries."
+  {:malli/schema [:=> [:cat :map [:maybe :map]] [:maybe steps/Facts]]}
+  [context {:keys [source-operation-id connection-id related-operation]}]
+  (when connection-id
+    (let [input    {:connection-id connection-id}
+          ids      (vec (distinct (remove nil? [source-operation-id related-operation])))
+          entry-id (provenance/import-entry-id source-operation-id)
+          stored   (get (sync/load-rows context ::entries/entries [entry-id]) entry-id)
+          changes  (when (= "pending" (:status stored)) (runtime/coeffect ::entries/changes context {:entry-id entry-id}))
+          own      (fn [rows] (into {} (filter #(= connection-id (:connection-id (val %)))) rows))
+          prov     (runtime/coeffect ::provenance/facts context {:entry-ids [entry-id]})]
+      {:connection         (runtime/coeffect ::sync/connection context input)
+       :products           (runtime/coeffect ::products/listings context input)
+       :mappings           (runtime/coeffect ::products/mappings context input)
+       :guard-facts        (runtime/coeffect ::products/catalogue context input)
+       :warehouse-mappings (runtime/coeffect ::warehouses/mappings context input)
+       :provenance         prov
+       :baselines          (:baselines prov)
+       :imports            (sync/load-rows context ::provenance/imports ids)
+       :acceptances        (sync/load-rows context ::provenance/source-acceptances ids)
+       :aside              (sync/load-rows context ::provenance/asides ids)
+       :operations         (own (sync/load-rows context ::sync/source-operations ids))
+       :catalogue          (runtime/coeffect ::entries/catalogue context {})
+       :history            (runtime/coeffect ::acceptance/history context {})
+       :entries            (if (= "pending" (:status stored))
+                             [(cond-> (assoc stored :lines (runtime/coeffect ::entries/lines context {:entry-id entry-id}))
+                                (seq changes) (assoc :changes changes))]
+                             [])
+       :currency           (currency/current (first (records/all-records context ::currency/workspace-currencies :currency-key)))})))
+
+
+(defmethod runtime/coeffect ::command-facts
+  [_ context {:keys [operation]}]
+  (command-facts context operation))
 
 
 (defmethod runtime/coeffect ::stored
@@ -254,7 +309,7 @@
 
 (def ^:private command-cofx
   [[:operation ::operation (fn [_ input] (select-keys input [:source-operation-id]))]
-   [:facts ::facts (fn [{:keys [operation]} _] {:connection-id (:connection-id operation)})]
+   [:facts ::command-facts (fn [{:keys [operation]} _] {:operation operation})]
    [:stored ::stored (fn [_ input] (select-keys input [:source-operation-id]))]])
 
 
@@ -450,5 +505,173 @@
   {:todo ::operations-to-propose}
   [{:keys [workspace-id connection-id command input]}]
   {:type  :command :id command :scope {:workspace-id (parse-uuid workspace-id)}
+   :actor (sync/connector-actor connection-id)
+   :input input})
+
+
+;; Slices 3 and 4 · Check automatic-acceptance eligibility, and Accept the imported operation automatically
+
+
+(def registering
+  "What automatic acceptance never emits: catalogue registrations and stock item changes. It confirms no mapping
+  either; no mapping event is declared."
+  #{:tover.catalogues.products.model/product-registered :tover.catalogues.warehouses.model/warehouse-registered
+    :tover.catalogues.suppliers.model/supplier-registered :tover.inventory.stock-items.model/stock-item-registered
+    :tover.inventory.stock-items.model/stock-item-barcode-assigned :tover.inventory.stock-items.model/stock-item-updated
+    :tover.inventory.stock-items.model/stock-item-moved :tover.inventory.stock-items.model/stock-item-archived
+    :tover.inventory.stock-items.model/stock-item-restored :tover.inventory.stock-items.model/stock-item-barcode-removed})
+
+
+(defn acceptance-id
+  "The acceptance an automatic attempt creates, fixed by the source operation and revision: a second attempt at
+  the same revision can never accept it again."
+  {:malli/schema [:=> [:cat :string :int] :string]}
+  [source-operation-id revision]
+  (str "auto/" source-operation-id "#" revision))
+
+
+(def EligibilityRow
+  [:map
+   [:entry-id :string]
+   [:source-operation-id :string]
+   [:occurred-at {:optional true} inst?]
+   [:eligible :boolean]
+   [:failing-conditions [:vector :string]]
+   [:revision [:int {:min 1}]]
+   [:entry-revision [:int {:min 1}]]])
+
+
+(defn eligibility
+  "Board `Imported Proposals and Acceptance Eligibility`: the connection's pending imported proposals in occurrence
+  order (time, then source operation id; one without a time last), each eligible or not with its failing conditions,
+  and the revisions an automatic attempt names."
+  {:malli/schema [:=> [:cat steps/Facts] [:vector EligibilityRow]]}
+  [{:keys [operations imports entries] :as facts}]
+  (let [pending (into {} (map (juxt :entry-id identity)) entries)]
+    (->> (for [[id {:keys [entry-id]}] imports
+               :let                    [operation (get operations id) entry (get pending entry-id)]
+               :when                   (and operation entry (= entry-id (provenance/import-entry-id id)))
+               :let                    [{:keys [next-step failing-conditions]} (steps/classify facts operation)]
+               :when                   next-step]
+           (cond-> {:entry-id entry-id :source-operation-id id
+                    :eligible (= "automatic" next-step)       :failing-conditions failing-conditions
+                    :revision (get-in imports [id :revision]) :entry-revision     (:revision entry)}
+             (:occurred-at entry) (assoc :occurred-at (instant (:occurred-at entry)))))
+         (sort-by (juxt (comp nil? :occurred-at) :occurred-at :source-operation-id))
+         vec)))
+
+
+(defreadmodel imported-proposals-and-acceptance-eligibility
+  {:input  [:map [:connection-id :string]]
+   :output [:vector :map]
+   :policy ::records/workspace-member
+   :cofx   [[:facts ::facts (fn [_ input] (select-keys input [:connection-id]))]
+            [:clock ::acceptance/now (constantly {})]]}
+  [{:keys [facts clock]} _]
+  (mapv #(select-keys % [:entry-id :source-operation-id :occurred-at :eligible :failing-conditions])
+        (eligibility (assoc facts :now clock))))
+
+
+(def AcceptImportedOperationAutomatically
+  "Board `Accept Imported Operation Automatically`: the attempt is named by the source operation and revision, and
+  exactly one entry at the revision eligibility read."
+  [:map
+   [:source-operation-id provenance/SourceOperationId]
+   [:revision [:int {:min 1}]]
+   [:entry-id records/Id]
+   [:entry-revision [:int {:min 1}]]])
+
+
+(defn automatic-acceptance-plan
+  "The events and effects of accepting one eligible proposal as the connector, decided on `facts` loaded inside
+  the commit (`load-facts`, with its `::provenance/facts`) at `now`. Refused when unknown, not the actor's
+  connection, accepted already, stale (the operation or its entry changed, or the entry is gone), not eligible
+  (naming the failing conditions), when it would register or change a catalogue record, or as `Accept Reviewed
+  Inventory Changes` refuses it."
+  {:malli/schema [:=> [:cat :map [:maybe :map] steps/Facts AcceptImportedOperationAutomatically :uuid inst?]
+                  [:map [:events [:vector :map]] [:fx [:vector :any]]]]}
+  [scope operation facts {:keys [source-operation-id revision entry-id entry-revision]} actor now]
+  (when-not operation (fail! :not-found))
+  (when (not= actor (sync/connector-actor (:connection-id operation))) (fail! :not-permitted))
+  (when (contains? (:acceptances facts) source-operation-id) (fail! :already-accepted))
+  (let [facts (assoc facts :now now)
+        entry (some #(when (= entry-id (:entry-id %)) %) (:entries facts))]
+    (when (or (not= revision (:revision operation)) (not= revision (get-in facts [:imports source-operation-id :revision]))
+              (not= entry-id (provenance/import-entry-id source-operation-id)) (not= entry-revision (:revision entry)))
+      (fail! :stale))
+    (let [{:keys [next-step failing-conditions]} (steps/classify facts operation)]
+      (when-not (= "automatic" next-step)
+        (records/fail! :not-eligible (messages :not-eligible) {:conditions failing-conditions :next-step next-step})))
+    (let [result (acceptance/plan {:scope        scope :now now
+                                   :entries      (:entries facts)              :catalogue  (:catalogue facts)
+                                   :history      (:history facts)              :provenance (:provenance facts)
+                                   :currency-row {:currency (:currency facts)}}
+                                  {:acceptance-id (acceptance-id source-operation-id revision)
+                                   :selection     [{:entry-id entry-id :revision entry-revision}] :order [entry-id]}
+                                  {:actor actor :fingerprint? false})]
+      (when (some (comp registering :type) (:events result))
+        (records/fail! :not-eligible (messages :registers) {:conditions ["validation"] :next-step "accept"}))
+      result)))
+
+
+(defcommand accept-imported-operation-automatically
+  ;; Board 45 slice 4: the validation and events of `Accept Reviewed Inventory Changes`, as the connector, with every
+  ;; eligibility condition rechecked on the facts of this commit. Retries of one attempt return its first result.
+  {:input  AcceptImportedOperationAutomatically
+   :policy ::sync/connector-principal
+   :cofx   [[:operation ::operation (fn [_ input] (select-keys input [:source-operation-id]))]
+            [:facts ::command-facts (fn [{:keys [operation]} _] {:operation operation})]]
+   :emits  #{::acceptance/inventory-changes-accepted ::acceptance/inventory-record-accepted
+             ::acceptance/inventory-record-line-accepted ::entries/shared-inventory-entry-accepted
+             ::provenance/source-operation-accepted}}
+  [{:keys [scope actor now operation facts]} input]
+  (automatic-acceptance-plan scope operation facts input actor (instant now)))
+
+
+(def AcceptanceItem
+  [:map [:workspace-id :string] [:connection-id :string] [:input AcceptImportedOperationAutomatically]])
+
+
+(defn acceptances-to-send
+  "Automatic Acceptance over one connection's facts: an attempt for each eligible proposal, in occurrence order.
+  Each is rechecked at its commit, after those before it, so a later one validates against what they accepted and a
+  refused one blocks none after it. A connection that is not active sends none."
+  {:malli/schema [:=> [:cat steps/Facts :string :string] [:vector AcceptanceItem]]}
+  [facts workspace-id connection-id]
+  (if (not= "active" (get-in facts [:connection :sync-state]))
+    []
+    (vec (for [row (eligibility facts) :when (:eligible row)]
+           {:workspace-id workspace-id :connection-id connection-id
+            :input        (select-keys row [:source-operation-id :revision :entry-id :entry-revision])}))))
+
+
+(defmethod runtime/coeffect ::operations-to-accept
+  [_ {:keys [bel/system]} _]
+  (if-let [marketplace (get-in system [:resources :marketplace])]
+    (let [owned (for [workspace-id (sync/workspace-ids system)
+                      connection   (sync/workspace-connections system workspace-id)]
+                  [workspace-id (:connection-id connection)])
+          now   (if-let [clock (:clock marketplace)] (Instant/ofEpochMilli (clock)) (Instant/now))
+          dirty (sync/take-dirty! marketplace :automatic-acceptance (set (map second owned)) now)]
+      (vec (for [[workspace-id connection-id] owned
+                 :when (contains? dirty connection-id)
+                 item (try (let [context {:bel/system system :scope {:workspace-id workspace-id}}]
+                             (acceptances-to-send (assoc (load-facts context connection-id) :now now) (str workspace-id) connection-id))
+                           (catch InterruptedException error (throw error))
+                           (catch Exception error
+                             ;; The minute sweep tries the connection again.
+                             (mu/log ::acceptance-skipped :connection-id connection-id
+                                     :error-type (or (:type (ex-data error)) (.getName (class error))))
+                             []))]
+             item)))
+    []))
+
+
+(defprocessor ^{:malli/schema [:=> [:cat AcceptanceItem] bel/ProcessorRequest]} automatic-acceptance
+  ;; Board `Automatic Acceptance`: wakes on the connection's marks (new proposals, confirmed mappings, new baselines,
+  ;; resumed connections, acceptances) and the minute sweep.
+  {:todo ::operations-to-accept}
+  [{:keys [workspace-id connection-id input]}]
+  {:type  :command :id ::accept-imported-operation-automatically :scope {:workspace-id (parse-uuid workspace-id)}
    :actor (sync/connector-actor connection-id)
    :input input})

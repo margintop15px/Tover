@@ -69,15 +69,21 @@
   (seed-all! ctx [[type data]]))
 
 
-(defn- listing
-  {:malli/schema [:=> [:cat :string :string] :map]}
-  [sku name]
-  (let [id (str c ":" sku)]
-    {:external-product-id id :entity-id id :connection-id c :source-id sku :revision 1
+(defn- listing-of
+  {:malli/schema [:=> [:cat :string :string :string] :map]}
+  [conn sku name]
+  (let [id (str conn ":" sku)]
+    {:external-product-id id :entity-id id :connection-id conn :source-id sku :revision 1
      :payload-hash        (apply str (repeat 64 "a")) :adapter-version "test" :observed-at at :last-observed-at at
      :source-revision-id  (str id "#1") :name name :archived false
      :identifiers         (observations/write-json [{:type "sku" :value sku :active true}])
      :facts               (observations/write-json {:base {:name name}})}))
+
+
+(defn- listing
+  {:malli/schema [:=> [:cat :string :string] :map]}
+  [sku name]
+  (listing-of c sku name))
 
 
 (defn- lines
@@ -87,18 +93,25 @@
                                              (partition 2 sku-quantities)))))
 
 
+(defn- operation-of
+  "A delivered FBS posting of connection `conn`: 3 red mugs from its seller warehouse on the 10th, at `revision`."
+  {:malli/schema [:=> [:cat :string :string :int [:* :any]] :map]}
+  [conn source-id revision & {:as fields}]
+  (let [id (str conn ":fbs-posting:" source-id)]
+    (into {} (remove (comp nil? val))
+          (merge {:source-operation-id id :entity-id id :connection-id conn :source-id source-id :revision revision
+                  :payload-hash        (apply str (repeat 64 (str revision))) :adapter-version "test" :observed-at                    at   :last-observed-at at
+                  :source-revision-id  (str id "#" revision)                  :facts           (observations/write-json {})
+                  :kind                "fbs-posting" :status "delivered" :terminal true :occurred-at "2026-11-10T09:00:00Z"
+                  :from-warehouse      (str conn ":fbs:3")                    :lines           (lines "100" "3")            :complete true}
+                 fields))))
+
+
 (defn- operation
   "A delivered FBS posting of 3 red mugs from the seller warehouse on the 10th, at `revision`."
   {:malli/schema [:=> [:cat :string :int [:* :any]] :map]}
   [source-id revision & {:as fields}]
-  (let [id (str c ":fbs-posting:" source-id)]
-    (into {} (remove (comp nil? val))
-          (merge {:source-operation-id id :entity-id id :connection-id c :source-id source-id :revision revision
-                  :payload-hash        (apply str (repeat 64 (str revision))) :adapter-version "test" :observed-at at :last-observed-at at
-                  :source-revision-id  (str id "#" revision)                  :facts           (observations/write-json {})
-                  :kind                "fbs-posting" :status "delivered" :terminal true :occurred-at "2026-11-10T09:00:00Z"
-                  :from-warehouse      seller :lines (lines "100" "3") :complete true}
-                 fields))))
+  (apply operation-of c source-id revision (mapcat identity fields)))
 
 
 (defn- warehouse-mapped
@@ -198,6 +211,22 @@
                                            {:command-id (runtime/processor-command-id ::operations/marketplace-operation-intake request)
                                             :input      (:input request)}))
                        (count found)))
+     :automatic!   (fn []
+                     ;; As `runtime/run-processors!` runs Automatic Acceptance, with a full sweep each time; a refused
+                     ;; request is counted, never thrown. The number of acceptances it sent.
+                     (reset! (:swept marketplace) nil)
+                     (let [found (runtime/coeffect ::operations/operations-to-accept {:bel/system system} {})]
+                       (doseq [request (map operations/automatic-acceptance found)]
+                         (try (runtime/execute! (merge (:scope request) {:bel/system system           :bel/service ::operations/automatic-acceptance
+                                                                         :user-id    (:actor request)})
+                                                (:id request)
+                                                {:command-id (runtime/processor-command-id ::operations/automatic-acceptance request)
+                                                 :input      (:input request)})
+                              (catch clojure.lang.ExceptionInfo _ nil)))
+                       (count found)))
+     :accept-auto! (fn [command-id input]
+                     (execute! (assoc as-connector :bel/service ::operations/automatic-acceptance)
+                               ::operations/accept-imported-operation-automatically command-id input))
      :propose!     (fn [command-id input]
                      (execute! as-connector ::operations/propose-imported-operation command-id input))
      :entry        (fn [id] (some #(when (= id (:entry-id %)) %) (records-of ctx ::entries/entries :entry-id)))
@@ -804,3 +833,286 @@
         (is (= [:validation message]
                (take 2 (rejection #(save! ctx id 1 {:amends "m1#1" :cancel true :reason "wrong"})))))
         (is (= [1 connector] ((juxt :revision :saved-by) (pending id))) "the entry is unchanged")))))
+
+
+;; Board 45 slices 3 and 4 · Check automatic-acceptance eligibility, and Accept the imported operation automatically
+
+
+(defn- auto-input
+  {:malli/schema [:=> [:cat :string [:* :any]] :map]}
+  [source-operation-id & {:keys [revision entry-revision] :or {revision 1 entry-revision 1}}]
+  {:source-operation-id source-operation-id :revision revision
+   :entry-id            (provenance/import-entry-id source-operation-id) :entry-revision entry-revision})
+
+
+(defn- accepted-sources
+  {:malli/schema [:=> [:cat :map] [:set :string]]}
+  [ctx]
+  (set (map :source-operation-id (records-of ctx ::provenance/source-acceptances :source-operation-id))))
+
+
+(defn- eligibility
+  {:malli/schema [:=> [:cat :map :string] [:vector :map]]}
+  [ctx connection-id]
+  (runtime/read-model ctx ::operations/imported-proposals-and-acceptance-eligibility {:connection-id connection-id}))
+
+
+(deftest short-stock
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! automatic! pending balance classify source-id entry-of]} (setup! repo)]
+        (testing "Given balance 2"
+          (observe! (operation "P0" 1 :occurred-at "2026-11-05T09:00:00Z" :lines (lines "100" "8")))
+          (intake!)
+          (automatic!)
+          (is (= 2 (balance "red" "home"))))
+        (testing "and an imported Sale of 3"
+          (observe! (operation "P1" 1))
+          (intake!)
+          (is (= [{:entry-id (entry-of "P1") :source-operation-id (source-id "P1") :occurred-at (java.time.Instant/parse "2026-11-10T09:00:00Z")
+                   :eligible false           :failing-conditions  ["validation"]}]
+                 (eligibility ctx c)))
+          (automatic!)
+          (testing "then it is not accepted and its next step is `fix shortage`"
+            (is (= 2 (balance "red" "home")))
+            (is (some? (pending (entry-of "P1"))))
+            (is (not (contains? (accepted-sources ctx) (source-id "P1"))))
+            (is (= "fix shortage" (classify (source-id "P1"))))))))))
+
+
+(deftest supply
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! automatic! pending balance classify]} (setup! repo)
+            id (str c ":supply:S1")]
+        (testing "Given a supply with every fact entered"
+          (observe! (operation "S1" 1 :source-operation-id id :entity-id id :source-revision-id (str id "#1") :kind "supply"
+                               :status "completed" :from-warehouse seller :to-warehouse hub))
+          (is (= 1 (intake!)))
+          (is (= "transfer" (:kind (pending (provenance/import-entry-id id)))))
+          (testing "then it still waits for a member"
+            (is (= 0 (automatic!)))
+            (is (= [false ["kind"]] ((juxt :eligible :failing-conditions) (first (eligibility ctx c)))))
+            (is (= "accept" (classify id)))
+            (is (= [10 10] [(balance "red" "home") (balance "red" "ozon-7")]))
+            (is (empty? (accepted-sources ctx)))))))))
+
+
+(deftest retry
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! accept-auto! balance source-id]} (setup! repo)
+            input (auto-input (source-id "P1"))
+            rows #(count (records-of ctx ::provenance/source-acceptances :source-operation-id))]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (testing "Given a lost response"
+          (let [first-result (accept-auto! "auto-1" input)]
+            (testing "when the same attempt is sent again, then the first result is returned"
+              (is (= first-result (accept-auto! "auto-1" input)))
+              (is (= 7 (balance "red" "home")) "no further effects")
+              (is (= 1 (rows))))))
+        (testing "another attempt at the same source revision is refused: the acceptance id is fixed by it"
+          (is (some? (failure #(accept-auto! "auto-2" input))))
+          (is (= 7 (balance "red" "home")))
+          (is (= 1 (rows))))))))
+
+
+(deftest race-with-a-member
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! accept-auto! balance source-id entry-of]} (setup! repo)
+            id (entry-of "P1")
+            input (auto-input (source-id "P1"))
+            selection {:selection [{:entry-id id :revision 1}] :order [id]}]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (let [review (runtime/read-model ctx ::acceptance/inventory-review selection)
+              ready  (java.util.concurrent.CountDownLatch. 2)
+              plan   acceptance/plan]
+          (testing "Given a member accepts the same entry at the same moment"
+            ;; Both decisions read their facts before either commits.
+            (with-redefs [acceptance/plan (fn [& args]
+                                            (.countDown ready)
+                                            (.await ready 10 java.util.concurrent.TimeUnit/SECONDS)
+                                            (apply plan args))]
+              (let [jobs    [(future (try (accept-auto! "auto" input) (catch Exception error error)))
+                             (future (try (execute! ctx ::acceptance/accept-reviewed-inventory-changes "by-member"
+                                                    (merge selection {:workspace-id workspace :acceptance-id "acc-m" :fingerprint (:fingerprint review)}))
+                                          (catch Exception error error)))]
+                    results (mapv #(deref % 20000 ::timeout) jobs)]
+                (is (not-any? #{::timeout} results))
+                ;; The other is refused; a member's attempt gets a retryable conflict.
+                (is (= 1 (count (filter map? results))) (pr-str (map #(if (map? %) % (ex-data %)) results)))))
+            (testing "then exactly one acceptance wins"
+              (is (= 1 (count (records-of ctx ::provenance/source-acceptances :source-operation-id))))
+              (is (= 1 (count (filter #(= id (:record-id %)) (:records (runtime/coeffect ::acceptance/history ctx {}))))))
+              (is (= 7 (balance "red" "home"))))))))))
+
+
+(deftest paused-just-before
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! automatic! accept-auto! balance source-id]} (setup! repo)]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (testing "Given the connection was paused"
+          (seed! ctx ::connections/marketplace-connection-paused
+                 {:connection-id c :sync-state "paused" :reason "manager" :paused-by (str member) :paused-at at})
+          (testing "then nothing is accepted"
+            (is (= :not-eligible (failure #(accept-auto! "auto" (auto-input (source-id "P1"))))))
+            (is (= [:not-eligible ["connection state"]]
+                   (try (accept-auto! "auto-b" (auto-input (source-id "P1"))) nil
+                        (catch clojure.lang.ExceptionInfo error ((juxt :type :conditions) (ex-data error))))))
+            (is (= 0 (automatic!)))
+            (is (= 10 (balance "red" "home")))
+            (is (empty? (accepted-sources ctx)))))))))
+
+
+(deftest one-failure-does-not-block-the-next
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! automatic! accept-auto! balance classify source-id]} (setup! repo)]
+        (testing "Given a short sale first and an independent sale after it"
+          (observe! (operation "P1" 1 :lines (lines "100" "11")))
+          (observe! (operation "P2" 1 :occurred-at "2026-11-11T09:00:00Z" :lines (lines "200" "2")))
+          (is (= 2 (intake!)))
+          (is (= :not-eligible (failure #(accept-auto! "auto-p1" (auto-input (source-id "P1"))))))
+          (automatic!)
+          (testing "then the later one is accepted and the short one waits"
+            (is (= #{(source-id "P2")} (accepted-sources ctx)))
+            (is (= [10 8] [(balance "red" "home") (balance "blue" "home")]))
+            (is (= "fix shortage" (classify (source-id "P1"))))))))))
+
+
+(def c2 "00000000-0000-0000-0000-00000000c046")
+
+
+(defn- connect-second!
+  "A second Ozon account in the workspace, its listing 100 confirmed as red and its seller warehouse as Home, with its
+  own baseline on red at Home."
+  {:malli/schema [:=> [:cat :map] :nil]}
+  [ctx]
+  (let [seller-2 (str c2 ":fbs:3")]
+    (seed-all! ctx [[::connections/marketplace-account-connected
+                     {:connection-id     c2       :workspace-id     (str workspace) :provider         "ozon"     :provider-account-id "456"    :account-label "Second"
+                      :secret-ref        "secret" :account-currency "RUB"           :readable-domains "products" :sync-state          "active"
+                      :credentials-state "valid"  :connected-by     (str member)    :connected-at     at}]
+                    [::sync/external-product-observed (listing-of c2 "100" "Mug red")]
+                    [::sync/external-warehouse-observed
+                     {:external-warehouse-id seller-2 :entity-id seller-2 :connection-id c2 :source-id "3" :revision 1
+                      :payload-hash          (apply str (repeat 64 "b"))  :adapter-version "test"     :observed-at    at    :last-observed-at at
+                      :source-revision-id    (str seller-2 "#1")          :name            "Seller 3" :warehouse-type "fbs" :active           true
+                      :facts                 (observations/write-json {})}]
+                    [::warehouses/external-warehouse-mapped (assoc (warehouse-mapped seller-2 "fbs" "home") :connection-id c2)]
+                    [::provenance/cutover-baseline-established
+                     {:baseline-id    (provenance/baseline-id c2 "red" "home") :connection-id c2                 :stock-item-id "red" :warehouse-id "home"
+                      :instant        "2026-11-01T00:00:00Z"                   :record-id     "opening-red-home"
+                      :established-at "2026-11-02T00:00:00Z"}]])
+    (execute! ctx ::products/confirm-product-mapping "confirm-2"
+              {:rows [{:external-product-id (str c2 ":100") :listing-revision 1 :stock-item-id "red" :item-revision 1}]})
+    nil))
+
+
+(deftest two-accounts-short-of-one-item
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! automatic! balance source-id]} (setup! repo)
+            other (str c2 ":fbs-posting:Q1")]
+        (connect-second! ctx)
+        (testing "Given balance 3 of red at Home"
+          (observe! (operation "P0" 1 :occurred-at "2026-11-05T09:00:00Z" :lines (lines "100" "7")))
+          (intake!)
+          (automatic!)
+          (is (= 3 (balance "red" "home"))))
+        (testing "and a sale of 2 by each account, both proposed and eligible"
+          (observe! (operation "P1" 1 :lines (lines "100" "2")))
+          (observe! (operation-of c2 "Q1" 1 :occurred-at "2026-11-11T09:00:00Z" :lines (lines "100" "2")))
+          (is (= 2 (intake!)))
+          (is (= [true true] (map :eligible (concat (eligibility ctx c) (eligibility ctx c2))))))
+        (automatic!)
+        (testing "then one is accepted and the other's next step is `fix shortage`"
+          (let [accepted (disj (accepted-sources ctx) (source-id "P0"))
+                step     (fn [connection-id id]
+                           (let [facts (operations/load-facts ctx connection-id)]
+                             (:next-step (steps/classify facts (get-in facts [:operations id])))))]
+            (is (= 1 (count accepted)))
+            (is (= 1 (balance "red" "home")))
+            (is (= "fix shortage" (if (contains? accepted other) (step c (source-id "P1")) (step c2 other))))))))))
+
+
+(deftest never-registers
+  (testing "the command declares no catalogue registration, item change or mapping confirmation"
+    (let [emits (get-in (bel/operations) [:commands ::operations/accept-imported-operation-automatically :emits])]
+      (is (seq emits))
+      (is (not-any? operations/registering emits))
+      (is (not-any? #(= "tover.marketplace.products.model" (namespace %)) emits))))
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! accept-auto! balance source-id]} (setup! repo)
+            plan acceptance/plan]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (testing "an acceptance that would register a record is refused and commits nothing"
+          (with-redefs [acceptance/plan (fn [& args]
+                                          (update (apply plan args) :events conj
+                                                  {:type :tover.catalogues.warehouses.model/warehouse-registered
+                                                   :data {:warehouse-id "new" :name "New" :status "active" :revision 1}}))]
+            (is (= :not-eligible (failure #(accept-auto! "auto" (auto-input (source-id "P1")))))))
+          (is (= 10 (balance "red" "home")))
+          (is (empty? (accepted-sources ctx))))))))
+
+
+(deftest actor-is-the-connector
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! automatic! pending balance source-id entry-of]} (setup! repo)]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (is (= [true []] ((juxt :eligible :failing-conditions) (first (eligibility ctx c)))))
+        (is (= 1 (automatic!)))
+        (testing "the Sale is accepted without a member, as the connector"
+          (is (= 7 (balance "red" "home")))
+          (is (nil? (pending (entry-of "P1"))))
+          (let [row        (some #(when (= (source-id "P1") (:source-operation-id %)) %)
+                                 (records-of ctx ::provenance/source-acceptances :source-operation-id))
+                acceptance (some #(when (= (str "auto/" (source-id "P1") "#1") (:acceptance-id %)) %)
+                                 (records-of ctx ::acceptance/acceptances :acceptance-id))]
+            (is (= [(str connector) false (entry-of "P1")] ((juxt :accepted-by :edited :record-id) row)))
+            (is (= connector (:actor acceptance)))
+            (is (= "Ozon · Shop" (:actor-label (first (actors/enrich ctx [{:actor (str (:actor acceptance))}])))))))
+        (testing "and nothing is left to accept"
+          (is (= [] (eligibility ctx c)))
+          (is (= 0 (automatic!))))))))
+
+
+(deftest first-sync-to-an-empty-queue
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx intake! automatic! balance]} (setup! repo)
+            skus (mapv #(str (+ 900 %)) (range 12))
+            item #(str "item-" %)
+            quiet (fn [] (loop [rounds 1] (if (and (zero? (intake!)) (zero? (automatic!))) rounds (recur (inc rounds)))))]
+        (testing "Given 12 listings matched to items with a cutover of 100 at Home, and 340 postings of 1"
+          (seed-all! ctx (concat (for [sku skus]
+                                   [:tover.inventory.stock-items.model/stock-item-registered
+                                    {:stock-item-id (item sku) :product-id "mug" :variant-label sku :unit "pcs" :condition "regular"
+                                     :status        "active"   :revision   1}])
+                                 (for [sku skus] [::sync/external-product-observed (listing sku (str "Listing " sku))])
+                                 (mapcat #(update-in (opening (item %) "home") [2 1] assoc :quantity-change 100) skus)))
+          (execute! ctx ::products/confirm-product-mapping "match"
+                    {:rows (mapv #(hash-map :external-product-id (str c ":" %) :listing-revision 1 :stock-item-id (item %) :item-revision 1) skus)})
+          (seed-all! ctx (for [n (range 340)]
+                           [::sync/source-operation-observed
+                            (operation (str "U" n) 1 :lines (lines (nth skus (mod n 12)) "1")
+                                       :occurred-at (str (.plusSeconds (java.time.Instant/parse "2026-11-10T00:00:00Z") (* 60 n))))]))
+          (testing "when intake and automatic acceptance run until nothing is left"
+            (let [started (System/nanoTime)
+                  rounds  (quiet)
+                  elapsed (quot (- (System/nanoTime) started) 1000000)]
+              (println "first-sync-to-an-empty-queue:" elapsed "ms," rounds "rounds")
+              (testing "then every sale is accepted once, as the connector"
+                (is (= 340 (count (records-of ctx ::provenance/source-acceptances :source-operation-id))))
+                (is (empty? (filter (comp provenance/import-entry-id? :entry-id) (runtime/coeffect ::entries/pending ctx {}))))
+                (is (= (- 100 29) (balance (item (first skus)) "home")) "29 of the 340 sell listing 900")
+                (is (= (- 100 28) (balance (item (peek skus)) "home")))))))))))

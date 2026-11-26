@@ -490,3 +490,12 @@
         facts (assoc (baselined) :entries [entry])]
     (is (= [] (:missing (steps/classify facts no-time-terminal))))
     (is (= "accept" (step facts no-time-terminal)))))
+
+
+(deftest an-indexed-history-classifies-alike
+  (testing "each review replays only its pairs, with the same next step, conditions and suggested correction"
+    (doseq [facts [(baselined) (balance 2) (paused) (unmatched)]
+            op    (vals operations)]
+      (let [indexed (assoc facts :history-index (steps/index-history (:history facts)))]
+        (is (= (steps/classify facts op) (steps/classify indexed op)) (:source-operation-id op))))
+    (is (= "fix shortage" (step (assoc (balance 2) :history-index (steps/index-history (:history (balance 2)))) posting)))))

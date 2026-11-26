@@ -10,8 +10,9 @@
   has a `::cutover-entries` row; discarding the entry deletes the row and frees its scope. A baseline's id is
   `<connection>|<item>|<warehouse>`: at most one per scope."
   (:require
-    [bel.core :refer [defevent defmodel defreadmodel]]
+    [bel.core :as bel :refer [defevent defmodel defreadmodel]]
     [bel.runtime :as runtime]
+    [bel.store :as store]
     [charred.api :as charred]
     [clojure.string :as str]
     [tover.catalogues.records :as records :refer [Id]])
@@ -178,20 +179,39 @@
    [:imports {:optional true} [:map-of :string Import]] [:source-acceptances {:optional true} [:map-of :string SourceAcceptance]]])
 
 
+(defn- rows-by-id
+  "Rows of `model-id` by id in the scope's workspace; missing ids are left out."
+  {:malli/schema [:=> [:cat :map :qualified-keyword [:sequential :string]] [:map-of :string :map]]}
+  [context model-id ids]
+  (if (empty? ids)
+    {}
+    (let [definition (bel/get-model model-id)]
+      (runtime/with-store context :catalogue :repeatable-read
+        (fn [{:keys [tx scope] :as context}]
+          (let [adapter (store/store context :catalogue)]
+            (into {} (keep (fn [id] (some->> (store/-load adapter tx (store/store-scope scope) definition id) (vector id))))
+                  (distinct ids))))))))
+
+
 (defmethod runtime/coeffect ::facts
   ;; `:cutover-entries` holds the rows whose shared entry is still pending: an accepted entry keeps its row, and its
-  ;; scope is then the baseline's (or, for another connection, history), never pending again.
-  [_ context _]
-  (let [pending (into #{} (keep #(when (= "pending" (:status %)) (:entry-id %)))
-                      (records/all-records context :tover.inventory.entries.model/entries :entry-id))
+  ;; scope is then the baseline's (or, for another connection, history), never pending again. With `entry-ids`, only
+  ;; those entries are considered, each row loaded by id: what a review of exactly that selection reads.
+  [_ context {:keys [entry-ids]}]
+  (let [entries (if entry-ids
+                  (vals (rows-by-id context :tover.inventory.entries.model/entries entry-ids))
+                  (records/all-records context :tover.inventory.entries.model/entries :entry-id))
+        pending (into #{} (keep #(when (= "pending" (:status %)) (:entry-id %))) entries)
         sources (into #{} (comp (filter import-entry-id?) (map import-source)) pending)
-        of      (fn [model] (into {} (comp (filter (comp sources :source-operation-id)) (map (juxt :source-operation-id identity)))
-                                  (records/all-records context model :source-operation-id)))]
-    (cond-> {:cutover-entries (into {} (comp (filter (comp pending :entry-id)) (map (juxt :entry-id identity)))
-                                    (records/all-records context ::cutover-entries :entry-id))
+        of      (fn [model id-key ids]
+                  (if entry-ids
+                    (rows-by-id context model (vec ids))
+                    (into {} (comp (filter (comp ids id-key)) (map (juxt id-key identity))) (records/all-records context model id-key))))]
+    (cond-> {:cutover-entries (of ::cutover-entries :entry-id pending)
              :baselines       (into {} (map (juxt :baseline-id identity)) (records/all-records context ::baselines :baseline-id))}
       ;; Only while import entries are pending.
-      (seq sources) (assoc :imports (of ::imports) :source-acceptances (of ::source-acceptances)))))
+      (seq sources) (assoc :imports (of ::imports :source-operation-id sources)
+                           :source-acceptances (of ::source-acceptances :source-operation-id sources)))))
 
 
 (defn import-row
