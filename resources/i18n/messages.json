@@ -1176,7 +1176,17 @@
     "{count} selected": "{count} selected",
     "{item} · same article": "{item} · same article",
     "{item} · same barcode": "{item} · same barcode",
-    "{item} · same name": "{item} · same name"
+    "{item} · same name": "{item} · same name",
+    "After": "After",
+    "Before": "Before",
+    "Barcode moved to another product": "Barcode moved to another product",
+    "Changed": "Changed",
+    "Choose a product from the list.": "Choose a product from the list.",
+    "Inactive": "Inactive",
+    "Listing identifiers changed": "Listing identifiers changed",
+    "Reconfirmed": "Reconfirmed",
+    "Stock item archived": "Stock item archived",
+    "Stock item changed": "Stock item changed"
   },
   "ru": {
     "Stock": "Остатки",
@@ -2359,6 +2369,16 @@
     "{count} selected": "Выбрано: {count}",
     "{item} · same article": "{item} · тот же артикул",
     "{item} · same barcode": "{item} · тот же штрихкод",
-    "{item} · same name": "{item} · то же название"
+    "{item} · same name": "{item} · то же название",
+    "After": "Стало",
+    "Before": "Было",
+    "Barcode moved to another product": "Штрихкод перешёл к другому товару",
+    "Changed": "Изменено",
+    "Choose a product from the list.": "Выберите товар из списка.",
+    "Inactive": "Неактивен",
+    "Listing identifiers changed": "Изменились идентификаторы карточки",
+    "Reconfirmed": "Подтверждено повторно",
+    "Stock item archived": "Складская позиция в архиве",
+    "Stock item changed": "Складская позиция изменилась"
   }
 }

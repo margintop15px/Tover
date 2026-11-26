@@ -199,3 +199,5 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .marketplace-workbench .sheet-actions button:is(.catalogue-save-new,.catalogue-discard-new):disabled { opacity: .45; cursor: default; }
 .marketplace-grid .jss_worksheet > tbody > tr > td.marketplace-finding { background-image: linear-gradient(225deg, var(--iw-red) 7px, transparent 7px); }
 @media (max-width: 600px) { #page-content .marketplace-workbench .sheet-actions { flex: 1 1 100%; min-width: 0; margin-left: 0; flex-wrap: wrap; row-gap: 6px; } #page-content .marketplace-workbench .sheet-actions input.marketplace-reason { flex: 1; min-width: 0; font-size: 16px; } }
+.management-table td.management-diff-before{color:var(--iw-red);background:var(--iw-red-fill)}
+.management-table td.management-diff-after{color:var(--iw-green);background:var(--iw-green-fill)}

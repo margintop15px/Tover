@@ -25,6 +25,7 @@
     [tover.marketplace.products.model :as products]
     [tover.marketplace.products.web :as web]
     [tover.marketplace.sync.model :as sync]
+    [tover.marketplace.sync.observations :as observations]
     [tover.support :as support]))
 
 
@@ -134,8 +135,8 @@
                (get-in mug-row [:options :stock-item])))
         (is (= {:value "plate-1" :label "Plate · same barcode" :revision 1} (get-in set-row [:cells :stock-item]))
             "Plate's only item is the suggested stock item")
-        (is (= [{:value "" :label "None"} {:value "4600000000017" :label "4600000000017"}] (get-in mug-row [:options :adopt])))
-        (is (= {:value "mug" :label "Mug"} (get-in mug-row [:cells :product])) "an existing product of the same name")
+        (is (= "" (get-in mug-row [:cells :adopt])) "no barcode is adopted until the member types it")
+        (is (= {:value "mug" :label "Mug" :revision 1} (get-in mug-row [:cells :product])) "an existing product of the same name")
         (is (= "4600000000017" (get-in mug-row [:cells :barcodes])))
         (is (= "pcs" (get-in mug-row [:cells :unit])))
         (is (= "/settings/marketplace/c-1/products/c-1%3A1" (:href mug-row)))
@@ -248,3 +249,76 @@
           (let [anonymous ((:request! (support/browser handler)) :get "/settings/marketplace/c-1/products")]
             (is (= 303 (:status anonymous)))
             (is (str/starts-with? (get-in anonymous [:headers "location"]) "/auth/login"))))))))
+
+
+(defn- cell
+  "Column `key` of the row as the grid draws it."
+  {:malli/schema [:=> [:cat :map :string :keyword] :map]}
+  [ctx id key]
+  (let [table (web/table ctx c "unmatched")
+        model (grid/model (assoc table :id "t"))]
+    (some #(when (= key (keyword (get-in % [:target :path] ""))) %)
+          (:cells (some #(when (= id (:id %)) %) (:rows model))))))
+
+
+(deftest an-edited-product-keeps-its-revision
+  (with-listings
+    (fn [ctx]
+      (listings/seed! ctx :tover.catalogues.products.model/product-registered {:product-id "bowl" :name "Bowl" :status "active" :revision 3})
+      (listings/seed! ctx ::sync/external-product-observed (listings/observed "4" "Bowl" :connection-id c))
+      (let [bowl (str c ":4")
+            cell (cell ctx bowl :product)]
+        (is (= "bowl" (:value cell)))
+        (is (some #(= {:value "bowl" :label "Bowl" :revision 3} %) (get-in cell [:editor :options]))
+            "the preselected product is among the picker's options with its revision, so the browser sends it")
+        (testing "a product without its revision is not sent"
+          (let [answer (act ctx {:command "register" :rows [{:id bowl :revision 1 :values {:product "bowl" :unit "pcs"}}]})]
+            (is (= :signals (:type answer)))
+            (is (str/includes? (get-in answer [:data :_marketplaceCommandJson]) "Choose a product from the list."))))
+        (let [descriptor (act ctx {:command "register" :rows [{:id bowl :revision 1 :values {:product "bowl" :product-revision "3" :unit "pcs"}}]})]
+          (is (= 3 (get-in descriptor [:input :rows 0 :product-revision])))
+          (forms/accept! ctx descriptor)
+          (is (contains? (rows ctx "confirmed") bowl) "Register is accepted, not stale"))))))
+
+
+(deftest register-keeps-the-barcodes-the-member-left
+  (with-listings
+    (fn [ctx]
+      (listings/seed! ctx ::sync/external-product-observed (listings/observed "5" "Jug" :barcodes ["jug-1" "jug-2"] :connection-id c))
+      (let [jug  (str c ":5")
+            text (:value (cell ctx jug :barcodes))]
+        (is (= "jug-1, jug-2" text) "the listing's barcodes, shown as sent")
+        (is (= ["jug-1" "jug-2"] (web/barcode-list text)))
+        (forms/accept! ctx (act ctx {:command "register"
+                                     :rows    [{:id jug :revision 1 :values {:product "" :product-name "Jug" :barcodes "jug-2" :unit "pcs"}}]}))
+        (is (contains? (rows ctx "confirmed") jug))
+        (let [{:keys [barcodes]} (runtime/read-model ctx :tover.inventory.references/draft-catalogue {})]
+          (is (= ["jug-2"] (filterv #{"jug-1" "jug-2"} (map :barcode barcodes))) "only the kept barcode is assigned"))))))
+
+
+(deftest actions-reject-listings-of-other-connections
+  (with-listings
+    (fn [ctx]
+      (listings/seed! ctx ::sync/external-product-observed (listings/observed "7" "Elsewhere" :connection-id "c-2"))
+      (let [status #(try (%) nil (catch clojure.lang.ExceptionInfo e (:status (ex-data e))))]
+        (doseq [id ["c-2:7" "c-1:999"]]
+          (is (= 404 (status #(act ctx {:command "defer" :rows [{:id mug :revision 1} {:id id :revision 1}]})))))
+        (is (= 404 (status #(forms/act ctx ::web/change-mapping {:connection-id c :listing-id "c-2:7" :mapping-revision 1 :stock-item ""}))))
+        (is (= #{mug plate-listing odd} (set (keys (rows ctx)))) "nothing was executed")))))
+
+
+(deftest suspended-details-highlight-the-change
+  (with-listings
+    (fn [ctx]
+      (forms/accept! ctx (act ctx {:command "confirm" :rows [{:id mug :revision 1 :values {:stock-item "mug-1" :stock-item-revision "1"}}]}))
+      (listings/seed! ctx ::products/product-mapping-suspended
+                      {:external-product-id mug :mapping-revision-id   (products/revision-id mug 2) :connection-id c
+                       :change              "suspended" :stock-item-id "mug-1" :listing-revision                   1           :item-revision 1           :identity-basis "{}"
+                       :reasons             (observations/write-json [{:rule "barcode-moved" :before "4600000000017" :after "<b>none</b>"}])
+                       :mapping-revision    2 :state                   "suspended"                  :changed-by    "connector" :changed-at    listings/at})
+      (let [html (page ctx ::web/mapping {:connection-id c :listing-id mug})]
+        (is (str/includes? html "Barcode moved to another product") "the rule is named")
+        (is (re-find #"management-diff-before\">4600000000017<" html))
+        (is (re-find #"management-diff-after\">&lt;b&gt;none&lt;/b&gt;<" html))
+        (is (str/includes? html "<td>Barcode</td>") "identifier types are labels")
+        (is (str/includes? html "<td>Suspended</td>") "history changes are labels")))))

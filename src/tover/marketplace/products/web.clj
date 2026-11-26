@@ -100,20 +100,23 @@
        (= "active" (:status (get products (:product-id item))))))
 
 
+(def ^:private identifier-types
+  {"article" "Article" "barcode" "Barcode" "sku" "SKU" "product-id" "Ozon product ID"})
+
+
 (defn- identifier-lines
   {:malli/schema [:=> [:cat [:sequential :map]] [:vector :string]]}
   [identifiers]
   (vec (for [{:keys [type value active?]} identifiers]
-         (str (i18n/t (get {"article" "Article" "barcode" "Barcode" "sku" "SKU" "product-id" "Ozon product ID"} type type))
+         (str (i18n/t (identifier-types type type))
               ": " value (when-not active? (str " " (i18n/t "(inactive)")))))))
 
 
-(defn- barcode-options
-  "Single barcodes, then all of them together; values are comma-joined barcodes."
-  {:malli/schema [:=> [:cat [:sequential :string]] [:vector grid/Option]]}
-  [barcodes]
-  (cond-> (into [{:value "" :label (i18n/t "None")}] (map (fn [b] {:value b :label b})) barcodes)
-    (< 1 (count barcodes)) (conj {:value (str/join "," barcodes) :label (i18n/t "All: {barcodes}" {:barcodes (str/join ", " barcodes)})})))
+(defn barcode-list
+  "A cell's barcodes as the member typed them: any subset, separated by commas or spaces."
+  {:malli/schema [:=> [:cat [:maybe :string]] [:vector :string]]}
+  [text]
+  (vec (distinct (re-seq #"[^,\s]+" (or text "")))))
 
 
 (def ^:private units
@@ -128,11 +131,11 @@
    {:key :identifiers :label "Identifiers" :type :lines :width 220}
    {:key :waiting :label "Waiting operations" :type :text :width 110}
    {:key :stock-item :label "Stock item" :type :reference :editable? true :lookup "stock-items" :width 260}
-   {:key :adopt :label "Adopt barcodes" :type :select :editable? true :width 170}
+   {:key :adopt :label "Adopt barcodes" :type :text :editable? true :width 170}
    {:key :product :label "New product" :type :reference :editable? true :lookup "products" :new-name? true :width 220}
    {:key :variant :label "Variant" :type :text :editable? true :width 130}
    {:key :article :label "Article" :type :text :editable? true :width 130}
-   {:key :barcodes :label "Barcodes" :type :select :editable? true :width 170}
+   {:key :barcodes :label "Barcodes" :type :text :editable? true :width 170}
    {:key :unit :label "Unit" :type :select :editable? true :options units :width 100}
    {:key :status :label "Status" :type :lines :width 260}])
 
@@ -190,23 +193,22 @@
                         (let [option (item-option catalogue item)]
                           (assoc option :label (i18n/t (rule-labels rule "{item}") {:item (:label option)})))))
         chosen   (some (fn [{:keys [stock-item-id preselected?]}] (when preselected? stock-item-id)) candidates)
-        listing  (into [] (keep #(when (and (= "barcode" (:type %)) (:active? %)) (:value %))) (:identifiers evidence))
-        barcodes (vec (distinct (concat (:barcodes proposed) listing)))
         existing (same-name-product catalogue (:product-name proposed))]
     {:id      external-product-id :revision listing-revision :label (or (:name evidence) external-product-id)
      :href    (listing-path connection-id external-product-id)
-     :options {:stock-item options :adopt (barcode-options (:barcodes proposed)) :barcodes (barcode-options barcodes)}
+     :options {:stock-item options}
      :cells   {:listing     (listing-lines evidence)
                :identifiers (identifier-lines (:identifiers evidence))
                :waiting     (str waiting-operations)
                :stock-item  (when-let [option (some #(when (= chosen (:value %)) %) options)] option)
                :adopt       ""
                :product     (if existing
-                              {:value (:product-id existing) :label (:name existing)}
+                              {:value (:product-id existing) :label (:name existing) :revision (:revision existing)}
                               {:value "" :label (or (:product-name proposed) "")})
                :variant     ""
                :article     (or (:article proposed) "")
-               :barcodes    (str/join "," (:barcodes proposed))
+               ;; Register keeps the barcodes the member leaves here: the listing's active ones to start with.
+               :barcodes    (str/join ", " (:barcodes proposed))
                :unit        (:unit proposed)
                :status      (status-lines catalogue row)}}))
 
@@ -317,12 +319,6 @@
   (some-> (text values key) parse-long))
 
 
-(defn- codes
-  {:malli/schema [:=> [:cat [:maybe :string]] [:vector :string]]}
-  [joined]
-  (vec (remove str/blank? (map str/trim (str/split (or joined "") #",")))))
-
-
 (def ^:private paths
   "Where each rejection code is shown on its row."
   {"confirm"  {:barcode-conflict "stock-item" :item-not-available "stock-item" :barcode-not-on-listing "adopt"}
@@ -347,24 +343,38 @@
                      {:rows (mapv (fn [{:keys [id revision values]}]
                                     (cond-> {:external-product-id id :listing-revision revision
                                              :stock-item-id       (text values "stock-item") :item-revision (number values "stock-item-revision")}
-                                      (seq (codes (get values "adopt"))) (assoc :adopt-barcodes (codes (get values "adopt")))))
+                                      (seq (barcode-list (get values "adopt"))) (assoc :adopt-barcodes (barcode-list (get values "adopt")))))
                                   rows)}]))
-      "register" [::products/register-product-for-external-listing
-                  {:rows (mapv (fn [{:keys [id revision values]}]
-                                 (let [product (text values "product")]
-                                   (cond-> {:external-product-id id :listing-revision revision :unit (or (text values "unit") "pcs")
-                                            :barcodes            (codes (get values "barcodes"))}
-                                     product (assoc :product-id product :product-revision (or (number values "product-revision") 1))
-                                     (not product) (assoc :product-name (or (text values "product-name") ""))
-                                     (text values "variant") (assoc :variant-label (text values "variant"))
-                                     (text values "article") (assoc :article (text values "article")))))
-                               rows)}])))
+      "register" (let [missing (filter #(and (text (:values %) "product") (not (number (:values %) "product-revision"))) rows)]
+                   (if (seq missing)
+                     {:rows (mapv (fn [{:keys [id]}] {:id id :path "product" :message (i18n/t "Choose a product from the list.")}) missing)}
+                     [::products/register-product-for-external-listing
+                      {:rows (mapv (fn [{:keys [id revision values]}]
+                                     (let [product (text values "product")]
+                                       (cond-> {:external-product-id id :listing-revision revision :unit (or (text values "unit") "pcs")
+                                                :barcodes            (barcode-list (get values "barcodes"))}
+                                         product (assoc :product-id product :product-revision (number values "product-revision"))
+                                         (not product) (assoc :product-name (or (text values "product-name") ""))
+                                         (text values "variant") (assoc :variant-label (text values "variant"))
+                                         (text values "article") (assoc :article (text values "article")))))
+                                   rows)}])))))
+
+
+(defn- listings!
+  "Fails as unknown unless every listing is one of the connection's in the selected workspace."
+  {:malli/schema [:=> [:cat :map :string [:sequential :string]] :nil]}
+  [context connection-id ids]
+  (let [known (into #{} (map :external-product-id)
+                    (:rows (runtime/read-model context ::products/mapped-and-remaining-listings {:connection-id connection-id})))]
+    (when-not (every? known ids)
+      (access/failure 404 :unknown-listing "Unknown listing"))))
 
 
 (defaction command
   {:route-data access :schema Command}
-  [context {:keys [connectionId commandId] :as input}]
+  [context {:keys [connectionId commandId rows] :as input}]
   (connection! context connectionId)
+  (listings! context connectionId (mapv :id rows))
   (let [result (command-input input)]
     (if (map? result)
       (grid/rejected commandId (i18n/t "Some rows are not ready.") :rows (:rows result))
@@ -482,6 +492,7 @@
   [context id {:keys [command-id workspace-id connection-id listing-id]} input]
   (selected! context workspace-id)
   (connection! context connection-id)
+  (listings! context connection-id [listing-id])
   {:type :command :id id :command-id command-id :input (assoc input :external-product-id listing-id)
    :then {:type :page :id ::mapping :path-params {:connection-id connection-id :listing-id listing-id}}})
 
@@ -493,14 +504,12 @@
 (defaction change-mapping
   "A blank stock item removes the mapping."
   {:route-data mapping-route
-   :schema     (into MappingForm [[:stock-item {:optional true} [:maybe [:string {:max 200}]]]])}
+   :schema     (into MappingForm [[:stock-item {:optional true} [:maybe [:or [:= ""] [:re #"\A.{1,180}@[1-9]\d{0,9}\z"]]]]])}
   [context {:keys [mapping-revision stock-item] :as input}]
-  (let [at            (some-> stock-item not-empty (str/last-index-of "@"))
-        stock-item-id (when at (subs stock-item 0 at))
-        item-revision (when at (subs stock-item (inc at)))]
+  (let [at (some-> stock-item not-empty (str/last-index-of "@"))]
     (mapping-descriptor context ::products/change-product-mapping input
                         (cond-> {:mapping-revision mapping-revision}
-                          stock-item-id (assoc :stock-item-id stock-item-id :item-revision (or (some-> item-revision parse-long) 1))))))
+                          at (assoc :stock-item-id (subs stock-item 0 at) :item-revision (parse-long (subs stock-item (inc at))))))))
 
 
 (defaction reconfirm-mapping
@@ -554,6 +563,24 @@
         (apply form request ::change-mapping (i18n/t "Remove mapping") (conj (fields) (hidden "stock-item" "")))]])))
 
 
+(def ^:private guard-rules
+  {"listing-identity-changed" "Listing identifiers changed"
+   "barcode-moved"            "Barcode moved to another product"
+   "item-identity-changed"    "Stock item changed"
+   "item-archived"            "Stock item archived"})
+
+
+(def ^:private change-kinds
+  {"mapped" "Confirmed" "changed" "Changed" "suspended" "Suspended" "reconfirmed" "Reconfirmed"})
+
+
+(defn- reason-value
+  "A suspension's before or after value: text as it is, anything else as JSON."
+  {:malli/schema [:=> [:cat :any] :string]}
+  [value]
+  (cond (nil? value) "—" (string? value) value :else (grid/json value)))
+
+
 (defn- actor
   {:malli/schema [:=> [:cat :map [:maybe :string]] :string]}
   [actors id]
@@ -588,14 +615,21 @@
               (when-let [at (:deferred-at mapping)]
                 (list [:dt (i18n/t "Deferred")] [:dd (actor actors (:deferred-by mapping)) " · " (team/moment at)
                                                  (when-let [reason (:reason mapping)] (list " · " reason))]))
-              (when-let [reasons (seq (:reasons mapping))]
-                (list [:dt (i18n/t "Suspended because")]
-                      [:dd (str/join "; " (map (fn [{:keys [rule before after]}] (str rule ": " before " → " after)) reasons))]))
               [:dt (i18n/t "Listing revision")]
               [:dd (:listing-revision listing)]
               (when-let [category (:category evidence)] (list [:dt (i18n/t "Category")] [:dd category]))
               [:dt (i18n/t "Operations")]
               [:dd (count operations)]]
+             (when-let [reasons (seq (:reasons mapping))]
+               [:section.management-section {:aria-labelledby "suspended-title"}
+                [:div.management-section-heading [:h2#suspended-title (i18n/t "Suspended because")]]
+                [:div.management-table-wrap
+                 [:table.management-table.management-diff
+                  [:thead [:tr [:th {:scope "col"} (i18n/t "Change")] [:th {:scope "col"} (i18n/t "Before")] [:th {:scope "col"} (i18n/t "After")]]]
+                  (into [:tbody]
+                        (for [{:keys [rule before after]} reasons]
+                          [:tr [:td.management-primary (i18n/t (guard-rules rule rule))]
+                           [:td.management-diff-before (reason-value before)] [:td.management-diff-after (reason-value after)]]))]]])
              (mapping-actions props)
              [:section.management-section {:aria-labelledby "identifiers-title"}
               [:div.management-section-heading [:h2#identifiers-title (i18n/t "Identifiers")]]
@@ -604,7 +638,7 @@
                 [:thead [:tr [:th {:scope "col"} (i18n/t "Type")] [:th {:scope "col"} (i18n/t "Value")] [:th {:scope "col"} (i18n/t "Status")]]]
                 (into [:tbody]
                       (for [{:keys [type value active?]} (:identifiers evidence)]
-                        [:tr [:td type] [:td.management-primary value] [:td (i18n/t (if active? "Active" "Inactive"))]]))]]]
+                        [:tr [:td (i18n/t (identifier-types type type))] [:td.management-primary value] [:td (i18n/t (if active? "Active" "Inactive"))]]))]]]
              [:section.management-section {:aria-labelledby "revisions-title"}
               [:div.management-section-heading [:h2#revisions-title (i18n/t "Listing revisions")]]
               [:div.management-table-wrap
@@ -623,7 +657,7 @@
                   (into [:tbody]
                         (for [{:keys [mapping-revision change stock-item-id changed-by changed-at]} history
                               :let [item (get-in catalogue [:items stock-item-id])]]
-                          [:tr [:td mapping-revision] [:td change]
+                          [:tr [:td mapping-revision] [:td (i18n/t (change-kinds change change))]
                            [:td.management-primary (if item (item-label item (get-in catalogue [:products (:product-id item)])) (or stock-item-id "—"))]
                            [:td (actor actors changed-by) " · " (team/moment changed-at)]]))]]])
              (when (seq other-listings)

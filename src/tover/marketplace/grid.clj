@@ -14,7 +14,7 @@
 
 
 (def Option
-  [:map [:value :string] [:label :string]])
+  [:map [:value :string] [:label :string] [:revision {:optional true} :int]])
 
 
 (def Column
@@ -46,7 +46,7 @@
   [:map [:label :string] [:href :string] [:current? {:optional true} :boolean]])
 
 
-(defn- json
+(defn json
   {:malli/schema [:=> [:cat :any] :string]}
   [value]
   (charred/write-json-str value))
@@ -57,8 +57,12 @@
   [{:keys [type]} value options]
   (case type
     :lines {:value "" :lines (mapv (fn [line] {:value line}) value)}
+    ;; The current value is always among the options, so its revision is sent with it.
     :reference {:value  (or (:value value) "") :display (or (:label value) "")
-                :editor {:type "catalogue-reference" :valueType "id" :options (vec (or options []))}}
+                :editor {:type    "catalogue-reference" :valueType "id"
+                         :options (cond-> (vec (or options []))
+                                    (and (seq (:value value)) (not-any? #(= (:value value) (:value %)) options))
+                                    (conj (select-keys value [:value :label :revision])))}}
     :select {:value   (or value "")
              :display (or (some #(when (= (:value %) value) (:label %)) options) "")
              :editor  {:type "select" :options (vec (or options []))}}
