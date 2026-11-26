@@ -129,12 +129,12 @@
         (forms/accept! ctx descriptor)
         (testing "the scopes are pending with what was proposed"
           (let [{red "red|main"} (rows ctx)]
-            (is (= ["Pending" "Proposed 120, difference +120"] (get-in red [:cells :readiness])))
+            (is (= ["Pending" "Proposed 120, difference +120 at proposal"] (get-in red [:cells :readiness])))
             (is (not (:selectable? red)))))
         (testing "the Stock page's Preview shows the observation on the pending cell"
           (let [model  (#'inventory-web/table-model ctx "units" false {:pending true})
                 titles (keep :title (mapcat :cells (:rows model)))]
-            (is (some #(str/includes? % "Cutover: observed 120, proposed 120, difference +120 from Tover's 0.") titles))))))))
+            (is (some #(str/includes? % "Cutover: observed 120, proposed 120, difference +120 from Tover's 0 at proposal.") titles))))))))
 
 
 (deftest cutover-review-is-the-shared-draft-preview-filtered-to-the-connection

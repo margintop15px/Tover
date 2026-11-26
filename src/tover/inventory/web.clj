@@ -354,7 +354,7 @@
     :field-conflict (i18n/t "Another pending entry changes this field.")
     ;; Chapter 44 · Cutover Review: the observation frozen with a pending cutover entry and what it changes.
     :cutover (let [{:keys [observed-quantity proposed-quantity balance difference]} related]
-               (i18n/t "Cutover: observed {observed}, proposed {proposed}, difference {difference} from Tover's {balance}."
+               (i18n/t "Cutover: observed {observed}, proposed {proposed}, difference {difference} from Tover's {balance} at proposal."
                        {:observed   (if observed-quantity (str observed-quantity) "—") :proposed proposed-quantity
                         :difference (cond->> (str (abs difference)) (pos? difference) (str "+") (neg? difference) (str "−"))
                         :balance    (or balance 0)}))

@@ -102,7 +102,7 @@
              :cells       {:item        (if stock-item-id (label stock-item-id stock-item-id) (or external-product-id ""))
                            :warehouse   (if warehouse-id (label warehouse-id warehouse-id) (or external-warehouse-id ""))
                            :readiness   (cond-> [(i18n/t (readiness-labels readiness readiness))]
-                                          reviewed (conj (i18n/t "Proposed {count}, difference {difference}"
+                                          reviewed (conj (i18n/t "Proposed {count}, difference {difference} at proposal"
                                                                  {:count      (:proposed-quantity reviewed)
                                                                   :difference (signed (:difference reviewed))})))
                            :observed    (if observed-quantity [(str observed-quantity) observed-at] [])
