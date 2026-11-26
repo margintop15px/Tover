@@ -20,7 +20,8 @@ class StockWorkbench extends InventoryWorkbench {
     this.workspaceId = this.dataset.workspaceId;
     this.days = prefs.get('period', '30');
     this.hideEmpty = true;
-    this.scope = {};
+    // A page scope (a connection's Cutover Review) opens in it; the chip clears it like any filter.
+    this.scope = this.dataset.scope ? JSON.parse(this.dataset.scope) : {};
     this.grid = this.querySelector('.stock-grid');
     this.notice = this.querySelector('.stock-notice');
     this.setupTable();
@@ -36,6 +37,7 @@ class StockWorkbench extends InventoryWorkbench {
     this.values = new Map();
     this.cellEntries = new Map();
     this.showModel(JSON.parse(this.dataset.model));
+    if (this.dataset.scope) this.setScope(this.scope, this.dataset.scopeLabel);
     this.smart.context = this.smartContext();
     if (this.mode !== 'units') this.refreshTable();
     this.showMode();

@@ -464,7 +464,7 @@
   shared entry ids the connection's proposals took, discarded ones included)."
   {:malli/schema [:=> [:cat [:sequential :string] :string :string :string] :string]}
   [proposals connection-id item warehouse]
-  (let [prefix (str "cutover:" connection-id "|" item "|" warehouse "#")]
+  (let [prefix (str (provenance/entry-prefix connection-id) item "|" warehouse "#")]
     (str prefix (inc (count (filter #(str/starts-with? % prefix) proposals))))))
 
 
@@ -559,7 +559,7 @@
 
 (defmethod runtime/coeffect ::proposals
   [_ context {:keys [connection-id]}]
-  (let [prefix (str "cutover:" connection-id "|")]
+  (let [prefix (provenance/entry-prefix connection-id)]
     (into [] (comp (map :entry-id) (filter #(str/starts-with? % prefix)))
           (records/all-records context ::entries/entries :entry-id))))
 

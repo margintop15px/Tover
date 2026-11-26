@@ -798,9 +798,13 @@
    (let [table     (read-or-nil context ::stock/stock-table (cond-> {:hide-empty? hide-empty?} show-archived? (assoc :show-archived? true)))
          work      (read-or-nil context ::entries/pending-entries {})
          catalogue (read-or-nil context ::references/draft-catalogue {})
-         cutover   (read-or-nil context ::provenance/cutover-review {})]
+         cutover   (read-or-nil context ::provenance/cutover-review {})
+         ;; Chapter 44 · Cutover Review: the scope's `:cutover` connection narrows the draft to its cutover entries.
+         entries   (if-let [cid (:cutover scope)]
+                     (filterv #(str/starts-with? (:entry-id %) (provenance/entry-prefix cid)) (:entries work))
+                     (:entries work))]
      (when (and table work catalogue)
-       (assoc (stock-grid table (merge order {:mode        mode :scope scope :entries (:entries work) :findings (:findings work)
+       (assoc (stock-grid table (merge order {:mode        mode :scope scope :entries entries :findings (:findings work)
                                               :cutover     (:rows cutover)
                                               :stock-items (:stock-items catalogue) :categories (:categories catalogue)
                                               :stores      (:stores catalogue)}))
@@ -1024,9 +1028,11 @@
 
 (defn query-page
   {:malli/schema [:=> [:cat :map :map] :map]}
-  [{:keys [request] :as context} _]
-  {:workspace-id (get-in request [:tover/identity :workspace-id])
-   :model        (table-model context "units" true nil)})
+  [{:keys [request] :as context} {:keys [cutover]}]
+  (let [scope (when cutover {:pending true :cutover cutover})]
+    (cond-> {:workspace-id (get-in request [:tover/identity :workspace-id])
+             :model        (table-model context "units" true scope)}
+      scope (assoc :scope scope))))
 
 
 (defn mode-switch
@@ -1049,23 +1055,24 @@
 
 (defn workbench
   {:malli/schema [:=> [:cat :map] schema/Hiccup]}
-  [{:keys [workspace-id model]}]
+  [{:keys [workspace-id model scope]}]
   (let [options {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0}]
     [:stock-workbench.stock-workbench.catalogue-workbench
-     {:data-workspace-id       (str workspace-id)
-      :data-model              (json model)
-      :data-on:stock-query     (->expr (.catch (@view ::table evt.detail ~options) (fn [_] (.requestFailed el "table"))))
-      :data-on:stock-suggest   (->expr (.catch (@view ::suggest evt.detail ~options) (fn [_] (.requestFailed el "suggest"))))
-      :data-on:stock-review    (->expr (.catch (@view ::review evt.detail ~options) (fn [_] (.requestFailed el "review"))))
-      :data-on:stock-history   (->expr (.catch (@view ::history evt.detail ~options) (fn [_] (.requestFailed el "history"))))
-      :data-on:stock-save      (->expr (.catch (@action ::save-entry evt.detail ~options) (fn [_] (.requestFailed el "save"))))
-      :data-on:stock-describe  (->expr (.catch (@action ::describe-entry evt.detail ~options) (fn [_] (.requestFailed el "save"))))
-      :data-on:stock-amend     (->expr (.catch (@action ::amend-opening evt.detail ~options) (fn [_] (.requestFailed el "save"))))
-      :data-on:stock-discard   (->expr (.catch (@action ::discard-entry evt.detail ~options) (fn [_] (.requestFailed el "save"))))
-      :data-on:stock-accept    (->expr (.catch (@action ::accept evt.detail ~options) (fn [_] (.requestFailed el "save"))))
-      :data-signals__ifmissing (json {:_stockTableJson   "null" :_stockSuggestJson "null" :_stockReviewJson "null"
-                                      :_stockHistoryJson "null" :_stockSaveJson    "null" :inventoryChanged ""})
-      :data-effect             "el.tableResponse=JSON.parse($_stockTableJson); el.suggestResponse=JSON.parse($_stockSuggestJson); el.reviewResponse=JSON.parse($_stockReviewJson); el.historyResponse=JSON.parse($_stockHistoryJson); el.saveResponse=JSON.parse($_stockSaveJson); el.changed=$inventoryChanged"}
+     (cond-> {:data-workspace-id       (str workspace-id)
+              :data-model              (json model)
+              :data-on:stock-query     (->expr (.catch (@view ::table evt.detail ~options) (fn [_] (.requestFailed el "table"))))
+              :data-on:stock-suggest   (->expr (.catch (@view ::suggest evt.detail ~options) (fn [_] (.requestFailed el "suggest"))))
+              :data-on:stock-review    (->expr (.catch (@view ::review evt.detail ~options) (fn [_] (.requestFailed el "review"))))
+              :data-on:stock-history   (->expr (.catch (@view ::history evt.detail ~options) (fn [_] (.requestFailed el "history"))))
+              :data-on:stock-save      (->expr (.catch (@action ::save-entry evt.detail ~options) (fn [_] (.requestFailed el "save"))))
+              :data-on:stock-describe  (->expr (.catch (@action ::describe-entry evt.detail ~options) (fn [_] (.requestFailed el "save"))))
+              :data-on:stock-amend     (->expr (.catch (@action ::amend-opening evt.detail ~options) (fn [_] (.requestFailed el "save"))))
+              :data-on:stock-discard   (->expr (.catch (@action ::discard-entry evt.detail ~options) (fn [_] (.requestFailed el "save"))))
+              :data-on:stock-accept    (->expr (.catch (@action ::accept evt.detail ~options) (fn [_] (.requestFailed el "save"))))
+              :data-signals__ifmissing (json {:_stockTableJson   "null" :_stockSuggestJson "null" :_stockReviewJson "null"
+                                              :_stockHistoryJson "null" :_stockSaveJson    "null" :inventoryChanged ""})
+              :data-effect             "el.tableResponse=JSON.parse($_stockTableJson); el.suggestResponse=JSON.parse($_stockSuggestJson); el.reviewResponse=JSON.parse($_stockReviewJson); el.historyResponse=JSON.parse($_stockHistoryJson); el.saveResponse=JSON.parse($_stockSaveJson); el.changed=$inventoryChanged"}
+       scope (assoc :data-scope (json scope) :data-scope-label (i18n/t "Cutover entries")))
      [:div.smart-entry.stock-search
       [:smart-entry#stock-smart {:data-ignore-morph "" :data-input-class "stock-search-input"}]
       [:button.stock-filter-chip {:type "button" :hidden true :aria-label (i18n/t "Clear filter")}]
@@ -1084,7 +1091,9 @@
 
 
 (defpage page
-  {:route "/" :title "Stock · Tover" :parent :tover.shared.web.core/shell :route-data access :query query-page}
+  {:route  "/" :title "Stock · Tover" :parent :tover.shared.web.core/shell :route-data access :query query-page
+   ;; `cutover`: a connection's Cutover Review, Preview narrowed to its cutover entries.
+   :schema [:map [:cutover {:optional true} [:string {:min 1 :max 100}]]]}
   [{:keys [model] :as props}]
   {:type :elements
    :html (if model

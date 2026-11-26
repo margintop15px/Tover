@@ -9,6 +9,7 @@
     [bel.core :refer [defaction defpage defview]]
     [bel.runtime :as runtime]
     [clojure.string :as str]
+    [ring.util.codec :as codec]
     [tover.inventory.operations.web :as operations]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.cutover.model :as cutover]
@@ -45,8 +46,8 @@
 
 
 (def ^:private readiness-labels
-  {"ready"                 "Ready"                 "pending" "Pending" "has baseline" "Has baseline" "needs product match" "Needs product match"
-   "needs warehouse match" "Needs warehouse match"})
+  {"ready"                 "Ready"                 "pending"      "Pending"      "has baseline" "Has baseline" "needs product match" "Needs product match"
+   "needs warehouse match" "Needs warehouse match" "not observed" "Not observed"})
 
 
 (defn- signed
@@ -157,6 +158,7 @@
 (defn coverage-rows
   {:malli/schema [:=> [:cat :map cutover/Coverage] [:vector grid/Row]]}
   [label {:keys [baselines without-baseline]}]
+  ;; ponytail: a baselined scope shows 0 waiting; chapter 45 supplies the imported operations still in Review.
   (into (mapv (fn [{:keys [stock-item-id warehouse-id instant]}]
                 {:id    (cutover/scope-id stock-item-id warehouse-id) :revision 1 :label (label stock-item-id stock-item-id)
                  :cells {:item     (label stock-item-id stock-item-id)                   :warehouse (label warehouse-id warehouse-id)
@@ -250,16 +252,17 @@
     [:div.management-form.cutover-instant
      [:form {:method "get" :action (cutover-path connection-id)}
       [:label (i18n/t "Cutover instant")
-       [:input {:type        "text"                 :name "instant" :value (or instant "") :required true :maxlength 100
+       [:input {:type        "text"                 :name "instant" :value (or instant default-instant "") :required true :maxlength 100
                 :placeholder "2026-11-20T10:00:00Z"}]]
       [:button {:type "submit"} (i18n/t "Show")]]
      [:p.management-secondary
-      (str/join " · " (remove nil? [(if earliest (i18n/t "Earliest allowed: {instant}" {:instant earliest})
+      (str/join " · " (remove nil? [(i18n/t "An instant with its UTC offset, such as Z or +03:00.")
+                                    (if earliest (i18n/t "Earliest allowed: {instant}" {:instant earliest})
                                         (i18n/t "Nothing can be proposed until every operation domain has been read once."))
                                     (when default-instant (i18n/t "Last snapshot: {instant}" {:instant default-instant}))]))]
      [:p.management-secondary
       (i18n/t "Proposed entries wait in the shared draft.") " "
-      [:a {:href "/"} (i18n/t "Review and accept them on the Stock page.")]]]))
+      [:a.cutover-review {:href (str "/?cutover=" (codec/url-encode connection-id))} (i18n/t "Review and accept the proposed entries")]]]))
 
 
 (defn query-cutover

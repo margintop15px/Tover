@@ -1238,7 +1238,6 @@
     "Last snapshot: {instant}": "Last snapshot: {instant}",
     "Nothing can be proposed until every operation domain has been read once.": "Nothing can be proposed until every operation domain has been read once.",
     "Proposed entries wait in the shared draft.": "Proposed entries wait in the shared draft.",
-    "Review and accept them on the Stock page.": "Review and accept them on the Stock page.",
     "Cutover scopes could not be loaded.": "Cutover scopes could not be loaded.",
     "Cutover coverage could not be loaded.": "Cutover coverage could not be loaded.",
     "Only an Owner or Admin proposes the cutover.": "Only an Owner or Admin proposes the cutover.",
@@ -1256,7 +1255,11 @@
     "Needs a warehouse match.": "Needs a warehouse match.",
     "Not a scope of this connection.": "Not a scope of this connection.",
     "Enter a valid date and time.": "Enter a valid date and time.",
-    "Cutover: observed {observed}, proposed {proposed}, difference {difference} from Tover's {balance}.": "Cutover: observed {observed}, proposed {proposed}, difference {difference} from Tover's {balance}."
+    "Cutover: observed {observed}, proposed {proposed}, difference {difference} from Tover's {balance}.": "Cutover: observed {observed}, proposed {proposed}, difference {difference} from Tover's {balance}.",
+    "Review and accept the proposed entries": "Review and accept the proposed entries",
+    "An instant with its UTC offset, such as Z or +03:00.": "An instant with its UTC offset, such as Z or +03:00.",
+    "Not observed": "Not observed",
+    "Cutover entries": "Cutover entries"
   },
   "ru": {
     "Stock": "Остатки",
@@ -2501,7 +2504,6 @@
     "Last snapshot: {instant}": "Последний снимок: {instant}",
     "Nothing can be proposed until every operation domain has been read once.": "Предложить ничего нельзя, пока каждый вид операций не прочитан хотя бы раз.",
     "Proposed entries wait in the shared draft.": "Предложенные записи ждут в общем черновике.",
-    "Review and accept them on the Stock page.": "Проверьте и примите их на странице «Склад».",
     "Cutover scopes could not be loaded.": "Не удалось загрузить позиции перехода.",
     "Cutover coverage could not be loaded.": "Не удалось загрузить покрытие перехода.",
     "Only an Owner or Admin proposes the cutover.": "Предложить переход может только владелец или администратор.",
@@ -2519,6 +2521,10 @@
     "Needs a warehouse match.": "Нужно сопоставить склад.",
     "Not a scope of this connection.": "Это не позиция данного подключения.",
     "Enter a valid date and time.": "Введите правильные дату и время.",
-    "Cutover: observed {observed}, proposed {proposed}, difference {difference} from Tover's {balance}.": "Переход: наблюдалось {observed}, предложено {proposed}, разница {difference} к {balance} в Tover."
+    "Cutover: observed {observed}, proposed {proposed}, difference {difference} from Tover's {balance}.": "Переход: наблюдалось {observed}, предложено {proposed}, разница {difference} к {balance} в Tover.",
+    "Review and accept the proposed entries": "Проверить и принять предложенные записи",
+    "An instant with its UTC offset, such as Z or +03:00.": "Момент со смещением от UTC, например Z или +03:00.",
+    "Not observed": "Не наблюдалось",
+    "Cutover entries": "Записи перехода"
   }
 }

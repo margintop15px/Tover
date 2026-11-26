@@ -6,13 +6,14 @@
     [bel.core :as bel]
     [bel.core-test :as bel-test]
     [bel.handler :as handler]
+    [bel.runtime :as runtime]
     [clojure.string :as str]
     [clojure.test :refer [deftest is testing use-fixtures]]
     [tover.catalogues.categories.model]
     [tover.catalogues.products.model]
     [tover.catalogues.suppliers.model]
-    [tover.inventory.acceptance.model]
-    [tover.inventory.entries.model]
+    [tover.inventory.acceptance.model :as acceptance]
+    [tover.inventory.entries.model :as entries]
     [tover.inventory.references]
     [tover.inventory.stock.model]
     [tover.inventory.web :as inventory-web]
@@ -36,6 +37,7 @@
                         'tover.marketplace.warehouses.model 'tover.marketplace.cutover.model
                         'tover.shared.web.core 'tover.marketplace.connections.web 'tover.marketplace.grid
                         'tover.marketplace.products.web 'tover.marketplace.warehouses.web 'tover.marketplace.cutover.web
+                        'tover.inventory.web
                         'tover.workspaces.currency.model])
   (f))
 
@@ -89,7 +91,8 @@
         (is (str/includes? html "href=\"/operations\">Back to operations<"))
         (is (re-find #"aria-current=\"page\" href=\"/operations/marketplace/c-1/cutover\"[^>]*>Cutover · " html) "this view is current")
         (is (str/includes? html "data-command=\"propose\""))
-        (is (str/includes? html "href=\"/\">Review and accept them on the Stock page.<"))))))
+        (is (str/includes? html "href=\"/?cutover=c-1\">Review and accept the proposed entries<"))
+        (is (str/includes? html "An instant with its UTC offset"))))))
 
 
 (deftest the-connection-page-links-to-the-view
@@ -131,6 +134,37 @@
           (let [model  (#'inventory-web/table-model ctx "units" false {:pending true})
                 titles (keep :title (mapcat :cells (:rows model)))]
             (is (some #(str/includes? % "Cutover: observed 120, proposed 120, difference +120 from Tover's 0.") titles))))))))
+
+
+(deftest cutover-review-is-the-shared-draft-preview-filtered-to-the-connection
+  (with-cutover
+    (fn [ctx]
+      (forms/accept! ctx (act ctx {:rows [red-row]}))
+      (runtime/execute! ctx ::entries/save-shared-inventory-entry
+                        {:command-id "other" :input {:workspace-id scenarios/workspace :entry-id "other" :kind "opening"
+                                                     :occurred-at  "2026-11-02T00:00:00Z"
+                                                     :lines        [{:line-id   "l" :stock-item-id "blue" :warehouse-id "main" :quantity "3"
+                                                                     :unit-cost "1"}]}})
+      (let [{:keys [scope model]} (inventory-web/query-page ctx {:cutover c})
+            html                  (forms/page ctx ::inventory-web/page {:cutover c})
+            red-id                (str "cutover:" c "|red|main#1")]
+        (testing "the Stock page opens in Preview narrowed to the connection's cutover entries"
+          (is (= {:pending true :cutover c} scope))
+          (is (str/includes? html "data-scope=\"{&quot;pending&quot;:true,&quot;cutover&quot;:&quot;c-1&quot;}\""))
+          (is (str/includes? html "data-scope-label=\"Cutover entries\""))
+          (is (= [red-id] (mapv :entry-id (:pending model))) "the other pending entry is left out")
+          (is (= 2 (count (:pending (#'inventory-web/table-model ctx "units" false {:pending true})))) "without the scope both are pending"))
+        (testing "Accept takes that selection through the shared-draft review; the other entry stays pending"
+          (let [selection (mapv #(select-keys % [:entry-id :revision]) (:pending model))
+                review    (runtime/read-model ctx ::acceptance/inventory-review {:selection selection :order [red-id]})]
+            (is (:valid? review) (pr-str (:problems review)))
+            (is (= :accepted (:status (forms/accept! ctx ((:bel/fn (bel/get-action ::inventory-web/accept)) ctx
+                                                                                                            {:workspaceId scenarios/workspace   :selection selection :order [red-id]
+                                                                                                             :fingerprint (:fingerprint review) :commandId "acc-1"})))))
+            (is (= [["red" "main" "2026-11-20T10:00:00Z"]]
+                   (mapv (juxt :stock-item-id :warehouse-id :instant)
+                         (:baselines (runtime/read-model ctx ::cutover/baseline-coverage-by-stock-item-and-warehouse {:connection-id c})))))
+            (is (= ["other"] (mapv :entry-id (:entries (runtime/read-model ctx ::entries/pending-entries {})))))))))))
 
 
 (deftest rejections-land-on-their-rows

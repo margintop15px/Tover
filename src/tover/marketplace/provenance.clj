@@ -86,6 +86,13 @@
    :baselines       (into {} (map (juxt :baseline-id identity)) (records/all-records context ::baselines :baseline-id))})
 
 
+(defn entry-prefix
+  "What every cutover entry id of a connection starts with: `cutover:<connection>|`."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [connection-id]
+  (str "cutover:" connection-id "|"))
+
+
 (defn baseline-id
   {:malli/schema [:=> [:cat :string :string :string] :string]}
   [connection-id stock-item-id warehouse-id]

@@ -148,7 +148,7 @@ test('the view switcher moves between operations and the matching views', async 
 
 // Board 44 · Cutover: a view of the Operations page; type the cost of an opening, propose, and the scope waits in the
 // shared draft with its observation shown in the Stock page's Preview.
-test('propose the cutover of a ready scope, reload: pending and shown in Preview', async ({ page }) => {
+test('propose the cutover of a ready scope, reload, review it filtered and accept: baseline', async ({ page }) => {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const setup = page.locator('#marketplace-cutover-grid');
   const whisk = setup.locator('tbody tr').filter({ hasText: 'Whisk' });
@@ -184,11 +184,20 @@ test('propose the cutover of a ready scope, reload: pending and shown in Preview
   await expect(whisk).toContainText('Pending');
   await expect(page.locator('#marketplace-cutover-coverage-grid tbody tr').filter({ hasText: 'Whisk' })).toContainText('No cutover baseline');
 
-  // Review and acceptance are the shared draft's: the pending opening shows its observation in Preview.
-  await page.getByRole('link', { name: 'Review and accept them on the Stock page.' }).click();
-  await expect(page).toHaveURL(/\/$/);
-  await page.getByRole('button', { name: 'Preview pending changes' }).click();
+  // Cutover Review is the shared draft's Preview narrowed to this connection's entries, with its observation.
+  await page.getByRole('link', { name: 'Review and accept the proposed entries' }).click();
+  await expect(page).toHaveURL(/\/\?cutover=/);
+  await expect(page.locator('.stock-filter-chip')).toHaveText('Cutover entries ×');
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(() => page.locator('#stock-grid').evaluate(node => (node.model?.rows || []).flatMap(row => row.cells.map(cell => cell.title || '')).join('\n')))
     .toContain('Cutover: observed 7, proposed 7, difference +7 from Tover');
+  await expect.poll(() => page.locator('#stock-grid').evaluate(node => node.model.pending.map(entry => entry['entry-id'])))
+    .toEqual([expect.stringMatching(/^cutover:/)]);
+  await page.locator('.stock-submit').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
+
+  // The accepted opening is the scope's baseline.
+  await page.goto(`${views}/cutover`);
+  await expect(page.locator('#marketplace-cutover-coverage-grid tbody tr').filter({ hasText: 'Whisk' })).toContainText('Baseline at 2026-11-20T10:00:00Z');
   expect(errors).toEqual([]);
 });
