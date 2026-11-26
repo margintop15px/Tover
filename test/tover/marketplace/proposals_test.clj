@@ -148,9 +148,10 @@
 
 
 (deftest sale-from-the-mapped-warehouse-at-the-handover-time
-  (is (= {:entry   {:kind  "sale" :occurred-at "2026-11-10T09:00:00Z"
-                    :lines [{:line-id "c1:fbs-posting:P1/1" :stock-item-id "red" :quantity 2 :warehouse-id "home" :unit-price "99.90"}]}
-          :missing []}
+  (is (= {:entry    {:kind  "sale" :occurred-at "2026-11-10T09:00:00Z"
+                     :lines [{:line-id "c1:fbs-posting:P1/1" :stock-item-id "red" :quantity 2 :warehouse-id "home" :unit-price "99.90"}]}
+          :missing  []
+          :findings []}
          (proposal handed-over-posting))))
 
 
@@ -193,9 +194,10 @@
 
 
 (deftest supply-is-a-transfer-between-the-mapped-warehouses
-  (is (= {:entry   {:kind  "transfer" :from-warehouse-id "home" :to-warehouse-id "ozon-7"
-                    :lines [{:line-id "c1:supply:S1/1" :stock-item-id "red" :quantity 5}]}
-          :missing ["actual time"]}
+  (is (= {:entry    {:kind  "transfer" :from-warehouse-id "home" :to-warehouse-id "ozon-7"
+                     :lines [{:line-id "c1:supply:S1/1" :stock-item-id "red" :quantity 5}]}
+          :missing  ["actual time"]
+          :findings []}
          (proposal supply))))
 
 
@@ -222,7 +224,7 @@
 
 (deftest quantities-stay-whole
   (are [text quantity] (= quantity (:quantity (first (lines text))))
-    "3" 3 "1.5" nil "0" nil "10000000000" nil "-1" nil "abc" nil)
+    "3" 3 "1.5" nil "0" nil "10000000000" nil "-1" nil "abc" nil "4.0" nil "+5" nil "1e3" nil " 7 " 7)
   (testing "a quantity that is not whole is a missing fact, never truncated"
     (is (= ["line quantity"] (:missing (proposal (assoc handed-over-posting :lines (one-line {:quantity "1.5"}))))))))
 
@@ -273,6 +275,33 @@
 
 (deftest supply-to-an-unmatched-drop-off
   (is (nil? (proposal (update facts :warehouse-mappings dissoc "c1:supply-origin:9") supply))))
+
+
+(deftest transfer-needs-both-baselines
+  (testing "a baseline on only one of a transfer's warehouses: not resolvable"
+    (is (nil? (proposal (update facts :baselines dissoc "c1|red|home") supply)))
+    (is (nil? (proposal (update facts :baselines dissoc "c1|red|ozon-7") supply))))
+  (is (= "transfer" (get-in (proposal supply) [:entry :kind]))))
+
+
+(deftest compensated-return-is-proposed-with-the-finding
+  (let [compensated              (return {:status            "OnSellerApproval"  :terminal false :return-schema "fbs" :compensated true
+                                          :related-operation "c1:fbs-posting:P1"})
+        {:keys [entry findings]} (proposal compensated)]
+    (is (= "customer-return" (:kind entry)))
+    (is (= ["Compensated by Ozon"] findings) "a member accepts it or sets it aside"))
+  (is (= [] (:findings (proposal fbs-return)))))
+
+
+(deftest returns-without-effect
+  (testing "rejected, utilized and every cancelled status: no effect, compensated or not"
+    (are [status] (nil? (proposal (return {:status status :return-schema "fbs" :related-operation "c1:fbs-posting:P1"})))
+      "Rejected" "Utilized" "CancelledByBuyer" "cancelled_by_seller")
+    (is (nil? (proposal (return {:status "Utilized" :compensated true :return-schema "fbs"})))))
+  (testing "another finished status without a receipt: a pending Customer return, its missing fact listed"
+    (let [{:keys [entry missing]} (proposal (return {:status "MoneyReturned" :return-schema "fbs"}))]
+      (is (= "customer-return" (:kind entry)))
+      (is (= ["receiving warehouse"] missing)))))
 
 
 (deftest posting-without-handover-time

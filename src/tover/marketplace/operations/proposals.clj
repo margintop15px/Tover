@@ -58,10 +58,14 @@
    [:entry [:map [:kind [:enum "sale" "customer-return" "transfer" "write-off"]] [:occurred-at {:optional true} :string]
             [:from-warehouse-id {:optional true} :string] [:to-warehouse-id {:optional true} :string]
             [:reason {:optional true} :string] [:lines [:vector EntryLine]]]]
-   [:missing [:vector :string]]])
+   [:missing [:vector :string]]
+   [:findings [:vector :string]]])
 
 
 (def disposed-reason "Disposed by Ozon")
+
+
+(def compensated-finding "Compensated by Ozon")
 
 
 (defn- json
@@ -88,14 +92,21 @@
   (= "receivedbyseller" (status operation)))
 
 
+(def ^:private no-effect-statuses
+  "Return statuses that never put stock back; every cancelled status is one too."
+  #{"rejected" "utilized"})
+
+
 (defn- return-counts?
-  "Received by its status; else a finished return that was neither cancelled nor compensated, whose missing facts a
-  member enters. Initiation adds no stock."
+  "Not cancelled, rejected or utilized, and received by its status, compensated (proposed with that finding) or
+  finished otherwise, its missing facts then entered by a member. Initiation adds no stock."
   {:malli/schema [:=> [:cat :map] :boolean]}
   [{:keys [terminal compensated] :as operation}]
-  (boolean
-    (or (contains? received-statuses (status operation))
-        (and terminal (not compensated) (not (str/includes? (status operation) "cancel"))))))
+  (let [s (status operation)]
+    (boolean
+      (and (not (contains? no-effect-statuses s))
+           (not (str/includes? s "cancel"))
+           (or (contains? received-statuses s) compensated terminal)))))
 
 
 (defn entry-kind
@@ -184,12 +195,12 @@
 
 
 (defn whole-quantity
-  "A line quantity as stated text: a whole number above 0 that a line holds, else nil. Never truncated."
+  "A line quantity as stated text: plain digits, at most nine as entries take them, above 0; else nil. Never
+  truncated: a sign, a decimal point or an exponent is no whole quantity."
   {:malli/schema [:=> [:cat :any] [:maybe :int]]}
   [text]
-  (when-let [n (try (some-> text str str/trim bigdec) (catch NumberFormatException _ nil))]
-    (when (and (pos? (.signum ^BigDecimal n)) (<= (.scale (.stripTrailingZeros ^BigDecimal n)) 0) (<= n 999999999M))
-      (.longValueExact ^BigDecimal n))))
+  (when-let [digits (some->> text str str/trim (re-matches #"\d{1,9}"))]
+    (let [n (parse-long digits)] (when (pos? n) n))))
 
 
 (defn- unit-price
@@ -207,13 +218,14 @@
 
 
 (defn- line-baseline
-  "The latest baseline among the line's scopes: its warehouse, a transfer's two, or without one every scope of the
-  item on the connection."
+  "The latest baseline among the line's scopes: its warehouse, or a transfer's two, each of which needs one; without
+  a warehouse, every scope of the item on the connection."
   {:malli/schema [:=> [:cat :map :string :string [:sequential [:maybe :string]]] [:maybe :map]]}
   [facts connection-id item warehouses]
   (let [named (remove nil? warehouses)
         found (if (seq named)
-                (keep #(provenance/baseline facts connection-id item %) named)
+                (let [found (map #(provenance/baseline facts connection-id item %) named)]
+                  (when (every? some? found) found))
                 (filter #(and (= connection-id (:connection-id %)) (= item (:stock-item-id %))) (vals (:baselines facts))))]
     (last (sort-by (comp instant :instant) found))))
 
@@ -268,7 +280,8 @@
 
 (defn proposal
   "Board `Propose Imported Operation` § entry: the pending entry the operation becomes with the facts still
-  missing, or nil when it becomes none (no inventory effect, a missing match or no line after its baseline)."
+  missing and its findings, or nil when it becomes none (no inventory effect, a missing match or no line after its
+  baseline)."
   {:malli/schema [:=> [:cat Facts Operation] [:maybe Proposal]]}
   [facts {:keys [source-operation-id occurred-at from-warehouse to-warehouse] :as operation}]
   (let [kind  (entry-kind operation)
@@ -281,12 +294,13 @@
       (let [transfer? (= "transfer" kind)
             from      (when transfer? (confirmed-warehouse facts from-warehouse))
             to        (when transfer? (confirmed-warehouse facts to-warehouse))]
-        {:entry   (cond-> {:kind  kind
-                           :lines (mapv #(-> (select-keys % [:stock-item-id :quantity :warehouse-id :unit-price])
-                                             (assoc :line-id (str source-operation-id "/" (:line-key %))))
-                                        lines)}
-                    occurred-at (assoc :occurred-at occurred-at)
-                    from (assoc :from-warehouse-id from)
-                    to (assoc :to-warehouse-id to)
-                    (= "write-off" kind) (assoc :reason disposed-reason))
-         :missing (missing-facts operation lines)}))))
+        {:entry    (cond-> {:kind  kind
+                            :lines (mapv #(-> (select-keys % [:stock-item-id :quantity :warehouse-id :unit-price])
+                                              (assoc :line-id (str source-operation-id "/" (:line-key %))))
+                                         lines)}
+                     occurred-at (assoc :occurred-at occurred-at)
+                     from (assoc :from-warehouse-id from)
+                     to (assoc :to-warehouse-id to)
+                     (= "write-off" kind) (assoc :reason disposed-reason))
+         :missing  (missing-facts operation lines)
+         :findings (if (and (= "customer-return" kind) (:compensated operation)) [compensated-finding] [])}))))
