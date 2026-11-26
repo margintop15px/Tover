@@ -23,7 +23,8 @@
     [tover.marketplace.cutover-propose-test :as propose]
     [tover.marketplace.cutover.model :as cutover]
     [tover.marketplace.cutover.web :as web]
-    [tover.marketplace.grid :as grid]))
+    [tover.marketplace.grid :as grid]
+    [tover.shared.i18n :as i18n]))
 
 
 (defn register
@@ -196,3 +197,16 @@
       (let [member (assoc ctx :memberships [{:workspace-id scenarios/workspace :role :member}])
             caught (handler/execute-action member ::web/command {:connectionId c :commandId "attempt-4" :command "propose" :rows [blue-row]})]
         (is (= "Only an Owner or Admin proposes the cutover." (:message ((:bel/fn (bel/get-view ::grid/failed)) (:input caught)))))))))
+
+
+(deftest a-refused-date-move-of-a-cutover-entry-names-the-board-rejection
+  (with-cutover
+    (fn [ctx]
+      (forms/accept! ctx (act ctx {:rows [red-row]}))
+      (let [caught (handler/execute-action ctx ::inventory-web/describe-entry
+                                           {:workspaceId scenarios/workspace :entryId    (str "cutover:" c "|red|main#1") :revision 1
+                                            :occurredAt  "2026-11-21T10:00:00Z" :commandId "move-1"})
+            answer #((:bel/fn (bel/get-view ::inventory-web/failed)) (:input caught))]
+        (is (= ::inventory-web/failed (:id caught)))
+        (is (= "Cutover date is fixed" (:message (answer))))
+        (is (= "Дата перехода зафиксирована" (binding [i18n/*locale* "ru"] (:message (answer)))))))))
