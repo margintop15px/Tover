@@ -189,3 +189,13 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .catalogue-workbench .sheet-actions button.catalogue-save-new{border-color:color-mix(in srgb,var(--iw-green) 25%,var(--iw-line));background:var(--iw-green-fill);color:var(--iw-green);font-weight:500}
 .catalogue-workbench .sheet-actions button:is(.catalogue-save-new,.catalogue-discard-new)[hidden]{display:none}
 .catalogue-workbench tr.catalogue-draft-row td{background:var(--iw-blue-fill)}
+/* Marketplace pages: the connection-page header above the catalogue workbench's table (marketplace.js). */
+.marketplace-page { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.marketplace-page > .management-page { padding-bottom: 0; }
+.marketplace-page .management-header { margin-bottom: 12px; }
+/* #page-content outranks the workbench toolbar rules of stock.css, which name an id. */
+#page-content .marketplace-workbench .sheet-toolbar { height: auto; flex-wrap: wrap; }
+.marketplace-workbench .sheet-actions input.marketplace-reason { width: 180px; height: 28px; margin-right: 6px; padding: 0 8px; border: 1px solid var(--iw-line); border-radius: 5px; background: var(--iw-bg); color: var(--iw-ink); font-size: 12px; }
+.marketplace-workbench .sheet-actions button:is(.catalogue-save-new,.catalogue-discard-new):disabled { opacity: .45; cursor: default; }
+.marketplace-grid .jss_worksheet > tbody > tr > td.marketplace-finding { background-image: linear-gradient(225deg, var(--iw-red) 7px, transparent 7px); }
+@media (max-width: 600px) { #page-content .marketplace-workbench .sheet-actions { flex: 1 1 100%; min-width: 0; margin-left: 0; flex-wrap: wrap; row-gap: 6px; } #page-content .marketplace-workbench .sheet-actions input.marketplace-reason { flex: 1; min-width: 0; font-size: 16px; } }

@@ -34,6 +34,7 @@
     [:script {:type "module" :src "/dates.js"}]
     [:script {:type "module" :src "/inventory-grid.js"}]
     [:script {:type "module" :src "/catalogues.js"}]
+    [:script {:type "module" :src "/marketplace.js"}]
     [:script {:type "module" :src "/stock.js"}]
     [:script {:type "module" :src "/operations.js"}]]
    (into [:body

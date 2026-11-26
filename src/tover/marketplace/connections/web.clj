@@ -326,7 +326,7 @@
                 [:dt (i18n/t "Next sync")]
                 [:dd (if-let [at (:next-sync-at status)] (team/moment at) (i18n/t "Not scheduled"))]
                 [:dt (i18n/t "Unmatched listings")]
-                [:dd (:unmatched-listings status)]
+                [:dd [:a {:href (str (connection-link connection-id) "/products")} (:unmatched-listings status)]]
                 [:dt (i18n/t "Unmatched warehouses")]
                 [:dd (:unmatched-warehouses status)]
                 [:dt (i18n/t "Scopes without baseline")]

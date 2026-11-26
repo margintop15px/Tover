@@ -96,6 +96,39 @@ const program = `
   ` : ''}
   (def system (system/start! (app/system-config ${port} ${JSON.stringify(join(project, 'inventory'))}
                            (select-keys services [:provider :session-store :limits :bel/system :origin :development?]))))
+  ${process.env.TOVER_BROWSER_MARKETPLACE_FIXTURES === 'true' ? `
+  ;; Board 42: an Ozon connection of the development workspace with four listings; three have a single fitting item.
+  (require '[bel.core :as bel] '[bel.runtime :as runtime] '[bel.store :as store]
+           '[tover.marketplace.connections.model :as connections] '[tover.marketplace.connector :as connector]
+           '[tover.marketplace.sync.observations :as observations])
+  (let [at  "2026-11-20T10:00:00Z"
+        ctx (assoc (runtime/prepare-context {:bel/system   (:bel/system services) :repo catalogue-repo
+                                             :workspace-id fixtures/workspace-id :user-id fixtures/owner-id
+                                             :memberships  [{:workspace-id fixtures/workspace-id :role :owner}]})
+                   :bel/definitions (bel/operations))
+        put (fn [type data] (store/with-store ctx :catalogue :serializable #(runtime/apply-event! % {:type type :data data})))
+        listing (fn [source-id name barcode]
+                  (let [id (str "browser-ozon:" source-id)]
+                    {:external-product-id id :entity-id id :connection-id "browser-ozon" :source-id source-id :revision 1
+                     :payload-hash (apply str (repeat 64 "a")) :adapter-version "test" :observed-at at :last-observed-at at
+                     :source-revision-id (str id "#1") :name name :archived false
+                     :identifiers (observations/write-json (if barcode [{:type "barcode" :value barcode :active true}] []))
+                     :facts (observations/write-json {:base {:name name}})}))]
+    (put ::connections/marketplace-account-connected
+         {:connection-id "browser-ozon" :workspace-id (str fixtures/workspace-id) :provider "ozon" :provider-account-id "777"
+          :account-label "Browser shop" :secret-ref "browser-secret" :account-currency "RUB"
+          :readable-domains (connections/encode-domains connector/domains) :sync-state "active" :credentials-state "valid"
+          :connected-by (str fixtures/owner-id) :connected-at at})
+    (doseq [[n name] [[1 "Kettle"] [2 "Teapot"] [3 "Saucer"]]
+            :let [product (str "browser-product-" n) item (str "browser-item-" n) barcode (str "460000000010" n)]]
+      (put :tover.catalogues.products.model/product-registered {:product-id product :name name :status "active" :revision 1})
+      (put :tover.inventory.stock-items.model/stock-item-registered
+           {:stock-item-id item :product-id product :condition "regular" :status "active" :revision 1})
+      (put :tover.inventory.stock-items.model/stock-item-barcode-assigned
+           {:barcode-id (str item "|" barcode) :stock-item-id item :barcode barcode})
+      (put :tover.marketplace.sync.model/external-product-observed (listing (str "10" n) (str name " (Ozon)") barcode)))
+    (put :tover.marketplace.sync.model/external-product-observed (listing "104" "Gift card" nil)))
+  ` : ''}
   ;; The team and invitation reads are SQL coeffects; serve them from the same in-memory fixture state.
   (require '[bel.runtime :as runtime] '[tover.invitations.fixtures :as invitations])
   (doseq [[id coeffect] invitations/coeffects]
