@@ -76,8 +76,13 @@
 
 
 (defmethod runtime/coeffect ::facts
+  ;; `:cutover-entries` holds the rows whose shared entry is still pending: an accepted entry keeps its row, and its
+  ;; scope is then the baseline's (or, for another connection, history), never pending again.
   [_ context _]
-  {:cutover-entries (into {} (map (juxt :entry-id identity)) (records/all-records context ::cutover-entries :entry-id))
+  {:cutover-entries (let [pending (into #{} (keep #(when (= "pending" (:status %)) (:entry-id %)))
+                                        (records/all-records context :tover.inventory.entries.model/entries :entry-id))]
+                      (into {} (comp (filter (comp pending :entry-id)) (map (juxt :entry-id identity)))
+                            (records/all-records context ::cutover-entries :entry-id)))
    :baselines       (into {} (map (juxt :baseline-id identity)) (records/all-records context ::baselines :baseline-id))})
 
 

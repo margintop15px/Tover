@@ -223,11 +223,12 @@
 
 
 (defn- readiness
+  "A scope's own baseline wins; a pending cutover entry of any connection for the stock item and warehouse makes it
+  pending, since two connections sharing a warehouse open it once."
   {:malli/schema [:=> [:cat :map :string :string :string] Readiness]}
   [provenance connection-id item warehouse]
   (cond (provenance/baseline provenance connection-id item warehouse) "has baseline"
-        (some #(= [connection-id item warehouse] ((juxt :connection-id :stock-item-id :warehouse-id) %))
-              (vals (:cutover-entries provenance)))
+        (some #(= [item warehouse] ((juxt :stock-item-id :warehouse-id) %)) (vals (:cutover-entries provenance)))
         "pending"
         :else "ready"))
 
@@ -424,6 +425,11 @@
   {:invalid-quantity :validation :invalid-cost :validation :listed-twice :validation})
 
 
+(def ^:private precedence
+  "The rejection a proposal with several problems raises: board rejections before typing mistakes."
+  [:scope-not-ready :stale :cost-required :listed-twice :invalid-quantity :invalid-cost])
+
+
 (def ^:private not-ready
   "What a row says when its scope is not ready, by readiness."
   {"pending"               "Already pending in the shared draft."
@@ -445,7 +451,7 @@
   none."
   {:malli/schema [:=> [:cat [:sequential :map]] :nil]}
   [problems]
-  (when-let [{:keys [code]} (first problems)]
+  (when-let [code (first (filter (set (map :code problems)) precedence))]
     (records/fail! (rejection-type code code) (messages code)
                    {:rows (mapv (fn [{:keys [stock-item-id warehouse-id code readiness] :as p}]
                                   (assoc p :scope-id (scope-id stock-item-id warehouse-id)

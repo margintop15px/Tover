@@ -255,6 +255,17 @@
       (is (= [["red" "pending" "cutover:c2|red|main#1"]] (mapv (juxt :stock-item-id :readiness :pending-entry) (:rows error)))))))
 
 
+(deftest readiness-is-pending-across-connections
+  (let [other {:entry-id    "cutover:c2|red|main#1" :connection-id "c2" :stock-item-id "red" :warehouse-id "main" :instant snapshot
+               :proposed-by (str manager)           :proposed-at   snapshot}
+        facts (assoc-in base [:provenance :cutover-entries (:entry-id other)] other)
+        row   (some #(when (= "red" (:stock-item-id %)) %) (cutover/scopes facts {:connection-id c :instant snapshot}))]
+    (is (= "pending" (:readiness row)) "the other connection's pending entry shows on this connection's row")
+    (is (not (contains? row :result)))
+    (is (= [{:stock-item-id "red" :warehouse-id "main" :readiness "pending" :waiting-operations 0}]
+           (filterv #(= "red" (:stock-item-id %)) (:without-baseline (cutover/coverage facts c {})))))))
+
+
 ;; Review the cutover and resulting corrections
 
 
@@ -289,14 +300,15 @@
 (defn seed-cutover!
   "Connection `cid` (seeded unless it exists): every operation domain first covered at `earliest`; its finished pass r1
   found red 120 and blue 8 at the hub; both are mapped, the hub to main."
-  {:malli/schema [:=> [:cat :map :string :boolean] :nil]}
-  [ctx cid connect?]
-  (let [wh (str cid ":fbo:1")]
-    (seed! ctx :tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "main" :name "Main" :status "active" :revision 1})
-    (seed! ctx :tover.catalogues.products.model/product-registered {:product-id "mug" :name "Mug" :status "active" :revision 1})
-    (doseq [item ["red" "blue"]]
-      (seed! ctx :tover.inventory.stock-items.model/stock-item-registered
-             {:stock-item-id item :product-id "mug" :variant-label item :unit "pcs" :condition "regular" :status "active" :revision 1}))
+  {:malli/schema [:=> [:cat :map :string :boolean [:* :any]] :nil]}
+  [ctx cid connect? & {:keys [catalogue?] :or {catalogue? true}}]
+  (let [wh (str cid ":fbo:1") r0 (str cid "-r0") r1 (str cid "-r1")]
+    (when catalogue?
+      (seed! ctx :tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "main" :name "Main" :status "active" :revision 1})
+      (seed! ctx :tover.catalogues.products.model/product-registered {:product-id "mug" :name "Mug" :status "active" :revision 1})
+      (doseq [item ["red" "blue"]]
+        (seed! ctx :tover.inventory.stock-items.model/stock-item-registered
+               {:stock-item-id item :product-id "mug" :variant-label item :unit "pcs" :condition "regular" :status "active" :revision 1})))
     (when connect?
       (seed! ctx ::connections/marketplace-account-connected
              {:connection-id    cid :workspace-id           (str listings/workspace) :provider     "ozon" :provider-account-id "123"
@@ -304,31 +316,31 @@
               :readable-domains (apply str (interpose " " (into ["products" "stock-by-warehouse"] cutover/operation-domains)))
               :sync-state       "active" :credentials-state "valid"                  :connected-by "m"    :connected-at        earliest}))
     (seed! ctx ::sync/marketplace-sync-started
-           {:run-id             "r0" :connection-id cid      :trigger   "member" :triggered-by "m"
+           {:run-id             r0 :connection-id cid      :trigger   "member" :triggered-by "m"
             :domains            (apply str (interpose " " cutover/operation-domains))
             :starting-positions "{}" :started-at    earliest :run-state "open"})
     (doseq [domain cutover/operation-domains]
       (seed! ctx ::sync/source-batch-recorded
-             {:position-id (str cid "/" domain) :connection-id cid  :domain         domain :run-id           "r0" :cursor           "" :batch-key   ""
+             {:position-id (str cid "/" domain) :connection-id cid  :domain         domain :run-id           r0 :cursor           "" :batch-key   ""
               :refetch-ids "[]"                 :finished      true :found-listings 0      :found-warehouses 0    :found-operations 0  :recorded-at earliest})
       (seed! ctx ::sync/source-domain-traversed
-             {:run-id      "r0"                 :connection-id    cid    :domain           domain   :covered-until earliest           :traversed-at earliest
-              :position-id (str cid "/" domain) :finished-domains domain :first-covered-at earliest :pass-id       (str "r0/" domain)}))
+             {:run-id      r0                 :connection-id    cid    :domain           domain   :covered-until earliest           :traversed-at earliest
+              :position-id (str cid "/" domain) :finished-domains domain :first-covered-at earliest :pass-id       (str r0 "/" domain)}))
     (seed! ctx ::sync/marketplace-sync-started
-           {:run-id             "r1" :connection-id cid      :trigger   "member" :triggered-by "m" :domains "stock-by-warehouse"
+           {:run-id             r1 :connection-id cid      :trigger   "member" :triggered-by "m" :domains "stock-by-warehouse"
             :starting-positions "{}" :started-at    snapshot :run-state "open"})
     (seed! ctx ::sync/source-batch-recorded
-           {:position-id (str cid "/stock-by-warehouse") :connection-id cid :domain "stock-by-warehouse" :run-id "r1" :cursor ""
+           {:position-id (str cid "/stock-by-warehouse") :connection-id cid :domain "stock-by-warehouse" :run-id r1 :cursor ""
             :batch-key   "" :refetch-ids "[]" :finished true :found-listings 2 :found-warehouses 0 :found-operations 0
             :recorded-at snapshot})
     (seed! ctx ::sync/source-domain-traversed
-           {:run-id      "r1" :connection-id cid :domain "stock-by-warehouse" :covered-until snapshot :traversed-at snapshot
+           {:run-id      r1 :connection-id cid :domain "stock-by-warehouse" :covered-until snapshot :traversed-at snapshot
             :position-id (str cid "/stock-by-warehouse") :finished-domains "stock-by-warehouse" :first-covered-at snapshot
-            :pass-id     "r1/stock-by-warehouse"         :asked            "[\"p1\",\"p2\"]"})
+            :pass-id     (str r1 "/stock-by-warehouse")         :asked            "[\"p1\",\"p2\"]"})
     (doseq [[p n item] [["p1" 120 "red"] ["p2" 8 "blue"]]
             :let       [listing (str cid ":" p)]]
       (seed! ctx ::sync/source-stock-observed
-             {:stock-id            (str listing "|warehouse-stock|" wh "|r1") :connection-id cid :run-id "r1"
+             {:stock-id            (str listing "|warehouse-stock|" wh "|" r1) :connection-id cid :run-id r1
               :external-product-id listing :external-warehouse-id wh :source "warehouse-stock"                :fulfilment-type "fbo"
               :present             n :parts "[]" :observed-at snapshot})
       (seed! ctx :tover.marketplace.products.model/external-product-mapped
@@ -362,7 +374,7 @@
                       :scopes        [{:stock-item-id               "red" :warehouse-id "main" :quantity "120" :unit-cost "350"
                                        :product-mapping-revisions   (get-in scopes ["red" :mapping-revisions :products])
                                        :warehouse-mapping-revisions (get-in scopes ["red" :mapping-revisions :warehouses])
-                                       :observation                 "r1"}
+                                       :observation                 (str cid "-r1")}
                                       {:stock-item-id               "blue" :warehouse-id "main" :quantity "8"
                                        :product-mapping-revisions   (get-in scopes ["blue" :mapping-revisions :products])
                                        :warehouse-mapping-revisions {wh 1}}]}]
@@ -398,3 +410,38 @@
                 (is (= 2 (connections/count-part :baselines admin cid)))
                 (testing "a baselined scope is not proposed again"
                   (is (= :scope-not-ready (:type (failure #(run! admin ::cutover/propose-marketplace-cutover "p2" input))))))))))))))
+
+
+(deftest second-connection-after-acceptance-gets-a-correction
+  (support/with-store
+    (fn [repo _]
+      (let [admin  (context repo :admin)
+            run!   (fn [command id input] (runtime/execute! admin command {:command-id id :input input}))
+            [c1 c2] [listings/c listings/other-c]
+            red    (fn [cid] (some #(when (= "red" (:stock-item-id %)) %)
+                                   (:scopes (runtime/read-model admin ::cutover/cutover-readiness-and-observed-balances {:connection-id cid}))))
+            input  (fn [cid quantity & [cost]]
+                     {:connection-id cid :instant snapshot
+                      :scopes        [(cond-> {:stock-item-id "red" :warehouse-id "main" :quantity quantity
+                                               :product-mapping-revisions {(str cid ":p1") 1} :warehouse-mapping-revisions {(str cid ":fbo:1") 1}}
+                                        cost (assoc :unit-cost cost))]})
+            accept! (fn [id]
+                      (let [pending   (:entries (runtime/read-model admin ::entries/pending-entries {}))
+                            selection {:selection (mapv #(hash-map :entry-id (:entry-id %) :revision (:revision %)) pending)
+                                       :order     (mapv :entry-id pending)}
+                            review    (runtime/read-model admin ::acceptance/inventory-review selection)]
+                        (run! ::acceptance/accept-reviewed-inventory-changes id
+                              (merge selection {:workspace-id listings/workspace :acceptance-id id :fingerprint (:fingerprint review)}))))]
+        (seed-cutover! admin c1 true)
+        (seed-cutover! admin c2 true :catalogue? false)
+        (is (= :accepted (:status (run! ::cutover/propose-marketplace-cutover "c2-p1" (input c2 "120" "350")))))
+        (testing "while another connection's entry is pending, this connection's scope reads pending and is refused"
+          (is (= "pending" (:readiness (red c1))))
+          (is (= :scope-not-ready (:type (failure #(run! ::cutover/propose-marketplace-cutover "c1-p0" (input c1 "118")))))))
+        (is (= :accepted (:status (accept! "acc-c2"))))
+        (testing "after its acceptance this connection proposes normally: a correction, since history exists"
+          (is (= ["ready" "correction" 120] ((juxt :readiness :result :balance) (red c1))))
+          (is (= :accepted (:status (run! ::cutover/propose-marketplace-cutover "c1-p1" (input c1 "118")))))
+          (is (= [[(str "cutover:" c1 "|red|main#1") "correction" 118]]
+                 (mapv (juxt :entry-id :kind (comp :quantity first :lines))
+                       (:entries (runtime/read-model admin ::entries/pending-entries {}))))))))))
