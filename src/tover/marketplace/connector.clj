@@ -362,6 +362,6 @@
            ;; Keys sealed by this process whose command may still be running.
            :in-flight (atom {})
            ;; ponytail: in memory, right for the single application instance the board decided; the minute sweep
-           ;; covers inventory edits and restarts. `:swept` is the instant of the last full sweep.
-           :dirty     (atom #{}) :swept (atom nil)}
+           ;; covers inventory edits and restarts. `:dirty` holds each consumer's marks, `:swept` each one's last full sweep.
+           :dirty     (atom {}) :swept (atom nil)}
     connector-key (assoc :key (tover.marketplace.connector/connector-key connector-key))))

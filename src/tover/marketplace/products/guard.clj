@@ -298,7 +298,7 @@
                       connection   (sync/workspace-connections system workspace-id)]
                   [workspace-id (:connection-id connection)])
           now   (if-let [clock (:clock marketplace)] (Instant/ofEpochMilli (clock)) (Instant/now))
-          dirty (sync/take-dirty! marketplace (set (map second owned)) now)]
+          dirty (sync/take-dirty! marketplace :mapping-guard (set (map second owned)) now)]
       (vec (for [[workspace-id connection-id] owned
                  :when (contains? dirty connection-id)
                  item (try (connection-pending system workspace-id connection-id)

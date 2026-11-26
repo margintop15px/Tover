@@ -2069,18 +2069,35 @@
 
 
 (deftest marked-once-is-taken-once
-  (let [marketplace {:dirty (atom #{}) :swept (atom nil)}
+  (let [marketplace {:dirty (atom {}) :swept (atom nil)}
         now         (t "2026-12-11T06:00:00Z")]
-    (sync/take-dirty! marketplace #{"a" "b"} now)
+    (sync/take-dirty! marketplace :mapping-guard #{"a" "b"} now)
     (runtime/effect! ::sync/mark-dirty {:resources {:marketplace marketplace}} {:connection-id "a"})
-    (is (= #{"a"} (sync/take-dirty! marketplace #{"a" "b"} (.plusSeconds now 1))))
-    (is (= #{} (sync/take-dirty! marketplace #{"a" "b"} (.plusSeconds now 2))))))
+    (is (= #{"a"} (sync/take-dirty! marketplace :mapping-guard #{"a" "b"} (.plusSeconds now 1))))
+    (is (= #{} (sync/take-dirty! marketplace :mapping-guard #{"a" "b"} (.plusSeconds now 2))))))
 
 
 (deftest everything-once-a-minute
-  (let [marketplace {:dirty (atom #{}) :swept (atom nil)}
+  (let [marketplace {:dirty (atom {}) :swept (atom nil)}
         now         (t "2026-12-11T06:00:00Z")]
-    (is (= #{"a" "b"} (sync/take-dirty! marketplace #{"a" "b"} now)) "at start")
-    (is (= #{} (sync/take-dirty! marketplace #{"a" "b"} (.plusSeconds now 59))))
-    (is (= #{"a" "b"} (sync/take-dirty! marketplace #{"a" "b"} (.plusSeconds now 60))))
-    (is (= #{} (sync/take-dirty! marketplace #{"a" "b"} (.plusSeconds now 61))))))
+    (is (= #{"a" "b"} (sync/take-dirty! marketplace :mapping-guard #{"a" "b"} now)) "at start")
+    (is (= #{} (sync/take-dirty! marketplace :mapping-guard #{"a" "b"} (.plusSeconds now 59))))
+    (is (= #{"a" "b"} (sync/take-dirty! marketplace :mapping-guard #{"a" "b"} (.plusSeconds now 60))))
+    (is (= #{} (sync/take-dirty! marketplace :mapping-guard #{"a" "b"} (.plusSeconds now 61))))))
+
+
+(deftest each-consumer-sees-every-mark
+  (let [marketplace {:dirty (atom {}) :swept (atom nil)}
+        now         (t "2026-12-11T06:00:00Z")
+        take!       #(sync/take-dirty! marketplace %1 #{"a" "b"} (.plusSeconds now %2))]
+    (doseq [consumer sync/consumers] (take! consumer 0))
+    (runtime/effect! ::sync/mark-dirty {:resources {:marketplace marketplace}} {:connection-id "a"})
+    (is (= #{"a"} (take! :mapping-guard 1)) "the Mapping Guard drains its own marks")
+    (is (= #{} (take! :mapping-guard 2)))
+    (is (= #{"a"} (take! :marketplace-operation-intake 3)) "intake still sees the mark the guard took")
+    (is (= #{"a"} (take! :automatic-acceptance 4)) "and so does automatic acceptance")
+    (is (= #{} (take! :marketplace-operation-intake 5)))
+    (testing "a consumer's first call sweeps everything, whatever the others swept"
+      (let [fresh {:dirty (atom {}) :swept (atom nil)}]
+        (is (= #{"a" "b"} (sync/take-dirty! fresh :mapping-guard #{"a" "b"} now)))
+        (is (= #{"a" "b"} (sync/take-dirty! fresh :automatic-acceptance #{"a" "b"} now)))))))

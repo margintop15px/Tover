@@ -241,7 +241,7 @@
   "A connected workspace with Mug (mug-1, mug-2) and listing 1 confirmed to mug-1. Returns the tools."
   {:malli/schema [:=> [:cat :any] :map]}
   [repo]
-  (let [marketplace {:dirty (atom #{}) :swept (atom nil)}
+  (let [marketplace {:dirty (atom {}) :swept (atom nil)}
         system      (support/bel-system {:repo repo :marketplace marketplace})
         ctx         (runtime/prepare-context {:bel/system  system :repo repo :workspace-id workspace :user-id member
                                               :memberships [{:workspace-id workspace :role :member}]})]

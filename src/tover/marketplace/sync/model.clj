@@ -964,19 +964,28 @@
        vec))
 
 
+(def consumers
+  "Who re-evaluates marked connections; each drains its own marks, so none takes another's."
+  [:mapping-guard :marketplace-operation-intake :automatic-acceptance])
+
+
 (defmethod runtime/effect! ::mark-dirty
   [_ {:keys [resources]} {:keys [connection-id]}]
-  (some-> (:marketplace resources) :dirty (swap! conj connection-id)))
+  (some-> (:marketplace resources) :dirty
+          (swap! (fn [marks] (reduce #(update %1 %2 (fnil conj #{}) connection-id) (if (map? marks) marks {}) consumers)))))
 
 
 (defn take-dirty!
-  "The connections to re-evaluate: those marked since the last call, and all of `all-ids` at the first call and
-  once a minute after the last full sweep. Marks are cleared atomically."
-  {:malli/schema [:=> [:cat [:maybe :map] [:set :string] validation/Instant] [:set :string]]}
-  [{:keys [dirty swept]} all-ids now]
-  (let [marked         (first (swap-vals! dirty (constantly #{})))
-        [before after] (swap-vals! swept #(if (or (nil? %) (not (.isBefore now (.plus ^Instant % (Duration/ofMinutes 1))))) now %))]
-    (cond-> marked (not= before after) (into all-ids))))
+  "The connections `consumer` re-evaluates: those marked since its last call, and all of `all-ids` at its first
+  call and once a minute after its last full sweep. Its marks are cleared atomically; other consumers keep theirs."
+  {:malli/schema [:=> [:cat [:maybe :map] (into [:enum] consumers) [:set :string] validation/Instant] [:set :string]]}
+  [{:keys [dirty swept]} consumer all-ids now]
+  (let [marks          (first (swap-vals! dirty #(assoc (if (map? %) % {}) consumer #{})))
+        marked         (get (if (map? marks) marks {}) consumer #{})
+        due?           #(or (nil? %) (not (.isBefore now (.plus ^Instant % (Duration/ofMinutes 1)))))
+        [before after] (swap-vals! swept #(let [sweeps (if (map? %) % {})]
+                                            (cond-> sweeps (due? (get sweeps consumer)) (assoc consumer now))))]
+    (cond-> marked (not= (get before consumer) (get after consumer)) (into all-ids))))
 
 
 (defn- look?

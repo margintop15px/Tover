@@ -576,7 +576,8 @@
         currency  (or (:currency (web/read-or-nil context ::currency/workspace-currency {})) "EUR")]
     (when (and work catalogue accepted)
       (operations-grid (assoc view :catalogue catalogue :pending (:entries work) :findings (:findings work) :accepted accepted :currency currency
-                              :actors (actors/labels context (mapcat :revisions accepted)))))))
+                              :actors (into {} (map (juxt (comp str :actor) :actor-label))
+                                            (actors/enrich context (map #(hash-map :actor %) (distinct (keep :actor (mapcat :revisions accepted)))))))))))
 
 
 (defview table

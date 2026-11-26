@@ -683,7 +683,7 @@
 (deftest remap
   (support/with-store
     (fn [repo _]
-      (let [marketplace {:dirty (atom #{}) :swept (atom nil)}
+      (let [marketplace {:dirty (atom {}) :swept (atom nil)}
             ctx         (runtime/prepare-context {:bel/system   (support/bel-system {:repo repo :marketplace marketplace}) :repo repo
                                                   :workspace-id workspace :user-id member
                                                   :memberships  [{:workspace-id workspace :role :member}]})
@@ -691,10 +691,10 @@
         (seed-catalogue! ctx)
         (execute! ctx ::products/confirm-product-mapping "confirm-1"
                   {:rows [{:external-product-id id :listing-revision 1 :stock-item-id "mug-1" :item-revision 1}]})
-        (reset! (:dirty marketplace) #{})
+        (reset! (:dirty marketplace) {})
         (execute! ctx ::products/change-product-mapping "change-1"
                   {:external-product-id id :mapping-revision 1 :stock-item-id "mug-2" :item-revision 1})
-        (is (= #{c} @(:dirty marketplace)) "the waiting operations are evaluated again, against B")
+        (is (= #{c} (:marketplace-operation-intake @(:dirty marketplace))) "the waiting operations are evaluated again, against B")
         (let [details (runtime/read-model ctx ::products/mapping-details-and-source-evidence {:external-product-id id})]
           (is (= [[1 "mapped" "mug-1" nil] [2 "changed" "mug-2" "mug-1"]]
                  (mapv (juxt :mapping-revision :change :stock-item-id :previous-stock-item-id) (:history details)))

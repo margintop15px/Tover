@@ -2,6 +2,9 @@
   "Board chapter 44 · What inventory must know of the marketplace: pending cutover entries and the baselines their
   acceptance establishes, with the pure rules saving and accepting inventory apply to them.
 
+  Chapter 45 adds the imported operations: the pending entry a source operation became (`::imports`), its acceptance
+  (`::source-acceptances`) and operations set aside (`::asides`), each keyed by source operation id.
+
   Depends on no other marketplace namespace, so inventory may require it. Store: both models live in `:catalogue`;
   ids and instants are text, an observation is JSON text. A cutover entry is an ordinary pending entry whose id
   has a `::cutover-entries` row; discarding the entry deletes the row and frees its scope. A baseline's id is
@@ -69,6 +72,99 @@
 (defmodel baselines
   {:id     :baseline-id :store :catalogue :schema Baseline :policy ::records/workspace-member
    :events {::cutover-baseline-established {:create [:connection-id :stock-item-id :warehouse-id :instant :record-id :established-at]}}})
+
+
+;; Board chapter 45 · Imported operations: which pending entry a source operation became, which accepted record it
+;; became, and which operations a member set aside. Each row's id is the source operation's.
+
+
+(def SourceOperationId
+  [:string {:min 1 :max 700}])
+
+
+(def Import
+  "Board `Imported Operation Proposed`: the source operation's revision and the shared entry it became; `entry-revision`
+  the entry revision the connector last saved, `missing` the missing facts as JSON text, `source-conflict` a newer
+  revision that differs from a member's edit."
+  [:map
+   [:source-operation-id SourceOperationId]
+   [:connection-id Ref]
+   [:revision [:int {:min 1}]]
+   [:entry-id Id]
+   [:entry-revision [:int {:min 1}]]
+   [:missing :string]
+   [:source-conflict :boolean]
+   [:proposed-at At]])
+
+
+(def SourceAcceptance
+  "A source operation is accepted at most once: the revision accepted, its record, who accepted it, whether a member
+  edited the entry, and the mappings its lines used (JSON text)."
+  [:map
+   [:source-operation-id SourceOperationId]
+   [:connection-id {:optional true} Ref]
+   [:revision [:int {:min 1}]]
+   [:record-id Id]
+   [:accepted-by Ref]
+   [:edited :boolean]
+   [:mappings-used :string]
+   [:accepted-at At]])
+
+
+(def Aside
+  "Board 45 slice a: an operation a member set aside (`aside` false once brought back)."
+  [:map
+   [:source-operation-id SourceOperationId]
+   [:connection-id {:optional true} Ref]
+   [:revision {:optional true} [:int {:min 1}]]
+   [:aside {:optional true} :boolean]
+   [:reason {:optional true} :string]
+   [:set-by {:optional true} Ref]
+   [:set-at {:optional true} At]])
+
+
+(defevent imported-operation-proposed {:schema Import})
+;; Intake withdraws an unedited entry whose operation is no longer resolvable: the entry is discarded beside it.
+(defevent imported-operation-withdrawn {:schema [:map [:source-operation-id SourceOperationId] [:entry-id Id]]})
+(defevent source-operation-accepted {:schema SourceAcceptance})
+(defevent source-operation-set-aside {:schema Aside})
+
+
+(defmodel imports
+  {:id     :source-operation-id :store :catalogue :schema Import :policy ::records/workspace-member
+   :events {::imported-operation-proposed  {:set [:connection-id :revision :entry-id :entry-revision :missing :source-conflict :proposed-at]}
+            ::imported-operation-withdrawn {:delete true}}})
+
+
+(defmodel source-acceptances
+  {:id     :source-operation-id :store :catalogue :schema SourceAcceptance :policy ::records/workspace-member
+   :events {::source-operation-accepted {:create [:connection-id :revision :record-id :accepted-by :edited :mappings-used :accepted-at]}}})
+
+
+(defmodel asides
+  {:id     :source-operation-id :store :catalogue :schema Aside :policy ::records/workspace-member
+   :events {::source-operation-set-aside {:set [:connection-id :revision :aside :reason :set-by :set-at]}}})
+
+
+(defn import-entry-id
+  "The shared entry a source operation becomes: `import:<source-operation-id>`."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [source-operation-id]
+  (str "import:" source-operation-id))
+
+
+(defn import-entry-id?
+  "Whether a shared entry id is an imported operation's."
+  {:malli/schema [:=> [:cat [:maybe :string]] :boolean]}
+  [entry-id]
+  (boolean (some-> entry-id (str/starts-with? "import:"))))
+
+
+(defn import-source
+  "The source operation an import entry id names."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [entry-id]
+  (subs entry-id (count "import:")))
 
 
 (def Facts

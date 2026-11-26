@@ -42,9 +42,13 @@
 
 
 (defn- principal
+  "The label of `<kind>:<id>`; a bare UUID no member holds is tried as a connector, whose actor id is its
+  connection's UUID."
   {:malli/schema [:=> [:cat :map :any] [:maybe :string]]}
   [context id]
-  (let [[kind id] (str/split (str id) #":" 2)]
+  (let [[kind id] (if (and (not (str/includes? (str id) ":")) (parse-uuid (str id)))
+                    ["connector" (str id)]
+                    (str/split (str id) #":" 2))]
     (when id
       (try (principal-label context kind id)
            (catch Exception error
