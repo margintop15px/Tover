@@ -230,9 +230,9 @@
 
 (defn observed
   {:malli/schema [:=> [:cat :string :string [:* :any]] :map]}
-  [source-id name & {:keys [barcodes revision] :or {revision 1}}]
-  (let [id (str c ":" source-id)]
-    {:external-product-id id :entity-id id :connection-id c :source-id source-id :revision revision
+  [source-id name & {:keys [barcodes revision connection-id] :or {revision 1 connection-id c}}]
+  (let [id (str connection-id ":" source-id)]
+    {:external-product-id id :entity-id id :connection-id connection-id :source-id source-id :revision revision
      :payload-hash        (apply str (repeat 64 "a")) :adapter-version "test" :observed-at at    :last-observed-at at
      :source-revision-id  (str id "#" revision) :name                  name   :archived    false
      :identifiers         (observations/write-json (mapv (fn [b] {:type "barcode" :value b :active true}) barcodes))
@@ -240,9 +240,9 @@
 
 
 (defn mapped
-  {:malli/schema [:=> [:cat :string :string :int] :map]}
-  [listing-id item revision]
-  {:external-product-id listing-id   :mapping-revision-id (products/revision-id listing-id revision) :connection-id c
+  {:malli/schema [:=> [:cat :string :string :int [:* :any]] :map]}
+  [listing-id item revision & {:keys [connection-id] :or {connection-id c}}]
+  {:external-product-id listing-id   :mapping-revision-id (products/revision-id listing-id revision) :connection-id connection-id
    :change              "mapped"     :stock-item-id       item :listing-revision 1 :item-revision 1
    :identity-basis      "{}"         :mapping-revision    revision :state "confirmed"
    :changed-by          (str member) :changed-at          at})
@@ -273,6 +273,7 @@
           (seed! ctx ::products/product-match-deferred {:external-product-id mug :deferred-by (str member) :deferred-at at})
           (is (= {:mapped 0 :unmatched 1 :deferred 1 :suspended 0}
                  (dissoc (read ::products/matching-progress {:connection-id c}) :without-candidates)))
+          (is (= 2 (connections/count-part :unmatched-listings ctx c)) "a deferred listing has no confirmed mapping")
           (seed! ctx ::products/external-product-mapped (mapped mug "mug-1" 1))
           (is (= {:mapped 1 :unmatched 1 :deferred 0 :suspended 0}
                  (dissoc (read ::products/matching-progress {:connection-id c}) :without-candidates)))
@@ -292,5 +293,66 @@
             (is (= [{:revision 1 :observed-at (Instant/parse at) :name "Mug"}] (get-in details [:listing :revisions])))
             (is (= [{:type "barcode" :value "4600000000017" :active? true}] (get-in details [:listing :evidence :identifiers])))))
 
+        (testing "a change takes the listing revision it was decided against"
+          (seed! ctx ::sync/external-product-observed (observed "1" "Mug" :barcodes ["4600000000017"] :revision 2))
+          (seed! ctx ::products/product-mapping-changed
+                 {:external-product-id    mug          :mapping-revision-id (products/revision-id mug 4) :connection-id c :change "changed"
+                  :previous-stock-item-id "mug-1"      :stock-item-id       "mug-1" :item-revision 1 :identity-basis              "{}"
+                  :listing-revision       2            :mapping-revision    4 :state "confirmed"
+                  :changed-by             (str member) :changed-at          at})
+          (is (= 2 (get-in (read ::products/mapping-details-and-source-evidence {:external-product-id mug}) [:mapping :listing-revision]))))
+
         (testing "status counts unmatched listings"
           (is (= 1 (get (runtime/coeffect ::connections/counts ctx {:connection-id c}) :unmatched-listings))))))))
+
+
+(defn seed-four!
+  "Listings 1-4 of a connection: unmatched, deferred, suspended and confirmed (to `item`)."
+  {:malli/schema [:=> [:cat :map :string :string] :nil]}
+  [ctx connection-id item]
+  (let [id #(str connection-id ":" %)]
+    (doseq [n ["1" "2" "3" "4"]]
+      (seed! ctx ::sync/external-product-observed (observed n (str "Listing " n) :connection-id connection-id)))
+    (seed! ctx ::products/product-match-deferred {:external-product-id (id "2") :reason "later" :deferred-by (str member) :deferred-at at})
+    (seed! ctx ::products/external-product-mapped (mapped (id "3") item 1 :connection-id connection-id))
+    (seed! ctx ::products/product-mapping-suspended
+           {:external-product-id (id "3") :mapping-revision-id (products/revision-id (id "3") 2)         :connection-id connection-id
+            :change              "suspended" :stock-item-id item :listing-revision 1 :item-revision 1 :identity-basis "{}"
+            :reasons             (observations/write-json [{:rule "item-archived"}]) :mapping-revision 2 :state         "suspended"
+            :changed-by          "connector" :changed-at at})
+    (seed! ctx ::products/external-product-mapped (mapped (id "4") item 1 :connection-id connection-id))
+    nil))
+
+
+(deftest unmatched-count-is-every-listing-without-a-confirmed-mapping
+  (support/with-store
+    (fn [repo _]
+      (let [ctx (context repo)]
+        (seed-four! ctx c "mug-1")
+        (is (= 3 (connections/count-part :unmatched-listings ctx c)) "unmatched, deferred and suspended count; confirmed does not")
+        (is (= {:mapped 1 :unmatched 1 :deferred 1 :suspended 1}
+               (dissoc (runtime/read-model ctx ::products/matching-progress {:connection-id c}) :without-candidates)))))))
+
+
+(deftest another-connection-stays-apart
+  (support/with-store
+    (fn [repo _]
+      (let [ctx  (context repo)
+            read #(runtime/read-model ctx %1 %2)
+            mine (str c ":9")]
+        (seed-four! ctx other-c "other-1")
+        (seed! ctx ::sync/external-product-observed (observed "9" "Mine"))
+        (is (= [mine] (ids (:rows (read ::products/unmatched-external-products-and-candidates {:connection-id c})))))
+        (is (= [] (:rows (read ::products/unmatched-external-products-and-candidates {:connection-id c :state "deferred"}))))
+        (is (= {:mapped 0 :unmatched 1 :deferred 0 :suspended 0 :without-candidates [{:external-product-id mine :name "Mine"}]}
+               (read ::products/matching-progress {:connection-id c})))
+        (is (= [["unmatched" mine]] (mapv (juxt :state :external-product-id)
+                                          (:rows (read ::products/mapped-and-remaining-listings {:connection-id c})))))
+        (is (= {"confirmed" 0 "unmatched" 1 "deferred" 0 "suspended" 0}
+               (:counts (read ::products/mapped-and-remaining-listings {:connection-id c}))))
+        (let [details (read ::products/mapping-details-and-source-evidence {:external-product-id mine})]
+          (is (= "unmatched" (:state details)))
+          (is (= [] (:history details)))
+          (is (= [] (:other-listings details))))
+        (is (= 1 (connections/count-part :unmatched-listings ctx c)))
+        (is (= 3 (connections/count-part :unmatched-listings ctx other-c)))))))

@@ -137,7 +137,7 @@
   {:id     :external-product-id :store :catalogue :schema ProductMapping :policy ::records/workspace-member
    ;; `:set` replaces every listed field: a change or reconfirmation clears the reasons.
    :events {::external-product-mapped     {:set mapping-fields}
-            ::product-mapping-changed     {:set (vec (remove #{:connection-id :listing-revision} mapping-fields))}
+            ::product-mapping-changed     {:set (vec (remove #{:connection-id} mapping-fields))}
             ::product-mapping-suspended   {:set [:mapping-revision :state :reasons :changed-by :changed-at]}
             ::product-mapping-reconfirmed {:set (vec (remove #{:connection-id} mapping-fields))}}})
 
@@ -422,11 +422,11 @@
 
 
 (defmethod connections/count-part :unmatched-listings
+  ;; Board chapter 40: external products without a confirmed mapping, so deferred and suspended ones count.
   [_ context connection-id]
-  (let [facts {:listings  (runtime/coeffect ::listings context {:connection-id connection-id})
-               :mappings  (runtime/coeffect ::mappings context {:connection-id connection-id})
-               :deferrals (runtime/coeffect ::deferrals context {})}]
-    ((state-counts facts) "unmatched")))
+  (let [mappings (runtime/coeffect ::mappings context {:connection-id connection-id})]
+    (count (remove #(= "confirmed" (:state (get mappings (:external-product-id %))))
+                   (runtime/coeffect ::listings context {:connection-id connection-id})))))
 
 
 (def ListingRow
