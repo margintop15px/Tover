@@ -47,7 +47,7 @@
 
 (def ^:private readiness-labels
   {"ready"                 "Ready"                 "pending"      "Pending"      "has baseline" "Has baseline" "needs product match" "Needs product match"
-   "needs warehouse match" "Needs warehouse match" "not observed" "Not observed"})
+   "needs warehouse match" "Needs warehouse match" "not observed" "Not observed" "history after instant" "History starts after the instant"})
 
 
 (defn- signed

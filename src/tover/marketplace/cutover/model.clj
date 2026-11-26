@@ -46,7 +46,9 @@
 
 
 (def Readiness
-  [:enum "ready" "needs product match" "needs warehouse match" "pending" "has baseline"])
+  "`history after instant`: the pair's accepted history starts after the instant, so neither an opening (it would not
+  come first) nor a correction (nothing to correct at the instant) can be accepted there."
+  [:enum "ready" "needs product match" "needs warehouse match" "pending" "has baseline" "history after instant"])
 
 
 (def CostSource
@@ -161,14 +163,17 @@
 
 
 (defn- history-at
-  "Balances at `at` (all accepted history without one) and the pairs with any accepted record."
-  {:malli/schema [:=> [:cat [:maybe :map] [:maybe inst?]] [:map [:balances :map] [:recorded [:set :any]]]]}
+  "Balances at `at` (all accepted history without one), the pairs with any accepted record and those of them whose
+  every record is after `at`."
+  {:malli/schema [:=> [:cat [:maybe :map] [:maybe inst?]] [:map [:balances :map] [:recorded [:set :any]] [:later [:set :any]]]]}
   [{:keys [records lines] :or {records [] lines []} :as history} at]
-  (let [kept   (set (keep #(when (or (nil? at) (some-> (instant (:occurred-at %)) (.isAfter ^Instant at) not)) (:record-id %))
-                          (valuation/effective records)))
-        before (filterv (comp kept :record-id) records)]
+  (let [kept     (set (keep #(when (or (nil? at) (some-> (instant (:occurred-at %)) (.isAfter ^Instant at) not)) (:record-id %))
+                            (valuation/effective records)))
+        before   (filterv (comp kept :record-id) records)
+        recorded (recorded-pairs history)]
     {:balances (:balances (valuation/replay before lines))
-     :recorded (recorded-pairs history)}))
+     :recorded recorded
+     :later    (reduce disj recorded (recorded-pairs {:records before :lines lines}))}))
 
 
 (defn- item-average
@@ -256,11 +261,12 @@
   (let [at (instant (:instant input))
         pass (first passes)
         snapshot (and at pass (= at (instant (:observed-at pass))))
-        {:keys [balances recorded]} (history-at history at)
+        {:keys [balances recorded later]} (history-at history at)
         costs (into {} (map (juxt :external-product-id identity)) listings)
         {:keys [unmatched-products unmatched-warehouses] :as classified} (classify facts connection-id)]
     (into (vec (for [[[item warehouse] contributes] (:scopes classified)
-                     :let [state (readiness provenance connection-id item warehouse)
+                     :let [state (let [s (readiness provenance connection-id item warehouse)]
+                                   (if (and (= "ready" s) (contains? later [item warehouse])) "history after instant" s))
                            quantity (observed pass figures contributes)
                            balance (get-in balances [[item warehouse] :quantity])
                            result (if (contains? recorded [item warehouse]) "correction" "opening")
@@ -441,7 +447,8 @@
    "has baseline"          "This scope already has a cutover baseline."
    "needs product match"   "Needs a product match."
    "needs warehouse match" "Needs a warehouse match."
-   "not observed"          "Not a scope of this connection."})
+   "not observed"          "Not a scope of this connection."
+   "history after instant" "Accepted history starts after this instant. Choose a later instant."})
 
 
 (defn scope-id

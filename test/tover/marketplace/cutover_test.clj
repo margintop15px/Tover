@@ -273,10 +273,10 @@
       (is (= [10 "correction"] ((juxt :balance :result) (scope facts "red" "main" :instant "2026-11-20T10:00:00Z")))))
     (testing "a correction needs no cost"
       (is (not-any? (scope facts "red" "main") [:suggested-cost :cost-source])))
-    (testing "accepted history after the instant still makes it a correction, without a balance at the instant"
+    (testing "accepted history starting after the instant makes the scope not ready: no opening or correction fits"
       (let [row (scope facts "red" "main" :instant "2026-10-01T00:00:00Z")]
-        (is (= "correction" (:result row)))
-        (is (not (contains? row :balance))))))
+        (is (= "history after instant" (:readiness row)))
+        (is (not-any? #(contains? row %) [:result :balance :suggested-quantity :mapping-revisions])))))
   (testing "without history: no balance, an opening"
     (let [row (scope base "red" "main")]
       (is (not (contains? row :balance)))

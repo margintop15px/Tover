@@ -232,6 +232,10 @@
       (is (= [["red" "needs product match"]]
              (mapv (juxt :stock-item-id :readiness)
                    (:rows (failure #(propose (facts :cutover (update base :product-mappings dissoc "c1:p1")) [(scope "red" 120 :unit-cost "1")])))))))
+    (testing "accepted history starting after the instant is named: neither an opening nor a correction fits"
+      (let [later (assoc-in base [:history :records 0 :occurred-at] (day 21))]
+        (is (= [["blue" "history after instant" "Accepted history starts after this instant. Choose a later instant."]]
+               (mapv (juxt :stock-item-id :readiness :message) (:rows (failure #(propose (facts :cutover later) [(scope "blue" 8)]))))))))
     (testing "all scopes are proposed together or none"
       (is (= :scope-not-ready
              (:type (failure #(propose (facts :cutover (assoc-in base [:provenance :cutover-entries (:entry-id row)] row))
