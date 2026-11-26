@@ -17,6 +17,7 @@
     [tover.inventory.stock-items.model :as stock-items]
     [tover.inventory.stock.model :as stock]
     [tover.inventory.valuation :as valuation]
+    [tover.marketplace.provenance :as provenance]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.core :as ui]
@@ -351,6 +352,12 @@
                        (i18n/t "The move conflicts with {p0}, kept by {p1}." {:p0 what :p1 (get item other other)})
                        (i18n/t "The move conflicts with {p0}." {:p0 what})))
     :field-conflict (i18n/t "Another pending entry changes this field.")
+    ;; Chapter 44 · Cutover Review: the observation frozen with a pending cutover entry and what it changes.
+    :cutover (let [{:keys [observed-quantity proposed-quantity balance difference]} related]
+               (i18n/t "Cutover: observed {observed}, proposed {proposed}, difference {difference} from Tover's {balance}."
+                       {:observed   (if observed-quantity (str observed-quantity) "—") :proposed proposed-quantity
+                        :difference (cond->> (str (abs difference)) (pos? difference) (str "+") (neg? difference) (str "−"))
+                        :balance    (or balance 0)}))
     (i18n/t (problem-text code "Check this value."))))
 
 
@@ -468,10 +475,11 @@
   "The stock table as one grid: a row per stock item under its product (merged with the product's category), its store,
   the item's details, a column per warehouse, Total and the row actions. Outside Preview it is read-only; Edit opens a
   row in Preview (`:editing` in the scope), where every cell is editable and each product offers a new stock item row.
-  Pending openings and corrections show in their cells. Draft `findings` mark the cells they concern; `:sort`,
+  Pending openings and corrections show in their cells. Draft `findings` mark the cells they concern, and so does
+  each pending cutover entry of `:cutover` (`provenance/review-rows`) with its observation; `:sort`,
   `:direction` and `:filters` order and narrow the products."
   {:malli/schema [:=> [:cat :map [:map [:mode [:enum "units" "money"]]]] :map]}
-  [{:keys [warehouses products currency]} {:keys [mode scope entries findings stock-items categories stores] :as options}]
+  [{:keys [warehouses products currency]} {:keys [mode scope entries findings stock-items categories stores cutover] :as options}]
   (let [{:keys [productId itemId productName newRow pending addTo newRowId]} scope
         editing (set (:editing scope))
         lines (pending-lines (filter #(= "opening" (:kind % "opening")) entries))
@@ -616,7 +624,10 @@
                             column-keys
                             ;; What blocks review marks its cell too, so a refused Submit points at what to fill in.
                             (concat findings (for [{:keys [entry-id blockers]} entries b blockers :when (:line-id b)]
-                                               (assoc b :entry-id entry-id :level :error)))
+                                               (assoc b :entry-id entry-id :level :error))
+                                    ;; Chapter 44 · Cutover Review: observed, proposed and the difference on the entry's cell.
+                                    (for [{:keys [entry-id line-id] :as row} cutover]
+                                      {:entry-id entry-id :line-id line-id :field :quantity :level :info :code :cutover :related row}))
                             row-of names)
         merges (second (reduce (fn [[start acc] group]
                                  [(+ start (count group))
@@ -786,9 +797,11 @@
   ([context mode hide-empty? scope show-archived? order]
    (let [table     (read-or-nil context ::stock/stock-table (cond-> {:hide-empty? hide-empty?} show-archived? (assoc :show-archived? true)))
          work      (read-or-nil context ::entries/pending-entries {})
-         catalogue (read-or-nil context ::references/draft-catalogue {})]
+         catalogue (read-or-nil context ::references/draft-catalogue {})
+         cutover   (read-or-nil context ::provenance/cutover-review {})]
      (when (and table work catalogue)
        (assoc (stock-grid table (merge order {:mode        mode :scope scope :entries (:entries work) :findings (:findings work)
+                                              :cutover     (:rows cutover)
                                               :stock-items (:stock-items catalogue) :categories (:categories catalogue)
                                               :stores      (:stores catalogue)}))
               ;; Move offers every active product, also those the table hides for having no stock items.

@@ -150,7 +150,57 @@ const program = `
            {:external-warehouse-id id :entity-id id :connection-id "browser-ozon" :source-id source-id :revision 1
             :payload-hash (apply str (repeat 64 "b")) :adapter-version "test" :observed-at at :last-observed-at at
             :source-revision-id (str id "#1") :name name :warehouse-type type :active true
-            :facts (observations/write-json {:name name})})))
+            :facts (observations/write-json {:name name})}))
+    ;; Board 44: a Whisk listing and an FBO warehouse already mapped, every operation domain read once, and a
+    ;; finished stock-by-warehouse pass that found 7 whisks there: one scope ready for the cutover.
+    (put :tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "browser-cutover-hub" :name "Cutover hub" :status "active" :revision 1})
+    (put :tover.catalogues.products.model/product-registered {:product-id "browser-product-6" :name "Whisk" :status "active" :revision 1})
+    (put :tover.inventory.stock-items.model/stock-item-registered
+         {:stock-item-id "browser-item-6" :product-id "browser-product-6" :unit "pcs" :condition "regular" :status "active" :revision 1})
+    (put :tover.marketplace.sync.model/external-product-observed (listing "106" "Whisk (Ozon)" nil))
+    (put :tover.marketplace.products.model/external-product-mapped
+         {:external-product-id "browser-ozon:106" :connection-id "browser-ozon" :stock-item-id "browser-item-6" :listing-revision 1
+          :item-revision 1 :identity-basis "{}" :changed-by (str fixtures/owner-id) :changed-at at
+          :mapping-revision-id "browser-ozon:106#1" :mapping-revision 1 :change "mapped" :state "confirmed"})
+    (let [hub (observations/warehouse-id "browser-ozon" "fbo" "204")
+          domains ["fbs-postings" "fbo-postings" "returns" "rfbs-returns" "supplies" "removals"]
+          earliest "2026-11-01T00:00:00Z"]
+      (put :tover.marketplace.sync.model/external-warehouse-observed
+           {:external-warehouse-id hub :entity-id hub :connection-id "browser-ozon" :source-id "204" :revision 1
+            :payload-hash (apply str (repeat 64 "c")) :adapter-version "test" :observed-at at :last-observed-at at
+            :source-revision-id (str hub "#1") :name "Cutover hub" :warehouse-type "fbo" :active true
+            :facts (observations/write-json {:name "Cutover hub"})})
+      (put :tover.marketplace.warehouses.model/external-warehouse-mapped
+           {:external-warehouse-id hub :mapping-revision-id (str hub "#1") :connection-id "browser-ozon" :warehouse-type "fbo"
+            :mapping-revision 1 :changed-by (str fixtures/owner-id) :changed-at at :change "mapped"
+            :warehouse-id "browser-cutover-hub" :state "confirmed"})
+      (put :tover.marketplace.sync.model/marketplace-sync-started
+           {:run-id "browser-r0" :connection-id "browser-ozon" :trigger "member" :triggered-by (str fixtures/owner-id)
+            :domains (clojure.string/join " " domains) :starting-positions "{}" :started-at earliest :run-state "open"})
+      (doseq [domain domains]
+        (put :tover.marketplace.sync.model/source-batch-recorded
+             {:position-id (str "browser-ozon/" domain) :connection-id "browser-ozon" :domain domain :run-id "browser-r0"
+              :cursor "" :batch-key "" :refetch-ids "[]" :finished true :found-listings 0 :found-warehouses 0
+              :found-operations 0 :recorded-at earliest})
+        (put :tover.marketplace.sync.model/source-domain-traversed
+             {:run-id "browser-r0" :connection-id "browser-ozon" :domain domain :covered-until earliest :traversed-at earliest
+              :position-id (str "browser-ozon/" domain) :finished-domains domain :first-covered-at earliest
+              :pass-id (str "browser-r0/" domain)}))
+      (put :tover.marketplace.sync.model/marketplace-sync-started
+           {:run-id "browser-r1" :connection-id "browser-ozon" :trigger "member" :triggered-by (str fixtures/owner-id)
+            :domains "stock-by-warehouse" :starting-positions "{}" :started-at at :run-state "open"})
+      (put :tover.marketplace.sync.model/source-batch-recorded
+           {:position-id "browser-ozon/stock-by-warehouse" :connection-id "browser-ozon" :domain "stock-by-warehouse"
+            :run-id "browser-r1" :cursor "" :batch-key "" :refetch-ids "[]" :finished true :found-listings 1
+            :found-warehouses 0 :found-operations 0 :recorded-at at})
+      (put :tover.marketplace.sync.model/source-domain-traversed
+           {:run-id "browser-r1" :connection-id "browser-ozon" :domain "stock-by-warehouse" :covered-until at :traversed-at at
+            :position-id "browser-ozon/stock-by-warehouse" :finished-domains "stock-by-warehouse" :first-covered-at at
+            :pass-id "browser-r1/stock-by-warehouse" :asked (observations/write-json ["106"])})
+      (put :tover.marketplace.sync.model/source-stock-observed
+           {:stock-id (str "browser-ozon:106|warehouse-stock|" hub "|browser-r1") :connection-id "browser-ozon"
+            :run-id "browser-r1" :external-product-id "browser-ozon:106" :external-warehouse-id hub :source "warehouse-stock"
+            :fulfilment-type "fbo" :present 7 :parts "[]" :observed-at at})))
   ` : ''}
   ;; The team and invitation reads are SQL coeffects; serve them from the same in-memory fixture state.
   (require '[bel.runtime :as runtime] '[tover.invitations.fixtures :as invitations])

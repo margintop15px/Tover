@@ -653,7 +653,7 @@
 
 
 (defn marketplace-path
-  "The matching views of one connection, under the operations page."
+  "The matching and cutover views of one connection, under the operations page."
   {:malli/schema [:=> [:cat :string] :string]}
   [connection-id]
   (str "/operations/marketplace/" (codec/url-encode connection-id)))
@@ -671,16 +671,17 @@
 
 
 (defn operations-views
-  "The views of the operations page: the table of operations, then each connection's Product matching and Warehouse
-  matching. `current` is `:operations`, `[:products connection-id]` or `[:warehouses connection-id]`. Without
-  connections there is nothing to switch to."
+  "The views of the operations page: the table of operations, then each connection's Product matching, Warehouse
+  matching and Cutover. `current` is `:operations`, `[:products connection-id]`, `[:warehouses connection-id]` or
+  `[:cutover connection-id]`. Without connections there is nothing to switch to."
   {:malli/schema [:=> [:cat [:map [:current [:or :keyword [:tuple :keyword :string]]] [:connections [:sequential :map]]]] [:maybe schema/Hiccup]]}
   [{:keys [current connections]}]
   (when (seq connections)
     [:nav.catalogue-kinds.operations-views {:aria-label (i18n/t "Views")}
      (for [[view href label] (cons [:operations "/operations" (i18n/t "Operations")]
                                    (for [{:keys [connection-id account-label]} connections
-                                         [kind segment title]                  [[:products "products" "Product matching"] [:warehouses "warehouses" "Warehouse matching"]]]
+                                         [kind segment title]                  [[:products "products" "Product matching"] [:warehouses "warehouses" "Warehouse matching"]
+                                                                                [:cutover "cutover" "Cutover"]]]
                                      [[kind connection-id] (str (marketplace-path connection-id) "/" segment) (str (i18n/t title) " · " account-label)]))]
        [:a (nav/link href {:aria-current (when (= current view) "page")}) label])]))
 

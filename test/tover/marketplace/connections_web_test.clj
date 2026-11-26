@@ -383,7 +383,7 @@
           (is (str/includes? html "API key expires") "the key's expiry is shown"))))))
 
 
-(deftest coverage-counts-are-text-until-their-pages-exist
+(deftest coverage-counts-open-their-views
   (with-context
     (fn [ctx _]
       (accept! ctx (act ctx ::web/connect connect-form))
@@ -394,13 +394,12 @@
         (try
           (let [html (page ctx ::web/connection {:connection-id "c-1"})]
             (is (str/includes? html "Unmatched listings"))
-            (is (str/includes? html "<dt>Baselines</dt><dd>0</dd>"))
+            (is (str/includes? html "<dt>Baselines</dt><dd><a href=\"/operations/marketplace/c-1/cutover\">0</a></dd>") "the counts open the Cutover view")
             (is (str/includes? html "Imported operations by next step"))
             (is (str/includes? html "Confirm &lt;b&gt;") "text from outside is escaped")
             (is (not (str/includes? html "Confirm <b>")))
             (is (str/includes? html "href=\"/operations/marketplace/c-1/products\">3</a>") "the unmatched count opens Product Matching")
             (is (str/includes? html "href=\"/operations/marketplace/c-1/warehouses\">0</a>") "the unmatched count opens Warehouse Matching")
-            (is (not (re-find #"href=\"[^\"]*/cutover" html)) "no links to pages that do not exist")
             (is (every? #(str/includes? html (str "<td>" (web/domain-labels %) "</td>")) connector/domains) "one row per domain"))
           (finally (.addMethod ^clojure.lang.MultiFn model/count-part :unmatched-listings unmatched)
                    (defmethod model/count-part :next-steps [_ _ _] {})))))))

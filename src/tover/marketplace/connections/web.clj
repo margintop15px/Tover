@@ -331,9 +331,9 @@
                 [:dt (i18n/t "Unmatched warehouses")]
                 [:dd [:a {:href (str (operations/marketplace-path connection-id) "/warehouses")} (:unmatched-warehouses status)]]
                 [:dt (i18n/t "Scopes without baseline")]
-                [:dd (:scopes-without-baseline status)]
+                [:dd [:a {:href (str (operations/marketplace-path connection-id) "/cutover")} (:scopes-without-baseline status)]]
                 [:dt (i18n/t "Baselines")]
-                [:dd (:baselines status)]
+                [:dd [:a {:href (str (operations/marketplace-path connection-id) "/cutover")} (:baselines status)]]
                 [:dt (i18n/t "Imported operations by next step")]
                 [:dd (if-let [steps (seq (:imported-operations-by-next-step status))]
                        (str/join ", " (map (fn [{:keys [next-step count]}] (str next-step ": " count)) steps))

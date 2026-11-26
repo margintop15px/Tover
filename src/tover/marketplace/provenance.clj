@@ -7,8 +7,9 @@
   has a `::cutover-entries` row; discarding the entry deletes the row and frees its scope. A baseline's id is
   `<connection>|<item>|<warehouse>`: at most one per scope."
   (:require
-    [bel.core :refer [defevent defmodel]]
+    [bel.core :refer [defevent defmodel defreadmodel]]
     [bel.runtime :as runtime]
+    [charred.api :as charred]
     [clojure.string :as str]
     [tover.catalogues.records :as records :refer [Id]])
   (:import
@@ -197,3 +198,47 @@
                  :stock-item-id  stock-item-id :warehouse-id warehouse-id
                  :instant        (:instant row) :record-id (:record-id record)
                  :established-at (str now)}})))
+
+
+;; Board `Cutover Review and Resulting Corrections` (slice 3): part of the ordinary Review of chapter 17.
+
+
+(def ReviewRow
+  "One pending cutover line: the frozen observation, the proposed absolute count and its difference against Tover's
+  balance at the instant (absent without history, then the difference is the whole count)."
+  [:map
+   [:entry-id Id] [:line-id Id] [:stock-item-id Id] [:warehouse-id Id] [:connection-id Ref]
+   [:observed-quantity {:optional true} :int] [:proposed-quantity :int] [:balance {:optional true} :int] [:difference :int]])
+
+
+(defn observation
+  "A frozen observation as a map; nil when absent or unreadable."
+  {:malli/schema [:=> [:cat [:maybe :string]] [:maybe :map]]}
+  [text]
+  (when-not (str/blank? text)
+    (try (charred/read-json text :key-fn keyword) (catch Exception _ nil))))
+
+
+(defn review-rows
+  "The pending entries of `pending` that have a cutover row in `rows`, one row per counted line."
+  {:malli/schema [:=> [:cat [:map-of :string :map] [:sequential :map]] [:vector ReviewRow]]}
+  [rows pending]
+  (vec (for [{:keys [entry-id lines]} pending
+             :let [{:keys [connection-id] :as row} (get rows entry-id)]
+             :when row
+             {:keys [line-id stock-item-id warehouse-id quantity]} lines
+             :when (int? quantity)
+             :let [{:keys [observed-quantity balance]} (observation (:observation row))]]
+         (cond-> {:entry-id      entry-id      :line-id           line-id  :stock-item-id stock-item-id               :warehouse-id warehouse-id
+                  :connection-id connection-id :proposed-quantity quantity :difference    (- quantity (or balance 0))}
+           (int? observed-quantity) (assoc :observed-quantity observed-quantity)
+           (int? balance) (assoc :balance balance)))))
+
+
+(defreadmodel cutover-review
+  {:input  [:map]
+   :output [:map [:rows [:vector ReviewRow]]]
+   :policy ::records/workspace-member
+   :cofx   [[:provenance ::facts (constantly {})] [:pending :tover.inventory.entries.model/pending (constantly {})]]}
+  [{:keys [provenance pending]} _]
+  {:rows (review-rows (:cutover-entries provenance) pending)})

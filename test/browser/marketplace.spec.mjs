@@ -145,3 +145,50 @@ test('the view switcher moves between operations and the matching views', async 
   await expect(page).toHaveURL(/\/operations$/);
   expect(errors).toEqual([]);
 });
+
+// Board 44 · Cutover: a view of the Operations page; type the cost of an opening, propose, and the scope waits in the
+// shared draft with its observation shown in the Stock page's Preview.
+test('propose the cutover of a ready scope, reload: pending and shown in Preview', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const setup = page.locator('#marketplace-cutover-grid');
+  const whisk = setup.locator('tbody tr').filter({ hasText: 'Whisk' });
+  await signIn(page);
+  await page.goto(connection);
+  await expect(page.locator(`a[href="${views}/cutover"]`).first()).toBeVisible();
+  await page.goto('/operations');
+  await page.getByRole('navigation', { name: 'Views' }).getByRole('link', { name: /^Cutover/ }).click();
+  await expect(page).toHaveURL(new RegExp(`${views}/cutover$`));
+  await expect(page.getByRole('heading', { name: 'Cutover', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Views' }).getByRole('link', { name: /^Cutover/ })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByLabel('Cutover instant')).toHaveValue('2026-11-20T10:00:00Z');
+  await expect.poll(() => setup.evaluate(node => !!node.worksheet)).toBe(true);
+  await expect(whisk).toContainText('Ready');
+  await expect(whisk).toContainText('Opening');
+  await expect(whisk.locator('td[data-x="7"]')).toHaveText('7');
+
+  // The cost is typed with a comma, as for any opening.
+  await whisk.locator('td[data-x="8"]').dblclick();
+  await page.keyboard.type('250,5');
+  await page.keyboard.press('Enter');
+  await expect(whisk.locator('td[data-x="8"]')).toHaveText('250,5');
+  const id = await setup.evaluate(node => node.model.rows.find(row => row.label.startsWith('Whisk')).id);
+  await page.locator('marketplace-workbench#marketplace-cutover').evaluate((node, selected) => node.select([selected]), id);
+  await expect(page.locator('#marketplace-cutover .marketplace-selected')).toHaveText('1 selected');
+  await page.getByRole('button', { name: 'Propose', exact: true }).click();
+  await expect(whisk).toContainText('Pending');
+  await expect(whisk).toContainText('Proposed 7, difference +7');
+  await expect(page.locator('#marketplace-cutover .catalogue-notice')).toHaveText('');
+
+  await page.reload();
+  await expect.poll(() => setup.evaluate(node => !!node.worksheet)).toBe(true);
+  await expect(whisk).toContainText('Pending');
+  await expect(page.locator('#marketplace-cutover-coverage-grid tbody tr').filter({ hasText: 'Whisk' })).toContainText('No cutover baseline');
+
+  // Review and acceptance are the shared draft's: the pending opening shows its observation in Preview.
+  await page.getByRole('link', { name: 'Review and accept them on the Stock page.' }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await page.getByRole('button', { name: 'Preview pending changes' }).click();
+  await expect.poll(() => page.locator('#stock-grid').evaluate(node => (node.model?.rows || []).flatMap(row => row.cells.map(cell => cell.title || '')).join('\n')))
+    .toContain('Cutover: observed 7, proposed 7, difference +7 from Tover');
+  expect(errors).toEqual([]);
+});

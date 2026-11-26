@@ -10,12 +10,18 @@
   The observation is evidence: it is shown on every scope it speaks for, and prefills the quantity only on a
   ready scope of an FBO warehouse, and only when the instant is the pass's observation time. Tover's balance
   and the item's average are read at the instant from accepted history; a pair with any accepted record gets a
-  correction, otherwise an opening."
+  correction, otherwise an opening.
+
+  Proposing (slice 2) turns each chosen ready scope into one ordinary pending entry of the shared draft, an opening
+  or an absolute correction at the instant, with its observation frozen beside it. Review and acceptance are the
+  shared draft's own (chapter 17); acceptance establishes each scope's baseline (`tover.marketplace.provenance`)."
   (:require
-    [bel.core :refer [defreadmodel]]
+    [bel.core :refer [defcommand defreadmodel]]
     [bel.runtime :as runtime]
+    [charred.api :as charred]
     [clojure.string :as str]
-    [tover.catalogues.records :as records]
+    [tover.catalogues.records :as records :refer [Id]]
+    [tover.inventory.entries.model :as entries]
     [tover.inventory.valuation :as valuation]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.products.model :as products]
@@ -382,3 +388,211 @@
 (defmethod connections/count-part :baselines
   [_ context connection-id]
   (count (filter #(= connection-id (:connection-id %)) (vals (:baselines (runtime/coeffect ::provenance/facts context {}))))))
+
+
+;; Propose the cutover balances (slice 2)
+
+
+(def ProposeScope
+  "One scope as reviewed: the mapping revisions the member saw, an absolute count, the cost of an opening as typed,
+  and the run of the observation the member saw."
+  [:map
+   [:stock-item-id Id] [:warehouse-id Id]
+   [:product-mapping-revisions [:map-of :string :int]] [:warehouse-mapping-revisions [:map-of :string :int]]
+   [:quantity [:or :int [:string {:max 20}]]]
+   [:unit-cost {:optional true} [:maybe [:string {:max 40}]]]
+   [:observation {:optional true} [:maybe [:string {:max 200}]]]])
+
+
+(def ProposeMarketplaceCutover
+  [:map [:connection-id Ref] [:instant [:string {:max 100}]] [:scopes [:vector {:min 1 :max 5000} ProposeScope]]])
+
+
+(def messages
+  "Rejection and row messages of `propose-marketplace-cutover`."
+  {:not-a-manager        "Only an Owner or Admin proposes the cutover."
+   :scope-not-ready      "This scope is not ready."
+   :instant-out-of-range "The instant is out of range."
+   :cost-required        "Enter a unit cost for this opening."
+   :stale                "A mapping or observation changed since review. Review the scope again."
+   :invalid-quantity     "Enter a whole number of 0 or more."
+   :invalid-cost         "Enter an amount of 0 or more with at most 4 decimal places."
+   :listed-twice         "The scope is in the proposal twice."})
+
+
+(def ^:private rejection-type
+  {:invalid-quantity :validation :invalid-cost :validation :listed-twice :validation})
+
+
+(def ^:private not-ready
+  "What a row says when its scope is not ready, by readiness."
+  {"pending"               "Already pending in the shared draft."
+   "has baseline"          "This scope already has a cutover baseline."
+   "needs product match"   "Needs a product match."
+   "needs warehouse match" "Needs a warehouse match."
+   "not observed"          "Not a scope of this connection."})
+
+
+(defn scope-id
+  "A scope's row id: `<item>|<warehouse>`."
+  {:malli/schema [:=> [:cat :string :string] :string]}
+  [stock-item-id warehouse-id]
+  (str stock-item-id "|" warehouse-id))
+
+
+(defn- reject!
+  "Rejects with the first problem's type, naming every problem row and why: all scopes are proposed together or
+  none."
+  {:malli/schema [:=> [:cat [:sequential :map]] :nil]}
+  [problems]
+  (when-let [{:keys [code]} (first problems)]
+    (records/fail! (rejection-type code code) (messages code)
+                   {:rows (mapv (fn [{:keys [stock-item-id warehouse-id code readiness] :as p}]
+                                  (assoc p :scope-id (scope-id stock-item-id warehouse-id)
+                                         :message (or (not-ready readiness) (messages code))))
+                                problems)})))
+
+
+(defn entry-id
+  "`cutover:<connection>|<item>|<warehouse>#<n>`, `n` counting the scope's earlier proposals in `proposals` (the
+  shared entry ids the connection's proposals took, discarded ones included)."
+  {:malli/schema [:=> [:cat [:sequential :string] :string :string :string] :string]}
+  [proposals connection-id item warehouse]
+  (let [prefix (str "cutover:" connection-id "|" item "|" warehouse "#")]
+    (str prefix (inc (count (filter #(str/starts-with? % prefix) proposals))))))
+
+
+(defn- missing-match
+  "Why a pair is no scope of the connection: its missing match, or nil when both are confirmed."
+  {:malli/schema [:=> [:cat :map :string :string :string] [:maybe Readiness]]}
+  [{:keys [product-mappings warehouse-mappings]} connection-id item warehouse]
+  (cond (not-any? #(= item (:stock-item-id %)) (vals (confirmed product-mappings connection-id))) "needs product match"
+        (not-any? #(= warehouse (:warehouse-id %)) (vals (confirmed warehouse-mappings connection-id))) "needs warehouse match"))
+
+
+(defn- pending-of
+  "The pending cutover entry of any connection for the stock item and warehouse: two connections sharing a
+  warehouse open it once."
+  {:malli/schema [:=> [:cat [:maybe :map] :string :string] [:maybe :map]]}
+  [provenance item warehouse]
+  (first (sort-by :entry-id (filter #(= [item warehouse] ((juxt :stock-item-id :warehouse-id) %)) (vals (:cutover-entries provenance))))))
+
+
+(defn- whole
+  {:malli/schema [:=> [:cat :any] [:maybe :int]]}
+  [value]
+  (cond (int? value) (when-not (neg? value) value)
+        (string? value) (let [text (str/trim value)] (when (re-matches #"\d{1,9}" text) (parse-long text)))))
+
+
+(defn- cost-text
+  "The typed cost as an exact decimal string, parsed like an opening's; `:invalid` when it cannot be."
+  {:malli/schema [:=> [:cat [:maybe :string]] [:maybe [:or :string [:= :invalid]]]]}
+  [text]
+  (when-not (str/blank? text)
+    (try (str (entries/parse-amount text)) (catch clojure.lang.ExceptionInfo _ :invalid))))
+
+
+(defn- same-amount?
+  {:malli/schema [:=> [:cat [:maybe :string] [:maybe :string]] :boolean]}
+  [a b]
+  (boolean (and a b (zero? (compare (bigdec a) (bigdec b))))))
+
+
+(defn- check-scope
+  "The scope's problem, or the readiness row it proposes with its count and cost."
+  {:malli/schema [:=> [:cat :map :map] :map]}
+  [{:keys [facts rows connection-id twice pass]} {:keys [stock-item-id warehouse-id quantity unit-cost observation] :as input}]
+  (let [row      (get rows [stock-item-id warehouse-id])
+        pending  (pending-of (:provenance facts) stock-item-id warehouse-id)
+        problem  (fn [code & {:as extra}] {:problem (merge {:stock-item-id stock-item-id :warehouse-id warehouse-id :code code} extra)})
+        n        (whole quantity)
+        cost     (cost-text unit-cost)
+        opening? (= "opening" (:result row))]
+    (cond
+      (twice [stock-item-id warehouse-id]) (problem :listed-twice)
+      (and pending (not= "has baseline" (:readiness row))) (problem :scope-not-ready :readiness "pending" :pending-entry (:entry-id pending))
+      (nil? row) (problem :scope-not-ready :readiness (or (missing-match facts connection-id stock-item-id warehouse-id) "not observed"))
+      (not= "ready" (:readiness row)) (problem :scope-not-ready :readiness (:readiness row))
+      (or (not= (:products (:mapping-revisions row)) (:product-mapping-revisions input))
+          (not= (:warehouses (:mapping-revisions row)) (:warehouse-mapping-revisions input))
+          (and (not (str/blank? observation)) (not= observation (:run-id pass))))
+      (problem :stale)
+      (nil? n) (problem :invalid-quantity)
+      (and opening? (= :invalid cost)) (problem :invalid-cost)
+      (and opening? (nil? cost)) (problem :cost-required)
+      :else {:proposed (assoc row :quantity n :unit-cost (when opening? cost))})))
+
+
+(defn- frozen
+  "The evidence frozen with the entry: the observation the scope had at the instant and Tover's balance then."
+  {:malli/schema [:=> [:cat [:maybe :map] :map] [:maybe :string]]}
+  [pass {:keys [observed-quantity observed-at balance]}]
+  (when (or observed-quantity balance)
+    (charred/write-json-str (cond-> {}
+                              observed-quantity (assoc :run-id (:run-id pass) :observed-quantity observed-quantity :observed-at observed-at)
+                              balance (assoc :balance balance)))))
+
+
+(defn- proposal-events
+  {:malli/schema [:=> [:cat :map :map] [:vector :map]]}
+  [{:keys [proposals connection-id at pass actor now]} {:keys [stock-item-id warehouse-id result quantity unit-cost suggested-cost cost-source] :as row}]
+  (let [id       (entry-id proposals connection-id stock-item-id warehouse-id)
+        evidence (frozen pass row)
+        line     (cond-> {:line-id "line" :stock-item-id stock-item-id :warehouse-id warehouse-id :quantity quantity}
+                   unit-cost (assoc :unit-cost unit-cost))]
+    (into [{:type ::provenance/marketplace-cutover-proposed
+            :data (cond-> {:entry-id id       :connection-id connection-id :stock-item-id stock-item-id :warehouse-id warehouse-id
+                           :instant  (str at) :proposed-by   (str actor)   :proposed-at   (str now)}
+                    evidence (assoc :observation evidence)
+                    (and cost-source (same-amount? unit-cost suggested-cost)) (assoc :cost-source cost-source))}
+           {:type ::entries/shared-inventory-entry-saved
+            :data {:entry-id id :kind result :occurred-at at :status "pending" :revision 1 :saved-by actor}}]
+          (entries/line-events id [] [line]))))
+
+
+(defmethod runtime/coeffect ::proposals
+  [_ context {:keys [connection-id]}]
+  (let [prefix (str "cutover:" connection-id "|")]
+    (into [] (comp (map :entry-id) (filter #(str/starts-with? % prefix)))
+          (records/all-records context ::entries/entries :entry-id))))
+
+
+(defn- out-of-range!
+  "The instant is between the earliest allowed instant and now."
+  {:malli/schema [:=> [:cat inst? [:maybe :string] inst?] :nil]}
+  [at first-at now]
+  (when (or (nil? first-at) (.isBefore ^Instant at (instant first-at)) (.isAfter ^Instant at ^Instant now))
+    (records/fail! :instant-out-of-range
+                   (if first-at
+                     (str "Choose an instant from " first-at " until now.")
+                     "Nothing can be proposed until every operation domain has been read once.")
+                   (cond-> {:field :instant}
+                     first-at (assoc :earliest first-at :message-key "Choose an instant from {instant} until now."
+                                     :message-params {:instant first-at})))))
+
+
+(defcommand propose-marketplace-cutover
+  ;; Board `Propose Marketplace Cutover`. Any active member reaches it; only an Owner or Admin proposes, refused
+  ;; as `:not-a-manager` rather than the policy's generic refusal.
+  {:input  ProposeMarketplaceCutover
+   :policy ::records/workspace-member
+   :cofx   [[:facts ::facts (fn [_ input] (select-keys input [:connection-id]))]
+            [:viewer ::connections/viewer (constantly {})]
+            [:proposals ::proposals (fn [_ input] (select-keys input [:connection-id]))]]
+   :emits  #{::provenance/marketplace-cutover-proposed ::entries/shared-inventory-entry-saved ::entries/inventory-entry-line-saved}}
+  [{:keys [scope actor now facts viewer proposals]} {:keys [connection-id] :as input}]
+  (when-not (:manager? viewer)
+    (records/fail! :not-a-manager (messages :not-a-manager) {}))
+  (let [at (or (instant (:instant input)) (records/fail! :validation "Enter a valid date and time." {:field :instant}))]
+    (out-of-range! at (earliest (:positions facts) (:readable facts)) (instant now))
+    (let [pass    (first (:passes facts))
+          rows    (into {} (keep #(when (:stock-item-id %) [[(:stock-item-id %) (:warehouse-id %)] %]))
+                        (scopes facts {:connection-id connection-id :instant at}))
+          twice   (set (keep (fn [[k n]] (when (< 1 n) k)) (frequencies (map (juxt :stock-item-id :warehouse-id) (:scopes input)))))
+          checked (mapv #(check-scope {:facts facts :rows rows :connection-id connection-id :twice twice :pass pass} %) (:scopes input))]
+      (reject! (keep :problem checked))
+      {:events (into [] (mapcat #(proposal-events {:proposals proposals :connection-id connection-id :at at :pass pass :actor actor :now now}
+                                                  (:proposed %)))
+                     checked)
+       :fx     (records/publish scope)})))
