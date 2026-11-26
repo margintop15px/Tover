@@ -388,8 +388,8 @@
 (defn fingerprint
   "What the review saw: the selection and order, the selected entries, referenced and same-named catalogue records
   (suppliers and stores included), owners of the barcodes and articles used, accepted lines on the affected pairs with
-  every revision of their records, the revisions of the amended records, and the currency. `replaced` are the accepted
-  lines of the amended records."
+  every revision of their records, the revisions of the amended records, the currency, and the import rows, source
+  acceptances and baselines of the selection. `replaced` are the accepted lines of the amended records."
   {:malli/schema [:=> [:cat :map Selection [:sequential :map] [:sequential :map] [:sequential :map]] :string]}
   [{:keys [products warehouses stock-items barcodes history currency entries suppliers] :as facts} selection lines changes replaced]
   (let [ids      (fn [k] (set (concat (keep k lines) (keep k changes))))
@@ -419,7 +419,8 @@
                                     (sort (keep #(when (owners (:record-id %)) (:record-revision-id %)) (:records history)))
                                     currency
                                     (sort-by :supplier-id (filter #(or (sellers (:supplier-id %)) (named (text-key (:name %)))) suppliers))
-                                    (sort-by :store-id (filter (comp shops :store-id) (:stores facts)))])))))
+                                    (sort-by :store-id (filter (comp shops :store-id) (:stores facts)))
+                                    (provenance/review-facts (:provenance facts) lines chosen)])))))
 
 
 (defn review
@@ -556,7 +557,9 @@
    :archive-blocked       [:archive-blocked "The item has stock or other pending work."]
    :cutover-date-fixed    [:cutover-date-fixed "Cutover date is fixed"]
    :baseline-exists       [:baseline-exists "This stock already has a cutover baseline."]
-   :baseline-cancelled    [:baseline-cancelled "A cutover baseline cannot be cancelled."]})
+   :baseline-cancelled    [:baseline-cancelled "A cutover baseline cannot be cancelled."]
+   :before-cutover        [:before-cutover "Before cutover"]
+   :already-accepted      [:already-accepted "This operation is already accepted."]})
 
 
 (defn- registration-events
@@ -600,9 +603,9 @@
         (records/fail! type message {:problem problem :problems problems})))
     (when-not (:valid? result)
       (records/fail! :review-outdated "The selection and order must match. Review it again." {}))
-    (let [picked    (filter (comp (set (map :entry-id selection)) :entry-id) entries)
-          ;; Each accepted scope's baseline is established in the same commit.
-          baselines (provenance/acceptance-events provenance picked (:records records) actor now)]
+    (let [picked            (filter (comp (set (map :entry-id selection)) :entry-id) entries)
+          ;; Each accepted scope's baseline, and each accepted source operation, is recorded in the same commit.
+          provenance-events (provenance/acceptance-events provenance picked (:records records) actor now)]
       {:events (vec (concat
                       [{:type ::inventory-changes-accepted
                         :data {:acceptance-id acceptance-id :actor actor :recorded-at now :record-count (count (:records records))}}]
@@ -616,8 +619,8 @@
                             :let     [revision (some #(when (= entry-id (:entry-id %)) (:revision %)) selection)]]
                         {:type :tover.inventory.entries.model/shared-inventory-entry-accepted
                          :data {:entry-id entry-id :status "accepted" :revision (inc revision)}})
-                      baselines))
-       :fx     (into (records/publish scope) (provenance/dirty-fx (map (comp :connection-id :data) baselines)))})))
+                      provenance-events))
+       :fx     (into (records/publish scope) (provenance/dirty-fx (map (comp :connection-id :data) provenance-events)))})))
 
 
 (defcommand accept-reviewed-inventory-changes
@@ -631,7 +634,8 @@
              ::stock-items/stock-item-barcode-removed
              :tover.catalogues.products.model/product-registered :tover.catalogues.warehouses.model/warehouse-registered
              :tover.catalogues.suppliers.model/supplier-registered
-             :tover.inventory.entries.model/shared-inventory-entry-accepted ::provenance/cutover-baseline-established}}
+             :tover.inventory.entries.model/shared-inventory-entry-accepted ::provenance/cutover-baseline-established
+             ::provenance/source-operation-accepted}}
   [{:keys [scope actor] :as facts} input]
   (entries/check-workspace! scope input)
   (plan facts input {:actor actor}))

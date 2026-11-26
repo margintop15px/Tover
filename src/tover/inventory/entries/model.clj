@@ -732,7 +732,8 @@
     {:events (-> [{:type ::shared-inventory-entry-saved :data saved}]
                  (into (line-events entry-id lines parsed))
                  (into (change-events entry-id (or changes []) proposed)))
-     :fx     (records/publish scope)}))
+     ;; An import entry's save marks its connection, so intake sees the member's edit.
+     :fx     (into (records/publish scope) (provenance/dirty-fx [(provenance/connection-of (:provenance facts) entry-id)]))}))
 
 
 (def DiscardEntry
@@ -740,18 +741,22 @@
 
 
 (defcommand discard-inventory-draft
-  {:input DiscardEntry :policy ::records/workspace-member :cofx draft-facts
+  ;; Discarding an import entry sets its operation aside (`provenance/discard-events`), so intake never proposes it
+  ;; again until a member brings it back.
+  {:input DiscardEntry :policy ::records/workspace-member :cofx (conj draft-facts [:provenance ::provenance/facts (constantly {})])
    :emits #{::inventory-draft-discarded ::inventory-entry-line-removed ::inventory-entry-line-barcode-removed
-            ::inventory-entry-change-removed ::inventory-entry-change-barcode-removed}}
-  [{:keys [scope entry lines changes]} {:keys [entry-id revision] :as input}]
+            ::inventory-entry-change-removed ::inventory-entry-change-barcode-removed
+            ::provenance/source-operation-set-aside ::provenance/imported-operation-withdrawn}}
+  [{:keys [scope entry lines changes provenance actor now]} {:keys [entry-id revision] :as input}]
   (check-workspace! scope input)
   (when-not entry
     (records/fail! :not-found "This entry no longer exists." {}))
   (current-draft! entry lines (or changes []) revision)
   {:events (-> [{:type ::inventory-draft-discarded :data {:entry-id entry-id :status "discarded" :revision (inc revision)}}]
                (into (line-events entry-id lines []))
-               (into (change-events entry-id (or changes []) [])))
-   :fx     (records/publish scope)})
+               (into (change-events entry-id (or changes []) []))
+               (into (provenance/discard-events provenance entry-id actor now)))
+   :fx     (into (records/publish scope) (provenance/dirty-fx [(provenance/connection-of provenance entry-id)]))})
 
 
 (defn blockers

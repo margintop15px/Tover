@@ -85,7 +85,8 @@
 (def Import
   "Board `Imported Operation Proposed`: the source operation's revision and the shared entry it became; `entry-revision`
   the entry revision the connector last saved, `missing` the missing facts as JSON text, `source-conflict` a newer
-  revision that differs from a member's edit."
+  revision that differs from a member's edit, `mappings-used` the line keys and mapping revisions of the proposal
+  (JSON text), which its acceptance records."
   [:map
    [:source-operation-id SourceOperationId]
    [:connection-id Ref]
@@ -94,6 +95,7 @@
    [:entry-revision [:int {:min 1}]]
    [:missing :string]
    [:source-conflict :boolean]
+   [:mappings-used {:optional true} :string]
    [:proposed-at At]])
 
 
@@ -112,13 +114,15 @@
 
 
 (def Aside
-  "Board 45 slice a: an operation a member set aside (`aside` false once brought back)."
+  "Board 45 slice a `Source Operation Set Aside`: an operation a member set aside (`aside` false once brought back),
+  with the pending entry setting aside removed."
   [:map
    [:source-operation-id SourceOperationId]
    [:connection-id {:optional true} Ref]
    [:revision {:optional true} [:int {:min 1}]]
    [:aside {:optional true} :boolean]
    [:reason {:optional true} :string]
+   [:removed-entry-id {:optional true} Id]
    [:set-by {:optional true} Ref]
    [:set-at {:optional true} At]])
 
@@ -132,7 +136,8 @@
 
 (defmodel imports
   {:id     :source-operation-id :store :catalogue :schema Import :policy ::records/workspace-member
-   :events {::imported-operation-proposed  {:set [:connection-id :revision :entry-id :entry-revision :missing :source-conflict :proposed-at]}
+   :events {::imported-operation-proposed  {:set [:connection-id :revision :entry-id :entry-revision :missing :source-conflict :mappings-used
+                                                  :proposed-at]}
             ::imported-operation-withdrawn {:delete true}}})
 
 
@@ -143,7 +148,7 @@
 
 (defmodel asides
   {:id     :source-operation-id :store :catalogue :schema Aside :policy ::records/workspace-member
-   :events {::source-operation-set-aside {:set [:connection-id :revision :aside :reason :set-by :set-at]}}})
+   :events {::source-operation-set-aside {:set [:connection-id :revision :aside :reason :removed-entry-id :set-by :set-at]}}})
 
 
 (defn import-entry-id
@@ -168,18 +173,34 @@
 
 
 (def Facts
-  [:map [:cutover-entries [:map-of :string CutoverEntry]] [:baselines [:map-of :string Baseline]]])
+  "`imports` and `source-acceptances` (by source operation id) are those of pending import entries."
+  [:map [:cutover-entries [:map-of :string CutoverEntry]] [:baselines [:map-of :string Baseline]]
+   [:imports {:optional true} [:map-of :string Import]] [:source-acceptances {:optional true} [:map-of :string SourceAcceptance]]])
 
 
 (defmethod runtime/coeffect ::facts
   ;; `:cutover-entries` holds the rows whose shared entry is still pending: an accepted entry keeps its row, and its
   ;; scope is then the baseline's (or, for another connection, history), never pending again.
   [_ context _]
-  {:cutover-entries (let [pending (into #{} (keep #(when (= "pending" (:status %)) (:entry-id %)))
-                                        (records/all-records context :tover.inventory.entries.model/entries :entry-id))]
-                      (into {} (comp (filter (comp pending :entry-id)) (map (juxt :entry-id identity)))
-                            (records/all-records context ::cutover-entries :entry-id)))
-   :baselines       (into {} (map (juxt :baseline-id identity)) (records/all-records context ::baselines :baseline-id))})
+  (let [pending (into #{} (keep #(when (= "pending" (:status %)) (:entry-id %)))
+                      (records/all-records context :tover.inventory.entries.model/entries :entry-id))
+        sources (into #{} (comp (filter import-entry-id?) (map import-source)) pending)
+        of      (fn [model] (into {} (comp (filter (comp sources :source-operation-id)) (map (juxt :source-operation-id identity)))
+                                  (records/all-records context model :source-operation-id)))]
+    (cond-> {:cutover-entries (into {} (comp (filter (comp pending :entry-id)) (map (juxt :entry-id identity)))
+                                    (records/all-records context ::cutover-entries :entry-id))
+             :baselines       (into {} (map (juxt :baseline-id identity)) (records/all-records context ::baselines :baseline-id))}
+      ;; Only while import entries are pending.
+      (seq sources) (assoc :imports (of ::imports) :source-acceptances (of ::source-acceptances)))))
+
+
+(defn import-row
+  "The import row of a pending import entry, or nil."
+  {:malli/schema [:=> [:cat [:maybe :map] [:maybe :string]] [:maybe Import]]}
+  [facts entry-id]
+  (when (import-entry-id? entry-id)
+    (let [row (get-in facts [:imports (import-source entry-id)])]
+      (when (= entry-id (:entry-id row)) row))))
 
 
 (defn entry-prefix
@@ -267,11 +288,32 @@
                                {:field field :message fixed}))))
 
 
+(defn- import-problems
+  "Board `Accept Reviewed Inventory Changes` § Imported entries: a line of an imported operation is strictly after
+  the baseline its connection holds for the line's stock item and warehouse (a pair the connection holds no baseline
+  for has no cutover to be before), and a source operation is accepted at most once."
+  {:malli/schema [:=> [:cat [:maybe :map] [:sequential :map] [:sequential :map]] [:sequential :map]]}
+  [facts lines picked]
+  (concat
+    (for [{:keys [entry-id]} picked
+          :let               [row (import-row facts entry-id)]
+          :when              (and row (contains? (:source-acceptances facts) (import-source entry-id)))]
+      {:entry-id entry-id :line-id nil :code :already-accepted})
+    (for [{:keys [entry-id entry line-id stock-item-id warehouse-id]} lines
+          :let [{:keys [connection-id]} (import-row facts entry-id)
+                from (some->> (when (and connection-id stock-item-id warehouse-id)
+                                (baseline facts connection-id stock-item-id warehouse-id))
+                              :instant instant)
+                at (instant (:occurred-at entry))]
+          :when (and from at (not (.isAfter ^Instant at ^Instant from)))]
+      {:entry-id entry-id :line-id line-id :code :before-cutover})))
+
+
 (defn acceptance-problems
   "Board `Accept Reviewed Inventory Changes`: reviewed `lines` (each with its `:entry`) of a cutover entry or of an
   amendment of a baseline's record keep its instant, item and warehouse; a scope gets one baseline, so it may not
   have one already nor two cutover entries in one selection. A `picked` entry cancelling a baseline's record is
-  refused."
+  refused. Imported entries: see `import-problems`."
   {:malli/schema [:=> [:cat [:maybe :map] [:sequential :map] [:sequential :map]] [:vector :map]]}
   [facts lines picked]
   (let [scope-of #(when-let [row (get-in facts [:cutover-entries %])] ((juxt :connection-id :stock-item-id :warehouse-id) row))
@@ -294,23 +336,67 @@
                                                  (baseline facts (:connection-id row) (:stock-item-id row) (:warehouse-id row))))
                                     :baseline-exists)]
                    :when code]
-               {:entry-id entry-id :line-id nil :code code}))))))
+               {:entry-id entry-id :line-id nil :code code})
+             (import-problems facts lines picked))))))
 
 
 (defn acceptance-events
   "One `Cutover Baseline Established` per accepted cutover entry of `picked`, naming the record its acceptance
-  `records` create, established `now`."
+  `records` create, established `now`; one `Source Operation Accepted` per accepted import entry, by `actor`,
+  edited when the entry's revision is not the one the connector last saved."
   {:malli/schema [:=> [:cat [:maybe :map] [:sequential :map] [:sequential :map] :any inst?] [:vector :map]]}
-  [facts picked records _actor now]
-  (vec (for [{:keys [entry-id]} (sort-by :entry-id picked)
-             :let               [{:keys [connection-id stock-item-id warehouse-id] :as row} (get-in facts [:cutover-entries entry-id])
-                                 record (some #(when (and (= entry-id (:record-id %)) (not (:cancelled %))) %) records)]
-             :when              (and row record)]
-         {:type ::cutover-baseline-established
-          :data {:baseline-id    (baseline-id connection-id stock-item-id warehouse-id) :connection-id connection-id
-                 :stock-item-id  stock-item-id :warehouse-id warehouse-id
-                 :instant        (:instant row) :record-id (:record-id record)
-                 :established-at (str now)}})))
+  [facts picked records actor now]
+  (let [record-of (fn [entry-id] (some #(when (and (= entry-id (:record-id %)) (not (:cancelled %))) %) records))]
+    (vec (concat
+           (for [{:keys [entry-id]} (sort-by :entry-id picked)
+                 :let               [{:keys [connection-id stock-item-id warehouse-id] :as row} (get-in facts [:cutover-entries entry-id])
+                                     record (record-of entry-id)]
+                 :when              (and row record)]
+             {:type ::cutover-baseline-established
+              :data {:baseline-id    (baseline-id connection-id stock-item-id warehouse-id) :connection-id connection-id
+                     :stock-item-id  stock-item-id :warehouse-id warehouse-id
+                     :instant        (:instant row) :record-id (:record-id record)
+                     :established-at (str now)}})
+           (for [{:keys [entry-id revision]} (sort-by :entry-id picked)
+                 :let [row (import-row facts entry-id) record (record-of entry-id)]
+                 :when (and row record)]
+             {:type ::source-operation-accepted
+              :data {:source-operation-id (:source-operation-id row)            :connection-id (:connection-id row) :revision (:revision row)
+                     :record-id           (:record-id record)                   :accepted-by   (str actor)
+                     :edited              (not= revision (:entry-revision row))
+                     :mappings-used       (or (:mappings-used row) "[]")        :accepted-at   (str now)}})))))
+
+
+(defn discard-events
+  "Board 45 slice a, Discarded imported entry (roadmap decision 2): a member's discard of a pending import entry sets
+  its operation aside in the same commit and drops its import row; nothing for any other entry."
+  {:malli/schema [:=> [:cat [:maybe :map] :string :any :any] [:vector :map]]}
+  [facts entry-id actor now]
+  (if-let [{:keys [source-operation-id connection-id revision]} (import-row facts entry-id)]
+    [{:type ::source-operation-set-aside
+      :data {:source-operation-id source-operation-id :connection-id connection-id :revision revision  :aside true
+             :removed-entry-id    entry-id            :set-by        (str actor)   :set-at   (str now)}}
+     {:type ::imported-operation-withdrawn :data {:source-operation-id source-operation-id :entry-id entry-id}}]
+    []))
+
+
+(defn connection-of
+  "The connection a pending import entry came from, or nil."
+  {:malli/schema [:=> [:cat [:maybe :map] [:maybe :string]] [:maybe :string]]}
+  [facts entry-id]
+  (:connection-id (import-row facts entry-id)))
+
+
+(defn review-facts
+  "What a review of `picked` with reviewed `lines` saw of imports: the selected entries' import rows and source
+  acceptances, and the baselines of the lines' stock items and warehouses."
+  {:malli/schema [:=> [:cat [:maybe :map] [:sequential :map] [:sequential :map]] :any]}
+  [facts lines picked]
+  (let [sources (keep #(some-> (import-row facts (:entry-id %)) :source-operation-id) picked)
+        pairs   (set (map (juxt :stock-item-id :warehouse-id) lines))]
+    [(sort-by :source-operation-id (keep #(get-in facts [:imports %]) sources))
+     (sort-by :source-operation-id (keep #(get-in facts [:source-acceptances %]) sources))
+     (sort-by :baseline-id (filter #(pairs [(:stock-item-id %) (:warehouse-id %)]) (vals (:baselines facts))))]))
 
 
 ;; Board `Cutover Review and Resulting Corrections` (slice 3): part of the ordinary Review of chapter 17.

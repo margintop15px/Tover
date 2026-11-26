@@ -14,6 +14,7 @@
   (:require
     [bel.core :as bel :refer [defcommand defprocessor]]
     [bel.runtime :as runtime]
+    [clojure.string :as str]
     [com.brunobonacci.mulog :as mu]
     [tover.catalogues.records :as records]
     [tover.inventory.acceptance.model :as acceptance]
@@ -37,6 +38,7 @@
 
 (def messages
   {:not-found         "Unknown source operation."
+   :reason-too-long   "Enter at most 500 characters."
    :not-permitted     "Not permitted"
    :connection-paused "Connection paused"
    :stale             "The operation, a mapping or its entry changed since it was read."
@@ -117,6 +119,17 @@
    :warehouses (into {} (keep (fn [[id m]] (when (:mapping-revision m) [id (:mapping-revision m)]))) (:warehouse-mappings facts))})
 
 
+(defn mappings-used
+  "Board `Source Operation Accepted` § mappings used: each line's key with the mapping revision that resolved it,
+  as JSON text."
+  {:malli/schema [:=> [:cat :map :map] :string]}
+  [facts operation]
+  (observations/write-json
+    (vec (for [{:keys [line-key external-product-id mapping]} (proposals/resolve-lines facts operation)
+               :when (:mapping-revision mapping)]
+           {:line-key line-key :external-product-id external-product-id :mapping-revision (:mapping-revision mapping)}))))
+
+
 (defn- aside?
   {:malli/schema [:=> [:cat :map :string] :boolean]}
   [facts id]
@@ -151,18 +164,19 @@
 (defn- proposal-events
   "Saving or replacing an unedited entry, a source conflict over an edited one, or nothing for a repeat."
   {:malli/schema [:=> [:cat :map :map :map :map :any] [:vector :map]]}
-  [facts {:keys [source-operation-id connection-id revision]} {:keys [entry missing]} {stored :entry lines :lines} now]
+  [facts {:keys [source-operation-id connection-id revision] :as operation} {:keys [entry missing]} {stored :entry lines :lines} now]
   (let [actor    (sync/connector-actor connection-id)
         entry-id (provenance/import-entry-id source-operation-id)
         row      (get-in facts [:imports source-operation-id])
         pending? (= "pending" (:status stored))
         edited?  (and pending? (not= (str (:saved-by stored)) (str actor)))
         missing  (observations/write-json missing)
+        used     (mappings-used facts operation)
         import   (fn [entry-revision conflict?]
                    {:type ::provenance/imported-operation-proposed
                     :data {:source-operation-id source-operation-id :connection-id  connection-id  :revision revision
                            :entry-id            entry-id            :entry-revision entry-revision :missing  missing  :source-conflict conflict?
-                           :proposed-at         (str now)}})]
+                           :mappings-used       used                :proposed-at    (str now)}})]
     (if edited?
       (if (= revision (:revision row))
         []
@@ -170,7 +184,7 @@
       (let [saved     (entry-data entry-id entry stored actor)
             new-lines (:lines entry)]
         (if (and pending? row (= revision (:revision row)) (not (:source-conflict row)) (= missing (:missing row))
-                 (= (comparable stored lines) (comparable saved new-lines)))
+                 (= used (:mappings-used row)) (= (comparable stored lines) (comparable saved new-lines)))
           []
           (-> [{:type ::entries/shared-inventory-entry-saved :data saved}]
               (into (entries/line-events entry-id (if pending? lines []) new-lines))
@@ -284,6 +298,74 @@
       (= :not-resolvable refusal) {}
       refusal (fail! refusal)
       :else (fail! :still-resolvable))))
+
+
+;; Slice a · Set an operation aside
+
+
+(def SetSourceOperationsAside
+  "Board `Set Source Operations Aside`: the reviewed rows, each at the revision (and, optionally, the entry revision,
+  0 without one) the member saw; `aside` false brings them back."
+  [:map
+   [:operations [:vector {:min 1} [:map [:source-operation-id provenance/SourceOperationId] [:revision [:int {:min 1}]]
+                                   [:entry-revision {:optional true} [:int {:min 0}]]]]]
+   [:aside :boolean]
+   [:reason {:optional true} [:maybe :string]]])
+
+
+(defmethod runtime/coeffect ::selected
+  ;; Each named operation with its import entry (any status) and lines, and whether it is accepted.
+  [_ context {:keys [operations]}]
+  (let [ids       (vec (distinct (map :source-operation-id operations)))
+        found     (sync/load-rows context ::sync/source-operations ids)
+        accepted  (sync/load-rows context ::provenance/source-acceptances ids)
+        entry-ids (mapv provenance/import-entry-id ids)
+        entries   (sync/load-rows context ::entries/entries entry-ids)]
+    (into {} (for [id ids :let [entry-id (provenance/import-entry-id id) entry (get entries entry-id)]]
+               [id {:operation (get found id)
+                    :accepted? (or (contains? accepted id) (= "accepted" (:status entry)))
+                    :entry     entry
+                    :lines     (if (= "pending" (:status entry)) (runtime/coeffect ::entries/lines context {:entry-id entry-id}) [])}]))))
+
+
+(defn set-aside-events
+  "Setting aside removes the pending entry, edited or not, in the same commit; bringing back only records it, and
+  intake proposes the operation again. Refused when unknown, accepted, or changed since review."
+  {:malli/schema [:=> [:cat [:map-of :string :map] :map :any :any] [:vector :map]]}
+  [selected {:keys [operations aside reason]} actor now]
+  (let [reason (some-> reason str/trim not-empty)]
+    (when (and reason (< 500 (count reason))) (fail! :reason-too-long))
+    (vec (mapcat
+           (fn [{:keys [source-operation-id revision entry-revision]}]
+             (let [{:keys [operation accepted? entry lines]} (get selected source-operation-id)
+                   pending? (= "pending" (:status entry))]
+               (when-not operation (fail! :not-found))
+               (when accepted? (fail! :already-accepted))
+               (when (or (not= revision (:revision operation))
+                         (and entry-revision (not= entry-revision (if pending? (:revision entry) 0))))
+                 (fail! :stale))
+               (cons {:type ::provenance/source-operation-set-aside
+                      :data (cond-> {:source-operation-id source-operation-id :connection-id (:connection-id operation)
+                                     :revision            revision            :aside         aside
+                                     :set-by              (str actor)         :set-at        (str now)}
+                              reason (assoc :reason reason)
+                              (and aside pending?) (assoc :removed-entry-id (:entry-id entry)))}
+                     (when (and aside pending?) (withdrawal-events source-operation-id {:entry entry :lines lines})))))
+           (vals (into (sorted-map) (map (juxt :source-operation-id identity)) operations))))))
+
+
+(defcommand set-source-operations-aside
+  ;; Board 45 slice a; any active member, whatever the connection's state. No stock effect.
+  {:input  SetSourceOperationsAside
+   :policy ::records/workspace-member
+   :cofx   [[:selected ::selected (fn [_ input] (select-keys input [:operations]))]]
+   :emits  #{::provenance/source-operation-set-aside ::provenance/imported-operation-withdrawn ::entries/inventory-draft-discarded
+             ::entries/inventory-entry-line-removed ::entries/inventory-entry-line-barcode-removed}}
+  [{:keys [scope actor now selected]} input]
+  (let [events (set-aside-events selected input actor now)]
+    {:events events
+     :fx     (into (records/publish scope)
+                   (provenance/dirty-fx (keep (comp :connection-id :operation) (vals selected))))}))
 
 
 ;; Slice 1 · Notice a new source operation

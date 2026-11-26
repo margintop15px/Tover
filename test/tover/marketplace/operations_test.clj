@@ -1,7 +1,8 @@
 (ns tover.marketplace.operations-test
-  "Board chapter 45 slices 1 and 2 · Notice a new source operation and Propose the imported operation: intake
-  through a store, from a downloaded operation to a pending shared entry the connector saved, its replacement,
-  conflict and withdrawal, and the refusals of `Propose Imported Operation`."
+  "Board chapter 45 slices 1, 2, a and 6 · Notice a new source operation, Propose the imported operation, Set an
+  operation aside and Accept reviewed imported changes: intake through a store, from a downloaded operation to a
+  pending shared entry the connector saved, its replacement, conflict and withdrawal, the refusals of `Propose
+  Imported Operation`, setting aside and bringing back, discarding, and a member's acceptance."
   (:require
     [bel.core :as bel]
     [bel.core-test :as bel-test]
@@ -181,6 +182,7 @@
                       {:external-product-id (str c ":200") :listing-revision 1 :stock-item-id "blue" :item-revision 1}]})
     {:ctx          ctx
      :system       system
+     :marketplace  marketplace
      :as-connector as-connector
      :source-id    source-id
      :entry-of     entry-of
@@ -464,3 +466,297 @@
         (testing "the connector's actor id, a bare UUID, is labelled with its Ozon account"
           (is (= "Ozon · Shop" (:actor-label (first (actors/enrich ctx [{:actor (str (:saved-by (pending (entry-of "P1"))))}])))))
           (is (= "Ozon · Shop" (:actor-label (first (actors/enrich ctx [{:actor (str connector)}]))))))))))
+
+
+;; Board 45 slice a · Set an operation aside
+
+
+(defn- set-aside!
+  {:malli/schema [:=> [:cat :map :string [:sequential :map] :boolean [:* :any]] :any]}
+  [ctx command-id operations aside & {:as more}]
+  (execute! ctx ::operations/set-source-operations-aside command-id (merge {:operations operations :aside aside} more)))
+
+
+(defn- aside-row
+  {:malli/schema [:=> [:cat :map :string] [:maybe :map]]}
+  [ctx id]
+  (some #(when (= id (:source-operation-id %)) %) (records-of ctx ::provenance/asides :source-operation-id)))
+
+
+(defn- acceptance-row
+  {:malli/schema [:=> [:cat :map :string] [:maybe :map]]}
+  [ctx id]
+  (some #(when (= id (:source-operation-id %)) %) (records-of ctx ::provenance/source-acceptances :source-operation-id)))
+
+
+(defn- marked?
+  "Whether intake's dirty set comes to hold the connection: effects run on a thread of their own after commit."
+  {:malli/schema [:=> [:cat :map] :boolean]}
+  [marketplace]
+  (loop [tries 200]
+    (cond (contains? (get @(:dirty marketplace) :marketplace-operation-intake #{}) c) true
+          (zero? tries) false
+          :else (do (Thread/sleep 10) (recur (dec tries))))))
+
+
+(deftest not-tracked-stock
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx marketplace intake! entry pending import balance source-id entry-of classify]} (setup! repo)
+            ids (mapv #(str "B" %) (range 20))
+            rows (fn [] (mapv #(hash-map :source-operation-id (source-id %) :revision 1) ids))]
+        (testing "Given 20 operations of a listing the business does not track"
+          (seed-all! ctx (for [id ids] [::sync/source-operation-observed (operation id 1 :lines (lines "200" "1"))]))
+          (is (= 20 (intake!)))
+          (testing "When a member sets them aside"
+            (reset! (:dirty marketplace) {})
+            (set-aside! ctx "aside" (rows) true :reason "Not tracked")
+            (is (marked? marketplace))
+            (testing "then they leave the list: their entries are removed in the same commit"
+              (is (every? #(nil? (pending (entry-of %))) ids))
+              (is (every? #(= "discarded" (:status (entry (entry-of %)))) ids))
+              (is (every? #(nil? (import (source-id %))) ids))
+              (is (= [true "Not tracked" (str member) 1 (entry-of "B0")]
+                     ((juxt :aside :reason :set-by :revision :removed-entry-id) (aside-row ctx (source-id "B0")))))
+              (is (= {"set aside" 20} (frequencies (apply classify (map source-id ids)))))
+              (is (= 0 (intake!))))
+            (testing "stock is unchanged"
+              (is (= 10 (balance "blue" "home"))))
+            (testing "and they can be brought back"
+              (set-aside! ctx "back" (rows) false)
+              (is (false? (:aside (aside-row ctx (source-id "B0")))))
+              (is (= 20 (intake!)))
+              (is (every? #(= ["pending" connector] ((juxt :status :saved-by) (pending (entry-of %)))) ids)))))))))
+
+
+(deftest new-revision-stays-aside
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! pending source-id entry-of classify]} (setup! repo)]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (set-aside! ctx "aside" [{:source-operation-id (source-id "P1") :revision 1}] true)
+        (observe! (operation "P1" 2 :lines (lines "100" "2")))
+        (is (= 0 (intake!)) "a new source revision keeps the operation aside")
+        (is (nil? (pending (entry-of "P1"))))
+        (is (= "set aside" (classify (source-id "P1"))))
+        (is (= :stale (failure #(set-aside! ctx "late" [{:source-operation-id (source-id "P1") :revision 1}] false)))
+            "a row reviewed at the old revision is stale")
+        (set-aside! ctx "back" [{:source-operation-id (source-id "P1") :revision 2}] false)
+        (is (= 1 (intake!)))
+        (is (= [2] (mapv :quantity (:lines (pending (entry-of "P1"))))))))))
+
+
+(deftest discarding-sets-aside
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx marketplace observe! intake! pending import source-id entry-of classify]} (setup! repo)
+            id (entry-of "P1")]
+        (testing "Given a pending imported entry"
+          (observe! (operation "P1" 1))
+          (intake!)
+          (testing "When a member discards it"
+            (reset! (:dirty marketplace) {})
+            (execute! ctx ::entries/discard-inventory-draft "discard" {:workspace-id workspace :entry-id id :revision 1})
+            (is (marked? marketplace))
+            (testing "then its operation is set aside in the same commit"
+              (is (= [true (str member) id] ((juxt :aside :set-by :removed-entry-id) (aside-row ctx (source-id "P1")))))
+              (is (nil? (import (source-id "P1"))))
+              (is (= "set aside" (classify (source-id "P1")))))
+            (testing "and is not proposed again until brought back"
+              (is (= 0 (intake!)))
+              (is (nil? (pending id)))
+              (set-aside! ctx "back" [{:source-operation-id (source-id "P1") :revision 1}] false)
+              (is (= 1 (intake!)))
+              (is (= ["pending" 3] ((juxt :status :revision) (pending id)))))))))))
+
+
+(deftest already-accepted-cannot-be-set-aside
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! source-id entry-of]} (setup! repo)]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (accept! ctx (entry-of "P1") 1)
+        (is (= :already-accepted (failure #(set-aside! ctx "aside" [{:source-operation-id (source-id "P1") :revision 1}] true))))
+        (is (= :not-found (failure #(set-aside! ctx "unknown" [{:source-operation-id (source-id "nope") :revision 1}] true))))))))
+
+
+;; Board 45 slice 6 · Accept reviewed imported changes
+
+
+(defn- accept-all!
+  "Reviews and accepts `selection` in its order."
+  {:malli/schema [:=> [:cat :map :string [:sequential [:tuple :string :int]]] :any]}
+  [ctx acceptance-id selection]
+  (let [input  {:selection (mapv (fn [[id revision]] {:entry-id id :revision revision}) selection) :order (mapv first selection)}
+        review (runtime/read-model ctx ::acceptance/inventory-review input)]
+    (is (:valid? review) (pr-str (:problems review)))
+    (execute! ctx ::acceptance/accept-reviewed-inventory-changes acceptance-id
+              (merge input {:workspace-id workspace :acceptance-id acceptance-id :fingerprint (:fingerprint review)}))))
+
+
+(defn- rejection
+  "The rejection's type, message and the problem it names."
+  {:malli/schema [:=> [:cat fn?] [:maybe :any]]}
+  [f]
+  (try (f) nil (catch clojure.lang.ExceptionInfo error [(:type (ex-data error)) (ex-message error) (:problem (ex-data error))])))
+
+
+(deftest return-warehouse
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! pending balance]} (setup! repo)
+            sale (str c ":fbs-posting:P1")
+            return (str c ":return:R2")
+            id (provenance/import-entry-id return)]
+        (seed! ctx :tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "v" :name "V" :status "active" :revision 1})
+        (observe! (operation "P1" 1))
+        (seed! ctx ::provenance/source-operation-accepted
+               {:source-operation-id sale  :connection-id c    :revision    1  :record-id "sale-p1" :accepted-by (str member)
+                :edited              false :mappings-used "[]" :accepted-at at})
+        (testing "Given an FBS return prefilled with warehouse W from its posting"
+          (observe! (operation "R2" 1 :source-operation-id return :entity-id return :source-revision-id (str return "#1") :kind "return"
+                               :return-schema "fbs" :status "ReturnedToOzon" :occurred-at "2026-11-12T09:00:00Z" :from-warehouse nil
+                               :related-operation sale :lines (lines "100" "1")))
+          (is (= 1 (intake!)))
+          (is (= ["customer-return" ["home"]] ((juxt :kind #(mapv :warehouse-id (:lines %))) (pending id))))
+          (testing "When the member changes it to V and accepts"
+            (save! ctx id 1 {:kind  "customer-return" :occurred-at "2026-11-12T09:00:00Z"
+                             :lines [{:line-id (str return "/1") :stock-item-id "red" :warehouse-id "v" :quantity 1}]})
+            (accept-all! ctx "acc-r" [[id 2]])
+            (testing "then the Customer return enters V"
+              (is (= 1 (balance "red" "v")))
+              (is (= 10 (balance "red" "home")))
+              (is (= [1 id true] ((juxt :revision :record-id :edited) (acceptance-row ctx return))))
+              (is (= 0 (intake!))))))))))
+
+
+(deftest edited
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx marketplace observe! intake! balance source-id entry-of]} (setup! repo)
+            id (entry-of "P1")]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (testing "Given a member changed the quantity"
+          (save! ctx id 1 {:occurred-at "2026-11-10T09:00:00Z"
+                           :lines       [{:line-id (str (source-id "P1") "/1") :stock-item-id "red" :warehouse-id "home" :quantity 2}]})
+          (testing "When they accept"
+            (reset! (:dirty marketplace) {})
+            (accept-all! ctx "acc-e" [[id 2]])
+            (is (marked? marketplace))
+            (testing "then Source Operation Accepted says edited"
+              (let [row (acceptance-row ctx (source-id "P1"))]
+                (is (= [c 1 id (str member) true] ((juxt :connection-id :revision :record-id :accepted-by :edited) row)))
+                (is (= [{:line-key "1" :external-product-id (str c ":100") :mapping-revision 1}]
+                       (observations/read-json (:mappings-used row))))))
+            (is (= 8 (balance "red" "home")))))))))
+
+
+(deftest with-manual-entries
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! pending balance source-id entry-of]} (setup! repo)
+            id (entry-of "P1")]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (execute! ctx ::entries/save-shared-inventory-entry "manual"
+                  {:workspace-id workspace :entry-id "m1" :kind "sale" :occurred-at "2026-11-11T09:00:00Z"
+                   :lines        [{:line-id "m1/1" :stock-item-id "red" :warehouse-id "home" :quantity 1}]})
+        (accept-all! ctx "acc-m" [[id 1] ["m1" 1]])
+        (is (= 6 (balance "red" "home")))
+        (is (nil? (pending id)))
+        (is (nil? (pending "m1")))
+        (is (= [(str member) false] ((juxt :accepted-by :edited) (acceptance-row ctx (source-id "P1")))) "accepted unedited")
+        (is (= 1 (count (records-of ctx ::provenance/source-acceptances :source-operation-id))) "the manual entry has no source")))))
+
+
+(deftest line-before-cutover-names-the-line
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! pending source-id entry-of classify]} (setup! repo)
+            id (entry-of "P1")
+            rid (acceptance/record-revision-id "count-green" 1)
+            day (java.time.Instant/parse "2026-11-15T00:00:00Z")
+            problem {:entry-id id :line-id (str (source-id "P1") "/2") :code :before-cutover}]
+        (testing "Given green, whose cutover at Home is on the 15th, and a posting on the 10th of red and green"
+          (seed-all! ctx (concat
+                           [[:tover.inventory.stock-items.model/stock-item-registered
+                             {:stock-item-id "green" :product-id "mug" :variant-label "green" :unit "pcs" :condition "regular" :status "active" :revision 1}]
+                            [::sync/external-product-observed (listing "300" "Mug green")]]
+                           (butlast (opening "green" "home"))
+                           [[::acceptance/inventory-changes-accepted {:acceptance-id "a-count" :actor member :recorded-at day :record-count 1}]
+                            [::acceptance/inventory-record-accepted {:record-revision-id rid          :record-id   "count-green" :revision 1 :acceptance-id "a-count"
+                                                                     :kind               "correction" :occurred-at day           :sequence 0 :cancelled     false}]
+                            [::acceptance/inventory-record-line-accepted {:record-line-id (acceptance/record-line-id rid 0) :record-revision-id rid :position 0
+                                                                          :stock-item-id  "green" :warehouse-id "home" :counted-quantity 10}]
+                            [::provenance/cutover-baseline-established {:baseline-id    (provenance/baseline-id c "green" "home") :connection-id c :stock-item-id "green"
+                                                                        :warehouse-id   "home" :instant "2026-11-15T00:00:00Z" :record-id "count-green"
+                                                                        :established-at "2026-11-16T00:00:00Z"}]]))
+          (execute! ctx ::products/confirm-product-mapping "confirm-green"
+                    {:rows [{:external-product-id (str c ":300") :listing-revision 1 :stock-item-id "green" :item-revision 1}]})
+          (observe! (operation "P1" 1 :lines (lines "100" "1" "300" "1")))
+          (is (= 1 (intake!)))
+          (is (= "remove old lines" (classify (source-id "P1"))))
+          (let [selection {:selection [{:entry-id id :revision 1}] :order [id]}
+                review    (runtime/read-model ctx ::acceptance/inventory-review selection)]
+            (is (some #{problem} (:problems review)))
+            (testing "then acceptance is rejected Before cutover, naming the line"
+              (is (= [:before-cutover "Before cutover" problem]
+                     (rejection #(execute! ctx ::acceptance/accept-reviewed-inventory-changes "acc-b"
+                                           (merge selection {:workspace-id workspace :acceptance-id "acc-b" :fingerprint (:fingerprint review)})))))
+              (is (some? (pending id))))))))))
+
+
+(deftest correction-in-the-same-selection-covers-the-shortage
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! balance entry-of]} (setup! repo)
+            id (entry-of "P1")]
+        (testing "Given a Sale of 12 red from Home, which holds 10"
+          (observe! (operation "P1" 1 :lines (lines "100" "12")))
+          (is (= 1 (intake!)))
+          (let [selection {:selection [{:entry-id id :revision 1}] :order [id]}
+                review    (runtime/read-model ctx ::acceptance/inventory-review selection)]
+            (is (= :negative-balance
+                   (first (rejection #(execute! ctx ::acceptance/accept-reviewed-inventory-changes "acc-short"
+                                                (merge selection {:workspace-id workspace :acceptance-id "acc-short" :fingerprint (:fingerprint review)})))))
+                "alone, the shortage is never accepted as a negative balance"))
+          (testing "a count before it in the same selection covers it"
+            (execute! ctx ::entries/save-shared-inventory-entry "count"
+                      {:workspace-id workspace :entry-id "count" :kind "correction" :occurred-at "2026-11-09T09:00:00Z"
+                       :lines        [{:line-id "count/1" :stock-item-id "red" :warehouse-id "home" :quantity 15}]})
+            (accept-all! ctx "acc-c" [["count" 1] [id 1]])
+            (is (= 3 (balance "red" "home")))))))))
+
+
+(deftest manual-acceptance-while-paused
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! balance source-id entry-of]} (setup! repo)]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (seed! ctx ::connections/marketplace-connection-paused
+               {:connection-id c :sync-state "paused" :reason "manager" :paused-by (str member) :paused-at at})
+        (accept-all! ctx "acc-p" [[(entry-of "P1") 1]])
+        (is (= 7 (balance "red" "home")))
+        (is (= [(str member) false] ((juxt :accepted-by :edited) (acceptance-row ctx (source-id "P1")))))))))
+
+
+(deftest accepted-at-most-once
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! pending source-id entry-of]} (setup! repo)
+            id (entry-of "P1")]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (seed! ctx ::provenance/source-operation-accepted
+               {:source-operation-id (source-id "P1") :connection-id c    :revision    1  :record-id "elsewhere" :accepted-by (str connector)
+                :edited              false            :mappings-used "[]" :accepted-at at})
+        (let [selection {:selection [{:entry-id id :revision 1}] :order [id]}
+              review    (runtime/read-model ctx ::acceptance/inventory-review selection)]
+          (is (= [:already-accepted "This operation is already accepted." {:entry-id id :line-id nil :code :already-accepted}]
+                 (rejection #(execute! ctx ::acceptance/accept-reviewed-inventory-changes "acc-twice"
+                                       (merge selection {:workspace-id workspace :acceptance-id "acc-twice" :fingerprint (:fingerprint review)})))))
+          (is (some? (pending id))))))))
