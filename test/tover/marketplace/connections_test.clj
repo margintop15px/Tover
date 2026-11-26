@@ -247,7 +247,7 @@
   ;; Chapter 40's half: pausing records no change to proposals or history; accepting them in Review is chapter 45.
   (let [plan (decide ::model/pause-marketplace-connection {:connection connection} {:connection-id c})]
     (is (= #{::model/marketplace-connection-paused} (set (map :type (:events plan)))))
-    (is (empty? (:fx plan)))))
+    (is (= [[:tover.marketplace.sync.model/mark-dirty {:connection-id c}]] (:fx plan)) "only the re-evaluation mark")))
 
 
 (deftest pause-unknown-connection

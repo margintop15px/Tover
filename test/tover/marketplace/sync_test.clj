@@ -2063,3 +2063,24 @@
               (dotimes [_ 60] (runtime/run-processors! system))
               (is (= "completed" (:run-state (row))))
               (is (= "fresh" @used)))))))))
+
+
+;; Dirty connections
+
+
+(deftest marked-once-is-taken-once
+  (let [marketplace {:dirty (atom #{}) :swept (atom nil)}
+        now         (t "2026-12-11T06:00:00Z")]
+    (sync/take-dirty! marketplace #{"a" "b"} now)
+    (runtime/effect! ::sync/mark-dirty {:resources {:marketplace marketplace}} {:connection-id "a"})
+    (is (= #{"a"} (sync/take-dirty! marketplace #{"a" "b"} (.plusSeconds now 1))))
+    (is (= #{} (sync/take-dirty! marketplace #{"a" "b"} (.plusSeconds now 2))))))
+
+
+(deftest everything-once-a-minute
+  (let [marketplace {:dirty (atom #{}) :swept (atom nil)}
+        now         (t "2026-12-11T06:00:00Z")]
+    (is (= #{"a" "b"} (sync/take-dirty! marketplace #{"a" "b"} now)) "at start")
+    (is (= #{} (sync/take-dirty! marketplace #{"a" "b"} (.plusSeconds now 59))))
+    (is (= #{"a" "b"} (sync/take-dirty! marketplace #{"a" "b"} (.plusSeconds now 60))))
+    (is (= #{} (sync/take-dirty! marketplace #{"a" "b"} (.plusSeconds now 61))))))

@@ -47,7 +47,8 @@
 
 (def Connector
   [:map [:verify [:fn fn?]] [:repo {:optional true} :any] [:key {:optional true} bytes?]
-   [:post {:optional true} [:fn fn?]] [:pacer {:optional true} :any] [:last-look {:optional true} :any] [:attempts {:optional true} :any]])
+   [:post {:optional true} [:fn fn?]] [:pacer {:optional true} :any] [:last-look {:optional true} :any] [:attempts {:optional true} :any]
+   [:dirty {:optional true} :any] [:swept {:optional true} :any]])
 
 
 ;; Sealing
@@ -359,5 +360,8 @@
            ;; Failed tries to record the batch at each connection's position.
            :attempts  (atom {})
            ;; Keys sealed by this process whose command may still be running.
-           :in-flight (atom {})}
+           :in-flight (atom {})
+           ;; ponytail: in memory, right for the single application instance the board decided; the minute sweep
+           ;; covers inventory edits and restarts. `:swept` is the instant of the last full sweep.
+           :dirty     (atom #{}) :swept (atom nil)}
     connector-key (assoc :key (tover.marketplace.connector/connector-key connector-key))))

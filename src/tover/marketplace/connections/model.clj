@@ -353,7 +353,8 @@
   (if (= "paused" (:sync-state (known! connection)))
     {}
     {:events [{:type ::marketplace-connection-paused
-               :data {:connection-id connection-id :sync-state "paused" :reason "manager" :paused-by (str actor) :paused-at (str now)}}]}))
+               :data {:connection-id connection-id :sync-state "paused" :reason "manager" :paused-by (str actor) :paused-at (str now)}}]
+     :fx     [[:tover.marketplace.sync.model/mark-dirty {:connection-id connection-id}]]}))
 
 
 (defcommand resume-marketplace-connection
@@ -365,7 +366,8 @@
     (= "active" (:sync-state (known! connection))) {}
     (= "rejected" (:credentials-state connection)) (fail! :needs-credentials "Needs credentials")
     :else {:events [{:type ::marketplace-connection-resumed
-                     :data {:connection-id connection-id :sync-state "active" :resumed-by (str actor) :resumed-at (str now)}}]}))
+                     :data {:connection-id connection-id :sync-state "active" :resumed-by (str actor) :resumed-at (str now)}}]
+           :fx     [[:tover.marketplace.sync.model/mark-dirty {:connection-id connection-id}]]}))
 
 
 (def ReplaceConnectionCredentials

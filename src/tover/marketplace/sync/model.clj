@@ -742,7 +742,8 @@
                                        :pass-id          (str run-id "/" domain)}
                                 (= "stock-by-warehouse" domain)
                                 (assoc :asked (observations/write-json
-                                                (spoken-for (or pass-rows {}) (into (set named) (keep (comp :external-product-id :data)) events)))))}))})))
+                                                (spoken-for (or pass-rows {}) (into (set named) (keep (comp :external-product-id :data)) events)))))}))
+       :fx     [[::mark-dirty {:connection-id connection-id}]]})))
 
 
 (defn coverage
@@ -961,6 +962,21 @@
                    (and (:run-id c) (not= "open" (:run-state c))) (assoc :after-run (:run-id c))))))
        (sort-by (juxt #(instant (:due-since %)) :connection-id))
        vec))
+
+
+(defmethod runtime/effect! ::mark-dirty
+  [_ {:keys [resources]} {:keys [connection-id]}]
+  (some-> (:marketplace resources) :dirty (swap! conj connection-id)))
+
+
+(defn take-dirty!
+  "The connections to re-evaluate: those marked since the last call, and all of `all-ids` at the first call and
+  once a minute after the last full sweep. Marks are cleared atomically."
+  {:malli/schema [:=> [:cat [:maybe :map] [:set :string] validation/Instant] [:set :string]]}
+  [{:keys [dirty swept]} all-ids now]
+  (let [marked         (first (swap-vals! dirty (constantly #{})))
+        [before after] (swap-vals! swept #(if (or (nil? %) (not (.isBefore now (.plus ^Instant % (Duration/ofMinutes 1))))) now %))]
+    (cond-> marked (not= before after) (into all-ids))))
 
 
 (defn- look?
