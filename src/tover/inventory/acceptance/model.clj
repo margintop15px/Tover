@@ -461,7 +461,7 @@
         pairs    (distinct (map (juxt :stock-item-id :warehouse-id) (concat usable (when (empty? blocked) replaced))))
         problems (vec (distinct (concat changed blocked future
                                         (when (seq usable) (openings standing usable))
-                                        (provenance/acceptance-problems (:provenance facts) usable)
+                                        (provenance/acceptance-problems (:provenance facts) usable picked)
                                         (changes/uniqueness facts usable)
                                         (unknown-units usable)
                                         (counts-without-history history usable)
@@ -555,7 +555,8 @@
    :restore-needs-product [:restore-needs-product "Restore the product first."]
    :archive-blocked       [:archive-blocked "The item has stock or other pending work."]
    :cutover-date-fixed    [:cutover-date-fixed "Cutover date is fixed"]
-   :baseline-exists       [:baseline-exists "This stock already has a cutover baseline."]})
+   :baseline-exists       [:baseline-exists "This stock already has a cutover baseline."]
+   :baseline-cancelled    [:baseline-cancelled "A cutover baseline cannot be cancelled."]})
 
 
 (defn- registration-events

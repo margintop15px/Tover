@@ -295,3 +295,25 @@
           (is (= {cutover-id cutover-row} (:cutover-entries (runtime/read-model ctx ::facts-for-test {}))))
           (run! ::entries/discard-inventory-draft "d1" {:workspace-id workspace :entry-id cutover-id :revision 1})
           (is (= {:cutover-entries {} :baselines {}} (runtime/read-model ctx ::facts-for-test {})) "the scope is free again"))))))
+
+
+(deftest two-cutover-entries-of-one-scope-are-refused
+  (let [row      (fn [n] (assoc cutover-row :entry-id (str "cutover:c1|red|main#" n)))
+        entry    (fn [n] {:entry-id (str "cutover:c1|red|main#" n) :kind "correction" :occurred-at (day 10) :status "pending" :revision 1
+                          :saved-by member :lines [{:line-id "l" :stock-item-id "red" :warehouse-id "main" :quantity 8}]})
+        p        {:cutover-entries {(:entry-id (row 1)) (row 1) (:entry-id (row 2)) (row 2)} :baselines {}}
+        f        (facts (history (record "o" 1 "opening" 1 ["red" "main" 5 {:unit-cost "100.00"}])) p (entry 1) (entry 2))
+        input    (assoc (selected f) :ordered? true)
+        reviewed (acceptance/review (assoc (acceptance/review-input f) :now (:now f)) input)]
+    (is (= #{[(:entry-id (row 1)) :baseline-exists] [(:entry-id (row 2)) :baseline-exists]}
+           (set (map (juxt :entry-id :code) (:problems reviewed)))))
+    (is (= :baseline-exists
+           (:type (failure #(runtime/decide ::acceptance/accept-reviewed-inventory-changes f
+                                            (merge input {:workspace-id workspace :acceptance-id "acc" :fingerprint (:fingerprint reviewed)}))))))))
+
+
+(deftest cancelling-a-baseline-is-refused-at-acceptance
+  (let [f (facts (history opening) {:cutover-entries {} :baselines {"c1|red|main" (baseline-of "o" "2026-11-01T00:00:00Z")}}
+                 {:entry-id "x" :kind "opening" :amends "o#1" :cancel true :status "pending" :revision 1 :lines []})]
+    (is (= [:baseline-cancelled] (map :code (:problems (review f)))))
+    (is (= [:baseline-cancelled "A cutover baseline cannot be cancelled."] ((juxt :type :message) (failure #(accept f)))))))
