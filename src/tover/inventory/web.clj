@@ -207,7 +207,8 @@
                             moved (get operations w)]
                         (cond
                           ;; An amended opening moves to the warehouse whose cell takes its quantity.
-                          (and mover item (not money?) (nil? line) (not gone?) (not archived?))
+                          ;; A pending count keeps its cell, and a locked row moves nothing.
+                          (and mover item (not money?) (nil? line) (nil? count) (not locked?) (not gone?) (not archived?))
                           (cond-> {:value     (if moved (str (+ (:quantity cell 0) (reduce + (map :change moved)))) shown)
                                    :className "inventory-cell-number" :editor {:type "quantity"}
                                    :title     (i18n/t "Enter a quantity to move the opening to this warehouse.")

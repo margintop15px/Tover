@@ -551,3 +551,17 @@
         "back has an earlier record")
     (is (= ["red" "main" (day 5)] (shortage (amend (history opening (sale 5 4)) {:warehouse-id "back"})))
         "the sale in main loses its stock")))
+
+
+(deftest an-amended-opening-stays-first-among-equal-instants
+  (let [h     (history opening (record "q" 1 "purchase" 3 {:supplier-id "acme"} ["red" "main" 2 {:unit-cost "10.00"}]))
+        f     (amend h {:occurred-at (day 3)})
+        after (accepted h f)]
+    (is (empty? (:problems (review f))) "no order is needed and the opening is not after the purchase")
+    (is (= ["opening" "purchase"] (map :kind (valuation/business-order (:records after)))))))
+
+
+(deftest a-second-amendment-of-an-opening-is-stale
+  (is (= [:stale-draft nil]
+         (rejected {:history (history opening) :pending [{:entry-id "y" :kind "opening" :amends "o#1" :status "pending" :revision 1}]}
+                   opening-save))))

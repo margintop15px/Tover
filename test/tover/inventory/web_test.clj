@@ -509,3 +509,12 @@
 (deftest an-amendment-keeps-its-target
   (is (= "o#1" (:amends (web/entry-input {:products [] :stock-items [{:stock-item-id "tee-m"}] :warehouses [{:warehouse-id "main"}]}
                                          workspace "x" 1 {"stock-item-id" "tee-m" "warehouse-id" "main" "quantity" "6" "amends" "o#1"} nil)))))
+
+
+(deftest a-pending-count-keeps-its-cell-beside-an-amended-opening
+  (let [table (assoc-in table [:products 0 :items 0 :cells "shop" :history?] true)
+        count {:entry-id "c" :revision 2 :kind "correction" :lines [{:line-id "c/shop" :stock-item-id "tee-m" :warehouse-id "shop" :quantity 7}]}
+        model (web/stock-grid table {:mode "units" :entries [amendment count] :scope {:pending true :editing ["tee-m"]}})
+        shop  (column model "tee-m" "shop")]
+    (is (= ["3 → " "7"] ((juxt :prefix :value) shop)) "the count shows, not the opening")
+    (is (= ["c" "correction"] [(get-in shop [:target :entry]) (get-in shop [:target :values "kind"])]) "typing there edits the count")))
