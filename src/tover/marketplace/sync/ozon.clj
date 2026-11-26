@@ -536,7 +536,8 @@
        (seq missing) (assoc :missing missing)))))
 
 
-(def ^:private after-handover
+(def after-handover
+  "Posting statuses after the physical handover."
   #{"delivering" "driver_pickup" "delivered" "client_arbitration" "arbitration" "not_accepted" "sent_by_seller"})
 
 
