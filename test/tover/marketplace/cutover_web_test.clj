@@ -215,17 +215,17 @@
   [ctx]
   (let [seed! #'propose/seed! r2 (str c "-r2") at "2026-11-21T10:00:00Z" listing (str c ":p1")]
     (seed! ctx :tover.marketplace.sync.model/marketplace-sync-started
-           {:run-id r2 :connection-id c :trigger "member" :triggered-by "m" :domains "stock-by-warehouse" :starting-positions "{}"
-            :started-at at :run-state "open"})
+           {:run-id     r2 :connection-id c      :trigger "member" :triggered-by "m" :domains "stock-by-warehouse" :starting-positions "{}"
+            :started-at at :run-state     "open"})
     (seed! ctx :tover.marketplace.sync.model/source-batch-recorded
-           {:position-id (str c "/stock-by-warehouse") :connection-id c :domain "stock-by-warehouse" :run-id r2 :cursor "" :batch-key ""
-            :refetch-ids "[]" :finished true :found-listings 1 :found-warehouses 0 :found-operations 0 :recorded-at at})
+           {:position-id (str c "/stock-by-warehouse") :connection-id c :domain "stock-by-warehouse" :run-id           r2 :cursor           "" :batch-key   ""
+            :refetch-ids "[]" :finished true :found-listings                    1                    :found-warehouses 0  :found-operations 0  :recorded-at at})
     (seed! ctx :tover.marketplace.sync.model/source-domain-traversed
-           {:run-id r2 :connection-id c :domain "stock-by-warehouse" :covered-until at :traversed-at at
-            :position-id (str c "/stock-by-warehouse") :finished-domains "stock-by-warehouse" :first-covered-at at
-            :pass-id (str r2 "/stock-by-warehouse") :asked "[\"p1\"]"})
+           {:run-id      r2 :connection-id c :domain "stock-by-warehouse" :covered-until at :traversed-at at
+            :position-id (str c "/stock-by-warehouse")  :finished-domains "stock-by-warehouse" :first-covered-at at
+            :pass-id     (str r2 "/stock-by-warehouse") :asked            "[\"p1\"]"})
     (seed! ctx :tover.marketplace.sync.model/source-stock-observed
-           {:stock-id (str listing "|warehouse-stock|" hub "|" r2) :connection-id c :run-id r2 :external-product-id listing
+           {:stock-id              (str listing "|warehouse-stock|" hub "|" r2) :connection-id c :run-id r2 :external-product-id listing
             :external-warehouse-id hub :source "warehouse-stock" :fulfilment-type "fbo" :present 130 :parts "[]" :observed-at at})))
 
 
@@ -241,8 +241,8 @@
         (finish-newer-pass! ctx)
         (testing "a pass finishing between load and Propose is refused as stale, not proposed with the new instant"
           (let [caught (handler/execute-action ctx ::web/command {:connectionId c :commandId "attempt-5" :command "propose"
-                                                                  :instant "2026-11-20T10:00:00Z"
-                                                                  :rows [(assoc red-row :observation (:observation row))]})
+                                                                  :instant      "2026-11-20T10:00:00Z"
+                                                                  :rows         [(assoc red-row :observation (:observation row))]})
                 answer ((:bel/fn (bel/get-view ::grid/failed)) (:input caught))]
             (is (= ::grid/failed (:id caught)))
             (is (= [{:id "red|main" :path "readiness" :message "A mapping or observation changed since review. Review the scope again."}]
@@ -254,7 +254,7 @@
     (fn [ctx]
       (forms/accept! ctx (act ctx {:rows [red-row]}))
       (let [caught (handler/execute-action ctx ::inventory-web/describe-entry
-                                           {:workspaceId scenarios/workspace :entryId    (str "cutover:" c "|red|main#1") :revision 1
+                                           {:workspaceId scenarios/workspace    :entryId   (str "cutover:" c "|red|main#1") :revision 1
                                             :occurredAt  "2026-11-21T10:00:00Z" :commandId "move-1"})
             answer #((:bel/fn (bel/get-view ::inventory-web/failed)) (:input caught))]
         (is (= ::inventory-web/failed (:id caught)))

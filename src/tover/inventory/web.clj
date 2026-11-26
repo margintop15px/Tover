@@ -819,8 +819,8 @@
                      (:entries work))]
      (when (and table work catalogue)
        (assoc (stock-grid table (merge order {:mode        mode :scope scope :entries entries :findings (:findings work)
-                                              :cutover     (:rows cutover) :baseline-records (:baseline-records cutover)
-                                              :stock-items (:stock-items catalogue) :categories (:categories catalogue)
+                                              :cutover     (:rows cutover)          :baseline-records (:baseline-records cutover)
+                                              :stock-items (:stock-items catalogue) :categories       (:categories catalogue)
                                               :stores      (:stores catalogue)}))
               ;; Move offers every active product, also those the table hides for having no stock items.
               :moveTargets (vec (for [{:keys [product-id name status]} (sort-by (comp records/name-key :name) (:products catalogue))

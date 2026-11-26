@@ -46,7 +46,7 @@
 
 
 (def ^:private readiness-labels
-  {"ready"                 "Ready"                 "pending"      "Pending"      "has baseline" "Has baseline" "needs product match" "Needs product match"
+  {"ready"                 "Ready"                 "pending"      "Pending"      "has baseline"          "Has baseline" "needs product match" "Needs product match"
    "needs warehouse match" "Needs warehouse match" "not observed" "Not observed" "history after instant" "History starts after the instant"})
 
 
@@ -92,7 +92,7 @@
   was read from, back as its observation."
   {:malli/schema [:=> [:cat :map [:maybe :map] [:maybe :string] :map] grid/Row]}
   [label reviewed run-id {:keys [stock-item-id warehouse-id external-product-id external-warehouse-id readiness observed-quantity observed-at
-                          balance result suggested-quantity suggested-cost cost-source mapping-revisions]}]
+                                 balance result suggested-quantity suggested-cost cost-source mapping-revisions]}]
   (let [id (cond stock-item-id (cutover/scope-id stock-item-id warehouse-id)
                  external-product-id (str "product:" external-product-id)
                  :else (str "warehouse:" external-warehouse-id))]
@@ -133,7 +133,7 @@
         :selection-actions (if (:can-propose? read) [{:command "propose" :label "Propose" :primary? true}] [])
         :read              (dissoc read :scopes)
         :rows              (mapv (fn [s] (scope-row label (when (:stock-item-id s) (reviewed (cutover/scope-id (:stock-item-id s) (:warehouse-id s))))
-                                                  (:run-id read) s))
+                                                    (:run-id read) s))
                                  (:scopes read))})))
 
 
