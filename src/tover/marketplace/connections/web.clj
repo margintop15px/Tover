@@ -332,6 +332,8 @@
                 [:dd [:a {:href (str (operations/marketplace-path connection-id) "/warehouses")} (:unmatched-warehouses status)]]
                 [:dt (i18n/t "Scopes without baseline")]
                 [:dd (:scopes-without-baseline status)]
+                [:dt (i18n/t "Baselines")]
+                [:dd (:baselines status)]
                 [:dt (i18n/t "Imported operations by next step")]
                 [:dd (if-let [steps (seq (:imported-operations-by-next-step status))]
                        (str/join ", " (map (fn [{:keys [next-step count]}] (str next-step ": " count)) steps))

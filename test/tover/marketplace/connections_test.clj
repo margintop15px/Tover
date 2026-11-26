@@ -9,10 +9,12 @@
     [bel.store :as store]
     [clojure.test :refer [deftest is testing use-fixtures]]
     [tover.catalogues.products.model]
+    [tover.inventory.entries.model]
     [tover.inventory.stock-items.model]
     [tover.marketplace.connections.model :as model]
     [tover.marketplace.connector :as connector]
     [tover.marketplace.products.model]
+    [tover.marketplace.provenance]
     [tover.marketplace.warehouses.model]
     [tover.support :as support])
   (:import
@@ -24,7 +26,7 @@
   [f]
   (bel/build-registry! ['tover.catalogues.warehouses.model 'tover.catalogues.stores.model
                         'tover.catalogues.products.model 'tover.inventory.stock-items.model 'tover.marketplace.products.model 'tover.marketplace.warehouses.model
-                        'tover.marketplace.connections.model 'tover.marketplace.sync.model
+                        'tover.marketplace.connections.model 'tover.marketplace.sync.model 'tover.marketplace.provenance 'tover.catalogues.suppliers.model 'tover.catalogues.categories.model 'tover.inventory.entries.model
                         'tover.workspaces.currency.model])
   (f))
 
@@ -154,18 +156,17 @@
   (let [counts {:unmatched-listings 3 :unmatched-warehouses 1 :scopes-without-baseline 4 :baselines 2
                 :next-steps         {"Match product" 2 "Confirm" 5 "Skip" 0}}
         status (model/status connection {:counts counts})]
-    (is (= [3 1 4] ((juxt :unmatched-listings :unmatched-warehouses :scopes-without-baseline) status)))
+    (is (= [3 1 4 2] ((juxt :unmatched-listings :unmatched-warehouses :scopes-without-baseline :baselines) status)))
     (is (= [{:next-step "Confirm" :count 5} {:next-step "Match product" :count 2}] (:imported-operations-by-next-step status))
         "sorted by next step; steps with nothing waiting are left out")
     (is (= [] (:blocking-reasons status)))))
 
 
 (deftest counts-are-zero-until-a-chapter-supplies-them
-  ;; Chapters 42 and 43 supply unmatched listings and warehouses; set aside here, as this context has no store.
-  (let [unmatched  (get-method model/count-part :unmatched-listings)
-        warehouses (get-method model/count-part :unmatched-warehouses)]
-    (remove-method model/count-part :unmatched-listings)
-    (remove-method model/count-part :unmatched-warehouses)
+  ;; Chapters 42, 43 and 44 supply their parts; set aside here, as this context has no store.
+  (let [parts [:unmatched-listings :unmatched-warehouses :scopes-without-baseline :baselines]
+        saved (into {} (keep #(when-let [m (get (methods model/count-part) %)] [% m])) parts)]
+    (doseq [part parts] (remove-method model/count-part part))
     (try
       (is (= {:unmatched-listings 0 :unmatched-warehouses 0 :scopes-without-baseline 0 :baselines 0 :next-steps {}}
              (runtime/coeffect ::model/counts {} {:connection-id c})))
@@ -173,8 +174,7 @@
       (is (= 7 (:baselines (runtime/coeffect ::model/counts {} {:connection-id c}))))
       (finally
         (remove-method model/count-part :baselines)
-        (when unmatched (.addMethod ^clojure.lang.MultiFn model/count-part :unmatched-listings unmatched))
-        (when warehouses (.addMethod ^clojure.lang.MultiFn model/count-part :unmatched-warehouses warehouses))))))
+        (doseq [[part m] saved] (.addMethod ^clojure.lang.MultiFn model/count-part part m))))))
 
 
 (deftest key-without-analytics-access

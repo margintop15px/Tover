@@ -14,12 +14,14 @@
     [dev.onionpancakes.chassis.core :as chassis]
     [tover.catalogues.products.model]
     [tover.catalogues.stores.model :as stores]
+    [tover.inventory.entries.model]
     [tover.inventory.stock-items.model]
     [tover.marketplace.connections-test :as scenarios]
     [tover.marketplace.connections.model :as model]
     [tover.marketplace.connections.web :as web]
     [tover.marketplace.connector :as connector]
     [tover.marketplace.products.model]
+    [tover.marketplace.provenance]
     [tover.marketplace.warehouses.model]
     [tover.shared.i18n :as i18n]
     [tover.shared.web.core]
@@ -34,7 +36,7 @@
   [f]
   (bel/build-registry! ['tover.catalogues.warehouses.model 'tover.catalogues.stores.model
                         'tover.catalogues.products.model 'tover.inventory.stock-items.model 'tover.marketplace.products.model 'tover.marketplace.warehouses.model
-                        'tover.marketplace.connections.model 'tover.marketplace.sync.model 'tover.shared.web.core
+                        'tover.marketplace.connections.model 'tover.marketplace.sync.model 'tover.marketplace.provenance 'tover.catalogues.suppliers.model 'tover.catalogues.categories.model 'tover.inventory.entries.model 'tover.shared.web.core
                         'tover.marketplace.connections.web 'tover.workspaces.currency.model])
   (f))
 
@@ -391,6 +393,7 @@
         (try
           (let [html (page ctx ::web/connection {:connection-id "c-1"})]
             (is (str/includes? html "Unmatched listings"))
+            (is (str/includes? html "<dt>Baselines</dt><dd>0</dd>"))
             (is (str/includes? html "Imported operations by next step"))
             (is (str/includes? html "Confirm &lt;b&gt;") "text from outside is escaped")
             (is (not (str/includes? html "Confirm <b>")))

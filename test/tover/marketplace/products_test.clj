@@ -7,8 +7,12 @@
     [bel.runtime :as runtime]
     [bel.store :as store]
     [clojure.test :refer [deftest is testing use-fixtures]]
+    [tover.catalogues.categories.model]
+    [tover.catalogues.suppliers.model]
+    [tover.inventory.entries.model]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.products.model :as products]
+    [tover.marketplace.provenance]
     [tover.marketplace.sync.model :as sync]
     [tover.marketplace.sync.observations :as observations]
     [tover.support :as support])
@@ -21,7 +25,9 @@
   [f]
   (bel/build-registry! ['tover.catalogues.products.model 'tover.catalogues.stores.model 'tover.catalogues.warehouses.model
                         'tover.inventory.stock-items.model 'tover.marketplace.connections.model
-                        'tover.marketplace.sync.model 'tover.marketplace.products.model 'tover.marketplace.warehouses.model 'tover.workspaces.currency.model])
+                        'tover.marketplace.sync.model 'tover.marketplace.products.model 'tover.marketplace.warehouses.model 'tover.workspaces.currency.model
+                        'tover.catalogues.suppliers.model 'tover.catalogues.categories.model 'tover.inventory.entries.model
+                        'tover.marketplace.provenance])
   (f))
 
 

@@ -523,7 +523,7 @@
    [:last-completed-sync-at {:optional true} validation/Instant]
    [:next-sync-at {:optional true} validation/Instant]
    [:domains [:vector [:map [:domain Domain] [:readable? :boolean] [:covered-until {:optional true} validation/Instant]]]]
-   [:unmatched-listings :int] [:unmatched-warehouses :int] [:scopes-without-baseline :int]
+   [:unmatched-listings :int] [:unmatched-warehouses :int] [:scopes-without-baseline :int] [:baselines :int]
    [:imported-operations-by-next-step [:vector [:map [:next-step :string] [:count :int]]]]
    [:currency-notice? :boolean] [:workspace-currency {:optional true} :string]
    [:automatic-acceptance-possible? :boolean]
@@ -587,7 +587,7 @@
                    :account-currency (:account-currency connection)
                    :domains (domain-rows connection covered)
                    :unmatched-listings unmatched-listings :unmatched-warehouses unmatched-warehouses
-                   :scopes-without-baseline scopes-without-baseline
+                   :scopes-without-baseline scopes-without-baseline :baselines baselines
                    :imported-operations-by-next-step (->> next-steps (filter (comp pos? val)) (sort-by key)
                                                           (mapv (fn [[step n]] {:next-step step :count n})))
                    :currency-notice? (boolean (and currency (not= currency (:account-currency connection))))
