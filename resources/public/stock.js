@@ -280,7 +280,7 @@ class StockWorkbench extends InventoryWorkbench {
     if (tab === 'lineage' && response.rows.length) { body.replaceChildren(this.timeline(response.rows)); return; }
     if (!response.rows.length) { body.replaceChildren(element('p', { textContent: t('No accepted records in this period.') })); return; }
     body.replaceChildren(element('table', { className: 'stock-history-rows' },
-      element('thead', {}, element('tr', {}, ...['Occurred at', 'Kind', 'Warehouse', 'Change', 'Balance', 'Unit cost', 'Reason'].map(label => element('th', { textContent: t(label) })))),
+      element('thead', {}, element('tr', {}, ...['Occurred at', 'Kind', 'Warehouse', 'Change', 'Balance', 'Unit cost', 'Reason', ''].map(label => element('th', { textContent: label && t(label) })))),
       element('tbody', {}, ...response.rows.map(row => element('tr', { className: row['superseded?'] || row['cancelled?'] ? 'stock-history-superseded' : '' },
         element('td', { textContent: formatDate(row['occurred-at']) }),
         element('td', { textContent: row['kind-label'] + (row['cancelled?'] ? ` (${t('cancelled')})` : row['superseded?'] ? ` (${t('superseded')})` : '') }),
@@ -288,7 +288,21 @@ class StockWorkbench extends InventoryWorkbench {
         element('td', { textContent: String(row['quantity-change']) }),
         element('td', { textContent: row['balance-after'] ?? '—' }),
         element('td', { textContent: row['unit-cost'] ?? '' }),
-        element('td', { textContent: row.reason ?? '' }))))));
+        element('td', { textContent: row.reason ?? '' }),
+        element('td', {}, ...(row.kind === 'opening' && !row['superseded?'] ? [this.amendButton(row)] : [])))))));
+  }
+  // Edit on an accepted opening: a pending revision of it, edited in Preview like a pending opening.
+  amendButton(row) {
+    const button = element('button', { type: 'button', className: 'stock-history-edit', textContent: `✎ ${t('Edit')}` });
+    button.addEventListener('click', () => {
+      if (this.pending) return;
+      const item = this.historyItem;
+      this.pending = { kind: 'amend', commandId: crypto.randomUUID(),
+        then: () => { this.focusRow = item; this.setScope({ ...this.scope, pending: true, editing: [...new Set([...(this.scope.editing ?? []), item])] }, this.scopeLabel); } };
+      this.setStatus('Saving');
+      this.emit('stock-amend', { workspaceId: this.workspaceId, entryId: crypto.randomUUID(), amends: row['record-revision-id'], commandId: this.pending.commandId });
+    });
+    return button;
   }
 
   // Every accepted operation of the item on a time axis: a lane per warehouse, a bar per balance, a mark per operation.

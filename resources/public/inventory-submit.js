@@ -211,6 +211,7 @@ export class InventoryWorkbench extends HTMLElement {
     const [id, queued] = this.queued.entries().next().value || [];
     if (id && request.kind === 'save' && response.status === 'ok') { this.queued.delete(id); this.save(id, queued); return; }
     if (request.kind.startsWith('discard') && response.status === 'ok' && this.discards?.length) { this.discard(this.discards.shift()); return; }
+    if (request.then && response.status === 'ok') { request.then(); return; }
     this.refreshTable();
   }
 

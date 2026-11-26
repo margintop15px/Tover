@@ -81,7 +81,7 @@
         operation? #(not (#{"opening" "correction"} (:kind (record (:record-revision-id %)))))
         row        (fn [line superseded?]
                      (let [r (record (:record-revision-id line))]
-                       (merge (select-keys r [:record-id :revision :kind :occurred-at :sequence :actor :recorded-at :reason])
+                       (merge (select-keys r [:record-revision-id :record-id :revision :kind :occurred-at :sequence :actor :recorded-at :reason])
                               (select-keys line [:warehouse-id :quantity-change :counted-quantity :unit-cost :balance-after])
                               {:superseded? superseded?})))
         mine?      #(and (= stock-item-id (:stock-item-id %)) (within? (:occurred-at (record (:record-revision-id %))) from to))]

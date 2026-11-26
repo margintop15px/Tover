@@ -10,6 +10,7 @@
     [tover.inventory.entries.model :as entries]
     [tover.inventory.movements :as movements]
     [tover.inventory.stock.model :as stock]
+    [tover.inventory.valuation :as valuation]
     [tover.support :as support])
   (:import
     [java.time Instant]))
@@ -157,7 +158,9 @@
                   :lines [{:stock-item-id "red" :warehouse-id "main" :quantity 2 :side "input"} {:stock-item-id "red-d" :warehouse-id "back" :quantity 1 :side "output"}]}
                  {:kind "defect" :reason "torn" :lines [{:stock-item-id "red" :warehouse-id "main" :quantity 2}]}
                  {:kind "write-off" :reason "lost" :lines [{:stock-item-id "red" :warehouse-id "main" :quantity 2}]}
-                 {:kind "payment" :direction "in" :store-id "web" :amount "5.00" :lines []}]]
+                 {:kind "payment" :direction "in" :store-id "web" :amount "5.00" :lines []}
+                 {:kind "opening" :reason "counted" :lines [{:stock-item-id "red" :warehouse-id "main" :quantity 5 :unit-cost "100.00"}]}
+                 {:kind "opening" :lines [{:stock-item-id "red" :warehouse-id "back" :quantity 0 :unit-cost "0.00"}]}]]
     (let [lines (map-indexed #(-> %2 (assoc :position %1 :quantity-change (:change %2)) (dissoc :quantity :change))
                              (movements/expand entry (partial movements/counterpart (:stock-items catalogue))))]
       (is (= entry (update (movements/collapse (assoc entry :record-revision-id "r#1") lines) :lines (partial mapv #(dissoc % :line-id))))
@@ -169,7 +172,7 @@
 
 (def references
   {:warehouses  [{:id "main" :status "active"} {:id "back" :status "active"}] :products [] :categories []
-   :stock-items [{:id "red" :status "active" :condition "regular"}]
+   :stock-items [{:id "red" :status "active" :condition "regular"} {:id "blue" :status "active" :condition "regular"}]
    :suppliers   [{:id "acme" :status "archived"}]
    :stores      [{:id "web" :status "active"}]})
 
@@ -218,7 +221,8 @@
 
 (deftest only-operations-keep-their-kind
   (is (= [:validation :kind] (rejected {} (assoc edit :kind "sale" :supplier-id nil :lines []))))
-  (is (= [:validation :amends] (rejected {:history (history (record "o" 1 "opening" 1 {} ["red" "main" 5]))} (assoc edit :amends "o#1" :kind "opening"))))
+  (is (= [:validation :kind] (rejected {:history (history (record "o" 1 "opening" 1 {} ["red" "main" 5]))} (assoc edit :amends "o#1")))
+      "an opening stays an opening")
   (is (= [:validation :amends] (rejected {} (assoc edit :amends "nope#1")))))
 
 
@@ -436,3 +440,114 @@
     (testing "a superseded target blocks"
       (is (= [:target-not-current]
              (map :code (:blockers (first (:entries (read (history purchase amended) (revision (history purchase) "x" "p#1" (quantity 9))))))))))))
+
+
+;; 14 · Opening amendment
+
+
+(def opening (record "o" 1 "opening" 1 {} ["red" "main" 5 {:unit-cost "100.00"}]))
+
+
+(defn- amend
+  "Facts of a review of the pending amendment of `opening` in `history`: line fields of `change` apply to its line,
+  `:occurred-at` to the entry."
+  {:malli/schema [:=> [:cat :map :map] :map]}
+  [history change]
+  (facts history (revision history "x" "o#1" #(-> %
+                                                  (update-in [:lines 0] merge (dissoc change :occurred-at))
+                                                  (merge (select-keys change [:occurred-at]))))))
+
+
+(defn- accepted
+  "`history` with the records and lines `facts`' acceptance adds."
+  {:malli/schema [:=> [:cat :map :map] :map]}
+  [history facts]
+  (let [plan (accept facts)]
+    (-> history
+        (update :records into (map #(assoc % :recorded-at (day 20) :actor member))
+                (concat (of-type plan ::acceptance/inventory-record-accepted) (of-type plan ::acceptance/operation-amended)))
+        (update :lines into (of-type plan ::acceptance/inventory-record-line-accepted)))))
+
+
+(defn- balance
+  {:malli/schema [:=> [:cat :map :string] [:maybe [:tuple :int decimal?]]]}
+  [history warehouse]
+  (when-let [b (get-in (valuation/replay (:records history) (:lines history)) [:balances ["red" warehouse]])]
+    [(:quantity b) (valuation/value b)]))
+
+
+(defn- codes
+  {:malli/schema [:=> [:cat :map] [:set :keyword]]}
+  [facts]
+  (set (map :code (:problems (review facts)))))
+
+
+(def opening-save
+  {:entry-id "x" :kind "opening" :amends "o#1" :occurred-at "2026-11-01T00:00:00Z"
+   :lines    [{:line-id "o#1-0" :stock-item-id "red" :warehouse-id "main" :quantity "5" :unit-cost "120.00"}]})
+
+
+(deftest an-opening-amendment-saves
+  (is (= ["opening" "o#1" "pending"] ((juxt :kind :amends :status) (get-in (save {:history (history opening)} opening-save) [:events 0 :data])))))
+
+
+(deftest wrong-cost
+  (let [h     (history opening)
+        after (accepted h (amend h {:unit-cost "120.00"}))]
+    (is (= [5 600.0000M] (balance after "main")))
+    (is (= [["opening" 2 false] ["opening" 1 true]]
+           (map (juxt :kind :revision :superseded?) (:rows (stock/history-rows {:history after} {:stock-item-id "red"}))))
+        "history lists both revisions")
+    (is (= [["o#2" "o#1" 2 "opening"]]
+           (map (juxt :record-revision-id :amends :revision :kind) (of-type (accept (amend h {:unit-cost "120.00"})) ::acceptance/operation-amended))))))
+
+
+(deftest amended-below-later-sales
+  (let [f (amend (history opening (sale 5 4)) {:quantity 3})]
+    (is (= ["red" "main" (day 5)] (shortage f)) "names the item, warehouse and sale date")
+    (is (= :negative-balance (:type (rejection #(accept f)))) "nothing is accepted")))
+
+
+(deftest openings-cannot-be-cancelled
+  (is (= [:validation :cancel] (rejected {:history (history opening)} {:entry-id "x" :kind "opening" :amends "o#1" :cancel true}))))
+
+
+(deftest the-stock-item-does-not-change
+  (is (= [:validation :stock-item-id] (rejected {:history (history opening)} (assoc-in opening-save [:lines 0 :stock-item-id] "blue"))))
+  (is (= [:validation :stock-item-id] (rejected {:history (history opening)} (update opening-save :lines conj {:line-id "n" :stock-item-id "blue" :warehouse-id "main" :quantity "1" :unit-cost "1.00"})))
+      "nor does a line for another item join it")
+  (is (= [:validation :stock-item-id] (rejected {:history (history opening)} (assoc opening-save :lines [])))
+      "nor does its line go"))
+
+
+(deftest corrections-stay-unamendable
+  (is (= [:validation :amends]
+         (rejected {:history (history opening (record "c" 1 "correction" 3 {} ["red" "main" nil {:counted-quantity 4}]))}
+                   {:entry-id "x" :kind "correction" :amends "c#1" :occurred-at "2026-11-03T00:00:00Z"
+                    :lines    [{:line-id "c#1-0" :stock-item-id "red" :warehouse-id "main" :quantity "3"}]}))))
+
+
+(deftest moved-before-another-record
+  (is (contains? (codes (amend (history opening (sale 5 4)) {:occurred-at (day 6)})) :opening-not-first)
+      "the sale would come before the opening"))
+
+
+(deftest amending-is-not-a-second-opening
+  (let [r (review (amend (history opening (sale 5 4)) {:quantity 6 :occurred-at (day 2)}))]
+    (is (:valid? r) (pr-str (:problems r)))
+    (is (= [[1 2]] (map (juxt :quantity-before :quantity-after) (:effects r))) "after the sale of 4")))
+
+
+(deftest changing-the-warehouse-moves-the-opening
+  (let [h (history opening)]
+    (let [after (accepted h (amend h {:warehouse-id "back"}))]
+      (is (= [nil [5 500.0000M]] [(balance after "main") (balance after "back")]) "main loses the opening, back gains it"))
+    (is (contains? (codes (amend (history opening (record "b" 1 "opening" 1 {} ["red" "back" 2 {:unit-cost "1.00"}])) {:warehouse-id "back"}))
+                   :second-opening)
+        "back already has an opening")
+    (is (contains? (codes (amend (history opening (record "q" 1 "purchase" 1 {:supplier-id "acme"} ["red" "back" 2 {:unit-cost "1.00"}]))
+                                 {:warehouse-id "back" :occurred-at (day 2)}))
+                   :opening-not-first)
+        "back has an earlier record")
+    (is (= ["red" "main" (day 5)] (shortage (amend (history opening (sale 5 4)) {:warehouse-id "back"})))
+        "the sale in main loses its stock")))

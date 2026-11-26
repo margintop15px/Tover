@@ -44,13 +44,15 @@
 
 
 (defn- pending-lines
-  "Every pending opening line with its entry's id, revision, time and reason, and how many lines the entry has."
+  "Every pending opening line with its entry's id, revision, time and reason, the accepted opening it amends, and how
+  many lines the entry has."
   {:malli/schema [:=> [:cat [:sequential :map]] [:sequential :map]]}
   [entries]
-  (for [{:keys [entry-id revision occurred-at reason lines]} entries
+  (for [{:keys [entry-id revision occurred-at reason amends lines]} entries
         line lines]
-    (assoc line :entry-id entry-id :revision revision :occurred-at (some-> occurred-at str) :reason reason
-           :line-count (count lines))))
+    (cond-> (assoc line :entry-id entry-id :revision revision :occurred-at (some-> occurred-at str) :reason reason
+                   :line-count (count lines))
+      amends (assoc :amends amends))))
 
 
 (defn- line-values
@@ -59,9 +61,9 @@
   (into {} (remove (comp nil? val))
         {"line-id"     (:line-id line)
          "quantity"    (some-> (:quantity line) str)                  "unit-cost" (some-> (:unit-cost line) str)
-         "occurred-at" (:occurred-at line) "reason" (:reason line) "article" (:article line)
+         "occurred-at" (:occurred-at line) "reason" (:reason line) "article"    (:article line)
          "barcodes"    (some->> (:barcodes line) seq (str/join ", ")) "unit"      (:unit line)
-         "category-id" (:category-id line) "store-id" (:store-id line)}))
+         "category-id" (:category-id line) "store-id" (:store-id line) "amends" (:amends line)}))
 
 
 (defn- decimal
@@ -93,7 +95,7 @@
   {:malli/schema [:=> [:cat :map :map] :map]}
   [{:keys [mode currency warehouses preview? stores]}
    {:keys [id className product-cells label label-cell details details-editable? base locked? accepted lines item correction correction-id
-           default-warehouse operations]}]
+           default-warehouse operations replaced]}]
   (let [money?      (and (= "money" mode) (not preview?))
         archived?   (:archived? item)
         ;; An existing row's counts and stock item changes go to its one Correction entry (chapter 15).
@@ -111,9 +113,13 @@
         by-w        (group-by #(column (:warehouse-id %) no-warehouse) lines)
         entries     (vec (for [l lines] {:entry  (:entry-id l) :revision (:revision l)
                                          :values (merge base {"warehouse-id" (:warehouse-id l)} (line-values l))}))
-        pend-q      (reduce + 0 (keep (comp decimal :quantity) lines))
+        ;; A pending amendment of an accepted opening replaces its accepted lines (chapter 14 § Opening amendment).
+        pend-q      (- (reduce + 0 (keep (comp decimal :quantity) lines)) (:quantity replaced 0))
+        amending    (filter :amends lines)
+        mover       (when (= 1 (count amending)) (first amending))
         costs       (distinct (keep (comp decimal :unit-cost) lines))
-        pend-v      (reduce + 0M (for [l lines :let [q (decimal (:quantity l)) c (decimal (:unit-cost l))] :when (and q c)] (* q c)))
+        pend-v      (- (reduce + 0M (for [l lines :let [q (decimal (:quantity l)) c (decimal (:unit-cost l))] :when (and q c)] (* q c)))
+                       (:value replaced 0M))
         acc-q       (get-in accepted [:total :quantity] 0)
         acc-v       (get-in accepted [:total :value] 0M)
         val-q       (reduce + 0 (keep #(when (and (:valued? %) (:value %)) (:quantity %)) (vals (:cells accepted))))
@@ -197,8 +203,20 @@
                             cell  (get-in accepted [:cells w])
                             shown (cond money? (if (and cell (pos? (:quantity cell))) (money (:value cell 0M)) "")
                                         cell (str (:quantity cell)) :else "")
-                            count (counts w)]
-                        (if (and item (not money?) (:history? cell) (nil? line) (not gone?) (not archived?))
+                            count (counts w)
+                            moved (get operations w)]
+                        (cond
+                          ;; An amended opening moves to the warehouse whose cell takes its quantity.
+                          (and mover item (not money?) (nil? line) (not gone?) (not archived?))
+                          (cond-> {:value     (if moved (str (+ (:quantity cell 0) (reduce + (map :change moved)))) shown)
+                                   :className "inventory-cell-number" :editor {:type "quantity"}
+                                   :title     (i18n/t "Enter a quantity to move the opening to this warehouse.")
+                                   :target    {:type     "stock-cell" :id id :rowId id :path w :field "quantity" :entry (:entry-id mover)
+                                               :revision (:revision mover) :shared (< 1 (:line-count mover 1))
+                                               :values   (merge base (line-values mover) {"warehouse-id" w}) :extra {"warehouse-id" w}}}
+                            moved (assoc :prefix (str (if (seq shown) shown "0") " → ") :className "inventory-cell-number stock-cell-pending"))
+
+                          (and item (not money?) (:history? cell) (nil? line) (not gone?) (not archived?))
                         ;; Accepted history here: the cell takes a counted balance.
                           ;; Clearing a count withdraws it, and the cell shows the accepted balance again.
                           (cond-> {:value  shown :cleared shown :className "inventory-cell-number" :editor {:type "quantity"}
@@ -206,6 +224,8 @@
                                    :target (ctarget w "quantity" {"warehouse-id" w "line-id" (or (:line-id count) (str correction-id "/" w))}
                                                     (or change (seq (dissoc counts w))))}
                             count (assoc :value (str (:quantity count)) :prefix (str shown " → ") :className "inventory-cell-number stock-cell-pending"))
+
+                          :else
                           (cond-> {:value shown :className (if (= w default-warehouse) "inventory-cell-number stock-default-warehouse" "inventory-cell-number")}
                             (and (not money?) (or (= no-warehouse w) (next ls))) (assoc :readOnly true)
                             (not (or money? (= no-warehouse w) (next ls)))
@@ -229,7 +249,10 @@
                                         :prefix "+" :className "inventory-cell-number stock-cell-pending"
                                         :title (cond (next ls) (i18n/t "Several pending openings. Only one can be accepted.")
                                                      (= no-warehouse w) (or (:warehouse-name line) (i18n/t "Warehouse is missing."))
-                                                     :else (i18n/t "Pending opening. Accepted now: {p0}" {:p0 (if (seq shown) shown "0")})))))))]
+                                                     :else (i18n/t "Pending opening. Accepted now: {p0}" {:p0 (if (seq shown) shown "0")})))
+                            (and line (:amends line) (not (next ls)) (not money?))
+                            (assoc :prefix (str (if (seq shown) shown "0") " → ")
+                                   :title (i18n/t "Pending amendment of the opening. Accepted now: {p0}" {:p0 (if (seq shown) shown "0")}))))))]
     {:id    id :label label :className className
      :cells (-> (if preview?
                   ;; In preview each row with pending openings can be left for a later submit, or discarded.
@@ -462,6 +485,9 @@
                                    :when (and stock-item-id warehouse-id (int? change) (not (:new-item? line)))]
                                {:stock-item-id stock-item-id :warehouse-id warehouse-id :change change
                                 :label         (str (kind-label kind nil) " " (if (neg? change) "−" "+") (abs change))}))
+        replaced (update-vals (group-by :stock-item-id (for [{:keys [kind replaces]} entries :when (= "opening" kind) l replaces] l))
+                              (fn [ls] {:quantity (reduce + 0 (keep :quantity-change ls))
+                                        :value    (reduce + 0M (for [l ls :when (:unit-cost l)] (* (:quantity-change l 0) (bigdec (:unit-cost l)))))}))
         corrected (into {} (for [{:keys [lines changes] :as c} (reverse corrections)
                                  :let [item (or (:stock-item-id (first lines)) (:stock-item-id (first changes)))]
                                  :when item]
@@ -518,6 +544,7 @@
                                              :base          {"stock-item-id" stock-item-id} :accepted       {:cells (:cells item) :total (:total item)}
                                              :lines         (at-item stock-item-id)
                                              :operations    (group-by :warehouse-id (operations stock-item-id))
+                                             :replaced      (replaced stock-item-id)
                                              :item          (assoc item :product-id product-id) :correction correction
                                              :correction-id (or (:entry-id correction) (str "correction-" (random-uuid)))})
                                           (when-not itemId (new-rows product-id #(hash-map "product-id" product-id "variant" %)))
@@ -672,7 +699,8 @@
      (cond-> {:workspace-id workspace-id :entry-id entry-id :kind "opening" :lines lines}
        (pos? revision) (assoc :expected-revision revision)
        (v "occurred-at") (assoc :occurred-at (v "occurred-at"))
-       (v "reason") (assoc :reason (v "reason"))))))
+       (v "reason") (assoc :reason (v "reason"))
+       (v "amends") (assoc :amends (v "amends"))))))
 
 
 ;; One Correction entry per stock row: its counts and its stock item's changes (chapter 15).
@@ -936,6 +964,23 @@
                   why (assoc :reason why)))))
 
 
+(defaction amend-opening
+  "Edit on an accepted opening's history row: a pending revision of it, starting from its accepted facts, that the
+  stock table then edits in Preview. When a pending entry already amends it, that entry is edited instead."
+  {:route-data access
+   :schema     [:map [:workspaceId :uuid] [:entryId [:string {:min 1 :max 500}]] [:amends [:string {:min 1 :max 500}]] [:commandId CommandId]]}
+  [context {:keys [workspaceId entryId amends commandId]}]
+  ;; Reads the accepted facts to start from; the command rechecks that the opening is still at this revision.
+  (if (some #(= amends (:amends %)) (:entries (runtime/read-model context ::entries/pending-entries {})))
+    {:type :view :id ::saved :input {:commandId commandId}}
+    (let [facts (runtime/read-model context ::acceptance/accepted-facts {:record-revision-id amends})]
+      (descriptor ::entries/save-shared-inventory-entry commandId
+                  (cond-> {:workspace-id workspaceId :entry-id entryId :kind "opening" :amends amends
+                           :lines        (mapv #(update % :quantity str) (:lines facts))}
+                    (:occurred-at facts) (assoc :occurred-at (str (:occurred-at facts)))
+                    (:reason facts) (assoc :reason (:reason facts)))))))
+
+
 (defaction discard-entry
   {:route-data access
    :schema     [:map [:workspaceId :uuid] [:entryId [:string {:min 1 :max 500}]] [:revision [:int {:min 1}]] [:commandId CommandId]]}
@@ -1001,6 +1046,7 @@
       :data-on:stock-history   (->expr (.catch (@view ::history evt.detail ~options) (fn [_] (.requestFailed el "history"))))
       :data-on:stock-save      (->expr (.catch (@action ::save-entry evt.detail ~options) (fn [_] (.requestFailed el "save"))))
       :data-on:stock-describe  (->expr (.catch (@action ::describe-entry evt.detail ~options) (fn [_] (.requestFailed el "save"))))
+      :data-on:stock-amend     (->expr (.catch (@action ::amend-opening evt.detail ~options) (fn [_] (.requestFailed el "save"))))
       :data-on:stock-discard   (->expr (.catch (@action ::discard-entry evt.detail ~options) (fn [_] (.requestFailed el "save"))))
       :data-on:stock-accept    (->expr (.catch (@action ::accept evt.detail ~options) (fn [_] (.requestFailed el "save"))))
       :data-signals__ifmissing (json {:_stockTableJson   "null" :_stockSuggestJson "null" :_stockReviewJson "null"

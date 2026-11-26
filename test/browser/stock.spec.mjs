@@ -148,6 +148,58 @@ test('find a product, add a stock item with an opening in the one table, review 
   expect(errors).toEqual([]);
 });
 
+test('wrong cost: Edit on the opening in history amends it in Preview', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await signIn(page);
+  const suffix = Date.now();
+  await registerCatalogueRecord(page, '/catalogues/warehouses', `Main ${suffix}`);
+  await registerCatalogueRecord(page, '/catalogues', `Polo ${suffix}`);
+  await page.goto('/');
+  const workbench = page.locator('stock-workbench');
+  const grid = page.locator('#stock-grid');
+  await expect.poll(() => grid.evaluate(node => Boolean(node.worksheet))).toBe(true);
+  await page.locator('.stock-search-input').fill(`Polo ${suffix}`);
+  await expect(page.locator('.stock-option-product')).toHaveCount(1);
+  await page.locator('.stock-search-input').press('Enter');
+  const productId = await workbench.evaluate(node => node.scope.productId);
+  const warehouse = await grid.evaluate((node, name) => node.model.columns.find(column => column.label === name).key, `Main ${suffix}`);
+  await cell(page, `new-row:${productId}`, 'item', 'M');
+  await cell(page, `new-row:${productId}`, warehouse, '5');
+  await cell(page, `new:${productId}:M`, 'unit-cost', '100');
+  await chooseCell(page, `new:${productId}:M`, 'unit', 'pcs');
+  await cell(page, `new:${productId}:M`, 'occurred-at', yesterday());
+  await page.locator('.stock-submit').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
+  const findM = () => grid.evaluate(node => node.model.rows.find(row => row.label === 'M' && !row.id.startsWith('new'))?.id);
+  await expect.poll(findM).toBeTruthy();
+  const itemM = await findM();
+  const row = grid.locator(`tr[data-row-id="${itemM}"]`);
+
+  // Edit on the opening's history row opens Preview with its quantity, unit cost, date and warehouse editable.
+  await row.getByRole('button', { name: 'History' }).click();
+  await page.locator('.stock-history-edit').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'true');
+  const editable = column => grid.evaluate((node, { id, column }) => node.model.rows.some(row => row.id === id
+    && row.cells.some(c => c.target?.path === column && c.editor && !c.readOnly)), { id: itemM, column });
+  await expect.poll(() => editable(warehouse)).toBe(true);
+  await expect.poll(() => editable('unit-cost')).toBe(true);
+  await expect.poll(() => editable('occurred-at')).toBe(true);
+  await cell(page, itemM, 'unit-cost', '120');
+  await page.locator('.stock-submit').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'false');
+  await expect(row.locator(`td[data-column-key="${warehouse}"]`)).toHaveText('5');
+  await page.locator('.stock-mode button[data-mode="money"]').click();
+  await expect(row.locator(`td[data-column-key="${warehouse}"]`)).toHaveText('600.00');
+  await page.locator('.stock-mode button[data-mode="units"]').click();
+  await row.getByRole('button', { name: 'History' }).click();
+  // History lists both revisions: the amended one in force, the first one superseded.
+  await expect(page.locator('.stock-history-rows tr.stock-history-superseded')).toHaveCount(1);
+  await expect(page.locator('.stock-history-rows tr.stock-history-superseded')).toContainText('100');
+  await expect(page.locator('.stock-history-rows tr:not(.stock-history-superseded)').filter({ hasText: 'Opening', visible: true })).toContainText('120');
+  expect(errors).toEqual([]);
+});
+
+
 test('creating a product opens it at the top of the preview with an editable cost', async ({ page }) => {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await signIn(page);

@@ -465,3 +465,47 @@
   (is (= "Opening: Unit cost is missing."
          (web/problem-message {:entry-id "e" :line-id "e-0" :code :entry-incomplete :cause :unit-cost-missing} {:entry {"e" "Opening"}}))))
 
+
+
+;; 14 · Opening amendment: Edit on an opening's history row opens it in Preview
+
+
+(def ^:private amendment
+  {:entry-id "x" :revision 1 :kind "opening" :amends "o#1" :occurred-at "2026-11-01T00:00:00Z"
+   :lines    [{:line-id "o#1-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 5 :unit-cost "120.00"}]
+   :replaces [{:record-line-id "o#1/0" :stock-item-id "tee-m" :warehouse-id "main" :quantity-change 5 :unit-cost "100.00"}]})
+
+
+(deftest edit-on-an-opening-starts-its-amendment
+  (let [facts {:kind  "opening" :occurred-at (java.time.Instant/parse "2026-11-01T00:00:00Z") :record-revision-id "o#1"
+               :lines [{:line-id "o#1-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 5 :unit-cost "100.00"}]}
+        amend (fn [pending]
+                (with-redefs [runtime/execute!   (fn [& _] (throw (Exception. "Action must be pure")))
+                              runtime/read-model (fn [_ id _] (case id ::entries/pending-entries {:entries pending} ::acceptance/accepted-facts facts))]
+                  (web/amend-opening {} {:workspaceId workspace :entryId "x" :amends "o#1" :commandId "c"})))]
+    (is (= {:type  :command :id ::entries/save-shared-inventory-entry :command-id "c"
+            :input {:workspace-id workspace :entry-id "x" :kind "opening" :amends "o#1" :occurred-at "2026-11-01T00:00:00Z"
+                    :lines        [{:line-id "o#1-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity "5" :unit-cost "100.00"}]}
+            :then  {:type :view :id ::web/saved :input {:commandId "c"}}
+            :catch {:type :view :id ::web/failed :input {:commandId "c"}}}
+           (amend [])))
+    (is (= {:type :view :id ::web/saved :input {:commandId "c"}} (amend [amendment])) "a pending amendment is edited instead")))
+
+
+(deftest a-pending-opening-amendment-is-edited-in-preview
+  (let [model (web/stock-grid table {:mode "units" :entries [amendment] :scope {:pending true :editing ["tee-m"]}})
+        main  (column model "tee-m" "main")
+        shop  (column model "tee-m" "shop")]
+    (is (= ["5 → " "5" "quantity"] [(:prefix main) (:value main) (get-in main [:editor :type])]) "quantity, from the accepted count")
+    (is (= ["x" 1 "o#1"] [(get-in main [:target :entry]) (get-in main [:target :revision]) (get-in main [:target :values "amends"])]))
+    (is (= "8" (:value (column model "tee-m" "total"))) "the amendment replaces the accepted opening")
+    (is (= ["x" "shop" "o#1"] [(get-in shop [:target :entry]) (get-in shop [:target :extra "warehouse-id"]) (get-in shop [:target :values "amends"])])
+        "another warehouse's cell moves the opening there")
+    (is (= [{:entry "x" :revision 1}] (map #(select-keys % [:entry :revision]) (get-in (column model "tee-m" "unit-cost") [:target :entries])))
+        "unit cost edits the amendment")
+    (is (= "stock-describe-row" (get-in (column model "tee-m" "occurred-at") [:target :type])) "and so does the date")))
+
+
+(deftest an-amendment-keeps-its-target
+  (is (= "o#1" (:amends (web/entry-input {:products [] :stock-items [{:stock-item-id "tee-m"}] :warehouses [{:warehouse-id "main"}]}
+                                         workspace "x" 1 {"stock-item-id" "tee-m" "warehouse-id" "main" "quantity" "6" "amends" "o#1"} nil)))))

@@ -658,6 +658,18 @@
                           :partial? (boolean (and price (< (count priced) (count ls)))))))))))
 
 
+;; The entry facts of the latest revision of the record that `record-revision-id` is a revision of, which an amendment
+;; starts from, with that revision's id; nil when the record is missing or is not an opening or operation.
+(defreadmodel accepted-facts
+  {:input  [:map [:record-revision-id Id]]
+   :output [:maybe :map]
+   :policy ::records/workspace-member
+   :cofx   [[:history ::history (constantly {})]]}
+  [{:keys [history]} {:keys [record-revision-id]}]
+  (when-let [{:keys [facts] :as latest} (entries/latest-revision history record-revision-id)]
+    (when facts (assoc facts :record-revision-id (:record-revision-id latest)))))
+
+
 (defreadmodel accepted-operations
   {:input [:map] :output [:vector :map] :policy ::records/workspace-member :cofx [[:history ::history (constantly {})]]}
   [{:keys [history]} _]

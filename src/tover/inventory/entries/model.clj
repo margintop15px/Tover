@@ -38,6 +38,13 @@
    "payment"         {:party :either}})
 
 
+(defn amendable?
+  "Board `Save Shared Inventory Entry` § Opening amendment: an accepted opening or operation may be amended."
+  {:malli/schema [:=> [:cat [:maybe :string]] :boolean]}
+  [kind]
+  (or (= "opening" kind) (contains? operation-rules kind)))
+
+
 (def Entry
   [:map
    [:entry-id Id]
@@ -611,7 +618,7 @@
           factual   (last (remove :cancelled revisions))
           own       (fn [{:keys [record-revision-id]}] (filterv #(= record-revision-id (:record-revision-id %)) lines))]
       (cond-> (assoc latest :lines (own latest))
-        (operation-rules (:kind latest)) (assoc :facts (movements/collapse factual (own factual)))))))
+        (amendable? (:kind latest)) (assoc :facts (movements/collapse factual (own factual)))))))
 
 
 (defn without-records
@@ -637,10 +644,11 @@
 
 
 (defn- check-amendment!
-  "An amending entry keeps its target and the target's kind; the target is the latest revision of an operation that no
-  other pending entry amends. A cancelling entry carries only a reason."
+  "An amending entry keeps its target and the target's kind; the target is the latest revision of an opening or an
+  operation that no other pending entry amends. A cancelling entry carries only a reason; an opening is never
+  cancelled, and its lines keep its stock items."
   {:malli/schema [:=> [:cat :map :map] :nil]}
-  [{:keys [entry pending history]} {:keys [entry-id kind amends cancel] :as input}]
+  [{:keys [entry pending history]} {:keys [entry-id kind amends cancel lines] :as input}]
   (when (and entry (not= amends (:amends entry)))
     (invalid! :amends "A pending entry keeps the operation it amends." {}))
   (when (and cancel (not amends))
@@ -648,10 +656,15 @@
   (when amends
     (let [target (latest-revision history amends)
           other  (some #(when (and (not= entry-id (:entry-id %)) (= amends (:amends %))) %) pending)]
-      (when-not (and target (operation-rules (:kind target)))
+      (when-not (and target (amendable? (:kind target)))
         (invalid! :amends "Choose an accepted operation." {:attempted amends}))
       (when (not= kind (:kind target))
         (invalid! :kind "An accepted operation keeps its kind." {:attempted kind}))
+      (when (and cancel (= "opening" kind))
+        (invalid! :cancel "An opening is amended, never cancelled." {}))
+      (when (and (= "opening" kind) (not cancel)
+                 (not= (sort (map :stock-item-id (:lines (:facts target)))) (sort (map (comp blank->nil :stock-item-id) lines))))
+        (invalid! :stock-item-id "An opening keeps its stock item." {}))
       (when (target-problem history input)
         (records/fail! :target-not-current "This operation changed since it was loaded. Review the latest values."
                        {:current (dissoc target :facts :lines)}))
