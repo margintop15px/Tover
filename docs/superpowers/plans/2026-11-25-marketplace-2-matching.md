@@ -121,7 +121,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 **Interfaces:** Produces
 - `grid/workbench [{:keys [id columns rows groups filters selection-actions query-view command-action]}] → Hiccup`, rendering `<marketplace-workbench>` around `<inventory-grid>`. `columns` `[{:key :label :type :editable? :options?}]`; `rows` `[{:id :revision :cells {key value} :findings {key text}}]`.
 - JS custom element `marketplace-workbench`: emits `marketplace-query`, `marketplace-command {command, rows}`; reads `tableResponse`, `commandResponse`; renders authoritative server rows; keeps attempted values of rejected rows with their reason.
-- Pages `/marketplace/:connection-id/products` and `/marketplace/:connection-id/products/:listing-id` (Mapping Details).
+- Pages `/settings/marketplace/:connection-id/products` and `/settings/marketplace/:connection-id/products/:listing-id` (Mapping Details).
 
 Table: listing evidence (read-only), suggested item with picker, adopt-barcode ticks, new-product columns (name, variant, article, barcodes, unit), waiting operations; selection actions Confirm, Register, Defer.
 
@@ -141,7 +141,7 @@ Table: listing evidence (read-only), suggested item with picker, adopt-barcode t
 
 **Files:** Create `warehouses/{model,web}.clj`, tests `warehouses_test.clj`, `warehouses_web_test.clj`. Board 43.
 
-**Interfaces:** Produces `::warehouse-mappings` id `:external-warehouse-id` (`:connection-id :warehouse-id? :mapping-revision :state :changed-by :changed-at`) with revisions as in task 2; commands `confirm-warehouse-mapping {:rows [{:external-warehouse-id :revision :warehouse-id? :warehouse-name?}]}`, `change-warehouse-mapping {:external-warehouse-id :mapping-revision :warehouse-id?}`; coeffect `::mappings`; read models `unmatched-external-warehouses`, `warehouse-mappings`; `connections/count-part :unmatched-warehouses`. New warehouse id `"listing-warehouse:<external-warehouse-id>"`. Page `/marketplace/:connection-id/warehouses`.
+**Interfaces:** Produces `::warehouse-mappings` id `:external-warehouse-id` (`:connection-id :warehouse-id? :mapping-revision :state :changed-by :changed-at`) with revisions as in task 2; commands `confirm-warehouse-mapping {:rows [{:external-warehouse-id :revision :warehouse-id? :warehouse-name?}]}`, `change-warehouse-mapping {:external-warehouse-id :mapping-revision :warehouse-id?}`; coeffect `::mappings`; read models `unmatched-external-warehouses`, `warehouse-mappings`; `connections/count-part :unmatched-warehouses`. New warehouse id `"listing-warehouse:<external-warehouse-id>"`. Page `/settings/marketplace/:connection-id/warehouses`.
 
 - [ ] **Step 1: Failing tests**
 

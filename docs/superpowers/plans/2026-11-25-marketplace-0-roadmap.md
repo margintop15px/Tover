@@ -40,12 +40,12 @@ Chapter 47 stays deferred. Nothing writes to Ozon.
 | `tover.marketplace.warehouses.{model,web}` | 43 |
 | `tover.marketplace.provenance` | Models and pure rules that inventory must read: cutover entries, baselines, imported entries, source acceptances. Depends on no other marketplace namespace, so `entries.model` and `acceptance.model` may require it |
 | `tover.marketplace.cutover.{model,web}` | 44 |
-| `tover.marketplace.operations.{steps,proposals,model,web}` | 45 |
+| `tover.marketplace.operations.{steps,proposals,model}` | 45; its screen is the Operations page (`inventory/operations/web.clj`) |
 | `tover.marketplace.moves.model` | 45 b, c |
 | `tover.marketplace.transit.{model,web}` | 46 |
 | `tover.marketplace.grid` + `resources/public/marketplace.js` | One table workbench over `inventory-grid`, used by every page above |
 
-Pages: `/marketplace`, `/marketplace/:connection-id`, and below it `/products`, `/warehouses`, `/cutover`, `/operations`, `/differences`, `/transit`.
+Pages (decided 2026-11-26): no Marketplace tab. The connections list is a section of `/settings`; the connection is `/settings/marketplace/:connection-id`, with `/products`, `/warehouses`, `/cutover`, `/differences` and `/transit` below it. Imported operations have no page of their own: they are reviewed and accepted on the Operations page (`/operations`), in the shared draft, under an Imported filter (board 45 `Inventory Review`). A connection names no store; imported entries leave Store blank for a person to fill or leave empty.
 
 ## Decisions needed from a person
 

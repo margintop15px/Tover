@@ -36,7 +36,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 
 **Interfaces:** Produces
 - `proposals/resolve-lines [facts operation] → [{:line-key :external-product-id? :mapping? :stock-item-id? :quantity? :warehouse-id? :unit-price? :baseline? :after-baseline?}]`; a line resolves its listing by SKU, then product id, then article, within the connection; two listings for one identifier resolve to none.
-- `proposals/proposal [facts operation] → {:entry {:kind :occurred-at? :store-id? :from-warehouse-id? :to-warehouse-id? :reason? :lines [{:line-id "<operation-id>/<line-key>" …}]} :missing [text]} | nil`.
+- `proposals/proposal [facts operation] → {:entry {:kind :occurred-at? :from-warehouse-id? :to-warehouse-id? :reason? :lines [{:line-id "<operation-id>/<line-key>" …}]} :missing [text]} | nil`.
 
 - [ ] **Step 1: Failing tests**
 
@@ -146,10 +146,14 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Store test with 340 operations, 12 listings: match, cutover, sync to empty queue; record its duration in the commit message. If one pass over 5,000 operations exceeds 2 s, index history per pair before continuing. **Step 6:** Commit `feat(marketplace): automatic acceptance`.
 
-### Task 6: Operations page
+### Task 6: Imported operations on the Operations page
 
-**Files:** Create `operations/web.clj`, `operations_web_test.clj`; extend `marketplace.js`, `marketplace.spec.mjs`; `connections/count-part :next-steps`; `products/waiting-operations`. Board 45 slice 5; also `imported-operations-needing-review`.
+No marketplace page (decided 2026-11-26; board 45 `Inventory Review`). Imported entries are already ordinary pending entries of the shared draft; this task shows the rest of the downloaded operations there too.
 
-- [ ] **Step 1: Failing tests:** groups most operations first ("Match Mug red – 48 operations"); hidden steps only when filtered; the suggested correction is highlighted and accepted together with its Sale; set aside and bring back on a selection; a group link opens matching with that listing filtered; no buyer data in the HTML.
-- [ ] **Step 2:** FAIL. **Step 3:** Implement `/marketplace/:connection-id/operations`. **Step 4:** PASS; browser spec. **Step 5:** Commit `feat(marketplace): imported operations table`; slices → `ready`.
+**Files:** Modify `src/tover/inventory/operations/web.clj` (Imported filter, source and next-step columns, set-aside and bring-back actions on a selection), its test, `resources/public/` adapter if the table needs it, `test/browser` spec; create `operations/review.clj` (read model `imported-operations-needing-review`, plain data for the page); `connections/count-part :next-steps`; `products/waiting-operations`. Board 45 slice 5.
+
+**Interfaces:** `review/imported-operations-needing-review {:connection-id?} → {:groups [{:decision :count :operations [...]}]}`; each operation row carries `:source-operation-id :connection-label :kind :status :next-step :entry-id? :missing :findings :suggested-correction?`. A row with an entry is the entry's own draft row with a source badge; a row without one is read-only except Set aside / Bring back and its next-step link. The connection page links to `/operations?source=<connection-id>`.
+
+- [ ] **Step 1: Failing tests:** the Imported filter lists only imported rows, groups most operations first ("Match Mug red – 48 operations"); without the filter imported entries appear among the other pending entries with their connection badge; hidden steps only when filtered; the suggested correction is highlighted and accepted together with its Sale; set aside and bring back on a selection; a group link opens matching (`/settings/marketplace/:connection-id/products`) with that listing filtered; manual entries keep working unchanged; no buyer data in the HTML.
+- [ ] **Step 2:** FAIL. **Step 3:** Implement on `/operations`. **Step 4:** PASS; browser spec. **Step 5:** Commit `feat(marketplace): imported operations on the Operations page`; slices → `ready`.
 - [ ] **Step 6:** Stop. Ask a person to run the roadmap's live check before deployment.

@@ -52,7 +52,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 
 **Files:** `transit/web.clj`; modify `inventory/changes.clj:104` (archive), `acceptance/model.clj`, `inventory/web.clj:319`; tests `review_test.clj`, `transit_web_test.clj`.
 
-**Interfaces:** `changes/problems` facts gain `:in-transit {stock-item-id [source-operation-id]}` through coeffect `:tover.marketplace.transit.model/blocking` listed in `acceptance/review-facts`; problem `:archive-blocked` with `:source-operation-id`. Pages `/marketplace/:connection-id/transit` and `…/transit/:operation-id`.
+**Interfaces:** `changes/problems` facts gain `:in-transit {stock-item-id [source-operation-id]}` through coeffect `:tover.marketplace.transit.model/blocking` listed in `acceptance/review-facts`; problem `:archive-blocked` with `:source-operation-id`. Pages `/settings/marketplace/:connection-id/transit` and `…/transit/:operation-id`.
 
 - [ ] **Step 1: Failing tests:** `travelling-units-block-archiving`, `returning-units-block-archiving`, `unknown-does-not-block`, `delivered-does-not-block`; page filters by state and connection; timeline keeps actual and observed time apart and has no buyer data.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS; browser check. **Step 5:** Commit `feat(marketplace): transit pages and archive guard`; slices → `ready`.

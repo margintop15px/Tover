@@ -36,7 +36,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 
 ### Task 2: Accepted imports and provenance
 
-**Files:** `operations/model.clj`, `operations/web.clj`, `inventory/operations/web.clj` (source badge and link), tests. Board slice 9.
+**Files:** `operations/model.clj`, `inventory/operations/web.clj` (source badge, provenance panel and link; there is no marketplace operations page), tests. Board slice 9.
 
 **Interfaces:** Produces read model `accepted-imported-operations-and-provenance {:connection-id}`: record, source operation and revision, accepted by, edited, mapping per line, later revisions, pending proposals.
 
@@ -69,7 +69,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 
 **Files:** `moves/model.clj`, `moves/web.clj`, tests. Board slice c.
 
-**Interfaces:** Produces `propose-detected-move {:connection-id :stock-item-id :last-agreeing-run :current-run}` (moves computed on commit facts), event `detected-move-proposed`, model `::detected-moves` id `"<connection>|<item>|<last-agreeing-run>"` (`:current-run :moves(JSON) :entries(JSON) :proposed-at`); entry id `"move:<key>|<from>|<to>"`; processor `move-detection`; page `/marketplace/:connection-id/differences`.
+**Interfaces:** Produces `propose-detected-move {:connection-id :stock-item-id :last-agreeing-run :current-run}` (moves computed on commit facts), event `detected-move-proposed`, model `::detected-moves` id `"<connection>|<item>|<last-agreeing-run>"` (`:current-run :moves(JSON) :entries(JSON) :proposed-at`); entry id `"move:<key>|<from>|<to>"`; processor `move-detection`; page `/settings/marketplace/:connection-id/differences`.
 
 - [ ] **Step 1: Failing tests:** `member-accepts` (dated one second after the last agreeing snapshot; stock changes only then), `still-there-next-day`, `explained-later` (withdrawn), `different-moves-replace-unedited`, `edited-transfer-is-kept`, `discarded-is-not-repeated`, `paused-connection`, `stale-when-a-newer-pass-exists`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS; browser check. **Step 5:** Commit `feat(marketplace): detected moves`; slices → `ready`.
