@@ -93,6 +93,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 (deftest shortage-suggestion (is (= {:count 3 :instant just-before} (select-keys (suggested posting-of-3 (balance 2)) [:count :instant]))))
 (deftest at-the-instant-is-history ...)     ; occurred-at = baseline instant
 (deftest return-of-a-pre-cutover-sale-counts ...)
+;; also extend provenance_test `counts-from-the-cutover`: a sale from the day before the cutover is history only (plan 3 deferred).
 (deftest first-sync ...)                    ; 340 operations, 12 groups, no entry
 (deftest edited-entry-is-not-automatic ...)
 (deftest suspension-found-now-is-not-automatic ...) ; guard/reasons non-empty, no suspended event yet
@@ -111,6 +112,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 - `propose-imported-operation {:source-operation-id :revision}`; the decision builds the entry from its own facts, so input carries no entry. Entry id `"import:<source-operation-id>"`, `:saved-by` the connector UUID. Edited ⇔ stored `:saved-by` differs from the connector.
 - Processor `marketplace-operation-intake`.
 - `actors/enrich`: an unresolved actor UUID is tried as `(principal-label context "connector" id)`.
+- `sync/take-dirty!` gets one mark set per consumer (`(take-dirty! connector consumer-key)`): the Mapping Guard, `marketplace-operation-intake` and `automatic-acceptance` each drain their own set, and `::sync/mark-dirty` marks every consumer's set. Test `each-consumer-sees-every-mark` (plan 3 ruling: deferred to here).
 
 - [ ] **Step 1: Failing tests:** `posting-without-handover-time` (pending Sale missing "actual time"), `repeat-emits-nothing`, `newer-revision-replaces-unedited`, `newer-revision-over-an-edit-is-a-conflict` (entry kept), `set-aside-is-refused`, `already-accepted-is-refused`, `mapping-changed-since-read-is-stale`, `paused-connection`, `remapped-unedited-entry-follows-the-mapping`, `no-longer-resolvable-unedited-entry-is-withdrawn`, `history-shows-ozon-account`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat(marketplace): propose imported operations`.
@@ -150,10 +152,10 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 
 No marketplace page (decided 2026-11-26; board 45 `Inventory Review`). Imported entries are already ordinary pending entries of the shared draft; this task shows the rest of the downloaded operations there too.
 
-**Files:** Modify `src/tover/inventory/operations/web.clj` (Imported filter, source and next-step columns, set-aside and bring-back actions on a selection), its test, `resources/public/` adapter if the table needs it, `test/browser` spec; create `operations/review.clj` (read model `imported-operations-needing-review`, plain data for the page); `connections/count-part :next-steps`; `products/waiting-operations`. Board 45 slice 5.
+**Files:** Modify `src/tover/inventory/operations/web.clj` (Imported filter, source and next-step columns, set-aside and bring-back actions on a selection), its test, `resources/public/` adapter if the table needs it, `test/browser` spec; create `operations/review.clj` (read model `imported-operations-needing-review`, plain data for the page); `connections/count-part :next-steps`; `products/waiting-operations`; the cutover coverage `:waiting` count (plan 3 left it `"0"`) reads the same waiting operations. Board 45 slice 5.
 
 **Interfaces:** `review/imported-operations-needing-review {:connection-id?} → {:groups [{:decision :count :operations [...]}]}`; each operation row carries `:source-operation-id :connection-label :kind :status :next-step :entry-id? :missing :findings :suggested-correction?`. A row with an entry is the entry's own draft row with a source badge; a row without one is read-only except Set aside / Bring back and its next-step link. The connection page links to `/operations?source=<connection-id>`.
 
-- [ ] **Step 1: Failing tests:** the Imported filter lists only imported rows, groups most operations first ("Match Mug red – 48 operations"); without the filter imported entries appear among the other pending entries with their connection badge; hidden steps only when filtered; the suggested correction is highlighted and accepted together with its Sale; set aside and bring back on a selection; a group link opens matching (`/settings/marketplace/:connection-id/products`) with that listing filtered; manual entries keep working unchanged; no buyer data in the HTML.
+- [ ] **Step 1: Failing tests:** the Imported filter lists only imported rows, groups most operations first ("Match Mug red – 48 operations"); without the filter imported entries appear among the other pending entries with their connection badge; hidden steps only when filtered; the suggested correction is highlighted and accepted together with its Sale; set aside and bring back on a selection; a group link opens matching (`/operations/marketplace/:connection-id/products`, the Operations view from plan 3) with that listing filtered; manual entries keep working unchanged; no buyer data in the HTML.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement on `/operations`. **Step 4:** PASS; browser spec. **Step 5:** Commit `feat(marketplace): imported operations on the Operations page`; slices → `ready`.
 - [ ] **Step 6:** Stop. Ask a person to run the roadmap's live check before deployment.
