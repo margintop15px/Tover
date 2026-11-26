@@ -34,14 +34,60 @@
   (into [:enum] rules))
 
 
+(def max-text
+  "Longest before or after value; a longer one ends in `…`."
+  500)
+
+
+(def max-reasons
+  "Most reasons a mapping names; the rest merge into a last `+N more` reason. Keeps the command's input and the
+  stored JSON within their limits, so a large change still suspends."
+  100)
+
+
 (def Reason
-  [:map [:rule Rule] [:before [:maybe [:string {:max 2000}]]] [:after [:maybe [:string {:max 2000}]]]])
+  [:map [:rule Rule] [:before [:maybe [:string {:max max-text}]]] [:after [:maybe [:string {:max max-text}]]]])
 
 
 (defn- text
   {:malli/schema [:=> [:cat :any] [:maybe :string]]}
   [value]
   (some-> value str str/trim not-empty))
+
+
+(defn- capped
+  {:malli/schema [:=> [:cat :any] [:maybe :string]]}
+  [value]
+  (when-let [t (text value)]
+    (if (> (count t) max-text) (str (subs t 0 (dec max-text)) "…") t)))
+
+
+(defn fit
+  "At most `max-reasons` reasons: the first ones, then one `+N more` reason of the next one's rule."
+  {:malli/schema [:=> [:cat [:sequential Reason]] [:vector Reason]]}
+  [reasons]
+  (let [reasons (vec reasons)]
+    (if (<= (count reasons) max-reasons)
+      reasons
+      (let [kept (subvec reasons 0 (dec max-reasons))
+            rest (subvec reasons (dec max-reasons))]
+        (conj kept {:rule (:rule (first rest)) :before nil :after (str "+" (count rest) " more")})))))
+
+
+(defn- read-or
+  "The parsed JSON text, or `fallback` when it is blank, unreadable or not what `ok?` accepts."
+  {:malli/schema [:=> [:cat [:maybe :string] [:fn fn?] :any] :any]}
+  [text ok? fallback]
+  (let [value (try (observations/read-json text) (catch Exception _ nil))]
+    (if (ok? value) value fallback)))
+
+
+(defn- basis-of
+  "The mapping's identity basis; an unreadable one is empty, so every rule sees a change (fails closed)."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [mapping]
+  (let [basis (read-or (:identity-basis mapping) map? {})]
+    (update basis :attributes #(if (map? %) (update-vals % (fn [v] (if (sequential? v) v [v]))) {}))))
 
 
 (defn catalogue-index
@@ -66,7 +112,7 @@
 (defn- reason
   {:malli/schema [:=> [:cat :string :any :any] Reason]}
   [rule before after]
-  {:rule rule :before (text before) :after (text after)})
+  {:rule rule :before (capped before) :after (capped after)})
 
 
 (defn- values-text
@@ -115,7 +161,7 @@
         item (get items (:stock-item-id mapping))
         product-id (:product-id item)
         definitions (filterv #(= (:connection-id listing) (:connection-id %)) definitions)
-        basis (or (observations/read-json (:identity-basis mapping)) {})
+        basis (basis-of mapping)
         current (candidates/identity-basis listing definitions item)
         barcodes (sort (distinct (keep #(when (and (= "barcode" (:type %)) (not (false? (:active %))))
                                           (candidates/usable-barcode (:value %)))
@@ -142,9 +188,11 @@
 
 
 (defn- stored-reasons
+  "The reasons the mapping names; unreadable ones are none."
   {:malli/schema [:=> [:cat [:maybe :map]] [:vector Reason]]}
   [mapping]
-  (mapv #(reason (:rule %) (:before %) (:after %)) (observations/read-json (:reasons mapping))))
+  (into [] (keep #(when (and (map? %) (contains? (set rules) (:rule %))) (reason (:rule %) (:before %) (:after %))))
+        (read-or (:reasons mapping) sequential? [])))
 
 
 (defn new-reasons
@@ -155,12 +203,23 @@
     (vec (distinct (remove (comp known key-of) found)))))
 
 
+(defn suspended-reasons
+  "What a suspension of the mapping with `found` stores: its reasons, then the new ones, fitted; nil when that
+  changes nothing for an already suspended mapping."
+  {:malli/schema [:=> [:cat [:maybe :map] [:sequential Reason]] [:maybe [:vector Reason]]]}
+  [mapping found]
+  (let [stored (stored-reasons mapping)
+        merged (fit (into stored (new-reasons mapping found)))]
+    (when-not (and (= "suspended" (:state mapping)) (= (map key-of stored) (map key-of merged)))
+      merged)))
+
+
 ;; Slice a · Suspend the mapping
 
 
 (def SuspendProductMapping
   [:map [:external-product-id products/ListingId] [:mapping-revision products/Revision]
-   [:reasons [:vector {:min 1 :max 200} Reason]]])
+   [:reasons [:vector {:min 1 :max max-reasons} Reason]]])
 
 
 (defcommand suspend-product-mapping
@@ -169,12 +228,12 @@
    :emits #{::products/product-mapping-suspended}}
   [{:keys [actor now scope mappings]} {:keys [external-product-id mapping-revision reasons]}]
   (let [mapping (get mappings external-product-id)
-        added   (new-reasons mapping reasons)]
+        merged  (suspended-reasons mapping reasons)]
     (cond (nil? mapping) (records/fail! :stale "The mapping changed since it was compared." {})
           (not= actor (sync/connector-actor (:connection-id mapping))) (records/fail! :not-permitted "Not permitted" {})
           (or (not= mapping-revision (:mapping-revision mapping)) (not (#{"confirmed" "suspended"} (:state mapping))))
           (records/fail! :stale "The mapping changed since it was compared." {}))
-    (if (and (= "suspended" (:state mapping)) (empty? added))
+    (if (nil? merged)
       {}
       (let [revision (inc mapping-revision)]
         {:events [{:type ::products/product-mapping-suspended
@@ -186,7 +245,7 @@
                           :listing-revision    (:listing-revision mapping)
                           :item-revision       (:item-revision mapping)
                           :identity-basis      (:identity-basis mapping)
-                          :reasons             (observations/write-json (into (stored-reasons mapping) added))
+                          :reasons             (observations/write-json merged)
                           :state               "suspended"
                           :mapping-revision    revision
                           :changed-by          (str "connector:" (:connection-id mapping))
@@ -211,8 +270,12 @@
     (vec (for [[id mapping] (sort-by key mappings)
                :let         [listing (get by-id id)]
                :when        (and listing (#{"confirmed" "suspended"} (:state mapping)))
-               :let         [found (reasons {:listing listing ::index index} mapping)]
-               :when        (seq (new-reasons mapping found))]
+               :let         [found (try (fit (reasons {:listing listing ::index index} mapping))
+                                        (catch Exception error
+                                          ;; One mapping that cannot be evaluated never stops the others.
+                                          (mu/log ::mapping-skipped :external-product-id id :error-type (.getName (class error)))
+                                          nil))]
+               :when        (and (seq found) (suspended-reasons mapping found))]
            {:workspace-id     workspace-id                :connection-id connection-id :external-product-id id
             :mapping-revision (:mapping-revision mapping) :reasons       found}))))
 
@@ -234,7 +297,8 @@
     (let [owned (for [workspace-id (sync/workspace-ids system)
                       connection   (sync/workspace-connections system workspace-id)]
                   [workspace-id (:connection-id connection)])
-          dirty (sync/take-dirty! marketplace (set (map second owned)) (Instant/now))]
+          now   (if-let [clock (:clock marketplace)] (Instant/ofEpochMilli (clock)) (Instant/now))
+          dirty (sync/take-dirty! marketplace (set (map second owned)) now)]
       (vec (for [[workspace-id connection-id] owned
                  :when (contains? dirty connection-id)
                  item (try (connection-pending system workspace-id connection-id)

@@ -316,3 +316,35 @@
         (is (= {:state "confirmed" :stock-item-id "mug-2"} (select-keys (:mapping (details)) [:state :stock-item-id :reasons])))
         (is (= 0 (guard!)))
         (is (= [] (suspended)))))))
+
+
+;; Fails closed on long values and unreadable bases
+
+
+(deftest long-values-and-many-attributes-still-suspend
+  (let [long-value (apply str (repeat 2500 "x"))
+        attributes (into [{:attribute-id "10096" :values [{:value long-value}]}]
+                         (for [n (range 250)] {:attribute-id (str "9" n) :values [{:value "v"}]}))
+        found      (guard/fit (reasons #(assoc % :attributes attributes :revision 2) identity))
+        plan       (suspend {:reasons found})]
+    (is (= guard/max-reasons (count found)))
+    (is (= "+152 more" (:after (peek found))) "251 attribute changes: 99 kept, the rest merged")
+    (is (every? #(<= (count (or (:after %) "")) guard/max-text) found))
+    (is (= \… (last (:after (first found)))) "a long value is cut and marked")
+    (is (= "suspended" (:state (suspended-data plan))))
+    (is (= found (observations/read-json (:reasons (suspended-data plan)))))
+    (is (nil? (guard/suspended-reasons (assoc mapping :state "suspended" :reasons (:reasons (suspended-data plan))) found))
+        "the fitted reasons are not new the next time")))
+
+
+(deftest unreadable-basis-suspends-and-never-stops-the-others
+  (let [other   (assoc listing :external-product-id (str c ":2") :unit-and-pack "2")
+        corrupt (assoc mapping :identity-basis "{not json" :reasons "[also not")
+        fine    (assoc mapping :external-product-id (str c ":2"))
+        found   (guard/pending {:listings [listing other] :mappings {id corrupt (str c ":2") fine} :catalogue catalogue}
+                               (str workspace) c)]
+    (is (= [id (str c ":2")] (mapv :external-product-id found)))
+    (is (some #{{:rule "listing-identity-changed" :before nil :after "1"}} (:reasons (first found)))
+        "an unreadable basis is empty, so the listing differs from it")
+    (is (= "suspended" (:state (suspended-data (suspend {:reasons (:reasons (first found))} :mappings {id corrupt}))))
+        "unreadable stored reasons count as none")))

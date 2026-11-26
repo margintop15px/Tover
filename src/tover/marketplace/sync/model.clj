@@ -925,7 +925,7 @@
         0)))
 
 
-;; Connections due for sync (spans workspaces; read only by the scheduler)
+;; Connections due for sync (spans workspaces; read by the scheduler and by the Mapping Guard's sweep)
 
 
 (defn workspace-ids
