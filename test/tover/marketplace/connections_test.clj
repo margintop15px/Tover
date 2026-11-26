@@ -8,7 +8,6 @@
     [bel.runtime :as runtime]
     [bel.store :as store]
     [clojure.test :refer [deftest is testing use-fixtures]]
-    [tover.catalogues.stores.model :as stores]
     [tover.marketplace.connections.model :as model]
     [tover.marketplace.connector :as connector]
     [tover.support :as support])
@@ -46,7 +45,6 @@
 (def run "00000000-0000-0000-0000-00000000f001")
 (def now (Instant/parse "2026-11-20T10:00:00Z"))
 (def all-domains connector/domains)
-(def active-store {:store-id "s" :name "Ozon shop" :status "active" :revision 1})
 
 
 (def admin-id (str admin))
@@ -61,7 +59,7 @@
 
 
 (def connection
-  {:connection-id       c :workspace-id             (str workspace) :store-id         "s"      :provider "ozon"
+  {:connection-id       c :workspace-id             (str workspace) :provider         "ozon"
    :provider-account-id "123" :secret-ref           secret          :account-currency "RUB"
    :readable-domains    (model/encode-domains all-domains)
    :sync-state          "active" :credentials-state "valid"         :connected-by     admin-id
@@ -100,15 +98,15 @@
 (defn connect
   {:malli/schema [:=> [:cat :map :map] :map]}
   [facts input]
-  (decide ::model/connect-marketplace-account (merge {:store active-store :connections [] :sealed? true} facts)
-          (merge {:connection-id c :store-id "s" :provider "ozon" :client-id " 123 "} verified input)))
+  (decide ::model/connect-marketplace-account (merge {:connections [] :sealed? true} facts)
+          (merge {:connection-id c :provider "ozon" :client-id " 123 "} verified input)))
 
 
 (defn unverified
   {:malli/schema [:=> [:cat :string] :map]}
   [outcome]
-  (decide ::model/connect-marketplace-account {:store active-store :connections []}
-          {:connection-id c :store-id "s" :provider "ozon" :client-id "123" :verification-outcome outcome}))
+  (decide ::model/connect-marketplace-account {:connections []}
+          {:connection-id c :provider "ozon" :client-id "123" :verification-outcome outcome}))
 
 
 (defn manager?
@@ -123,13 +121,13 @@
 (deftest connect-a-seller-account
   (let [plan (connect {} {:account-label "Shop LLC" :key-expires-at "2027-01-01T00:00:00Z"})]
     (is (= [{:type ::model/marketplace-account-connected
-             :data {:connection-id       c :workspace-id             (str workspace)        :store-id     "s"      :provider     "ozon"
+             :data {:connection-id       c :workspace-id             (str workspace)        :provider     "ozon"
                     :provider-account-id "123" :account-label        "Shop LLC"             :secret-ref   secret
                     :account-currency    "RUB" :key-expires-at       "2027-01-01T00:00:00Z"
                     :readable-domains    (model/encode-domains all-domains)
                     :sync-state          "active" :credentials-state "valid"                :connected-by admin-id :connected-at at}}]
            (data plan)))
-    (let [status (model/status (after {} plan) active-store {:manager? true})]
+    (let [status (model/status (after {} plan) {:manager? true})]
       (is (false? (:automatic-acceptance-possible? status)))
       (is (= ["no baseline"] (:blocking-reasons status))))))
 
@@ -137,7 +135,7 @@
 ;; Counts come from later chapters; here only what the status does with them.
 (deftest only-three-things-block-the-connection
   (let [opts   {:manager? true :currency "RUB"}
-        status #(model/status % active-store %2)]
+        status #(model/status % %2)]
     (is (= [] (:blocking-reasons (status connection (assoc opts :counts {:baselines 1 :unmatched-listings 9 :unmatched-warehouses 2})))))
     (is (:automatic-acceptance-possible? (status connection (assoc opts :counts {:baselines 1}))))
     (is (= ["paused" "needs credentials" "no baseline"]
@@ -150,7 +148,7 @@
 (deftest coverage-by-next-step
   (let [counts {:unmatched-listings 3 :unmatched-warehouses 1 :scopes-without-baseline 4 :baselines 2
                 :next-steps         {"Match product" 2 "Confirm" 5 "Skip" 0}}
-        status (model/status connection active-store {:counts counts})]
+        status (model/status connection {:counts counts})]
     (is (= [3 1 4] ((juxt :unmatched-listings :unmatched-warehouses :scopes-without-baseline) status)))
     (is (= [{:next-step "Confirm" :count 5} {:next-step "Match product" :count 2}] (:imported-operations-by-next-step status))
         "sorted by next step; steps with nothing waiting are left out")
@@ -168,7 +166,7 @@
 (deftest key-without-analytics-access
   (let [domains (vec (remove #{"stock-analytics"} all-domains))
         plan    (connect {} {:readable-domains domains})
-        rows    (:domains (model/status (after {} plan) active-store {:manager? true}))]
+        rows    (:domains (model/status (after {} plan) {:manager? true}))]
     (is (= (model/encode-domains domains) (get-in (data plan) [0 :data :readable-domains])))
     (is (= [{:domain "stock-analytics" :readable? false}] (filterv #(= "stock-analytics" (:domain %)) rows)))
     (is (every? :readable? (remove #(= "stock-analytics" (:domain %)) rows)))))
@@ -189,7 +187,7 @@
 
 
 (deftest same-seller-account-again
-  (let [error (try (connect {:connections [connection]} {:connection-id "c2" :store-id "s2"})
+  (let [error (try (connect {:connections [connection]} {:connection-id "c2"})
                    (catch clojure.lang.ExceptionInfo e (ex-data e)))]
     (is (= {:type :already-connected :connection-id c} error))))
 
@@ -198,11 +196,6 @@
   (is (manager? :owner))
   (is (manager? :admin))
   (is (not (manager? :member))))
-
-
-(deftest store-must-be-active-in-this-workspace
-  (is (= :store-not-available (rejection #(connect {:store (assoc active-store :status "archived")} {}))))
-  (is (= :store-not-available (rejection #(connect {:store nil} {})))))
 
 
 ;; Slice 4 · Pause the connection
@@ -230,7 +223,7 @@
   ;; Chapter 40's half: once the pause commits, the connection reads paused and blocks automatic acceptance.
   ;; The automatic path's recheck inside its own commit belongs to chapter 45.
   (let [paused (after connection (decide ::model/pause-marketplace-connection {:connection connection} {:connection-id c}))
-        status (model/status paused active-store {:manager? true})]
+        status (model/status paused {:manager? true})]
     (is (false? (:automatic-acceptance-possible? status)))
     (is (some #{"paused"} (:blocking-reasons status)))))
 
@@ -255,9 +248,9 @@
 
 
 (defn resume
-  {:malli/schema [:=> [:cat :map :map] :map]}
-  [connection store]
-  (decide ::model/resume-marketplace-connection {:connection connection :store store} {:connection-id c}))
+  {:malli/schema [:=> [:cat :map] :map]}
+  [connection]
+  (decide ::model/resume-marketplace-connection {:connection connection} {:connection-id c}))
 
 
 (def paused
@@ -266,7 +259,7 @@
 
 (deftest resume-after-a-long-pause
   (let [before (assoc paused :last-completed-sync-at (hours-ago 72))
-        plan   (resume before active-store)]
+        plan   (resume before)]
     (is (= [{:type ::model/marketplace-connection-resumed
              :data {:connection-id c :sync-state "active" :resumed-by admin-id :resumed-at at}}]
            (data plan)))
@@ -275,21 +268,17 @@
 
 (deftest resume-soon-after-a-run
   (let [before (assoc paused :last-completed-sync-at (hours-ago 2))
-        after  (after before (resume before active-store))]
+        after  (after before (resume before))]
     (is (not (model/due? after now)))
     (is (= (.plus (Instant/parse (hours-ago 2)) (Duration/ofHours 24)) (model/next-sync-at after)))))
 
 
 (deftest resume-needs-credentials
-  (is (= :needs-credentials (rejection #(resume (assoc paused :credentials-state "rejected") active-store)))))
-
-
-(deftest resume-store-archived
-  (is (= :store-archived (rejection #(resume paused (assoc active-store :status "archived"))))))
+  (is (= :needs-credentials (rejection #(resume (assoc paused :credentials-state "rejected"))))))
 
 
 (deftest resume-an-active-connection-accepts-nothing
-  (is (= {:fx [] :events []} (resume connection active-store))))
+  (is (= {:fx [] :events []} (resume connection))))
 
 
 ;; Slice 8 · Replace the connection credentials
@@ -388,7 +377,7 @@
 
 
 (def connect-input
-  (merge {:connection-id c :store-id "s" :provider "ozon" :client-id "123"} verified))
+  (merge {:connection-id c :provider "ozon" :client-id "123"} verified))
 
 
 (deftest connections-through-the-store
@@ -399,9 +388,6 @@
             read   #(runtime/read-model %1 %2 %3)]
         (doseq [ref [secret new-secret]]
           (connector/store-secret! {:repo repo :key (byte-array 32)} workspace ref "api-key"))
-        (execute! ctx ::stores/register-store "st1" {:store-id "s" :name "Ozon shop"})
-        (execute! ctx ::stores/register-store "st2" {:store-id "old" :name "Old shop"})
-        (execute! ctx ::stores/archive-store "st3" {:store-id "old" :revision 1})
 
         (testing "slice 2 · double-click: one connection, both responses show it"
           (let [first  (execute! ctx ::model/connect-marketplace-account "attempt-1" connect-input)
@@ -413,13 +399,11 @@
           (is (= :forbidden (rejection #(execute! viewer ::model/connect-marketplace-account "attempt-2"
                                                   (assoc connect-input :connection-id (str (random-uuid))))))))
 
-        (testing "slice 1 · every member reads connections and active stores, never secrets"
+        (testing "slice 1 · every member reads connections, never secrets"
           (let [list (read viewer ::model/marketplace-connections-and-requirements {})]
-            (is (= {:connections       [{:connection-id     c :provider "ozon" :provider-account-id "123" :account-label "123"
-                                         :store             {:store-id "s" :name "Ozon shop" :archived? false} :sync-state "active"
-                                         :credentials-state "valid"}]
-                    :selectable-stores [{:store-id "s" :name "Ozon shop"}]
-                    :can-manage?       false}
+            (is (= {:connections [{:connection-id c        :provider          "ozon"  :provider-account-id "123" :account-label "123"
+                                   :sync-state    "active" :credentials-state "valid"}]
+                    :can-manage? false}
                    list))
             (is (not (re-find #"secret" (pr-str list))))
             (is (:can-manage? (read ctx ::model/marketplace-connections-and-requirements {})))))
@@ -470,67 +454,4 @@
 
         (testing "slice 2 · the same seller account again points to the existing connection"
           (is (= :already-connected (rejection #(execute! ctx ::model/connect-marketplace-account "attempt-3"
-                                                          (assoc connect-input :connection-id (str (random-uuid)))))))
-          (is (= :store-not-available (rejection #(execute! ctx ::model/connect-marketplace-account "attempt-4"
-                                                            (assoc connect-input :connection-id (str (random-uuid)) :client-id "9"
-                                                                   :store-id "old"))))))))))
-
-
-;; Chapter 12 slice 6 · Archive the store
-
-
-(deftest archiving-a-store-pauses-its-connections
-  (let [archive  (fn [connections]
-                   (decide ::stores/archive-store {:record active-store :connections connections} {:store-id "s" :revision 1}))
-        paused   (assoc connection :connection-id "c2" :sync-state "paused" :reason "manager" :paused-by "someone")
-        rejected (assoc connection :connection-id "c3" :credentials-state "rejected")
-        pause    (fn [id] {:type ::model/marketplace-connection-paused
-                           :data {:connection-id id :sync-state "paused" :reason "store archived" :paused-by admin-id :paused-at at}})
-        archived {:type ::stores/store-archived :data {:store-id "s" :status "archived" :revision 2}}]
-    (is (= [archived (pause c)] (data (archive [connection paused]))) "an already paused connection is untouched")
-    (is (= [archived (pause c) (pause "c3")] (data (archive [connection rejected]))) "sync active, whatever its credentials")
-    (is (= [archived] (data (archive []))))))
-
-
-(deftest restoring-does-not-resume
-  (is (= [::stores/store-restored]
-         (map :type (:events (decide ::stores/restore-store {:record (assoc active-store :status "archived")} {:store-id "s" :revision 1}))))))
-
-
-(deftest archiving-through-the-store
-  (support/with-store
-    (fn [repo _]
-      (let [owner   (context repo :admin)
-            ctx     (context repo :member)
-            connect (fn [id store-id client-id]
-                      (execute! owner ::model/connect-marketplace-account (str "connect-" id)
-                                (assoc connect-input :connection-id id :store-id store-id :client-id client-id)))
-            row     #(runtime/read-model ctx ::model/connections {:connection-id %})
-            state   #((juxt :sync-state :reason :paused-by) (row %))
-            store   #(runtime/read-model ctx ::stores/stores {:store-id "s"})]
-        (connector/store-secret! {:repo repo :key (byte-array 32)} workspace secret "api-key")
-        (execute! owner ::stores/register-store "st1" {:store-id "s" :name "Ozon shop"})
-        (execute! owner ::stores/register-store "st2" {:store-id "other" :name "Other shop"})
-        (connect "c1" "s" "1")
-        (connect "c2" "s" "2")
-        (connect "c3" "other" "3")
-        (execute! owner ::model/pause-marketplace-connection "pause" {:connection-id "c2"})
-        (testing "a rejected attempt pauses nothing"
-          (is (= :stale-catalogue (rejection #(execute! ctx ::stores/archive-store "stale" {:store-id "s" :revision 9}))))
-          (is (= "active" (:sync-state (row "c1")))))
-        (let [untouched [(row "c2") (row "c3")]
-              archive   #(execute! ctx ::stores/archive-store "archive" {:store-id "s" :revision 1})
-              receipt   (archive)]
-          (is (= "archived" (:status (store))))
-          (is (= ["paused" "store archived" (str member)] (state "c1")) "any member archives; the connection pauses with it")
-          (is (= untouched [(row "c2") (row "c3")]))
-          (is (= receipt (archive)) "a retry returns the recorded outcome"))
-        (is (= :store-archived (rejection #(execute! owner ::model/resume-marketplace-connection "resume-1" {:connection-id "c1"}))))
-        (testing "Restore does not resume"
-          (execute! ctx ::stores/restore-store "restore" {:store-id "s" :revision 2})
-          (is (= "active" (:status (store))))
-          (is (= ["paused" "store archived" (str member)] (state "c1"))))
-        (testing "an Owner or Admin resumes each one"
-          (is (= :forbidden (rejection #(execute! ctx ::model/resume-marketplace-connection "resume-2" {:connection-id "c1"}))))
-          (execute! owner ::model/resume-marketplace-connection "resume-3" {:connection-id "c1"})
-          (is (= ["active" "paused"] (map (comp :sync-state row) ["c1" "c2"]))))))))
+                                                          (assoc connect-input :connection-id (str (random-uuid))))))))))))

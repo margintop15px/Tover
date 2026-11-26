@@ -1,5 +1,6 @@
 (ns tover.marketplace.connections.web
-  "Board chapter 40 screens: Marketplace Connections (the list and the connect form) and Connection Details
+  "Board chapter 40 screens: Marketplace Connections (the list and the connect form, on the workspace settings page)
+  and Connection Details
   (status, coverage, Pause, Resume and the write-only reconnect form). Every member reads; Owner and Admin act.
 
   Connect and Replace verify the credentials with the provider and seal the API key before returning the
@@ -25,11 +26,11 @@
 (def problems
   "Board rejections, shown on the page the form came from."
   (let [changed [409 "This connection changed. Reload the page."]]
-    {:store-not-available      409 :credentials-rejected 422 :could-not-verify      503     :products-not-readable 422
-     :already-connected        409 :unknown-connection   404 :needs-credentials     409     :store-archived        409
-     :different-seller-account 422 :conflict             changed :identity-conflict changed
-     :connection-paused        409 :throttled            409 :idempotency-conflict  changed
-     :not-configured           503 :journal-unavailable  [503 "The result is not recorded yet. Try again."]
+    {:credentials-rejected     422 :could-not-verify    503 :products-not-readable 422
+     :already-connected        409 :unknown-connection  404 :needs-credentials     409
+     :different-seller-account 422 :conflict            changed :identity-conflict changed
+     :connection-paused        409 :throttled           409 :idempotency-conflict  changed
+     :not-configured           503 :journal-unavailable [503 "The result is not recorded yet. Try again."]
      :validation               [422 "Check the entered fields."]}))
 
 
@@ -72,7 +73,7 @@
         client-id   (str/trim client-id)
         secret-ref  (connector/secret-ref marketplace command-id client-id api-key)
         ;; Named fields only: a form also posts its anti-forgery token and context version.
-        entered     (assoc (select-keys input [:connection-id :store-id :provider]) :client-id client-id)
+        entered     (assoc (select-keys input [:connection-id :provider]) :client-id client-id)
         attempt     (select-keys input [:command-id :workspace-id])
         accepted    #(some-> (runtime/read-model context ::model/accepted-attempt
                                                  {:command-id command-id :command command
@@ -94,18 +95,18 @@
 
 
 (defaction connect
-  {:schema     (into Command (concat [[:connection-id model/ConnectionId] [:store-id :string] [:provider model/Provider]]
+  {:schema     (into Command (concat [[:connection-id model/ConnectionId] [:provider model/Provider]]
                                      (rest Credentials)))
-   :route-data {:tover/access :manager :bel/error-page ::connections :bel/retain ["store-id"] :tover/problems problems}}
+   :route-data {:tover/access   :manager :bel/error-page :tover.workspaces.currency.web/settings :bel/retain ["provider"]
+                :tover/problems problems}}
   [context input]
-  (let [{:keys [connections selectable-stores]}
+  (let [{:keys [connections]}
         (runtime/read-model context ::model/marketplace-connections-and-requirements {})
         ;; The attempt's own connection is no obstacle: a second click recovers the first one's outcome.
         acceptable? (fn [client-id]
-                      (and (some #(= (:store-id input) (:store-id %)) selectable-stores)
-                           (not-any? #(and (= client-id (:provider-account-id %))
-                                           (not= (:connection-id input) (:connection-id %)))
-                                     connections)))]
+                      (not-any? #(and (= client-id (:provider-account-id %))
+                                      (not= (:connection-id input) (:connection-id %)))
+                                connections))]
     (descriptor context ::model/connect-marketplace-account (credentials context ::model/connect-marketplace-account input acceptable?))))
 
 
@@ -174,66 +175,53 @@
   "Encoded: the path also stands in a Datastar expression."
   {:malli/schema [:=> [:cat :string] :string]}
   [connection-id]
-  (str "/marketplace/" (codec/url-encode connection-id)))
+  (str "/settings/marketplace/" (codec/url-encode connection-id)))
 
 
 (defn- connect-form
-  {:malli/schema [:=> [:cat :map [:vector :map]] schema/Hiccup]}
-  [request stores]
-  (let [params (:params request)]
-    [:div.management-form
-     (apply form request ::connect (i18n/t "Connect")
-            (concat (team/command-fields request)
-                    [(hidden "connection-id" (random-uuid))
-                     (hidden "provider" "ozon")
-                     [:label (i18n/t "Store")
-                      (into [:select {:name "store-id" :required true}]
-                            (for [{:keys [store-id name]} stores]
-                              [:option {:value store-id :selected (= store-id (:store-id params))} name]))]]
-                    (credential-fields nil)))
-     [:p.management-secondary (i18n/t "Ozon is read only: Tover never changes anything in your seller account.")]]))
+  {:malli/schema [:=> [:cat :map] schema/Hiccup]}
+  [request]
+  [:div.management-form
+   (apply form request ::connect (i18n/t "Connect")
+          (concat (team/command-fields request)
+                  [(hidden "connection-id" (random-uuid))
+                   (hidden "provider" "ozon")]
+                  (credential-fields nil)))
+   [:p.management-secondary (i18n/t "Ozon is read only: Tover never changes anything in your seller account.")]])
 
 
 (defn query-connections
-  {:malli/schema [:=> [:cat :map :map] :map]}
-  [{:keys [request] :as context} _]
-  {:request request
-   :model   (runtime/read-model context ::model/marketplace-connections-and-requirements {})})
+  "The model of `connections-section`, read on the workspace settings page."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [context]
+  (runtime/read-model context ::model/marketplace-connections-and-requirements {}))
 
 
-(defpage connections
-  {:route      "/marketplace"
-   :title      "Marketplace · Tover"
-   :parent     :tover.shared.web.core/shell
-   :route-data {:tover/access :workspace}
-   :query      query-connections}
+(defn connections-section
+  "Marketplace Connections: the list and the connect form, a section of the workspace settings page."
+  {:malli/schema [:=> [:cat [:map [:request :map] [:model :map]]] schema/Hiccup]}
   [{:keys [request model]}]
   (let [existing (get-in request [:tover/rejection :connection-id])]
-    {:type :elements
-     :html [:section.management-page {:aria-labelledby "marketplace-title"}
-            [:header.management-header [:h1#marketplace-title {:tabindex -1} (i18n/t "Marketplace connections")]]
-            [:div.management-content
-             (when existing
-               [:p [:a {:href (connection-link existing)} (i18n/t "Open the existing connection")]])
-             (if (seq (:connections model))
-               [:div.management-table-wrap
-                [:table.management-table {:aria-labelledby "marketplace-title"}
-                 [:thead [:tr [:th {:scope "col"} (i18n/t "Seller account")] [:th {:scope "col"} (i18n/t "Store")]
-                          [:th {:scope "col"} (i18n/t "Status")] [:th {:scope "col"} (i18n/t "Last sync")]]]
-                 (into [:tbody]
-                       (for [{:keys [connection-id account-label store last-completed-sync-at] :as row} (:connections model)]
-                         [:tr {:data-connection-id connection-id}
-                          [:td.management-primary [:a {:href (connection-link connection-id)} "Ozon · " account-label]]
-                          [:td (:name store) (when (:archived? store) (list " · " (i18n/t "Archived")))]
-                          [:td (state-label row)]
-                          [:td (if last-completed-sync-at (team/moment last-completed-sync-at) (i18n/t "Not yet"))]]))]]
-               [:p.management-empty (i18n/t "No marketplace connections yet.")])
-             (when (:can-manage? model)
-               [:details#connect-account.management-disclosure {:open (or (empty? (:connections model)) (contains? (:params request) :store-id))}
-                [:summary (i18n/t "Connect a seller account")]
-                (if (seq (:selectable-stores model))
-                  (connect-form request (:selectable-stores model))
-                  [:p.management-empty (i18n/t "Add an active store in Catalogues first.")])])]]}))
+    [:section.management-section {:aria-labelledby "marketplace-title"}
+     [:h2#marketplace-title (i18n/t "Marketplace connections")]
+     (when existing
+       [:p [:a {:href (connection-link existing)} (i18n/t "Open the existing connection")]])
+     (if (seq (:connections model))
+       [:div.management-table-wrap
+        [:table.management-table {:aria-labelledby "marketplace-title"}
+         [:thead [:tr [:th {:scope "col"} (i18n/t "Seller account")]
+                  [:th {:scope "col"} (i18n/t "Status")] [:th {:scope "col"} (i18n/t "Last sync")]]]
+         (into [:tbody]
+               (for [{:keys [connection-id account-label last-completed-sync-at] :as row} (:connections model)]
+                 [:tr {:data-connection-id connection-id}
+                  [:td.management-primary [:a {:href (connection-link connection-id)} "Ozon · " account-label]]
+                  [:td (state-label row)]
+                  [:td (if last-completed-sync-at (team/moment last-completed-sync-at) (i18n/t "Not yet"))]]))]]
+       [:p.management-empty (i18n/t "No marketplace connections yet.")])
+     (when (:can-manage? model)
+       [:details#connect-account.management-disclosure {:open (or (empty? (:connections model)) (contains? (:params request) :provider))}
+        [:summary (i18n/t "Connect a seller account")]
+        (connect-form request)])]))
 
 
 (defn query-connection
@@ -299,21 +287,21 @@
 
 
 (defpage connection
-  {:route      "/marketplace/:connection-id"
+  {:route      "/settings/marketplace/:connection-id"
    :title      "Marketplace connection · Tover"
    :parent     :tover.shared.web.core/shell
    :schema     [:map [:connection-id model/ConnectionId]]
    :route-data {:tover/access :workspace}
    :query      query-connection}
   [{:keys [request status paused attention sync]}]
-  (let [{:keys [connection-id account-label store can-manage?]} status]
+  (let [{:keys [connection-id account-label can-manage?]} status]
     {:type :elements
      :html [:section.management-page {:aria-labelledby "connection-title" :data-connection-id connection-id}
             [:header.management-header
              [:h1#connection-title {:tabindex -1} "Ozon · " account-label]
-             [:p.management-subtitle (:name store) " · " (state-label status)]]
+             [:p.management-subtitle (state-label status)]]
             [:div.management-content
-             [:p [:a {:href "/marketplace"} (i18n/t "All connections")]]
+             [:p [:a {:href "/settings"} (i18n/t "All connections")]]
              (when attention
                [:section.management-section {:role "status"}
                 [:p (i18n/t "Ozon rejected the credentials.") " " (team/moment (:rejected-at attention))]

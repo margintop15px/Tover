@@ -1685,25 +1685,22 @@
             (is (= {:listings 0 :warehouses 0 :operations 0} (:found-counts (read))))
             (is (= before (recorded)))))
 
-        (testing "archiving the store pauses the connection and the running sync stops recording"
+        (testing "pausing the connection stops the running sync from recording"
           (sync-now "R3")
           (dotimes [_ 4] (tick system))
           (is (= "open" (:run-state (row))))
           (let [request (sync/marketplace-fetcher (first (runtime/coeffect ::sync/runs-to-fetch {:bel/system system} {})))
-                _       (runtime/execute! ctx ::stores/archive-store {:command-id "archive" :input {:store-id "s" :revision 1}})
+                _       (runtime/execute! ctx ::connections/pause-marketplace-connection {:command-id "pause-3" :input {:connection-id c}})
                 before  (state)]
-            (is (= ["paused" "store archived" "R3" "open"] ((juxt :sync-state :reason :run-id :run-state) (row))))
+            (is (= ["paused" "manager" "R3" "open"] ((juxt :sync-state :reason :run-id :run-state) (row))))
             (is (= ::sync/record-source-observations (:id request)))
             (is (= :connection-paused
                    (rejection #(runtime/execute! (merge (:scope request) {:bel/system system           :bel/service ::sync/marketplace-fetcher
                                                                           :user-id    (:actor request)})
                                                  (:id request) {:command-id "late" :input (:input request)})))
-                "a page read before the archive is not recorded")
+                "a page read before the pause is not recorded")
             (dotimes [_ 3] (tick system))
-            (is (= before (state)))
-            (runtime/execute! ctx ::stores/restore-store {:command-id "restore" :input {:store-id "s" :revision 2}})
-            (dotimes [_ 3] (tick system))
-            (is (= before (state)) "restoring does not resume")
+            (is (= before (state)) "nothing runs while paused")
             (runtime/execute! ctx ::connections/resume-marketplace-connection {:command-id "resume-3" :input {:connection-id c}})
             (finish system)
             (is (= ["R3" "completed"] ((juxt :run-id :run-state) (row))) "Resume continues the run")

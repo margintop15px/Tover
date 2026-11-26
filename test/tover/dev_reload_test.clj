@@ -204,7 +204,7 @@
   (doseq [overrides [{} {"IDENTITY_API_PORT" "58111" "IDENTITY_DB_PORT" "55111" "IDENTITY_SMTP_PORT" "51111" "TO_DEV_SITE_URL" "http://localhost:3099"}]]
     (let [settings (merge {"ANON_KEY"                "synthetic-public"   "SERVICE_ROLE_KEY"       "synthetic-admin"
                            "TO_DEV_APP_PASSWORD"     "synthetic-password" "SESSION_ENCRYPTION_KEY" "synthetic-session-key"
-                           "TO_DEV_JOURNAL_PASSWORD" "synthetic-journal"}
+                           "TO_DEV_JOURNAL_PASSWORD" "synthetic-journal"  "CONNECTOR_KEY"          "synthetic-connector-key"}
                           overrides)
           content  (str/join "\n" (map (fn [[key value]] (str key "=" value)) settings))
           api-port (or (System/getenv "IDENTITY_API_PORT") (get settings "IDENTITY_API_PORT") "58000")
@@ -219,6 +219,7 @@
                 "TOVER_ORIGIN"          origin "TOVER_JDBC_URL" (str "jdbc:postgresql://127.0.0.1:" db-port "/postgres")
                 "TOVER_DB_USER"         "tover_app" "TOVER_DB_PASSWORD"                "synthetic-password"
                 "TOVER_SESSION_KEY"     "synthetic-session-key"
+                "TOVER_CONNECTOR_KEY"   (or (System/getenv "TOVER_CONNECTOR_KEY") "synthetic-connector-key")
                 "TOVER_JOURNAL_DB_USER" "tover_journal" "TOVER_JOURNAL_DB_PASSWORD"    "synthetic-journal"
                 "TOVER_SMTP_HOST"       "127.0.0.1" "TOVER_SMTP_PORT"                  smtp
                 "TOVER_SMTP_FROM"       "invitations@tover.test" "TOVER_SMTP_STARTTLS" "false"}

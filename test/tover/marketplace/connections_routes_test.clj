@@ -11,6 +11,7 @@
     [tover.catalogues.stores.model :as stores]
     [tover.fixtures :as fixtures]
     [tover.inventory.actors :as actors]
+    [tover.invitations.fixtures :as invitations]
     [tover.marketplace.connections-web-test :as forms]
     [tover.marketplace.connections.model :as model]
     [tover.marketplace.connections.web :as web]
@@ -46,7 +47,7 @@
                                                          "workspace-id" (str fixtures/workspace-id)} form)
                                                  (or options {})))]
               (runtime/execute! ctx ::stores/register-store {:command-id "st1" :input {:store-id "s" :name "Ozon shop"}})
-              (is (= 303 (:status (post! ::web/connect {"command-id" "connect-1" "store-id" "s"    "provider" "ozon"
+              (is (= 303 (:status (post! ::web/connect {"command-id" "connect-1" "provider" "ozon"
                                                         "client-id"  "123"       "api-key"  "good"}))))
               (f services ctx post!))))))))
 
@@ -101,4 +102,19 @@
 (deftest an-unknown-connection-page-is-not-found
   (with-connection
     (fn [{:keys [browser]} _ _]
-      (is (= 404 (:status ((:request! browser) :get "/marketplace/c-2")))))))
+      (is (= 404 (:status ((:request! browser) :get "/settings/marketplace/c-2")))))))
+
+
+(deftest connections-live-on-the-settings-page
+  (invitations/with-memory-coeffects
+    #(with-connection
+       (fn [{:keys [browser]} _ post!]
+         (let [settings (visible ((:request! browser) :get "/settings"))]
+           (is (str/includes? settings "id=\"marketplace-title\""))
+           (is (str/includes? settings "href=\"/settings/marketplace/c-1\""))
+           (is (not (str/includes? settings "href=\"/marketplace\""))))
+         (testing "a rejected connect renders the settings page with the reason"
+           (let [response (post! ::web/connect {"connection-id" "c-2" "provider" "ozon"
+                                                "client-id"     "123" "api-key"  "good"})]
+             (is (= 409 (:status response)))
+             (is (str/includes? (visible response) "id=\"marketplace-title\""))))))))

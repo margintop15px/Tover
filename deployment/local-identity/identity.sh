@@ -19,7 +19,8 @@ def jwt(role):
 values={'POSTGRES_PASSWORD':secrets.token_urlsafe(32),'TO_DEV_APP_PASSWORD':secrets.token_urlsafe(32),
         'TO_DEV_JOURNAL_PASSWORD':secrets.token_urlsafe(32),
         'JWT_SECRET':secret,'ANON_KEY':jwt('anon'),'SERVICE_ROLE_KEY':jwt('service_role'),
-        'SESSION_ENCRYPTION_KEY':base64.b64encode(secrets.token_bytes(32)).decode()}
+        'SESSION_ENCRYPTION_KEY':base64.b64encode(secrets.token_bytes(32)).decode(),
+        'CONNECTOR_KEY':base64.b64encode(secrets.token_bytes(32)).decode()}
 fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
 with os.fdopen(fd,'w') as output:
     for key,value in values.items(): output.write(f'{key}={value}\n')
@@ -27,19 +28,23 @@ print('Created private local credentials in deployment/local-identity/.env')
 PY
     ;;
   up)
-    # Profiles created before the journal worker get its password once; other keys stay unchanged.
-    python3 - "$profile_dir/.env" <<'PYJOURNAL'
-import os, secrets, sys
+    # Profiles created before the journal worker or marketplace connections get those secrets once; other keys stay unchanged.
+    python3 - "$profile_dir/.env" <<'PYADD'
+import base64, os, secrets, sys
 path=sys.argv[1]
 with open(path) as source: content=source.read()
-if any(line.startswith('TO_DEV_JOURNAL_PASSWORD=') for line in content.splitlines()): sys.exit()
+present={line.split('=',1)[0] for line in content.splitlines()}
+missing={key:value for key,value in {'TO_DEV_JOURNAL_PASSWORD':secrets.token_urlsafe(32),
+                                     'CONNECTOR_KEY':base64.b64encode(secrets.token_bytes(32)).decode()}.items()
+         if key not in present}
+if not missing: sys.exit()
 fd=os.open(path,os.O_WRONLY|os.O_APPEND)
 os.fchmod(fd,0o600)
 # Keep a hand-edited last line intact when the file lacks a final newline.
 separator='' if not content or content.endswith('\n') else '\n'
-with os.fdopen(fd,'a') as output: output.write(f'{separator}TO_DEV_JOURNAL_PASSWORD={secrets.token_urlsafe(32)}\n')
-print('Added a local journal worker password to deployment/local-identity/.env')
-PYJOURNAL
+with os.fdopen(fd,'a') as output: output.write(separator+''.join(f'{key}={value}\n' for key,value in missing.items()))
+print('Added '+', '.join(missing)+' to deployment/local-identity/.env')
+PYADD
     "${compose[@]}" up -d --wait --wait-timeout 180 db mail
     "${compose[@]}" exec -T db bash -s < "$profile_dir/db-roles.sh"
     "${compose[@]}" up -d --wait --wait-timeout 180
@@ -71,6 +76,7 @@ configuration={
     'TOVER_JOURNAL_DB_USER':'tover_journal','TOVER_JOURNAL_DB_PASSWORD':values['TO_DEV_JOURNAL_PASSWORD'],
     'TOVER_SMTP_HOST':'127.0.0.1','TOVER_SMTP_PORT':values.get('IDENTITY_SMTP_PORT','51025'),
     'TOVER_SMTP_FROM':'invitations@tover.test','TOVER_SMTP_STARTTLS':'false'}
+if 'CONNECTOR_KEY' in values: configuration['TOVER_CONNECTOR_KEY']=values['CONNECTOR_KEY']
 fd=os.open(sys.argv[2],os.O_CREAT|os.O_TRUNC|os.O_WRONLY,0o600)
 os.fchmod(fd,0o600)
 with os.fdopen(fd,'w') as output:

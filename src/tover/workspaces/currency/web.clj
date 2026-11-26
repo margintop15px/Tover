@@ -1,10 +1,12 @@
 (ns tover.workspaces.currency.web
   "Board chapter 04a · Workspace settings: the workspace currency. Owners pick from ISO 4217 codes; other members
-  see it read-only. A failed read offers Retry, never a guessed currency."
+  see it read-only. A failed read offers Retry, never a guessed currency. The page also holds the marketplace
+  connections (chapter 40) and leaving the workspace."
   (:require
     [bel.core :as bel :refer [defaction defpage]]
     [bel.runtime :as runtime]
     [com.brunobonacci.mulog :as mu]
+    [tover.marketplace.connections.web :as marketplace]
     [tover.memberships.departure.web :as departure]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
@@ -23,14 +25,19 @@
 (defn query-settings
   {:malli/schema [:=> [:cat :map :map] :map]}
   [{:keys [request] :as context} _]
-  {:request  request
-   :setting  (try (runtime/read-model context ::model/workspace-currency {})
-                  (catch ExceptionInfo error
-                    (when (= :forbidden (:type (ex-data error))) (throw error))
-                    (mu/log ::currency-unavailable :error-type (:type (ex-data error)))
-                    nil))
-   :leave    (departure/eligibility context)
-   :rejected (:tover/rejection request)})
+  {:request     request
+   :setting     (try (runtime/read-model context ::model/workspace-currency {})
+                     (catch ExceptionInfo error
+                       (when (= :forbidden (:type (ex-data error))) (throw error))
+                       (mu/log ::currency-unavailable :error-type (:type (ex-data error)))
+                       nil))
+   :leave       (departure/eligibility context)
+   :marketplace (try (marketplace/query-connections context)
+                     (catch ExceptionInfo error
+                       (when (= :forbidden (:type (ex-data error))) (throw error))
+                       (mu/log ::marketplace-unavailable :error-type (:type (ex-data error)))
+                       nil))
+   :rejected    (:tover/rejection request)})
 
 
 (defn currency-form
@@ -67,6 +74,11 @@
             (currency-form props)
             [:div.management-empty {:role "alert"}
              [:p (i18n/t "Could not load the workspace currency.")]
+             [:p [:a {:href (:uri request)} (i18n/t "Retry")]]])
+          (if-let [model (:marketplace props)]
+            (marketplace/connections-section {:request request :model model})
+            [:div.management-empty {:role "alert"}
+             [:p (i18n/t "Could not load the marketplace connections.")]
              [:p [:a {:href (:uri request)} (i18n/t "Retry")]]])
           (departure/leave-section {:request request :eligibility (:leave props)})]})
 

@@ -77,6 +77,9 @@
      "TOVER_DB_USER"             "tover_app"
      "TOVER_DB_PASSWORD"         (get settings "TO_DEV_APP_PASSWORD")
      "TOVER_SESSION_KEY"         (get settings "SESSION_ENCRYPTION_KEY")
+     ;; Profiles from before marketplace connections get it from identity.sh up; a process value still wins.
+     "TOVER_CONNECTOR_KEY"       (or (System/getenv "TOVER_CONNECTOR_KEY")
+                                     (get settings "CONNECTOR_KEY"))
      "TOVER_JOURNAL_DB_USER"     "tover_journal"
      "TOVER_JOURNAL_DB_PASSWORD" (get settings "TO_DEV_JOURNAL_PASSWORD")
      ;; Invitation email goes to the profile's captured Mailpit inbox.
@@ -148,4 +151,8 @@
 (comment
   (start!)
   (stop!)
-  (refresh!))
+  (refresh!)
+
+  (require '[integrant.repl.state :as igstate])
+  (keys igstate/system)
+  (:tover.marketplace.connector/connector igstate/system))

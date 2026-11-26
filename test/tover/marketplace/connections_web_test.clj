@@ -77,8 +77,15 @@
     (chassis/html (:html (fn (query ctx input))))))
 
 
+(defn section
+  "Rendered HTML of the marketplace section of the settings page."
+  {:malli/schema [:=> [:cat :map] :string]}
+  [ctx]
+  (chassis/html (web/connections-section {:request (:request ctx) :model (web/query-connections ctx)})))
+
+
 (def connect-form
-  {:connection-id "c-1" :store-id "s" :provider "ozon" :client-id " 123 " :api-key "good"})
+  {:connection-id "c-1" :provider "ozon" :client-id " 123 " :api-key "good"})
 
 
 (deftest connect-and-replace-through-the-forms
@@ -110,10 +117,10 @@
           (is (not (contains? (:input (act ctx ::web/connect (assoc connect-form :connection-id "c-2"))) :secret-ref))))
 
         (testing "the pages show the connection and never the key or its reference"
-          (let [list    (page ctx ::web/connections {})
+          (let [list    (section ctx)
                 details (page ctx ::web/connection {:connection-id "c-1"})
                 secret  (:secret-ref (runtime/read-model ctx ::model/connections {:connection-id "c-1"}))]
-            (is (str/includes? list "/marketplace/c-1"))
+            (is (str/includes? list "/settings/marketplace/c-1"))
             (is (str/includes? details "Pause"))
             (doseq [html [list details]]
               (is (not (str/includes? html "good")))
@@ -225,7 +232,6 @@
               before (act ctx ::web/connect form)
               result (accept! ctx before)
               change {:command-id "attempt-2" :connection-id "c-1" :client-id " 123 " :api-key "good-2"}]
-          (runtime/execute! ctx ::stores/archive-store {:command-id "st2" :input {:store-id "s" :revision 1}})
           (is (= before (act later ::web/connect form)))
           (is (= result (accept! ctx (act later ::web/connect form))))
           (let [replaced (act ctx ::web/replace-credentials change)
@@ -251,7 +257,6 @@
                   #(assoc (fake-verify %) :account-label "Renamed" :readable-domains ["products"])]]
     (with-context
       (fn [ctx marketplace]
-        (runtime/execute! ctx ::stores/register-store {:command-id "st2" :input {:store-id "s2" :name "Second shop"}})
         (let [calls    (atom 0)
               later    (verifying ctx calls verify)
               form     (assoc connect-form :command-id "attempt-1")
@@ -261,7 +266,7 @@
           (let [shown (submit ctx ::web/connect form)]
             (is (= {:type :page :id ::web/connection :path-params {:connection-id "c-1"}} shown))
             (is (= shown (submit later ::web/connect form)) "double-click on Connect"))
-          (doseq [other [{:client-id "456"} {:store-id "s2"} {:api-key "good-2"} {:connection-id "c-2"}]]
+          (doseq [other [{:client-id "456"} {:api-key "good-2"} {:connection-id "c-2"}]]
             (is (= :idempotency-conflict (conflict ::web/connect (merge form other)))))
           (let [shown    (submit ctx ::web/replace-credentials change)
                 replaced (row)]
@@ -350,9 +355,10 @@
                             (assoc-in [:request :tover/identity :workspace-id] other))
               fresh     (act elsewhere ::web/connect (assoc form :workspace-id other))]
           (is (= 1 @calls) "another workspace verifies its own attempt")
-          (is (not (contains? (:input fresh) :secret-ref)))
-          (is (= ["good"] (keep #(connector/api-key marketplace % (:secret-ref (runtime/read-model ctx ::model/connections {:connection-id "c-1"})))
-                                [scenarios/workspace other]))))))))
+          (is (contains? (:input fresh) :secret-ref) "its own attempt seals its own key")
+          (is (= ["good" "good"] (keep #(connector/api-key marketplace % (:secret-ref (runtime/read-model ctx ::model/connections {:connection-id "c-1"})))
+                                       [scenarios/workspace other]))
+              "each workspace seals its own copy under the attempt's reference"))))))
 
 
 (deftest other-currency
@@ -443,8 +449,8 @@
 
 
 (deftest a-connection-id-is-encoded-in-expressions
-  (is (= "/marketplace/x%27%29%3Balert%281%29%3B%28%27" (#'web/connection-link "x');alert(1);('")))
-  (is (= "/marketplace/00000000-0000-0000-0000-00000000c001" (#'web/connection-link scenarios/c))))
+  (is (= "/settings/marketplace/x%27%29%3Balert%281%29%3B%28%27" (#'web/connection-link "x');alert(1);('")))
+  (is (= "/settings/marketplace/00000000-0000-0000-0000-00000000c001" (#'web/connection-link scenarios/c))))
 
 
 (deftest problems-are-translated
@@ -477,7 +483,7 @@
   (with-context
     (fn [ctx _]
       (accept! ctx (act ctx ::web/connect connect-form))
-      (let [html (page (assoc-in ctx [:request :params] {:store-id "s"}) ::web/connections {})]
+      (let [html (section (assoc-in ctx [:request :params] {:provider "ozon"}))]
         (is (re-find #"<details[^>]* open" html))
         (is (not (re-find #"name=\"(?:client-id|api-key)\"[^>]*value=\"[^\"]" html)))))))
 
@@ -502,4 +508,4 @@
         (is (str/includes? details "data-preserve-attr=\"open\""))
         (testing "a morph from the list or from another connection must not match it"
           (is (str/includes? details "id=\"replace-credentials-c-1\""))
-          (is (re-find #"<details[^>]* id=\"connect-account\"" (page ctx ::web/connections {}))))))))
+          (is (re-find #"<details[^>]* id=\"connect-account\"" (section ctx))))))))

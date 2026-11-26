@@ -3,9 +3,8 @@
   connection reads. Two independent states: sync `active | paused` (the manager's choice) and credentials
   `valid | rejected` (the provider's outcome).
 
-  Store: every Marketplace model lives in `:catalogue`, the workspace RDF repository. Stores (chapter 12) are
-  there, so connect and resume check the store in the same snapshot, and chapter 41 persists source records in
-  the same repository, so a sync batch and its checkpoint can commit atomically with the connection. Identity
+  Store: every Marketplace model lives in `:catalogue`, the workspace RDF repository. A connection names no
+  catalogue Store (decided 2026-11-26); chapter 41 persists source records in the same repository, so a sync batch and its checkpoint can commit atomically with the connection. Identity
   (`:directory`) holds only accounts, memberships and sessions.
 
   Board `attempt id` is the Bel command id. The board's `api key` input never reaches a command: the action
@@ -20,7 +19,6 @@
     [bel.validation :as validation]
     [clojure.string :as str]
     [tover.catalogues.records :as records]
-    [tover.catalogues.stores.model :as stores]
     [tover.inventory.actors :as actors]
     [tover.marketplace.connector :as connector]
     [tover.workspaces.currency.model :as currency])
@@ -70,6 +68,7 @@
 
 
 (def PauseReason
+  "`store archived` only in history from before connections stopped naming a store."
   [:enum "manager" "store archived"])
 
 
@@ -105,7 +104,6 @@
   [:map
    [:connection-id Ref]
    [:workspace-id Ref]
-   [:store-id {:bel/ref ::stores/stores} records/Id]
    [:provider Provider]
    [:provider-account-id :string]
    [:account-label {:optional true} :string]
@@ -136,7 +134,7 @@
 
 (def MarketplaceAccountConnected
   [:map
-   [:connection-id Ref] [:workspace-id Ref] [:store-id records/Id] [:provider Provider]
+   [:connection-id Ref] [:workspace-id Ref] [:provider Provider]
    [:provider-account-id :string] [:account-label {:optional true} :string] [:secret-ref Ref]
    [:account-currency :string] [:key-expires-at {:optional true} At]
    [:readable-domains Domains] [:sync-state [:= "active"]] [:credentials-state [:= "valid"]]
@@ -177,7 +175,7 @@
    :store  :catalogue
    :schema Connection
    :policy ::records/workspace-member
-   :events {::marketplace-account-connected {:create [:workspace-id :store-id :provider :provider-account-id :account-label
+   :events {::marketplace-account-connected {:create [:workspace-id :provider :provider-account-id :account-label
                                                       :account-currency :key-expires-at :secret-ref :readable-domains
                                                       :sync-state :credentials-state
                                                       :connected-by :connected-at]}
@@ -248,12 +246,6 @@
   (select-keys input [:connection-id]))
 
 
-(defn- connection-store
-  {:malli/schema [:=> [:cat :map :map] :map]}
-  [facts _]
-  {:store-id (get-in facts [:connection :store-id])})
-
-
 (def ^:private connection
   [:connection ::connections by-connection])
 
@@ -312,7 +304,6 @@
 (def ConnectMarketplaceAccount
   [:map
    [:connection-id ConnectionId]
-   [:store-id records/Id]
    [:provider Provider]
    [:client-id ClientId]
    [:secret-ref {:optional true} Ref]
@@ -324,16 +315,13 @@
 
 
 (defcommand connect-marketplace-account
-  {:input ConnectMarketplaceAccount :policy ::manager
-   :cofx  [[:store ::stores/stores (fn [_ input] (select-keys input [:store-id]))]
-           [:connections ::all (constantly {})]
+  {:input ConnectMarketplaceAccount             :policy ::manager
+   :cofx  [[:connections ::all (constantly {})]
            sealed]
    :emits #{::marketplace-account-connected}}
-  [{:keys [actor now scope store connections sealed?]}
-   {:keys [connection-id store-id provider client-id secret-ref account-label account-currency readable-domains key-expires-at]
+  [{:keys [actor now scope connections sealed?]}
+   {:keys [connection-id provider client-id secret-ref account-label account-currency readable-domains key-expires-at]
     :as   input}]
-  (when-not (= "active" (:status store))
-    (fail! :store-not-available "Store not available"))
   (check-verification! input)
   (when-let [existing (first (filter #(and (= provider (:provider %)) (= client-id (:provider-account-id %)))
                                      connections))]
@@ -342,7 +330,6 @@
   {:events [{:type ::marketplace-account-connected
              :data (cond-> {:connection-id       connection-id
                             :workspace-id        (str (:workspace-id scope))
-                            :store-id            store-id
                             :provider            provider
                             :provider-account-id client-id
                             :account-currency    account-currency
@@ -370,14 +357,13 @@
 
 
 (defcommand resume-marketplace-connection
-  {:input ConnectionAttempt :policy ::manager
-   :cofx  [connection [:store ::stores/stores connection-store]]
+  {:input ConnectionAttempt                   :policy ::manager
+   :cofx  [connection]
    :emits #{::marketplace-connection-resumed}}
-  [{:keys [actor now connection store]} {:keys [connection-id]}]
+  [{:keys [actor now connection]} {:keys [connection-id]}]
   (cond
     (= "active" (:sync-state (known! connection))) {}
     (= "rejected" (:credentials-state connection)) (fail! :needs-credentials "Needs credentials")
-    (not= "active" (:status store)) (fail! :store-archived "Store archived")
     :else {:events [{:type ::marketplace-connection-resumed
                      :data {:connection-id connection-id :sync-state "active" :resumed-by (str actor) :resumed-at (str now)}}]}))
 
@@ -491,19 +477,9 @@
   (and (not= "open" run-state) (<= max-failures (or consecutive-failures 0))))
 
 
-(defn- store-ref
-  {:malli/schema [:=> [:cat :map [:maybe :map]] :map]}
-  [connection store]
-  {:store-id (:store-id connection) :name (or (:name store) (:store-id connection)) :archived? (not= "active" (:status store))})
-
-
-(def StoreRef
-  [:map [:store-id records/Id] [:name :string] [:archived? :boolean]])
-
-
 (def ConnectionRow
   [:map
-   [:connection-id Ref] [:provider Provider] [:provider-account-id :string] [:account-label :string] [:store StoreRef]
+   [:connection-id Ref] [:provider Provider] [:provider-account-id :string] [:account-label :string]
    [:sync-state SyncState] [:credentials-state CredentialsState]
    [:last-completed-sync-at {:optional true} validation/Instant]])
 
@@ -511,30 +487,24 @@
 (def MarketplaceConnectionsAndRequirements
   [:map
    [:connections [:vector ConnectionRow]]
-   [:selectable-stores [:vector [:map [:store-id records/Id] [:name :string]]]]
    [:can-manage? :boolean]])
 
 
 (defn- row
   "Display fields only: never the secret reference."
-  {:malli/schema [:=> [:cat :map [:maybe :map]] ConnectionRow]}
-  [connection store]
+  {:malli/schema [:=> [:cat :map] ConnectionRow]}
+  [connection]
   (cond-> (assoc (select-keys connection [:connection-id :provider :provider-account-id :sync-state :credentials-state])
-                 :account-label (or (:account-label connection) (:provider-account-id connection))
-                 :store (store-ref connection store))
+                 :account-label (or (:account-label connection) (:provider-account-id connection)))
     (:last-completed-sync-at connection) (assoc :last-completed-sync-at (at (:last-completed-sync-at connection)))))
 
 
 (defreadmodel marketplace-connections-and-requirements
   {:input [:map] :output MarketplaceConnectionsAndRequirements :policy ::records/workspace-member
-   :cofx  [[:connections ::all (constantly {})] [:stores ::stores/all (constantly {})] viewer]}
-  [{:keys [connections stores viewer]} _]
-  (let [by-id (into {} (map (juxt :store-id identity)) stores)]
-    {:connections       (->> connections (sort-by (juxt :connected-at :connection-id))
-                             (mapv #(row % (by-id (:store-id %)))))
-     :selectable-stores (->> stores (filter #(= "active" (:status %))) (sort-by :name)
-                             (mapv #(select-keys % [:store-id :name])))
-     :can-manage?       (:manager? viewer)}))
+   :cofx  [[:connections ::all (constantly {})] viewer]}
+  [{:keys [connections viewer]} _]
+  {:connections (->> connections (sort-by (juxt :connected-at :connection-id)) (mapv row))
+   :can-manage? (:manager? viewer)})
 
 
 (def BlockingReason
@@ -544,7 +514,7 @@
 
 (def ConnectionStatusAndSyncCoverage
   [:map
-   [:connection-id Ref] [:provider Provider] [:provider-account-id :string] [:account-label :string] [:store StoreRef]
+   [:connection-id Ref] [:provider Provider] [:provider-account-id :string] [:account-label :string]
    [:account-currency :string] [:key-expires-at {:optional true} validation/Instant]
    [:sync-state SyncState] [:credentials-state CredentialsState]
    [:current-run {:optional true} Ref]
@@ -602,8 +572,8 @@
 (defn status
   "Connection Status and Sync Coverage. `counts` (see `count-part`) and `currency` (the workspace's) come from
   the caller; absent counts are zero. Only three things block automatic acceptance of a connection."
-  {:malli/schema [:=> [:cat :map [:maybe :map] [:maybe :map]] ConnectionStatusAndSyncCoverage]}
-  [connection store {:keys [manager? covered counts currency]}]
+  {:malli/schema [:=> [:cat :map [:maybe :map]] ConnectionStatusAndSyncCoverage]}
+  [connection {:keys [manager? covered counts currency]}]
   (let [{:keys [unmatched-listings unmatched-warehouses scopes-without-baseline baselines next-steps]
          :or   {unmatched-listings 0 unmatched-warehouses 0 scopes-without-baseline 0 baselines 0 next-steps {}}} counts
         reasons (cond-> []
@@ -611,7 +581,7 @@
                   (= "rejected" (:credentials-state connection)) (conj "needs credentials")
                   (not (pos? baselines)) (conj "no baseline"))
         next-at (next-sync-at connection)]
-    (cond-> (assoc (row connection store)
+    (cond-> (assoc (row connection)
                    :account-currency (:account-currency connection)
                    :domains (domain-rows connection covered)
                    :unmatched-listings unmatched-listings :unmatched-warehouses unmatched-warehouses
@@ -630,11 +600,10 @@
 
 (defreadmodel connection-status-and-sync-coverage
   {:input ConnectionAttempt :output ConnectionStatusAndSyncCoverage :policy ::records/workspace-member
-   :cofx  [connection [:store ::stores/stores connection-store] viewer covered currency/row-fact
-           [:counts ::counts by-connection]]}
-  [{:keys [connection store viewer covered counts currency-row]} _]
-  (status (known! connection) store {:manager? (:manager? viewer)              :covered covered :counts counts
-                                     :currency (currency/current currency-row)}))
+   :cofx  [connection viewer covered currency/row-fact [:counts ::counts by-connection]]}
+  [{:keys [connection viewer covered counts currency-row]} _]
+  (status (known! connection) {:manager? (:manager? viewer)              :covered covered :counts counts
+                               :currency (currency/current currency-row)}))
 
 
 (def PausedConnection
@@ -650,9 +619,9 @@
 
 (defreadmodel paused-connection
   {:input ConnectionAttempt :output PausedConnection :policy ::records/workspace-member
-   :cofx  [connection [:store ::stores/stores connection-store] viewer covered
+   :cofx  [connection viewer covered
            [:label ::account-label (fn [facts _] {:account-id (get-in facts [:connection :paused-by])})]]}
-  [{:keys [connection store viewer label covered]} _]
+  [{:keys [connection viewer label covered]} _]
   (let [{:keys [paused-by] :as connection} (known! connection)]
     (when-not (= "paused" (:sync-state connection))
       (fail! :not-paused "This connection is not paused"))
@@ -663,7 +632,7 @@
      :reason (:reason connection)
      :resume-positions           (mapv #(select-keys % [:domain :covered-until]) (filter :readable? (domain-rows connection covered)))
      :pending-imported-proposals 0
-     :can-resume?                (and (:manager? viewer) (= "valid" (:credentials-state connection)) (= "active" (:status store)))}))
+     :can-resume?                (and (:manager? viewer) (= "valid" (:credentials-state connection)))}))
 
 
 (def ConnectionNeedingAttention
