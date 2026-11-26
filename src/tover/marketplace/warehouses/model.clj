@@ -75,10 +75,16 @@
 
 
 (defn new-warehouse-id
-  "The Tover warehouse an external warehouse registers. Derived from it, so one never registers two."
-  {:malli/schema [:=> [:cat :string] :string]}
-  [external-warehouse-id]
-  (str "listing-warehouse:" external-warehouse-id))
+  "The Tover warehouse an external warehouse registers, derived from it: `listing-warehouse:<id>`, or
+  `listing-warehouse:<id>:<n>` with the least n from 2 when the earlier ones are archived or deleted. An active
+  one is the answer itself, so one external warehouse never registers two active warehouses. `warehouses` by id."
+  {:malli/schema [:=> [:cat :map :string] :string]}
+  [warehouses external-warehouse-id]
+  (let [base (str "listing-warehouse:" external-warehouse-id)]
+    (some #(let [id (if (= 1 %) base (str base ":" %))
+                 w (get warehouses id)]
+             (when (or (nil? w) (= "active" (:status w))) id))
+          (iterate inc 1))))
 
 
 (def ^:private Common
@@ -215,18 +221,18 @@
 
 
 (defn suggestion
-  "The prefilled choice: the warehouse it registered before, else for a seller warehouse an active one of the
+  "The prefilled choice: the active warehouse it registered before, else for a seller warehouse an active one of the
   same name that the FBO rule leaves free, else a new one under the provider's name. A name another warehouse
   holds takes the account label: a second account's FBO warehouse of the same name."
   {:malli/schema [:=> [:cat :map [:maybe :string] :map] [:or [:map [:warehouse-id :string]] [:map [:new-name :string]]]]}
   [{:keys [warehouses used]} label {:keys [external-warehouse-id warehouse-type] :as external}]
   (let [name     (provider-name external)
-        own      (get warehouses (new-warehouse-id external-warehouse-id))
+        own      (get warehouses (new-warehouse-id warehouses external-warehouse-id))
         taken    (some #(when (and (live? %) (= (fold name) (fold (:name %)))) %) (vals warehouses))
         sharable (when (and taken (= "active" (:status taken)) (not (fbo? warehouse-type))
                             (not (shared-with-fbo? external-warehouse-id warehouse-type (get used (:warehouse-id taken) []))))
                    taken)]
-    (cond (live? own) {:warehouse-id (:warehouse-id own)}
+    (cond own {:warehouse-id (:warehouse-id own)}
           sharable {:warehouse-id (:warehouse-id sharable)}
           (and taken label) {:new-name (str name " · " label)}
           :else {:new-name name})))
@@ -404,11 +410,11 @@
 
 (defn- row-target
   "The row with what it maps to: an existing `:warehouse-id`, or a new one under `:warehouse-name`."
-  {:malli/schema [:=> [:cat :map] :map]}
-  [{:keys [external-warehouse-id warehouse-id warehouse-name] :as row}]
+  {:malli/schema [:=> [:cat :map :map] :map]}
+  [warehouses {:keys [external-warehouse-id warehouse-id warehouse-name] :as row}]
   (if (some-> warehouse-id str/trim not-empty)
     (assoc row :target (str/trim warehouse-id))
-    (assoc row :target (new-warehouse-id external-warehouse-id) :new-name (some-> warehouse-name str/trim))))
+    (assoc row :target (new-warehouse-id warehouses external-warehouse-id) :new-name (some-> warehouse-name str/trim))))
 
 
 (defn- target-code
@@ -434,7 +440,7 @@
                      others (remove #(= id (:external-warehouse-id %)) (get used target []))]
                :when (shared-with-fbo? id (:warehouse-type external) others)
                :let [other (:external-warehouse-id (first (sort-by :external-warehouse-id others)))]]
-           (problem id :already-used :owner-product (or (some-> (get named other) provider-name) other))))))
+           (problem id :already-used :other-warehouse (or (some-> (get named other) provider-name) other))))))
 
 
 (defn- decided
@@ -521,7 +527,7 @@
    :cofx  command-cofx
    :emits #{::external-warehouse-mapped :tover.catalogues.warehouses.model/warehouse-registered}}
   [{:keys [scope externals mappings named warehouses] :as facts} {:keys [rows]}]
-  (let [rows (mapv row-target (distinct rows))
+  (let [rows (mapv (partial row-target (by-id warehouses :warehouse-id)) (distinct rows))
         twice (set (keep (fn [[id n]] (when (> n 1) id)) (frequencies (map :external-warehouse-id rows))))
         ;; Each new name is checked against the warehouses and every other new name of the batch.
         records (into (vec warehouses) (for [{:keys [target new-name] :as row} rows :when (contains? row :new-name)]

@@ -233,7 +233,7 @@
          (catch clojure.lang.ExceptionInfo e
            (is (= "Already used for another Ozon warehouse." (ex-message e)))
            (is (= [["c-1:fbo:1" :already-used "Тверь"] ["c-1:fbo:2" :already-used "Хоругвино"]]
-                  (mapv (juxt :external-warehouse-id :code :owner-product) (:rows (ex-data e)))) "each row names the other")))))
+                  (mapv (juxt :external-warehouse-id :code :other-warehouse) (:rows (ex-data e)))) "each row names the other")))))
 
 
 (deftest fbo-warehouse-is-not-shared
@@ -268,6 +268,43 @@
                               :mappings {(:external-warehouse-id hub) (assoc (mapping hub "main") :state "removed")})
                      [:events 0 :data :mapping-revision]))
         "a removed mapping is mapped again with the next revision")))
+
+
+(defn new-after
+  "The suggestion for FBO warehouse Hub and the warehouse its confirm registers, given `earlier` warehouses."
+  {:malli/schema [:=> [:cat [:sequential :map]] [:tuple :map :map]]}
+  [earlier]
+  (let [hub        (external "fbo" "1" :name "Hub")
+        warehouses (into [main] earlier)
+        suggestion (:suggestion (first (:rows (read-handler ::warehouses/unmatched-external-warehouses
+                                                            {:externals [hub] :warehouses warehouses} {:connection-id c}))))
+        plan       (confirm [hub] [(row hub :warehouse-name (:new-name suggestion))] :warehouses warehouses)]
+    [suggestion (:data (first (:events plan)))]))
+
+
+(deftest new-warehouse-after-the-earlier-one-is-archived
+  (let [[suggestion registered] (new-after [(warehouse "listing-warehouse:c-1:fbo:1" "Hub" :status "archived")])]
+    (is (= {:new-name "Hub · Main shop"} suggestion) "the archived warehouse is not suggested; it keeps its name")
+    (is (= {:warehouse-id "listing-warehouse:c-1:fbo:1:2" :name "Hub · Main shop" :status "active" :revision 1} registered)
+        "the new warehouse takes the next free id")))
+
+
+(deftest new-warehouse-after-the-earlier-one-is-deleted
+  (let [[suggestion registered] (new-after [(warehouse "listing-warehouse:c-1:fbo:1" "Hub" :status "deleted")])]
+    (is (= {:new-name "Hub"} suggestion) "a deleted warehouse holds no name")
+    (is (= "listing-warehouse:c-1:fbo:1:2" (:warehouse-id registered))))
+  (testing "every earlier one archived or deleted"
+    (is (= "listing-warehouse:c-1:fbo:1:3"
+           (:warehouse-id (second (new-after [(warehouse "listing-warehouse:c-1:fbo:1" "Hub" :status "deleted")
+                                              (warehouse "listing-warehouse:c-1:fbo:1:2" "Hub 2" :status "archived")]))))))
+  (testing "an active later one is suggested and stays the only one"
+    (let [hub     (external "fbo" "1" :name "Hub")
+          earlier [main (warehouse "listing-warehouse:c-1:fbo:1" "Hub" :status "deleted") (warehouse "listing-warehouse:c-1:fbo:1:2" "Hub 2")]]
+      (is (= {:warehouse-id "listing-warehouse:c-1:fbo:1:2"}
+             (:suggestion (first (:rows (read-handler ::warehouses/unmatched-external-warehouses
+                                                      {:externals [hub] :warehouses earlier} {:connection-id c}))))))
+      (is (= [["c-1:fbo:1" :warehouse-exists]]
+             (offending #(confirm [hub] [(row hub :warehouse-name "Hub 3")] :warehouses earlier)))))))
 
 
 ;; Slice 4 · Change Warehouse Mapping

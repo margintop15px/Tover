@@ -141,14 +141,14 @@
   "Row codes whose message names the barcode, product or Ozon warehouse it is about."
   {"barcode-conflict"    "Barcode {barcode} belongs to {product}."
    "uniqueness-conflict" "A barcode or article belongs to {product}."
-   "already-used"        "Already used for another Ozon warehouse: {product}."})
+   "already-used"        "Already used for another Ozon warehouse: {warehouse}."})
 
 
 (defn row-message
   {:malli/schema [:=> [:cat :map] :string]}
-  [{:keys [code message owner-product barcode]}]
-  (if-let [key (and owner-product (get parameterized (some-> code name)))]
-    (i18n/t key {:barcode (or barcode "") :product owner-product})
+  [{:keys [code message owner-product other-warehouse barcode]}]
+  (if-let [key (and (or owner-product other-warehouse) (get parameterized (some-> code name)))]
+    (i18n/t key {:barcode (or barcode "") :product (or owner-product "") :warehouse (or other-warehouse "")})
     (i18n/t (or message "The request could not be completed."))))
 
 
