@@ -1,6 +1,7 @@
 (ns tover.marketplace.products.model
-  "Board chapter 42 · Match marketplace products to stock items: product mappings, deferrals and the matching
-  reads (slices 1, 3, 5, 7). The commands that emit these events come with slices 2, 4, 6, 8 and c.
+  "Board chapter 42 · Match marketplace products to stock items: product mappings, deferrals, the matching
+  reads (slices 1, 3, 5, 7) and the member's confirm, defer, change and reconfirm commands (slices 2, 6, 8, c).
+  Registering a product for a listing (slice 4) comes later.
 
   A listing is an `External Product Observed` row of one connection. A mapping links it to one stock item;
   several listings may map to the same item. States: `confirmed` (permits automatic acceptance), `suspended`
@@ -13,10 +14,11 @@
   every event. `External Product Mapped` writes with `:set`: a removed mapping is mapped again in place. Each
   of the four mapping events also creates a revision `<external-product-id>#<mapping-revision>`."
   (:require
-    [bel.core :refer [defevent defmodel defreadmodel]]
+    [bel.core :refer [defcommand defevent defmodel defreadmodel]]
     [bel.runtime :as runtime]
     [clojure.string :as str]
     [tover.catalogues.records :as records]
+    [tover.inventory.stock-items.model :as stock-items]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.products.candidates :as candidates]
     [tover.marketplace.sync.model :as sync]
@@ -605,3 +607,300 @@
   (when-not listing
     (records/fail! :not-found "Unknown listing" {}))
   (details (assoc facts :mapping (get mappings external-product-id))))
+
+
+;; Commands (slices 2, 6, 8 and c). Every row is checked and every problem returned; one bad row accepts nothing.
+
+
+(def ^:private messages
+  {:stale                  "The listing, its mapping or the stock item changed since review. Review it again."
+   :barcode-conflict       "A barcode of the listing belongs to another product."
+   :item-not-available     "Choose an active, regular stock item of this workspace."
+   :already-mapped         "The listing is already mapped. Change its mapping instead."
+   :listed-twice           "The listing is in the batch twice with different stock items."
+   :not-suspended          "The mapping is not suspended; there is nothing to reconfirm."
+   :item-archived          "The stock item is archived or defective. Change the mapping instead."
+   :barcode-not-on-listing "Only an active barcode of the listing can be adopted."})
+
+
+(def ^:private rejection-type
+  "Row codes that reject with another type than their own."
+  {:listed-twice :already-mapped :barcode-not-on-listing :validation})
+
+
+(defn- problem
+  {:malli/schema [:=> [:cat :string :keyword [:* :any]] :map]}
+  [external-product-id code & {:as extra}]
+  (merge {:external-product-id external-product-id :code code :message (messages code)} extra))
+
+
+(defn- reject!
+  "Rejects with the first problem's type, naming every problem row."
+  {:malli/schema [:=> [:cat [:sequential :map]] :nil]}
+  [problems]
+  (when-let [{:keys [code message]} (first problems)]
+    (records/fail! (rejection-type code code) message {:rows (vec problems)})))
+
+
+(defn- holders
+  "Barcode to the products whose items hold it, archived items included: a barcode stays reserved to its product."
+  {:malli/schema [:=> [:cat :map] [:map-of :string [:set :string]]]}
+  [{:keys [barcodes stock-items]}]
+  (let [product-of (into {} (map (juxt :stock-item-id :product-id)) stock-items)]
+    (reduce (fn [owners {:keys [stock-item-id barcode]}]
+              (let [barcode (candidates/usable-barcode barcode)
+                    product (product-of stock-item-id)]
+                (if (and barcode product) (update owners barcode (fnil conj #{}) product) owners)))
+            {}
+            barcodes)))
+
+
+(defn- catalogue-index
+  {:malli/schema [:=> [:cat :map] :map]}
+  [catalogue]
+  {:items    (by-id (:stock-items catalogue) :stock-item-id)
+   :products (by-id (:products catalogue) :product-id)
+   :owners   (holders catalogue)
+   :held     (set (map (juxt :stock-item-id :barcode) (:barcodes catalogue)))})
+
+
+(defn- listing-barcodes
+  "The listing's active barcodes."
+  {:malli/schema [:=> [:cat [:maybe :map]] [:set :string]]}
+  [listing]
+  (into #{} (keep #(when (and (= "barcode" (:type %)) (not (false? (:active %)))) (candidates/usable-barcode (:value %))))
+        (:identifiers listing)))
+
+
+(defn- item-code
+  "Nil when the item is in this workspace, at the reviewed revision, active, regular and of a live product; else the
+  problem code. Stale is checked before availability; an item of another workspace is not found here."
+  {:malli/schema [:=> [:cat :map [:maybe :string] [:maybe :int] :keyword] [:maybe :keyword]]}
+  [{:keys [items products]} stock-item-id item-revision unavailable]
+  (let [item (get items stock-item-id)]
+    (cond (nil? item) unavailable
+          (not= item-revision (:revision item)) :stale
+          (or (not= "active" (:status item)) (not= "regular" (:condition item "regular"))
+              (contains? #{"archived" "deleted"} (:status (get products (:product-id item))))) unavailable)))
+
+
+(defn- conflicts
+  "One problem per listing barcode held by a product other than `product-id`, naming that product."
+  {:malli/schema [:=> [:cat :map :string [:set :string] [:maybe :string]] [:vector :map]]}
+  [{:keys [owners products]} external-product-id barcodes product-id]
+  (vec (for [barcode (sort barcodes)
+             owner   (sort (disj (get owners barcode #{}) product-id))
+             :let    [name (:name (get products owner) owner)]]
+         (problem external-product-id :barcode-conflict :barcode barcode :owner-product name
+                  :message (str "Barcode " barcode " belongs to " name ".")))))
+
+
+(defn- basis
+  {:malli/schema [:=> [:cat :map :map :map] :string]}
+  [catalogue listing item]
+  (observations/write-json
+    (candidates/identity-basis listing (filterv #(= (:connection-id listing) (:connection-id %)) (:definitions catalogue)) item)))
+
+
+(defn- decided
+  "What every member decision writes: the listing, the new mapping revision, who and when."
+  {:malli/schema [:=> [:cat :map :map :string :string :int] :map]}
+  [{:keys [actor now]} listing connection-id change mapping-revision]
+  {:external-product-id (:external-product-id listing)
+   :mapping-revision-id (revision-id (:external-product-id listing) mapping-revision)
+   :connection-id       connection-id
+   :change              change
+   :listing-revision    (:revision listing)
+   :mapping-revision    mapping-revision
+   :changed-by          (str actor)
+   :changed-at          (str now)})
+
+
+(defn- target
+  "The confirmed item and the values the Mapping Guard compares with."
+  {:malli/schema [:=> [:cat :map :map :map] :map]}
+  [catalogue listing item]
+  {:stock-item-id  (:stock-item-id item)
+   :item-revision  (:revision item)
+   :identity-basis (basis catalogue listing item)
+   :state          "confirmed"})
+
+
+(defn- accepted-fx
+  "Publish, and evaluate again the waiting operations of each connection touched."
+  {:malli/schema [:=> [:cat :map [:sequential [:maybe :string]]] [:vector :any]]}
+  [scope connection-ids]
+  (into (records/publish scope) (for [c (sort (set (remove nil? connection-ids)))] [::sync/mark-dirty {:connection-id c}])))
+
+
+(defn- mapped?
+  {:malli/schema [:=> [:cat [:maybe :map]] :boolean]}
+  [mapping]
+  (contains? #{"confirmed" "suspended"} (:state mapping)))
+
+
+(defmethod runtime/coeffect ::reviewed-listings
+  [_ context {:keys [ids]}]
+  (update-vals (sync/load-rows context ::sync/external-products (vec ids)) listing-row))
+
+
+(defmethod runtime/coeffect ::mappings-by-id
+  [_ context {:keys [ids]}]
+  (sync/load-rows context ::product-mappings (vec ids)))
+
+
+(defn- row-ids
+  {:malli/schema [:=> [:cat :map :map] :map]}
+  [_ {:keys [rows external-product-ids external-product-id]}]
+  {:ids (vec (or external-product-ids (some->> rows (map :external-product-id)) [external-product-id]))})
+
+
+(def ^:private command-cofx
+  [[:listings ::reviewed-listings row-ids]
+   [:mappings ::mappings-by-id row-ids]
+   [:catalogue ::catalogue (constantly {})]])
+
+
+(def ConfirmRow
+  [:map
+   [:external-product-id ListingId] [:listing-revision Revision]
+   [:stock-item-id Ref] [:item-revision Revision]
+   [:adopt-barcodes {:optional true} [:vector [:string {:max 200}]]]])
+
+
+(def ConfirmProductMapping
+  [:map [:rows [:vector {:min 1 :max 5000} ConfirmRow]]])
+
+
+(defn- confirm-row
+  "Adds the row's problems, or the accepted row, to `acc`. A listing already confirmed to the same item is skipped."
+  {:malli/schema [:=> [:cat :map :map :map] :map]}
+  [{:keys [listings mappings index twice]} {:keys [owners] :as acc}
+   {:keys [external-product-id listing-revision stock-item-id item-revision adopt-barcodes]}]
+  (let [listing  (get listings external-product-id)
+        mapping  (get mappings external-product-id)
+        item     (get-in index [:items stock-item-id])
+        barcodes (listing-barcodes listing)
+        adopt    (set (keep candidates/usable-barcode adopt-barcodes))
+        code     (cond (twice external-product-id) :listed-twice
+                       (or (nil? listing) (not= listing-revision (:revision listing))) :stale
+                       (and (= "confirmed" (:state mapping)) (= stock-item-id (:stock-item-id mapping))) :same
+                       (mapped? mapping) :already-mapped
+                       :else (item-code index stock-item-id item-revision :item-not-available))
+        problems (cond (= :same code) []
+                       code [(problem external-product-id code)]
+                       :else (into (vec (for [b (sort adopt) :when (not (barcodes b))]
+                                          (problem external-product-id :barcode-not-on-listing :barcode b)))
+                                   (conflicts (assoc index :owners owners) external-product-id barcodes (:product-id item))))]
+    (cond (= :same code) acc
+          (seq problems) (update acc :problems into problems)
+          :else (-> acc
+                    (update :accepted conj {:listing listing :mapping mapping :item item :adopt adopt})
+                    ;; Adopted in this batch: a later row may not give the barcode to another product.
+                    (update :owners #(reduce (fn [o b] (update o b (fnil conj #{}) (:product-id item))) % adopt))))))
+
+
+(defcommand confirm-product-mapping
+  {:input ConfirmProductMapping :policy ::records/workspace-member
+   :cofx  command-cofx
+   :emits #{::external-product-mapped :tover.inventory.stock-items.model/stock-item-barcode-assigned}}
+  [{:keys [scope listings mappings catalogue] :as facts} {:keys [rows]}]
+  (let [rows  (distinct rows)
+        twice (set (keep (fn [[id n]] (when (> n 1) id)) (frequencies (map :external-product-id rows))))
+        index (catalogue-index catalogue)
+        {:keys [problems accepted]}
+        (reduce (partial confirm-row {:listings listings :mappings mappings :index index :twice twice})
+                {:owners (:owners index) :problems [] :accepted []}
+                rows)]
+    (reject! problems)
+    (if (empty? accepted)
+      {}
+      {:events (vec (concat
+                      (for [{:keys [listing mapping item]} accepted]
+                        {:type ::external-product-mapped
+                         :data (merge (decided facts listing (:connection-id listing) "mapped" (inc (:mapping-revision mapping 0)))
+                                      (target catalogue listing item))})
+                      ;; Stock Item Barcode Assigned, as acceptance emits it; a barcode the item has changes nothing.
+                      (for [[item code] (distinct (for [{:keys [item adopt]} accepted, code (sort adopt)] [(:stock-item-id item) code]))
+                            :when       (not ((:held index) [item code]))]
+                        {:type :tover.inventory.stock-items.model/stock-item-barcode-assigned
+                         :data {:barcode-id (stock-items/barcode-id item code) :stock-item-id item :barcode code}})))
+       :fx     (accepted-fx scope (map (comp :connection-id :listing) accepted))})))
+
+
+(def DeferProductMatch
+  [:map [:external-product-ids [:vector {:min 1 :max 5000} ListingId]] [:reason {:optional true} [:string {:max 500}]]])
+
+
+(defcommand defer-product-match
+  {:input DeferProductMatch :policy ::records/workspace-member :cofx (pop command-cofx) :emits #{::product-match-deferred}}
+  [{:keys [actor now scope listings mappings]} {:keys [external-product-ids reason]}]
+  (let [ids    (distinct external-product-ids)
+        reason (some-> reason str/trim not-empty)]
+    (reject! (for [id    ids
+                   :let  [code (cond (nil? (get listings id)) :stale (mapped? (get mappings id)) :already-mapped)]
+                   :when code]
+               (problem id code)))
+    {:events (mapv (fn [id] {:type ::product-match-deferred
+                             :data (cond-> {:external-product-id id :deferred-by (str actor) :deferred-at (str now)}
+                                     reason (assoc :reason reason))})
+                   ids)
+     :fx     (accepted-fx scope (map #(:connection-id (get listings %)) ids))}))
+
+
+(def ChangeProductMapping
+  "A blank stock item removes the mapping."
+  [:map [:external-product-id ListingId] [:mapping-revision Revision]
+   [:stock-item-id {:optional true} Ref] [:item-revision {:optional true} Revision]])
+
+
+(defcommand change-product-mapping
+  {:input ChangeProductMapping :policy ::records/workspace-member :cofx command-cofx :emits #{::product-mapping-changed}}
+  [{:keys [scope listings mappings catalogue] :as facts} {:keys [external-product-id mapping-revision stock-item-id item-revision]}]
+  (let [listing (get listings external-product-id)
+        mapping (get mappings external-product-id)
+        index   (catalogue-index catalogue)
+        item    (get-in index [:items stock-item-id])
+        same?   (if stock-item-id
+                  (and (= "confirmed" (:state mapping)) (= stock-item-id (:stock-item-id mapping)))
+                  (not (mapped? mapping)))]
+    (reject! (cond (or (nil? listing) (nil? mapping) (not= mapping-revision (:mapping-revision mapping)))
+                   [(problem external-product-id :stale)]
+                   same? []
+                   stock-item-id (if-let [code (item-code index stock-item-id item-revision :item-not-available)]
+                                   [(problem external-product-id code)]
+                                   (conflicts index external-product-id (listing-barcodes listing) (:product-id item)))
+                   :else []))
+    (if same?
+      {}
+      {:events [{:type ::product-mapping-changed
+                 :data (cond-> (decided facts listing (:connection-id mapping) "changed" (inc mapping-revision))
+                         (:stock-item-id mapping) (assoc :previous-stock-item-id (:stock-item-id mapping))
+                         item (merge (target catalogue listing item))
+                         (nil? item) (assoc :state "removed"))}]
+       :fx     (accepted-fx scope [(:connection-id mapping)])})))
+
+
+(def ReconfirmProductMapping
+  [:map [:external-product-id ListingId] [:mapping-revision Revision] [:listing-revision Revision] [:item-revision Revision]])
+
+
+(defcommand reconfirm-product-mapping
+  {:input ReconfirmProductMapping :policy ::records/workspace-member :cofx command-cofx :emits #{::product-mapping-reconfirmed}}
+  [{:keys [scope listings mappings catalogue] :as facts} {:keys [external-product-id mapping-revision listing-revision item-revision]}]
+  (let [listing (get listings external-product-id)
+        mapping (get mappings external-product-id)
+        index   (catalogue-index catalogue)
+        item    (get-in index [:items (:stock-item-id mapping)])
+        code    (cond (nil? mapping) :not-suspended
+                      (not= mapping-revision (:mapping-revision mapping)) :stale
+                      (not= "suspended" (:state mapping)) :not-suspended
+                      (or (nil? listing) (not= listing-revision (:revision listing))) :stale
+                      :else (item-code index (:stock-item-id mapping) item-revision :item-archived))]
+    (reject! (if code
+               [(problem external-product-id code)]
+               (conflicts index external-product-id (listing-barcodes listing) (:product-id item))))
+    {:events [{:type ::product-mapping-reconfirmed
+               :data (merge (decided facts listing (:connection-id mapping) "reconfirmed" (inc mapping-revision))
+                            (target catalogue listing item))}]
+     :fx     (accepted-fx scope [(:connection-id mapping)])}))

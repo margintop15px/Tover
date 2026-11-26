@@ -356,3 +356,356 @@
           (is (= [] (:other-listings details))))
         (is (= 1 (connections/count-part :unmatched-listings ctx c)))
         (is (= 3 (connections/count-part :unmatched-listings ctx other-c)))))))
+
+
+;; Slices 2, 6, 8 and c · the member's commands over given facts
+
+
+(def blue
+  "Listing c:9001 states the Mug's barcode, so Mug's only item is preselected."
+  (listing "9001" :name "Mug blue" :barcodes ["4600000000017"] :connection-id "c"))
+
+
+(def command-facts
+  {:listings  {(:external-product-id blue) blue}
+   :mappings  {}
+   :catalogue (update catalogue :stock-items conj
+                      {:stock-item-id "mug-2" :product-id "mug" :variant-label "red" :condition "regular" :status "active" :revision 1})})
+
+
+(defn decide
+  {:malli/schema [:=> [:cat :keyword :map :map] :map]}
+  [command facts input]
+  (runtime/decide command (merge {:scope support/scope :actor member :now (Instant/parse at)} command-facts facts) input))
+
+
+(defn with-listing
+  "Command facts in which c:9001 is `listing`."
+  {:malli/schema [:=> [:cat :map] :map]}
+  [listing]
+  {:listings {(:external-product-id listing) listing}})
+
+
+(def row
+  {:external-product-id "c:9001" :listing-revision 1 :stock-item-id "mug-1" :item-revision 1})
+
+
+(defn confirm
+  {:malli/schema [:=> [:cat [:sequential :map] [:* :any]] :map]}
+  [rows & {:as facts}]
+  (decide ::products/confirm-product-mapping (or facts {}) {:rows rows}))
+
+
+(defn event
+  "The data of the plan's first event of `type`."
+  {:malli/schema [:=> [:cat :map :keyword] [:maybe :map]]}
+  [plan type]
+  (some #(when (= type (:type %)) (:data %)) (:events plan)))
+
+
+(defn offending
+  "The rejection's rows as [listing code owner-product], or nil when accepted."
+  {:malli/schema [:=> [:cat [:fn fn?]] [:maybe [:vector [:vector :any]]]]}
+  [f]
+  (try (f) nil
+       (catch clojure.lang.ExceptionInfo e
+         (mapv #(vec (remove nil? ((juxt :external-product-id :code :owner-product) %))) (:rows (ex-data e))))))
+
+
+(defn rejection
+  {:malli/schema [:=> [:cat [:fn fn?]] [:maybe :keyword]]}
+  [f]
+  (try (f) nil (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+
+
+(def accepted-fx
+  [[:bel/publish {:topic :tover.inventory.web/changed :scope-id workspace :data {}}]
+   [::sync/mark-dirty {:connection-id "c"}]])
+
+
+;; Slice 2 · Confirm a mapping to an existing stock item
+
+
+(deftest one-click
+  (let [plan (confirm [row])]
+    (is (= {:external-product-id "c:9001" :stock-item-id "mug-1" :mapping-revision 1 :state "confirmed"}
+           (select-keys (event plan ::products/external-product-mapped) [:external-product-id :stock-item-id :mapping-revision :state])))
+    (is (= {:mapping-revision-id "c:9001#1"   :connection-id "c" :change "mapped" :listing-revision 1 :item-revision 1
+            :changed-by          (str member) :changed-at    at}
+           (select-keys (event plan ::products/external-product-mapped)
+                        [:mapping-revision-id :connection-id :change :listing-revision :item-revision :changed-by :changed-at])))
+    (is (= {:attributes {} :pack nil :unit nil :variant-label nil}
+           (observations/read-json (:identity-basis (event plan ::products/external-product-mapped)))))
+    (is (= accepted-fx (:fx plan)) "the listing's waiting operations are evaluated again")))
+
+
+(deftest foreign-barcode
+  (let [row-with-plate-code (with-listing (listing "9001" :barcodes ["4600000000017" "plate-code"] :connection-id "c"))]
+    (is (= [["c:9001" :barcode-conflict "Plate"]] (offending #(confirm [row] row-with-plate-code))))
+    (is (= :barcode-conflict (rejection #(confirm [row] row-with-plate-code))))
+    (testing "an archived item keeps its barcode reserved to its product"
+      (is (= [["c:9001" :barcode-conflict "Plate"]]
+             (offending #(confirm [row] (merge row-with-plate-code
+                                               {:catalogue (update catalogue :stock-items (partial mapv (fn [i] (cond-> i (= "plate-1" (:stock-item-id i)) (assoc :status "archived")))))}))))))))
+
+
+(deftest adopt-a-barcode
+  (let [facts (with-listing (listing "9001" :barcodes ["4600000000017" "4600000000024"] :connection-id "c"))
+        plan  (confirm [(assoc row :adopt-barcodes ["4600000000024" " 4600000000017 "])] facts)]
+    (is (= [::products/external-product-mapped :tover.inventory.stock-items.model/stock-item-barcode-assigned] (mapv :type (:events plan)))
+        "the item's own barcode changes nothing")
+    (is (= {:barcode-id "mug-1|4600000000024" :stock-item-id "mug-1" :barcode "4600000000024"}
+           (event plan :tover.inventory.stock-items.model/stock-item-barcode-assigned)))
+    (testing "nothing ticked, nothing assigned"
+      (is (= [::products/external-product-mapped] (mapv :type (:events (confirm [row] facts))))))))
+
+
+(deftest adopted-barcode-must-be-active-on-the-listing
+  (let [facts (with-listing (update (listing "9001" :barcodes ["4600000000024"] :connection-id "c")
+                                    :identifiers conj {:type "barcode" :value "4600000000031" :active false}))]
+    (is (= [["c:9001" :barcode-not-on-listing]] (offending #(confirm [(assoc row :adopt-barcodes ["4600000000031"])] facts))))
+    (is (= :validation (rejection #(confirm [(assoc row :adopt-barcodes ["4600000000048"])] facts))))))
+
+
+(deftest two-members
+  (let [mapped {:mappings {"c:9001" (mapping blue "mug-1" "confirmed")}}]
+    (is (= [["c:9001" :already-mapped]] (offending #(confirm [(assoc row :stock-item-id "mug-2")] mapped))))
+    (is (= {:events [] :fx []} (confirm [row] mapped)) "the same decision twice changes nothing")
+    (is (= [["c:9001" :already-mapped]]
+           (offending #(confirm [row] {:mappings {"c:9001" (mapping blue "mug-1" "suspended")}})))
+        "a suspended mapping is reconfirmed, not confirmed")
+    (testing "a removed mapping is mapped again with the next revision"
+      (is (= 3 (:mapping-revision (event (confirm [row] {:mappings {"c:9001" (assoc (mapping blue "mug-1" "removed") :mapping-revision 2)}})
+                                         ::products/external-product-mapped)))))))
+
+
+(deftest same-listing-twice-in-a-batch
+  (is (= [["c:9001" :listed-twice] ["c:9001" :listed-twice]]
+         (offending #(confirm [row (assoc row :stock-item-id "mug-2")]))))
+  (is (= :already-mapped (rejection #(confirm [row (assoc row :stock-item-id "mug-2")]))))
+  (is (= 1 (count (:events (confirm [row row])))) "the same row twice is one decision"))
+
+
+(deftest one-bad-row-accepts-nothing
+  (let [cup   (listing "9002" :name "Cup" :connection-id "c")
+        facts {:listings {"c:9001" blue "c:9002" cup}}
+        rows  [row {:external-product-id "c:9002" :listing-revision 1 :stock-item-id "mug-2" :item-revision 1}]]
+    (is (= 2 (count (:events (confirm rows facts)))))
+    (is (= [["c:9002" :stale]] (offending #(confirm (assoc-in rows [1 :listing-revision] 2) facts))))
+    (is (= [["c:9002" :stale]] (offending #(confirm (assoc-in rows [1 :item-revision] 2) facts))))
+    (is (= [["c:9002" :item-not-available]] (offending #(confirm (assoc-in rows [1 :stock-item-id] "gone") facts))))
+    (testing "every bad row is named"
+      (is (= [["c:9001" :stale] ["c:9002" :stale]]
+             (offending #(confirm (mapv (fn [r] (assoc r :listing-revision 5)) rows) facts)))))
+    (testing "a barcode adopted by one row is not free for another product in the same batch"
+      (let [shared {:listings {"c:9001" (listing "9001" :barcodes ["4600000000024"] :connection-id "c")
+                               "c:9002" (listing "9002" :barcodes ["4600000000024"] :connection-id "c")}}]
+        (is (= [["c:9002" :barcode-conflict "Mug"]]
+               (offending #(confirm [(assoc row :adopt-barcodes ["4600000000024"])
+                                     {:external-product-id "c:9002" :listing-revision 1 :stock-item-id "plate-1" :item-revision 1}]
+                                    shared))))))))
+
+
+(deftest archived-and-defective-items-are-not-available
+  (let [with-item #(update-in command-facts [:catalogue :stock-items] conj %)]
+    (is (= [["c:9001" :item-not-available]]
+           (offending #(confirm [(assoc row :stock-item-id "mug-3")]
+                                (with-item {:stock-item-id "mug-3" :product-id "mug" :condition "defective" :status "active" :revision 1})))))
+    (is (= [["c:9001" :item-not-available]]
+           (offending #(confirm [(assoc row :stock-item-id "mug-3")]
+                                (with-item {:stock-item-id "mug-3" :product-id "mug" :condition "regular" :status "archived" :revision 1})))))
+    (testing "an archived listing may be mapped: its old operations still need it"
+      (is (some? (event (confirm [row] (with-listing (assoc blue :archived true))) ::products/external-product-mapped))))))
+
+
+;; Slice 6 · Defer a listing
+
+
+(deftest defer-sets-a-listing-aside
+  (let [cup  (listing "9002" :name "Cup" :connection-id "c")
+        plan (decide ::products/defer-product-match {:listings {"c:9001" blue "c:9002" cup}}
+                     {:external-product-ids ["c:9001" "c:9002" "c:9001"] :reason "  not sold from stock "})]
+    (is (= [{:external-product-id "c:9001" :reason "not sold from stock" :deferred-by (str member) :deferred-at at}
+            {:external-product-id "c:9002" :reason "not sold from stock" :deferred-by (str member) :deferred-at at}]
+           (mapv :data (:events plan))))
+    (is (= accepted-fx (:fx plan)))
+    (is (nil? (:reason (:data (first (:events (decide ::products/defer-product-match {} {:external-product-ids ["c:9001"] :reason " "})))))))))
+
+
+(deftest defer-rejects-a-mapped-listing
+  (is (= [["c:9001" :already-mapped]]
+         (offending #(decide ::products/defer-product-match {:mappings {"c:9001" (mapping blue "mug-1" "confirmed")}}
+                             {:external-product-ids ["c:9001"]}))))
+  (is (= [["c:9404" :stale]] (offending #(decide ::products/defer-product-match {} {:external-product-ids ["c:9404"]}))))
+  (is (= 1 (count (:events (decide ::products/defer-product-match {:mappings {"c:9001" (mapping blue "mug-1" "removed")}}
+                                   {:external-product-ids ["c:9001"]}))))
+      "a removed mapping is unmatched again"))
+
+
+;; Slice 8 · Change the mapping
+
+
+(def change-facts
+  {:mappings {"c:9001" (mapping blue "mug-1" "confirmed")}})
+
+
+(defn change
+  {:malli/schema [:=> [:cat :map [:* :any]] :map]}
+  [input & {:as facts}]
+  (decide ::products/change-product-mapping (merge change-facts facts) (merge {:external-product-id "c:9001" :mapping-revision 1} input)))
+
+
+(deftest change-points-at-another-item
+  (let [data (event (change {:stock-item-id "mug-2" :item-revision 1}) ::products/product-mapping-changed)]
+    (is (= {:external-product-id    "c:9001" :mapping-revision-id "c:9001#2" :mapping-revision 2 :change "changed"
+            :previous-stock-item-id "mug-1"  :stock-item-id       "mug-2"    :item-revision    1 :state  "confirmed" :listing-revision 1}
+           (dissoc data :identity-basis :connection-id :changed-by :changed-at)))
+    (is (= "red" (:variant-label (observations/read-json (:identity-basis data)))))
+    (is (= accepted-fx (:fx (change {:stock-item-id "mug-2" :item-revision 1}))))))
+
+
+(deftest change-checks-like-confirm
+  (is (= [["c:9001" :stale]] (offending #(change {:mapping-revision 2 :stock-item-id "mug-2" :item-revision 1}))))
+  (is (= [["c:9001" :stale]] (offending #(change {:stock-item-id "mug-2" :item-revision 3}))))
+  (is (= [["c:9001" :item-not-available]] (offending #(change {:stock-item-id "gone" :item-revision 1}))))
+  (is (= [["c:9001" :barcode-conflict "Mug"]] (offending #(change {:stock-item-id "plate-1" :item-revision 1}))))
+  (is (= {:events [] :fx []} (change {:stock-item-id "mug-1" :item-revision 1})) "the same item changes nothing"))
+
+
+;; Slice c · Reconfirm the mapping
+
+
+(def suspended-facts
+  {:listings {"c:9001" (assoc blue :revision 2)}
+   :mappings {"c:9001" (assoc (mapping blue "mug-1" "suspended") :mapping-revision 2 :reasons "[]")}})
+
+
+(defn reconfirm
+  {:malli/schema [:=> [:cat :map [:* :any]] :map]}
+  [input & {:as facts}]
+  (decide ::products/reconfirm-product-mapping (merge suspended-facts facts)
+          (merge {:external-product-id "c:9001" :mapping-revision 2 :listing-revision 2 :item-revision 1} input)))
+
+
+(deftest reconfirm-a-suspended-mapping
+  (let [plan (reconfirm {})]
+    (is (= {:external-product-id "c:9001" :mapping-revision-id "c:9001#3" :mapping-revision 3 :change "reconfirmed"
+            :stock-item-id       "mug-1"  :listing-revision    2          :item-revision    1 :state  "confirmed"   :connection-id "c"}
+           (dissoc (event plan ::products/product-mapping-reconfirmed) :identity-basis :changed-by :changed-at)))
+    (is (= accepted-fx (:fx plan)))))
+
+
+(deftest reconfirm-rejections
+  (is (= [["c:9001" :not-suspended]] (offending #(reconfirm {} :mappings {"c:9001" (assoc (mapping blue "mug-1" "confirmed") :mapping-revision 2)}))))
+  (is (= [["c:9001" :not-suspended]] (offending #(reconfirm {} :mappings {}))))
+  (is (= [["c:9001" :stale]] (offending #(reconfirm {:mapping-revision 1}))))
+  (is (= [["c:9001" :stale]] (offending #(reconfirm {:listing-revision 1}))))
+  (is (= [["c:9001" :stale]] (offending #(reconfirm {:item-revision 2}))))
+  (is (= [["c:9001" :item-archived]]
+         (offending #(reconfirm {} :catalogue (update catalogue :stock-items (partial mapv (fn [i] (cond-> i (= "mug-1" (:stock-item-id i)) (assoc :status "archived")))))))))
+  (is (= [["c:9001" :barcode-conflict "Plate"]]
+         (offending #(reconfirm {} :listings {"c:9001" (listing "9001" :barcodes ["plate-code"] :revision 2 :connection-id "c")})))))
+
+
+;; Through a store: one commit, history and workspace isolation
+
+
+(defn execute!
+  {:malli/schema [:=> [:cat :map :keyword :string :map] :map]}
+  [ctx command command-id input]
+  (runtime/execute! ctx command {:command-id command-id :input input}))
+
+
+(defn seed-catalogue!
+  {:malli/schema [:=> [:cat :map] :nil]}
+  [ctx]
+  (seed! ctx :tover.catalogues.products.model/product-registered {:product-id "mug" :name "Mug" :status "active" :revision 1})
+  (doseq [item ["mug-1" "mug-2"]]
+    (seed! ctx :tover.inventory.stock-items.model/stock-item-registered
+           {:stock-item-id item :product-id "mug" :condition "regular" :status "active" :revision 1}))
+  (seed! ctx ::sync/external-product-observed (observed "1" "Mug" :barcodes ["4600000000024"])))
+
+
+(deftest adopt-a-barcode-in-one-commit
+  (support/with-store
+    (fn [repo _]
+      (let [ctx (context repo)
+            id  (str c ":1")]
+        (seed-catalogue! ctx)
+        (execute! ctx ::products/confirm-product-mapping "confirm-1"
+                  {:rows [{:external-product-id id                :listing-revision 1 :stock-item-id "mug-1" :item-revision 1
+                           :adopt-barcodes      ["4600000000024"]}]})
+        (is (= "confirmed" (:state (runtime/read-model ctx ::products/mapping-details-and-source-evidence {:external-product-id id}))))
+        (is (= [["mug-1" "4600000000024"]]
+               (mapv (juxt :stock-item-id :barcode) (:barcodes (runtime/coeffect ::products/catalogue ctx {})))))))))
+
+
+(deftest two-members-through-the-store
+  (support/with-store
+    (fn [repo _]
+      (let [ctx   (context repo)
+            other (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo})            :repo repo :workspace-id workspace
+                                            :user-id     #uuid "00000000-0000-0000-0000-0000000000b2"
+                                            :memberships [{:workspace-id workspace :role :member}]})
+            input #(hash-map :rows [{:external-product-id (str c ":1") :listing-revision 1 :stock-item-id % :item-revision 1}])]
+        (seed-catalogue! ctx)
+        (execute! ctx ::products/confirm-product-mapping "first" (input "mug-1"))
+        (is (= :already-mapped (rejection #(execute! other ::products/confirm-product-mapping "second" (input "mug-2")))))
+        (is (map? (execute! other ::products/confirm-product-mapping "third" (input "mug-1"))))
+        (is (= ["mapped"] (mapv :change (:history (runtime/read-model ctx ::products/mapping-details-and-source-evidence
+                                                                      {:external-product-id (str c ":1")})))))))))
+
+
+(deftest remap
+  (support/with-store
+    (fn [repo _]
+      (let [ctx (context repo)
+            id  (str c ":1")]
+        (seed-catalogue! ctx)
+        (execute! ctx ::products/confirm-product-mapping "confirm-1"
+                  {:rows [{:external-product-id id :listing-revision 1 :stock-item-id "mug-1" :item-revision 1}]})
+        (execute! ctx ::products/change-product-mapping "change-1"
+                  {:external-product-id id :mapping-revision 1 :stock-item-id "mug-2" :item-revision 1})
+        (let [details (runtime/read-model ctx ::products/mapping-details-and-source-evidence {:external-product-id id})]
+          (is (= [[1 "mapped" "mug-1" nil] [2 "changed" "mug-2" "mug-1"]]
+                 (mapv (juxt :mapping-revision :change :stock-item-id :previous-stock-item-id) (:history details)))
+              "the previous stock item stays in revision 1; revision 2 names B")
+          (is (= "mug-2" (get-in details [:stock-item :stock-item-id]))))))))
+
+
+(deftest removing-returns-to-unmatched
+  (support/with-store
+    (fn [repo _]
+      (let [ctx (context repo)
+            id  (str c ":1")]
+        (seed-catalogue! ctx)
+        (execute! ctx ::products/confirm-product-mapping "confirm-1"
+                  {:rows [{:external-product-id id :listing-revision 1 :stock-item-id "mug-1" :item-revision 1}]})
+        (execute! ctx ::products/change-product-mapping "remove-1" {:external-product-id id :mapping-revision 1})
+        (is (= [["unmatched" id]] (mapv (juxt :state :external-product-id)
+                                        (:rows (runtime/read-model ctx ::products/mapped-and-remaining-listings {:connection-id c})))))
+        (is (= {:state "removed" :previous-stock-item-id "mug-1"}
+               (select-keys (last (:history (runtime/read-model ctx ::products/mapping-details-and-source-evidence {:external-product-id id})))
+                            [:state :previous-stock-item-id :stock-item-id])))
+        (testing "confirming again maps it in place with the next revision"
+          (execute! ctx ::products/confirm-product-mapping "confirm-2"
+                    {:rows [{:external-product-id id :listing-revision 1 :stock-item-id "mug-2" :item-revision 1}]})
+          (is (= 3 (get-in (runtime/read-model ctx ::products/mapping-details-and-source-evidence {:external-product-id id})
+                           [:mapping :mapping-revision]))))))))
+
+
+(deftest another-workspaces-item-is-not-available
+  (support/with-store
+    (fn [repo _]
+      (let [ctx       (context repo)
+            elsewhere #uuid "00000000-0000-0000-0000-000000000002"
+            theirs    (runtime/prepare-context {:bel/system  (support/bel-system {:repo repo})         :repo repo :workspace-id elsewhere
+                                                :user-id     member
+                                                :memberships [{:workspace-id elsewhere :role :member}]})]
+        (seed! theirs :tover.catalogues.products.model/product-registered {:product-id "theirs" :name "Theirs" :status "active" :revision 1})
+        (seed! theirs :tover.inventory.stock-items.model/stock-item-registered
+               {:stock-item-id "their-1" :product-id "theirs" :condition "regular" :status "active" :revision 1})
+        (seed! ctx ::sync/external-product-observed (observed "1" "Mug"))
+        (is (= :item-not-available
+               (rejection #(execute! ctx ::products/confirm-product-mapping "confirm-1"
+                                     {:rows [{:external-product-id (str c ":1") :listing-revision 1 :stock-item-id "their-1" :item-revision 1}]}))))))))

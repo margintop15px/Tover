@@ -41,7 +41,7 @@
   (str/lower-case (str/replace (trimmed text) #"\s+" " ")))
 
 
-(defn- usable-barcode
+(defn usable-barcode
   "A barcode as compared, or nil for a blank one or one made only of zeros."
   {:malli/schema [:=> [:cat [:maybe :string]] [:maybe :string]]}
   [text]
