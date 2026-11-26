@@ -35,7 +35,7 @@
     (bel/build-registry! ['tover.shared.web.core 'tover.catalogues.warehouses.model 'tover.catalogues.suppliers.model
                           'tover.catalogues.stores.model 'tover.catalogues.categories.model
                           'tover.catalogues.products.model 'tover.inventory.stock-items.model
-                          'tover.inventory.entries.model 'tover.inventory.acceptance.model 'tover.inventory.models-test])
+                          'tover.inventory.entries.model 'tover.marketplace.provenance 'tover.inventory.acceptance.model 'tover.inventory.models-test])
     (f))
   (fn [f]
     ;; Membership guards run in the store integration suite; here the principal comes from the context.

@@ -12,6 +12,7 @@
     [tover.inventory.movements :as movements]
     [tover.inventory.stock-items.model :as stock-items]
     [tover.inventory.valuation :as valuation]
+    [tover.marketplace.provenance :as provenance]
     [tover.workspaces.currency.model :as currency])
   (:import
     [java.security MessageDigest]))
@@ -460,6 +461,7 @@
         pairs    (distinct (map (juxt :stock-item-id :warehouse-id) (concat usable (when (empty? blocked) replaced))))
         problems (vec (distinct (concat changed blocked future
                                         (when (seq usable) (openings standing usable))
+                                        (provenance/acceptance-problems (:provenance facts) usable)
                                         (changes/uniqueness facts usable)
                                         (unknown-units usable)
                                         (counts-without-history history usable)
@@ -492,14 +494,15 @@
   [[:entries :tover.inventory.entries.model/pending (constantly {})]
    [:catalogue :tover.inventory.entries.model/catalogue (constantly {})]
    [:history ::history (constantly {})]
+   [:provenance ::provenance/facts (constantly {})]
    currency/row-fact])
 
 
 (defn review-input
   "Facts as `review` takes them, from the coeffects in `review-facts`."
   {:malli/schema [:=> [:cat :map] :map]}
-  [{:keys [entries catalogue history currency-row]}]
-  (merge catalogue {:entries entries :history history :currency (currency/current currency-row)}))
+  [{:keys [entries catalogue history currency-row provenance]}]
+  (merge catalogue {:entries entries :history history :currency (currency/current currency-row) :provenance provenance}))
 
 
 (defreadmodel inventory-review
@@ -550,7 +553,9 @@
    :field-conflict        [:field-conflict "Two selected entries change the same stock item field."]
    :move-conflict         [:move-conflict "The move would make a value belong to two products."]
    :restore-needs-product [:restore-needs-product "Restore the product first."]
-   :archive-blocked       [:archive-blocked "The item has stock or other pending work."]})
+   :archive-blocked       [:archive-blocked "The item has stock or other pending work."]
+   :cutover-date-fixed    [:cutover-date-fixed "Cutover date is fixed"]
+   :baseline-exists       [:baseline-exists "This stock already has a cutover baseline."]})
 
 
 (defn- registration-events
@@ -580,6 +585,40 @@
               :data {:barcode-id (stock-items/barcode-id item code) :stock-item-id item :barcode code}})))))
 
 
+(defn plan
+  "The events and effects of accepting `input` (`Accept`) reviewed on `facts` (`review-facts` with `:scope` and
+  `:now`), recorded as `actor`; rejected like `Accept Reviewed Inventory Changes`. The workspace is checked by the
+  caller."
+  {:malli/schema [:=> [:cat :map :map [:map [:actor :any]]] [:map [:events [:vector :map]] [:fx [:vector :any]]]]}
+  [{:keys [scope now entries provenance] :as facts} {:keys [acceptance-id fingerprint selection order] :as input} {:keys [actor]}]
+  (let [{:keys [problems lines records item-events] :as result} (review (assoc (review-input facts) :now now) (select-keys input [:selection :order :ordered?]))]
+    (when (not= fingerprint (:fingerprint result))
+      (records/fail! :review-outdated "Something the review saw changed. Review it again." {}))
+    (when-let [{:keys [code] :as problem} (first problems)]
+      (let [[type message] (rejection code [:review-outdated "Review it again."])]
+        (records/fail! type message {:problem problem :problems problems})))
+    (when-not (:valid? result)
+      (records/fail! :review-outdated "The selection and order must match. Review it again." {}))
+    (let [picked    (filter (comp (set (map :entry-id selection)) :entry-id) entries)
+          ;; Each accepted scope's baseline is established in the same commit.
+          baselines (provenance/acceptance-events provenance picked (:records records) actor now)]
+      {:events (vec (concat
+                      [{:type ::inventory-changes-accepted
+                        :data {:acceptance-id acceptance-id :actor actor :recorded-at now :record-count (count (:records records))}}]
+                      (registration-events lines)
+                      item-events
+                      (for [r (sort-by :sequence (:records records))]
+                        {:type (cond (:cancelled r) ::operation-cancelled (:amends r) ::operation-amended :else ::inventory-record-accepted)
+                         :data (-> r (dissoc :recorded-at) (assoc :acceptance-id acceptance-id))})
+                      (for [l (:lines records)] {:type ::inventory-record-line-accepted :data l})
+                      (for [entry-id order
+                            :let     [revision (some #(when (= entry-id (:entry-id %)) (:revision %)) selection)]]
+                        {:type :tover.inventory.entries.model/shared-inventory-entry-accepted
+                         :data {:entry-id entry-id :status "accepted" :revision (inc revision)}})
+                      baselines))
+       :fx     (into (records/publish scope) (provenance/dirty-fx (map (comp :connection-id :data) baselines)))})))
+
+
 (defcommand accept-reviewed-inventory-changes
   {:input  Accept
    :policy ::records/workspace-member
@@ -591,31 +630,10 @@
              ::stock-items/stock-item-barcode-removed
              :tover.catalogues.products.model/product-registered :tover.catalogues.warehouses.model/warehouse-registered
              :tover.catalogues.suppliers.model/supplier-registered
-             :tover.inventory.entries.model/shared-inventory-entry-accepted}}
-  [{:keys [scope actor now] :as facts} {:keys [acceptance-id fingerprint selection order] :as input}]
+             :tover.inventory.entries.model/shared-inventory-entry-accepted ::provenance/cutover-baseline-established}}
+  [{:keys [scope actor] :as facts} input]
   (entries/check-workspace! scope input)
-  (let [{:keys [problems lines records item-events] :as result} (review (assoc (review-input facts) :now now) (select-keys input [:selection :order :ordered?]))]
-    (when (not= fingerprint (:fingerprint result))
-      (records/fail! :review-outdated "Something the review saw changed. Review it again." {}))
-    (when-let [{:keys [code] :as problem} (first problems)]
-      (let [[type message] (rejection code [:review-outdated "Review it again."])]
-        (records/fail! type message {:problem problem :problems problems})))
-    (when-not (:valid? result)
-      (records/fail! :review-outdated "The selection and order must match. Review it again." {}))
-    {:events (vec (concat
-                    [{:type ::inventory-changes-accepted
-                      :data {:acceptance-id acceptance-id :actor actor :recorded-at now :record-count (count (:records records))}}]
-                    (registration-events lines)
-                    item-events
-                    (for [r (sort-by :sequence (:records records))]
-                      {:type (cond (:cancelled r) ::operation-cancelled (:amends r) ::operation-amended :else ::inventory-record-accepted)
-                       :data (-> r (dissoc :recorded-at) (assoc :acceptance-id acceptance-id))})
-                    (for [l (:lines records)] {:type ::inventory-record-line-accepted :data l})
-                    (for [entry-id order
-                          :let     [revision (some #(when (= entry-id (:entry-id %)) (:revision %)) selection)]]
-                      {:type :tover.inventory.entries.model/shared-inventory-entry-accepted
-                       :data {:entry-id entry-id :status "accepted" :revision (inc revision)}})))
-     :fx     (records/publish scope)}))
+  (plan facts input {:actor actor}))
 
 
 (defreadmodel acceptance-result

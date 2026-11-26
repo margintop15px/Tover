@@ -10,7 +10,8 @@
     [tover.inventory.findings :as findings]
     [tover.inventory.movements :as movements]
     [tover.inventory.stock-items.model :as stock-items]
-    [tover.inventory.valuation :as valuation])
+    [tover.inventory.valuation :as valuation]
+    [tover.marketplace.provenance :as provenance])
   (:import
     [java.time OffsetDateTime]
     [java.time.format DateTimeParseException]
@@ -689,7 +690,8 @@
 (defcommand save-shared-inventory-entry
   {:input SaveEntry :policy ::records/workspace-member
    :cofx  (conj draft-facts [:references ::references (constantly {})] [:pending ::pending (constantly {})]
-                [:history :tover.inventory.acceptance.model/history (constantly {})])
+                [:history :tover.inventory.acceptance.model/history (constantly {})]
+                [:provenance ::provenance/facts (constantly {})])
    :emits #{::shared-inventory-entry-saved ::inventory-entry-line-saved ::inventory-entry-line-removed
             ::inventory-entry-line-barcode-added ::inventory-entry-line-barcode-removed ::inventory-entry-change-saved
             ::inventory-entry-change-removed ::inventory-entry-change-barcode-added ::inventory-entry-change-barcode-removed}}
@@ -698,6 +700,8 @@
   (current-draft! entry lines (or changes []) expected-revision)
   (when (and (seq (:changes input)) (not= "correction" kind))
     (invalid! :changes "Only a correction changes stock items." {}))
+  (when-let [{:keys [field message]} (provenance/save-problem (:provenance facts) entry input)]
+    (invalid! field message {}))
   (check-amendment! facts input)
   (check-references! references (kept-references facts input) entry input)
   (let [before   (into {} (map (juxt :line-id identity)) lines)
