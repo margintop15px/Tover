@@ -20,6 +20,7 @@
     [tover.marketplace.connections.web :as web]
     [tover.marketplace.connector :as connector]
     [tover.marketplace.products.model]
+    [tover.marketplace.warehouses.model]
     [tover.shared.i18n :as i18n]
     [tover.shared.web.core]
     [tover.support :as support]
@@ -32,7 +33,7 @@
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
   (bel/build-registry! ['tover.catalogues.warehouses.model 'tover.catalogues.stores.model
-                        'tover.catalogues.products.model 'tover.inventory.stock-items.model 'tover.marketplace.products.model
+                        'tover.catalogues.products.model 'tover.inventory.stock-items.model 'tover.marketplace.products.model 'tover.marketplace.warehouses.model
                         'tover.marketplace.connections.model 'tover.marketplace.sync.model 'tover.shared.web.core
                         'tover.marketplace.connections.web 'tover.workspaces.currency.model])
   (f))
@@ -394,7 +395,8 @@
             (is (str/includes? html "Confirm &lt;b&gt;") "text from outside is escaped")
             (is (not (str/includes? html "Confirm <b>")))
             (is (str/includes? html "href=\"/settings/marketplace/c-1/products\">3</a>") "the unmatched count opens Product Matching")
-            (is (not (re-find #"href=\"[^\"]*/(warehouses|cutover|operations)" html)) "no links to pages that do not exist")
+            (is (str/includes? html "href=\"/settings/marketplace/c-1/warehouses\">0</a>") "the unmatched count opens Warehouse Matching")
+            (is (not (re-find #"href=\"[^\"]*/(cutover|operations)" html)) "no links to pages that do not exist")
             (is (every? #(str/includes? html (str "<td>" (web/domain-labels %) "</td>")) connector/domains) "one row per domain"))
           (finally (.addMethod ^clojure.lang.MultiFn model/count-part :unmatched-listings unmatched)
                    (defmethod model/count-part :next-steps [_ _ _] {})))))))

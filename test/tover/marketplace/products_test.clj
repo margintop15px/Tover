@@ -21,7 +21,7 @@
   [f]
   (bel/build-registry! ['tover.catalogues.products.model 'tover.catalogues.stores.model 'tover.catalogues.warehouses.model
                         'tover.inventory.stock-items.model 'tover.marketplace.connections.model
-                        'tover.marketplace.sync.model 'tover.marketplace.products.model 'tover.workspaces.currency.model])
+                        'tover.marketplace.sync.model 'tover.marketplace.products.model 'tover.marketplace.warehouses.model 'tover.workspaces.currency.model])
   (f))
 
 

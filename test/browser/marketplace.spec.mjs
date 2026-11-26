@@ -68,3 +68,34 @@ test('a rejected row keeps its values and shows why', async ({ page }) => {
   await expect(row(page, 'Gift card').locator('td.marketplace-finding')).toHaveCount(1);
   await expect(page.locator('.marketplace-selected')).toHaveText('1 selected');
 });
+
+// Board 43 · Warehouse Matching: the same table; several rows confirmed at once survive a reload.
+test('confirm several warehouses, reload: still confirmed', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await signIn(page);
+  await page.goto(connection);
+  const unmatched = page.getByRole('link', { name: '3', exact: true });
+  await expect(unmatched).toHaveAttribute('href', `${connection}/warehouses`);
+  await unmatched.click();
+  await expect(page.getByRole('heading', { name: 'Warehouse matching' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Back to the connection' })).toHaveAttribute('href', connection);
+  await ready(page, 'marketplace-warehouses-unmatched');
+  await expect(page.locator('.marketplace-page form')).toHaveCount(0);
+  await expect(row(page, 'Khorugvino')).toContainText('New warehouse: Khorugvino');
+
+  const ids = await grid(page).evaluate(node => node.model.rows.map(row => row.id));
+  expect(ids).toHaveLength(3);
+  await workbench(page).evaluate((node, selected) => node.select(selected), ids);
+  await expect(page.locator('.marketplace-selected')).toHaveText('3 selected');
+  await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect.poll(() => grid(page).evaluate(node => node.model.rows.length)).toBe(0);
+  await expect(page.locator('.catalogue-notice')).toHaveText('');
+
+  await page.reload();
+  await ready(page, 'marketplace-warehouses-unmatched');
+  await expect.poll(() => grid(page).evaluate(node => node.model.rows.length)).toBe(0);
+  await page.goto(`${connection}/warehouses?state=confirmed`);
+  await ready(page, 'marketplace-warehouses-confirmed');
+  for (const name of ['Khorugvino', 'Tver', 'Seller stock']) await expect(row(page, name)).toContainText('Mapped');
+  expect(errors).toEqual([]);
+});

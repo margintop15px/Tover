@@ -328,7 +328,7 @@
                 [:dt (i18n/t "Unmatched listings")]
                 [:dd [:a {:href (str (connection-link connection-id) "/products")} (:unmatched-listings status)]]
                 [:dt (i18n/t "Unmatched warehouses")]
-                [:dd (:unmatched-warehouses status)]
+                [:dd [:a {:href (str (connection-link connection-id) "/warehouses")} (:unmatched-warehouses status)]]
                 [:dt (i18n/t "Scopes without baseline")]
                 [:dd (:scopes-without-baseline status)]
                 [:dt (i18n/t "Imported operations by next step")]

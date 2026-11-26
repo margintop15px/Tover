@@ -13,6 +13,7 @@
     [tover.marketplace.connections.model :as model]
     [tover.marketplace.connector :as connector]
     [tover.marketplace.products.model]
+    [tover.marketplace.warehouses.model]
     [tover.support :as support])
   (:import
     [java.time Duration Instant]))
@@ -22,7 +23,7 @@
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [f]
   (bel/build-registry! ['tover.catalogues.warehouses.model 'tover.catalogues.stores.model
-                        'tover.catalogues.products.model 'tover.inventory.stock-items.model 'tover.marketplace.products.model
+                        'tover.catalogues.products.model 'tover.inventory.stock-items.model 'tover.marketplace.products.model 'tover.marketplace.warehouses.model
                         'tover.marketplace.connections.model 'tover.marketplace.sync.model
                         'tover.workspaces.currency.model])
   (f))
@@ -160,9 +161,11 @@
 
 
 (deftest counts-are-zero-until-a-chapter-supplies-them
-  ;; Chapter 42 supplies unmatched listings (products-test); set aside here, as this context has no store.
-  (let [unmatched (get-method model/count-part :unmatched-listings)]
+  ;; Chapters 42 and 43 supply unmatched listings and warehouses; set aside here, as this context has no store.
+  (let [unmatched  (get-method model/count-part :unmatched-listings)
+        warehouses (get-method model/count-part :unmatched-warehouses)]
     (remove-method model/count-part :unmatched-listings)
+    (remove-method model/count-part :unmatched-warehouses)
     (try
       (is (= {:unmatched-listings 0 :unmatched-warehouses 0 :scopes-without-baseline 0 :baselines 0 :next-steps {}}
              (runtime/coeffect ::model/counts {} {:connection-id c})))
@@ -170,7 +173,8 @@
       (is (= 7 (:baselines (runtime/coeffect ::model/counts {} {:connection-id c}))))
       (finally
         (remove-method model/count-part :baselines)
-        (when unmatched (.addMethod ^clojure.lang.MultiFn model/count-part :unmatched-listings unmatched))))))
+        (when unmatched (.addMethod ^clojure.lang.MultiFn model/count-part :unmatched-listings unmatched))
+        (when warehouses (.addMethod ^clojure.lang.MultiFn model/count-part :unmatched-warehouses warehouses))))))
 
 
 (deftest key-without-analytics-access

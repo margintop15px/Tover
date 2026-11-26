@@ -127,7 +127,15 @@ const program = `
       (put :tover.inventory.stock-items.model/stock-item-barcode-assigned
            {:barcode-id (str item "|" barcode) :stock-item-id item :barcode barcode})
       (put :tover.marketplace.sync.model/external-product-observed (listing (str "10" n) (str name " (Ozon)") barcode)))
-    (put :tover.marketplace.sync.model/external-product-observed (listing "104" "Gift card" nil)))
+    (put :tover.marketplace.sync.model/external-product-observed (listing "104" "Gift card" nil))
+    ;; Board 43: two FBO warehouses and one seller warehouse, all unmatched.
+    (doseq [[type source-id name] [["fbo" "201" "Khorugvino"] ["fbo" "202" "Tver"] ["fbs" "203" "Seller stock"]]
+            :let [id (observations/warehouse-id "browser-ozon" type source-id)]]
+      (put :tover.marketplace.sync.model/external-warehouse-observed
+           {:external-warehouse-id id :entity-id id :connection-id "browser-ozon" :source-id source-id :revision 1
+            :payload-hash (apply str (repeat 64 "b")) :adapter-version "test" :observed-at at :last-observed-at at
+            :source-revision-id (str id "#1") :name name :warehouse-type type :active true
+            :facts (observations/write-json {:name name})})))
   ` : ''}
   ;; The team and invitation reads are SQL coeffects; serve them from the same in-memory fixture state.
   (require '[bel.runtime :as runtime] '[tover.invitations.fixtures :as invitations])

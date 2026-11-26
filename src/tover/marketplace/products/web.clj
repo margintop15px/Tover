@@ -47,7 +47,7 @@
   (str (connection-path connection-id) "/products/" (codec/url-encode external-product-id)))
 
 
-(defn- connection!
+(defn connection!
   "The connection of the selected workspace, or the not-found page."
   {:malli/schema [:=> [:cat :map :string] :map]}
   [context connection-id]
@@ -228,7 +228,7 @@
                  :status     (cond-> [(i18n/t (state-labels state))] reason (conj reason))}})
 
 
-(defn- read-or-nil
+(defn read-or-nil
   "nil when the rows cannot be read: unavailable information is never shown as an empty table."
   {:malli/schema [:=> [:cat [:fn fn?]] :any]}
   [read]
@@ -407,7 +407,7 @@
      :table      (table context connection-id state)}))
 
 
-(defn- header
+(defn header
   {:malli/schema [:=> [:cat [:map [:id :string] [:title :string] [:subtitle :string] [:back-href :string] [:back-label :string]]]
                   schema/Hiccup]}
   [{:keys [id title subtitle back-href back-label]}]

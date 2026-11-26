@@ -138,9 +138,10 @@
 
 
 (def ^:private parameterized
-  "Row codes whose message names the barcode or product it is about."
+  "Row codes whose message names the barcode, product or Ozon warehouse it is about."
   {"barcode-conflict"    "Barcode {barcode} belongs to {product}."
-   "uniqueness-conflict" "A barcode or article belongs to {product}."})
+   "uniqueness-conflict" "A barcode or article belongs to {product}."
+   "already-used"        "Already used for another Ozon warehouse: {product}."})
 
 
 (defn row-message
