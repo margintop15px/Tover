@@ -121,7 +121,7 @@
   (mapv #(vector :tover.marketplace.sync.model/mark-dirty {:connection-id %}) (sort (set (remove nil? connection-ids)))))
 
 
-(defn- record-id
+(defn record-id
   "The record a revision id `record-id#revision` belongs to; a record id may hold `#` itself."
   {:malli/schema [:=> [:cat :string] :string]}
   [revision-id]
@@ -255,8 +255,10 @@
 
 (defreadmodel cutover-review
   {:input  [:map]
-   :output [:map [:rows [:vector ReviewRow]]]
+   :output [:map [:rows [:vector ReviewRow]] [:baseline-records {:optional true} [:vector :string]]]
    :policy ::records/workspace-member
    :cofx   [[:provenance ::facts (constantly {})] [:pending :tover.inventory.entries.model/pending (constantly {})]]}
   [{:keys [provenance pending]} _]
-  {:rows (review-rows (:cutover-entries provenance) pending)})
+  ;; `baseline-records`: the accepted records baselines name, whose date and warehouse stay fixed.
+  {:rows             (review-rows (:cutover-entries provenance) pending)
+   :baseline-records (vec (sort (distinct (keep :record-id (vals (:baselines provenance))))))})

@@ -94,7 +94,7 @@
   (units or amount), then in Preview the row's occurrence time and reason, and the row actions. Outside Preview the row
   is read-only: its actions are History and Edit, which opens it in Preview. Preview is always in units."
   {:malli/schema [:=> [:cat :map :map] :map]}
-  [{:keys [mode currency warehouses preview? stores]}
+  [{:keys [mode currency warehouses preview? stores fixed?] :or {fixed? (constantly false)}}
    {:keys [id className product-cells label label-cell details details-editable? base locked? accepted lines item correction correction-id
            default-warehouse operations replaced]}]
   (let [money?      (and (= "money" mode) (not preview?))
@@ -117,7 +117,9 @@
         ;; A pending amendment of an accepted opening replaces its accepted lines (chapter 14 § Opening amendment).
         pend-q      (- (reduce + 0 (keep (comp decimal :quantity) lines)) (:quantity replaced 0))
         amending    (filter :amends lines)
-        mover       (when (= 1 (count amending)) (first amending))
+        ;; A baseline's opening keeps its warehouse and date (chapter 44): it is amended in its own cell only.
+        mover       (when (and (= 1 (count amending)) (not (fixed? (first amending)))) (first amending))
+        date-fixed? (or (some fixed? lines) (and correction (fixed? correction)))
         costs       (distinct (keep (comp decimal :unit-cost) lines))
         pend-v      (- (reduce + 0M (for [l lines :let [q (decimal (:quantity l)) c (decimal (:unit-cost l))] :when (and q c)] (* q c)))
                        (:value replaced 0M))
@@ -194,10 +196,13 @@
         described   {"occurred-at" (or (:occurred-at (first lines)) (some-> (:occurred-at correction) str))
                      "reason"      (or (:reason (first lines)) (:reason correction))}
         describe    (fn [path editor]
-                      (if (seq row-entries)
+                      (cond
+                        (and date-fixed? (= "occurred-at" path))
+                        {:value (or (described path) "") :readOnly true :title (i18n/t "Cutover date is fixed")}
+                        (seq row-entries)
                         {:value  (or (described path) "") :editor editor
                          :target {:type "stock-describe-row" :id id :rowId id :path path :field path :entries row-entries}}
-                        {:value (or (described path) "") :readOnly true :title (i18n/t "Enter a change first")}))
+                        :else {:value (or (described path) "") :readOnly true :title (i18n/t "Enter a change first")}))
         w-cell      (fn [{w :id gone? :archived?}]
                       (let [ls    (by-w w)
                             line  (first ls)
@@ -479,7 +484,7 @@
   each pending cutover entry of `:cutover` (`provenance/review-rows`) with its observation; `:sort`,
   `:direction` and `:filters` order and narrow the products."
   {:malli/schema [:=> [:cat :map [:map [:mode [:enum "units" "money"]]]] :map]}
-  [{:keys [warehouses products currency]} {:keys [mode scope entries findings stock-items categories stores cutover] :as options}]
+  [{:keys [warehouses products currency]} {:keys [mode scope entries findings stock-items categories stores cutover baseline-records] :as options}]
   (let [{:keys [productId itemId productName newRow pending addTo newRowId]} scope
         editing (set (:editing scope))
         lines (pending-lines (filter #(= "opening" (:kind % "opening")) entries))
@@ -513,7 +518,11 @@
         group-of #(or (:product-id %) (str "name:" (key (:product-name %))))
         new-lines (group-by group-of (remove :stock-item-id lines))
         preview? (boolean pending)
-        ctx {:mode mode :currency currency :warehouses warehouses :preview? preview? :stores stores}
+        ;; Chapter 44: a cutover entry and an amendment of a baseline's opening keep their date and warehouse.
+        baseline-records (set baseline-records)
+        fixed? (fn [{:keys [entry-id amends]}]
+                 (or (provenance/cutover-entry? entry-id) (boolean (some-> amends provenance/record-id baseline-records))))
+        ctx {:mode mode :currency currency :warehouses warehouses :preview? preview? :stores stores :fixed? fixed?}
         category-name (into {} (map (juxt :category-id :name)) categories)
         choices (fn [rows id-key] (into [{:value "" :label ""}]
                                         (for [r (sort-by (comp records/name-key :name) rows) :when (= "active" (:status r))]
@@ -810,7 +819,7 @@
                      (:entries work))]
      (when (and table work catalogue)
        (assoc (stock-grid table (merge order {:mode        mode :scope scope :entries entries :findings (:findings work)
-                                              :cutover     (:rows cutover)
+                                              :cutover     (:rows cutover) :baseline-records (:baseline-records cutover)
                                               :stock-items (:stock-items catalogue) :categories (:categories catalogue)
                                               :stores      (:stores catalogue)}))
               ;; Move offers every active product, also those the table hides for having no stock items.

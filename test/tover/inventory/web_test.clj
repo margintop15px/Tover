@@ -522,6 +522,20 @@
     (is (= "stock-describe-row" (get-in (column model "tee-m" "occurred-at") [:target :type])) "and so does the date")))
 
 
+(deftest a-baseline-opening-amendment-keeps-its-warehouse-and-date
+  (let [model (web/stock-grid table {:mode "units" :entries [amendment] :baseline-records ["o"] :scope {:pending true :editing ["tee-m"]}})
+        main  (column model "tee-m" "main")
+        shop  (column model "tee-m" "shop")
+        at    (column model "tee-m" "occurred-at")]
+    (is (= ["x" 1 "o#1"] [(get-in main [:target :entry]) (get-in main [:target :revision]) (get-in main [:target :values "amends"])])
+        "the count is still edited")
+    (is (= [{:entry "x" :revision 1}] (map #(select-keys % [:entry :revision]) (get-in (column model "tee-m" "unit-cost") [:target :entries])))
+        "and the cost")
+    (is (not= "x" (get-in shop [:target :entry])) "another warehouse's cell does not move the opening")
+    (is (nil? (get-in shop [:target :values "amends"])))
+    (is (= [true "Cutover date is fixed" nil] [(:readOnly at) (:title at) (:target at)]) "the date is read-only")))
+
+
 (deftest an-amendment-keeps-its-target
   (is (= "o#1" (:amends (web/entry-input {:products [] :stock-items [{:stock-item-id "tee-m"}] :warehouses [{:warehouse-id "main"}]}
                                          workspace "x" 1 {"stock-item-id" "tee-m" "warehouse-id" "main" "quantity" "6" "amends" "o#1"} nil)))))
