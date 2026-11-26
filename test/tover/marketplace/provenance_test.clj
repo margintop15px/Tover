@@ -10,8 +10,10 @@
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
     [tover.inventory.valuation :as valuation]
+    [tover.marketplace.operations.steps :as steps]
     [tover.marketplace.provenance :as provenance]
     [tover.marketplace.sync.model :as sync]
+    [tover.marketplace.sync.observations :as observations]
     [tover.support :as support])
   (:import
     [java.time Instant]))
@@ -172,7 +174,21 @@
       (let [h (-> (history (record "s" 1 "sale" 11 ["red" "main" -3 {:unit-price "500.00"}]))
                   (update :records into (map #(assoc % :recorded-at (day 20)) (of-type plan ::acceptance/inventory-record-accepted)))
                   (update :lines into (of-type plan ::acceptance/inventory-record-line-accepted)))]
-        (is (= 117 (get-in (valuation/replay (:records h) (:lines h)) [:balances ["red" "main"] :quantity])))))))
+        (is (= 117 (get-in (valuation/replay (:records h) (:lines h)) [:balances ["red" "main"] :quantity])))))
+    (testing "a sale from the day before the cutover is history only"
+      (let [established (into {} (map (juxt :baseline-id identity)) (of-type plan ::provenance/cutover-baseline-established))
+            sale        {:source-operation-id "c1:fbs-posting:P9" :connection-id "c1"       :kind "fbs-posting" :status "delivered" :terminal true
+                         :occurred-at         (str (day 9)) :from-warehouse      "c1:fbs:1"
+                         :lines               (observations/write-json [{:line-key "1" :identifiers [{:type "sku" :value "100"}] :quantity "3"}])}
+            facts       {:connection         {:connection-id "c1" :sync-state "active" :credentials-state "valid"}
+                         :products           [{:external-product-id "c1:mug-red" :connection-id "c1" :identifiers [{:type "sku" :value "100"}]}]
+                         :mappings           {"c1:mug-red" {:external-product-id "c1:mug-red" :connection-id "c1" :stock-item-id "red" :state "confirmed"}}
+                         :warehouse-mappings {"c1:fbs:1" {:external-warehouse-id "c1:fbs:1" :connection-id "c1" :warehouse-id "main" :state "confirmed"}}
+                         :baselines          established
+                         :catalogue          catalogue}]
+        (is (= "history" (:next-step (steps/classify facts sale))))
+        (is (not= "history" (:next-step (steps/classify facts (assoc sale :occurred-at (str (day 11))))))
+            "the day after counts")))))
 
 
 (deftest moving-the-date
