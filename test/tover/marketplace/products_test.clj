@@ -716,6 +716,217 @@
                            [:mapping :mapping-revision]))))))))
 
 
+;; Slice 4 · Register a product or stock item for the listing
+
+
+(def red-cup (listing "9101" :name "Cup red" :barcodes ["4600000001001"] :connection-id "c"))
+(def blue-cup (listing "9102" :name "Cup blue" :barcodes ["4600000001002"] :connection-id "c"))
+
+
+(defn listings-of
+  {:malli/schema [:=> [:cat [:* :map]] :map]}
+  [& ls]
+  {:listings (into {} (map (juxt :external-product-id identity)) ls)})
+
+
+(defn new-row
+  "A registration row for `listing`, unit `pcs` unless given."
+  {:malli/schema [:=> [:cat :map [:* :any]] :map]}
+  [listing & {:as row}]
+  (merge {:external-product-id (:external-product-id listing) :listing-revision 1 :unit "pcs"} row))
+
+
+(defn register-rows
+  {:malli/schema [:=> [:cat [:sequential :map] [:* :any]] :map]}
+  [rows & {:as facts}]
+  (decide ::products/register-product-for-external-listing (or facts {}) {:rows rows}))
+
+
+(defn events-of
+  {:malli/schema [:=> [:cat :map :keyword] [:vector :map]]}
+  [plan type]
+  (vec (keep #(when (= type (:type %)) (:data %)) (:events plan))))
+
+
+(def colours
+  [(new-row red-cup :product-name "Cup" :variant-label "red" :barcodes ["4600000001001"])
+   (new-row blue-cup :product-name "Cup" :variant-label "blue" :barcodes ["4600000001002"])])
+
+
+(deftest two-colours
+  (let [plan (register-rows colours (listings-of red-cup blue-cup))]
+    (is (= [{:product-id "listing-product:c:9101" :name "Cup" :status "active" :revision 1}]
+           (events-of plan :tover.catalogues.products.model/product-registered))
+        "one product")
+    (is (= [{:stock-item-id "listing:c:9101" :product-id "listing-product:c:9101" :variant-label "red" :unit "pcs"
+             :condition     "regular"        :status     "active"                 :revision      1}
+            {:stock-item-id "listing:c:9102" :product-id "listing-product:c:9101" :variant-label "blue" :unit "pcs"
+             :condition     "regular"        :status     "active"                 :revision      1}]
+           (events-of plan :tover.inventory.stock-items.model/stock-item-registered))
+        "two items")
+    (is (= [["listing:c:9101" "4600000001001"] ["listing:c:9102" "4600000001002"]]
+           (mapv (juxt :stock-item-id :barcode) (events-of plan :tover.inventory.stock-items.model/stock-item-barcode-assigned))))
+    (is (= [["c:9101" "listing:c:9101" 1 1 "confirmed"] ["c:9102" "listing:c:9102" 1 1 "confirmed"]]
+           (mapv (juxt :external-product-id :stock-item-id :mapping-revision :item-revision :state)
+                 (events-of plan ::products/external-product-mapped)))
+        "two mappings in the same plan")
+    (is (= {:attributes {} :pack nil :unit "pcs" :variant-label "red"}
+           (observations/read-json (:identity-basis (first (events-of plan ::products/external-product-mapped))))))
+    (is (= accepted-fx (:fx plan)))))
+
+
+(deftest collision-in-the-batch
+  (let [ls    (vec (for [n (range 40)]
+                     (listing (str (+ 9200 n)) :name (str "Product " n) :connection-id "c"
+                              :barcodes [(if (< n 2) "4600000002000" (str "46000000030" (format "%02d" n)))])))
+        rows  (mapv #(new-row % :product-name (:name %) :barcodes (mapv :value (:identifiers %))) ls)
+        facts (apply listings-of ls)]
+    (is (= [["c:9200" :uniqueness-conflict "Product 1"] ["c:9201" :uniqueness-conflict "Product 0"]]
+           (offending #(register-rows rows facts)))
+        "both rows are marked and nothing else")
+    (is (= :collision (rejection #(register-rows rows facts))))
+    (is (= 40 (count (events-of (register-rows (assoc-in rows [1 :barcodes] []) facts)
+                                :tover.inventory.stock-items.model/stock-item-registered)))
+        "without the shared barcode every row is accepted")))
+
+
+(deftest same-new-name-forms-one-product
+  (let [plan (register-rows [(new-row blue-cup :product-name "  cup " :variant-label "blue")
+                             (new-row red-cup :product-name "CUP" :variant-label "red")]
+                            (listings-of red-cup blue-cup))]
+    (is (= [{:product-id "listing-product:c:9102" :name "cup" :status "active" :revision 1}]
+           (events-of plan :tover.catalogues.products.model/product-registered))
+        "trimmed; the first row by order names it")
+    (is (= #{"listing-product:c:9102"}
+           (set (map :product-id (events-of plan :tover.inventory.stock-items.model/stock-item-registered)))))))
+
+
+(deftest registered-item-has-no-store
+  (is (not-any? #(contains? % :store-id)
+                (events-of (register-rows colours (listings-of red-cup blue-cup)) :tover.inventory.stock-items.model/stock-item-registered))
+      "a person fills the store later"))
+
+
+(deftest unit-defaults-to-pcs-in-the-read
+  (let [with-article (update both :identifiers conj {:type "article" :value " SET-2 " :active true})
+        row          (first (:rows (read-handler ::products/unmatched-external-products-and-candidates
+                                                 (assoc facts :listings [with-article]) {:connection-id c})))]
+    (is (= {:product-name "Set" :article "SET-2" :barcodes ["4600000000017" "plate-code"] :unit "pcs"} (:proposed row)))
+    (is (= {:barcodes [] :unit "pcs"} (products/proposed {:identifiers []})))))
+
+
+(deftest register-under-an-existing-product
+  (let [blue  (new-row red-cup :product-id "mug" :product-revision 1 :variant-label "blue")
+        facts (listings-of red-cup)
+        plan  (register-rows [blue] facts)]
+    (is (= [] (events-of plan :tover.catalogues.products.model/product-registered)))
+    (is (= ["mug"] (mapv :product-id (events-of plan :tover.inventory.stock-items.model/stock-item-registered))))
+    (is (= [["c:9101" :stale]] (offending #(register-rows [(assoc blue :product-revision 2)] facts))) "the product changed")
+    (is (= [["c:9101" :product-not-available]] (offending #(register-rows [(assoc blue :product-id "gone")] facts))))
+    (is (= [["c:9101" :product-not-available]]
+           (offending #(register-rows [blue] (merge facts {:catalogue (update catalogue :products (partial mapv (fn [p] (cond-> p (= "mug" (:product-id p)) (assoc :status "archived")))))})))))
+    (is (= [["c:9101" :duplicate-variant]] (offending #(register-rows [(dissoc blue :variant-label)] facts)))
+        "Mug already has an item without a label")))
+
+
+(deftest register-rejections
+  (let [facts (listings-of red-cup blue-cup)
+        row   (new-row red-cup :product-name "Cup" :barcodes ["4600000001001"])]
+    (is (= [["c:9101" :stale]] (offending #(register-rows [(assoc row :listing-revision 2)] facts))))
+    (is (= [["c:9404" :stale]] (offending #(register-rows [(new-row (listing "9404" :connection-id "c") :product-name "Cup")] facts))))
+    (is (= [["c:9101" :already-mapped]] (offending #(register-rows [row] (merge facts {:mappings {"c:9101" (mapping red-cup "mug-1" "confirmed")}})))))
+    (is (= [["c:9101" :item-exists]]
+           (offending #(register-rows [row] (merge facts {:catalogue (update catalogue :stock-items conj
+                                                                             {:stock-item-id "listing:c:9101" :product-id "mug" :condition "regular" :status "active" :revision 1})}))))
+        "a listing never registers two items")
+    (is (= [["c:9101" :product-name-taken]] (offending #(register-rows [(assoc row :product-name " mug ")] facts))))
+    (is (= :collision (rejection #(register-rows [(assoc row :product-name " mug ")] facts))))
+    (is (= [["c:9101" :invalid-product-name]] (offending #(register-rows [(dissoc row :product-name)] facts))))
+    (is (= [["c:9101" :unknown-unit]] (offending #(register-rows [(assoc row :unit "box")] facts))))
+    (is (= [["c:9101" :barcode-not-on-listing]] (offending #(register-rows [(assoc row :barcodes ["4600000009999"])] facts))))
+    (is (= [["c:9101" :uniqueness-conflict "Mug"]]
+           (offending #(register-rows [(new-row (listing "9101" :barcodes ["4600000000017"] :connection-id "c") :product-name "Cup" :barcodes ["4600000000017"])] (listings-of (listing "9101" :barcodes ["4600000000017"] :connection-id "c")))))
+        "a barcode of an existing product")
+    (is (= [["c:9101" :uniqueness-conflict "Plate"]]
+           (offending #(register-rows [(assoc row :article " plate-a ")]
+                                      (merge facts {:catalogue (update catalogue :stock-items conj
+                                                                       {:stock-item-id "plate-2" :product-id "plate" :article "PLATE-A" :condition "regular" :status "archived" :revision 1})}))))
+        "an article of an archived item")
+    (testing "two new items of the batch"
+      (is (= [["c:9101" :duplicate-variant] ["c:9102" :duplicate-variant]]
+             (offending #(register-rows [(assoc row :variant-label "red") (new-row blue-cup :product-name "cup" :variant-label " RED ")] facts))))
+      (is (= [["c:9101" :uniqueness-conflict "Bowl"] ["c:9102" :uniqueness-conflict "Cup"]]
+             (offending #(register-rows [(assoc row :article "A-1") (new-row blue-cup :product-name "Bowl" :article "a-1")] facts)))))
+    (testing "every bad row is named; one bad row accepts nothing"
+      (is (= [["c:9101" :stale] ["c:9102" :unknown-unit]]
+             (offending #(register-rows [(assoc row :listing-revision 2) (new-row blue-cup :product-name "Cup" :unit "")] facts)))))))
+
+
+(defn seed-all!
+  "Applies every event in one transaction."
+  {:malli/schema [:=> [:cat :map [:sequential :map]] :nil]}
+  [ctx events]
+  (store/with-store (assoc ctx :bel/definitions (bel/operations)) :catalogue :serializable
+    (fn [tx] (doseq [e events] (runtime/apply-event! tx e))))
+  nil)
+
+
+(defn stock-item-ids
+  {:malli/schema [:=> [:cat :map] [:vector :string]]}
+  [ctx]
+  (vec (sort (map :stock-item-id (:stock-items (runtime/coeffect ::products/catalogue ctx {}))))))
+
+
+(deftest two-colours-in-one-commit
+  (support/with-store
+    (fn [repo _]
+      (let [ctx (context repo)]
+        (seed! ctx ::sync/external-product-observed (observed "1" "Cup red" :barcodes ["4600000001001"]))
+        (seed! ctx ::sync/external-product-observed (observed "2" "Cup blue"))
+        (execute! ctx ::products/register-product-for-external-listing "register-1"
+                  {:rows [{:external-product-id (str c ":1")      :listing-revision 1     :product-name "Cup" :variant-label "red"
+                           :barcodes            ["4600000001001"] :unit             "pcs"}
+                          {:external-product-id (str c ":2") :listing-revision 1 :product-name "Cup" :variant-label "blue" :unit "pcs"}]})
+        (let [{:keys [products stock-items barcodes]} (runtime/coeffect ::products/catalogue ctx {})]
+          (is (= [["Cup" (str "listing-product:" c ":1")]] (mapv (juxt :name :product-id) products)))
+          (is (= [(str "listing:" c ":1") (str "listing:" c ":2")] (sort (map :stock-item-id stock-items))))
+          (is (= [nil nil] (map :store-id stock-items)) "no store")
+          (is (= [[(str "listing:" c ":1") "4600000001001"]] (mapv (juxt :stock-item-id :barcode) barcodes))))
+        (is (= {"confirmed" 2 "unmatched" 0 "deferred" 0 "suspended" 0}
+               (:counts (runtime/read-model ctx ::products/mapped-and-remaining-listings {:connection-id c}))))))))
+
+
+(deftest retry
+  (support/with-store
+    (fn [repo _]
+      (let [ctx   (context repo)
+            input {:rows [{:external-product-id (str c ":1") :listing-revision 1 :product-name "Cup" :unit "pcs"}]}]
+        (seed! ctx ::sync/external-product-observed (observed "1" "Cup"))
+        (let [first-receipt (execute! ctx ::products/register-product-for-external-listing "attempt-1" input)]
+          (is (= first-receipt (execute! ctx ::products/register-product-for-external-listing "attempt-1" input))
+              "the same attempt recovers its outcome"))
+        (is (= [(str "listing:" c ":1")] (stock-item-ids ctx)) "one item exists for the listing")
+        (is (= :already-mapped (rejection #(execute! ctx ::products/register-product-for-external-listing "attempt-2" input))))
+        (is (= [(str "listing:" c ":1")] (stock-item-ids ctx)))))))
+
+
+(deftest two-thousand-rows
+  (support/with-store
+    (fn [repo _]
+      (let [ctx   (context repo)
+            ids   (mapv str (range 1 2001))
+            input {:rows (mapv (fn [n] {:external-product-id (str c ":" n)    :listing-revision 1     :product-name (str "Product " n)
+                                        :barcodes            [(str "4700" n)] :unit             "pcs"})
+                               ids)}]
+        (seed-all! ctx (for [n ids] {:type ::sync/external-product-observed :data (observed n (str "Product " n) :barcodes [(str "4700" n)])}))
+        (let [started (System/nanoTime)]
+          (execute! ctx ::products/register-product-for-external-listing "bulk-1" input)
+          (is (< (/ (- (System/nanoTime) started) 1e9) 10.0) "one command for 2,000 listings, under 10 s"))
+        (is (= {:mapped 2000 :unmatched 0 :deferred 0 :suspended 0}
+               (dissoc (runtime/read-model ctx ::products/matching-progress {:connection-id c}) :without-candidates)))
+        (is (= 2000 (count (stock-item-ids ctx))))))))
+
+
 (deftest another-workspaces-item-is-not-available
   (support/with-store
     (fn [repo _]

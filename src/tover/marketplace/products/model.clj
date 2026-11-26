@@ -1,7 +1,7 @@
 (ns tover.marketplace.products.model
   "Board chapter 42 · Match marketplace products to stock items: product mappings, deferrals, the matching
-  reads (slices 1, 3, 5, 7) and the member's confirm, defer, change and reconfirm commands (slices 2, 6, 8, c).
-  Registering a product for a listing (slice 4) comes later.
+  reads (slices 1, 3, 5, 7) and the member's confirm, register, defer, change and reconfirm commands (slices 2,
+  4, 6, 8, c).
 
   A listing is an `External Product Observed` row of one connection. A mapping links it to one stock item;
   several listings may map to the same item. States: `confirmed` (permits automatic acceptance), `suspended`
@@ -18,6 +18,7 @@
     [bel.runtime :as runtime]
     [clojure.string :as str]
     [tover.catalogues.records :as records]
+    [tover.inventory.changes :as changes]
     [tover.inventory.stock-items.model :as stock-items]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.products.candidates :as candidates]
@@ -324,6 +325,35 @@
     (:category listing) (assoc :category (:category listing))))
 
 
+(def Proposed
+  "What registering a product for the listing starts with (slice 4); every value is editable in the table."
+  [:map
+   [:product-name {:optional true} :string]
+   [:article {:optional true} :string]
+   [:barcodes [:vector :string]]
+   [:unit :string]])
+
+
+(defn- listing-barcodes
+  "The listing's active barcodes."
+  {:malli/schema [:=> [:cat [:maybe :map]] [:set :string]]}
+  [listing]
+  (into #{} (keep #(when (and (= "barcode" (:type %)) (not (false? (:active %)))) (candidates/usable-barcode (:value %))))
+        (:identifiers listing)))
+
+
+(defn proposed
+  "The listing's name, first active article and active barcodes; the unit starts as `pcs`."
+  {:malli/schema [:=> [:cat :map] Proposed]}
+  [listing]
+  (let [article (some #(when (and (= "article" (:type %)) (not (false? (:active %))) (not (str/blank? (:value %))))
+                         (str/trim (:value %)))
+                      (:identifiers listing))]
+    (cond-> {:barcodes (vec (sort (listing-barcodes listing))) :unit candidates/default-unit}
+      (not (str/blank? (:name listing))) (assoc :product-name (str/trim (:name listing)))
+      article (assoc :article article))))
+
+
 (def UnmatchedRow
   [:map
    [:external-product-id :string]
@@ -333,6 +363,7 @@
    [:candidates [:vector :map]]
    [:conflicts [:vector [:map [:barcode :string] [:product-ids [:vector :string]]]]]
    [:waiting-operations :int]
+   [:proposed Proposed]
    [:deferral {:optional true} [:map [:reason {:optional true} :string] [:deferred-by :string] [:deferred-at :any]]]])
 
 
@@ -358,7 +389,8 @@
                         :listing-revision    (:revision listing)
                         :state               state
                         :evidence            (evidence listing (get earlier external-product-id []))
-                        :waiting-operations  (get waiting external-product-id 0)}
+                        :waiting-operations  (get waiting external-product-id 0)
+                        :proposed            (proposed listing)}
                        (candidates/indexed-candidates index listing))
           (= "deferred" state) (assoc :deferral (-> (select-keys deferral [:reason :deferred-by])
                                                     (assoc :deferred-at (connections/at (:deferred-at deferral))))))))))
@@ -620,12 +652,21 @@
    :listed-twice           "The listing is in the batch twice with different stock items."
    :not-suspended          "The mapping is not suspended; there is nothing to reconfirm."
    :item-archived          "The stock item is archived or defective. Change the mapping instead."
-   :barcode-not-on-listing "Only an active barcode of the listing can be adopted."})
+   :barcode-not-on-listing "Only an active barcode of the listing can be adopted."
+   :item-exists            "The listing already registered a stock item. Confirm a mapping to it instead."
+   :product-not-available  "Choose an active product of this workspace."
+   :invalid-product-name   "Enter a product name of 1 to 500 characters."
+   :product-name-taken     "A product with this name already exists."
+   :unknown-unit           "Choose a unit from the list."
+   :duplicate-variant      "This product already has a stock item with this variant."
+   :uniqueness-conflict    "A barcode or article belongs to another product."})
 
 
 (def ^:private rejection-type
   "Row codes that reject with another type than their own."
-  {:listed-twice :already-mapped :barcode-not-on-listing :validation})
+  {:listed-twice         :already-mapped :barcode-not-on-listing :validation :item-exists        :already-mapped
+   :invalid-product-name :validation     :unknown-unit           :validation :product-name-taken :collision
+   :duplicate-variant    :collision      :uniqueness-conflict    :collision})
 
 
 (defn- problem
@@ -650,14 +691,6 @@
    :products (by-id (:products catalogue) :product-id)
    :owners   (candidates/barcode-products (:barcodes catalogue) (:stock-items catalogue))
    :held     (set (map (juxt :stock-item-id :barcode) (:barcodes catalogue)))})
-
-
-(defn- listing-barcodes
-  "The listing's active barcodes."
-  {:malli/schema [:=> [:cat [:maybe :map]] [:set :string]]}
-  [listing]
-  (into #{} (keep #(when (and (= "barcode" (:type %)) (not (false? (:active %)))) (candidates/usable-barcode (:value %))))
-        (:identifiers listing)))
 
 
 (defn- item-code
@@ -905,3 +938,165 @@
                :data (merge (decided facts listing (:connection-id mapping) "reconfirmed" (inc mapping-revision))
                             (target catalogue listing item))}]
      :fx     (accepted-fx scope [(:connection-id mapping)])}))
+
+
+;; Slice 4 · Register a product or stock item for the listing
+
+
+(defn item-id
+  "The stock item a listing registers. Derived from the listing, so one listing never registers two items."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [external-product-id]
+  (str "listing:" external-product-id))
+
+
+(defn new-product-id
+  "A new product of the batch takes its id from the first row (by order) naming it."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [external-product-id]
+  (str "listing-product:" external-product-id))
+
+
+(def RegisterRow
+  "The product is an existing `:product-id` at `:product-revision`, or a new `:product-name`. Rows naming the same
+  new name (trimmed, case-insensitive) form one product."
+  [:map
+   [:external-product-id ListingId] [:listing-revision Revision]
+   [:product-id {:optional true} Ref] [:product-revision {:optional true} Revision]
+   [:product-name {:optional true} [:string {:max 1000}]]
+   [:variant-label {:optional true} [:string {:max 500}]]
+   [:article {:optional true} [:string {:max 500}]]
+   [:barcodes {:optional true} [:vector [:string {:max 200}]]]
+   [:unit [:string {:max 50}]]])
+
+
+(def RegisterProductForExternalListing
+  [:map [:rows [:vector {:min 1 :max 5000} RegisterRow]]])
+
+
+(defn- value
+  {:malli/schema [:=> [:cat [:maybe :string]] [:maybe :string]]}
+  [text]
+  (some-> text str/trim not-empty))
+
+
+(defn- register-code
+  "The row's first problem before uniqueness, or nil."
+  {:malli/schema [:=> [:cat :map :map] [:maybe :keyword]]}
+  [{:keys [listings mappings index taken twice]}
+   {:keys [external-product-id listing-revision product-id product-revision product-name unit]}]
+  (let [listing (get listings external-product-id)
+        product (get-in index [:products product-id])
+        name    (value product-name)]
+    (or (cond (twice external-product-id) :listed-twice
+              (or (nil? listing) (not= listing-revision (:revision listing))) :stale
+              (mapped? (get mappings external-product-id)) :already-mapped
+              (get-in index [:items (item-id external-product-id)]) :item-exists)
+        (if product-id
+          (cond (nil? product) :product-not-available
+                (not= product-revision (:revision product)) :stale
+                (not= "active" (:status product)) :product-not-available)
+          (cond (not (and name (<= (count name) 500))) :invalid-product-name
+                (taken (changes/text-key name)) :product-name-taken))
+        (when-not (stock-items/unit? (value unit)) :unknown-unit))))
+
+
+(defn- register-lines
+  "Rows as acceptance lines of new items: `:entry-id` is the listing, the item id derives from it and a new name
+  takes the id of the first row naming it."
+  {:malli/schema [:=> [:cat :map [:sequential :map]] [:vector :map]]}
+  [listings rows]
+  (let [first-row (reduce (fn [m {:keys [external-product-id product-id product-name]}]
+                            (let [k (when-not product-id (changes/text-key product-name))]
+                              (if (and k (not (contains? m k))) (assoc m k external-product-id) m)))
+                          {} rows)]
+    (mapv (fn [{:keys [external-product-id product-id product-name variant-label article barcodes unit]}]
+            (let [new-key (changes/text-key product-name)]
+              (cond-> {:entry-id      external-product-id :line-id   nil             :new-item? true
+                       :stock-item-id (item-id external-product-id)
+                       :product-id    (or product-id (when new-key (new-product-id (first-row new-key))))
+                       :variant-label (value variant-label) :article (value article) :unit      (value unit)
+                       :barcodes      (vec (distinct (keep candidates/usable-barcode barcodes)))
+                       :listing       (get listings external-product-id)}
+                (not product-id) (assoc :new-product? true :product-name (value product-name)))))
+          rows)))
+
+
+(defn- collisions
+  "Uniqueness as acceptance checks it (`changes/uniqueness`), plus what two new items of the batch may break: a
+  variant twice under one product, an article under two products. An in-batch barcode problem names the other
+  product of the batch instead of the barcode."
+  {:malli/schema [:=> [:cat :map [:sequential :map]] [:vector :map]]}
+  [catalogue lines]
+  (let [names   (merge (into {} (map (juxt :product-id :name)) (:products catalogue))
+                       (into {} (keep #(when (:new-product? %) [(:product-id %) (:product-name %)])) lines))
+        by-line (by-id lines :entry-id)
+        claims  (reduce (fn [m l] (reduce #(update %1 %2 (fnil conj #{}) (:product-id l)) m (:barcodes l))) {} lines)
+        other   (fn [line owners] (names (first (sort (disj owners (:product-id line))))))
+        found   (changes/uniqueness (assoc (select-keys catalogue [:products :stock-items :barcodes]) :suppliers []) lines)]
+    (vec (distinct
+           (concat
+             (for [{:keys [entry-id code owner-product]} found
+                   :let [line (by-line entry-id)
+                         batch (when (some #{owner-product} (:barcodes line)) (claims owner-product))]]
+               (if (< 1 (count batch))
+                 (problem entry-id code :barcode owner-product :owner-product (other line batch))
+                 (cond-> (problem entry-id code) owner-product (assoc :owner-product owner-product))))
+             (for [[_ ls] (group-by (juxt :product-id (comp changes/text-key :variant-label)) lines)
+                   :when  (< 1 (count ls))
+                   line   ls]
+               (problem (:entry-id line) :duplicate-variant))
+             (for [[article ls] (group-by (comp changes/text-key :article) lines)
+                   :let         [owners (set (map :product-id ls))]
+                   :when        (and article (< 1 (count owners)))
+                   line         ls]
+               (problem (:entry-id line) :uniqueness-conflict :article (:article line) :owner-product (other line owners))))))))
+
+
+(defn- registration-events
+  "Product Registered once per new product, Stock Item Registered and its barcodes once per row, then the mapping."
+  {:malli/schema [:=> [:cat :map :map [:sequential :map]] [:vector :map]]}
+  [facts catalogue lines]
+  (let [present #(into {} (remove (comp nil? val)) %)]
+    (vec (concat
+           (for [l (vals (into (sorted-map) (map (juxt :product-id identity)) (reverse (filter :new-product? lines))))]
+             {:type :tover.catalogues.products.model/product-registered
+              :data {:product-id (:product-id l) :name (:product-name l) :status "active" :revision 1}})
+           (for [l lines]
+             {:type ::stock-items/stock-item-registered
+              :data (present {:stock-item-id (:stock-item-id l) :product-id (:product-id l) :variant-label (:variant-label l)
+                              :article       (:article l)       :unit       (:unit l)       :condition     "regular"          :status "active"
+                              :revision      1})})
+           (for [l lines code (:barcodes l)]
+             {:type ::stock-items/stock-item-barcode-assigned
+              :data {:barcode-id (stock-items/barcode-id (:stock-item-id l) code) :stock-item-id (:stock-item-id l) :barcode code}})
+           (for [{:keys [listing] :as l} lines
+                 :let                    [item (-> (select-keys l [:stock-item-id :variant-label :unit]) (assoc :revision 1))]]
+             {:type ::external-product-mapped
+              :data (merge (decided facts listing (:connection-id listing) "mapped"
+                                    (inc (:mapping-revision (get (:mappings facts) (:entry-id l)) 0)))
+                           (target catalogue listing item))})))))
+
+
+(defcommand register-product-for-external-listing
+  {:input RegisterProductForExternalListing :policy ::records/workspace-member
+   :cofx  command-cofx
+   :emits #{:tover.catalogues.products.model/product-registered ::stock-items/stock-item-registered
+            ::stock-items/stock-item-barcode-assigned ::external-product-mapped}}
+  [{:keys [scope listings mappings catalogue] :as facts} {:keys [rows]}]
+  (let [rows    (distinct rows)
+        twice   (set (keep (fn [[id n]] (when (> n 1) id)) (frequencies (map :external-product-id rows))))
+        taken   (into #{} (keep #(when (not= "deleted" (:status %)) (changes/text-key (:name %)))) (:products catalogue))
+        checked {:listings listings :mappings mappings :index (catalogue-index catalogue) :taken taken :twice twice}
+        lines   (register-lines listings rows)]
+    (reject! (for [[row line] (map vector rows lines)
+                   p          (if-let [code (register-code checked row)]
+                                [(problem (:external-product-id row) code)]
+                                (let [on-listing (listing-barcodes (:listing line))]
+                                  (for [b (:barcodes line) :when (not (on-listing b))]
+                                    (problem (:external-product-id row) :barcode-not-on-listing :barcode b))))]
+               p))
+    ;; Uniqueness once every row stands: all rows are accepted together or none.
+    (reject! (collisions catalogue lines))
+    {:events (registration-events facts catalogue lines)
+     :fx     (accepted-fx scope (map (comp :connection-id :listing) lines))}))

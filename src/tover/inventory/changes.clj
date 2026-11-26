@@ -24,6 +24,50 @@
   (into {} (map (juxt k identity)) rows))
 
 
+(defn- line-problem
+  {:malli/schema [:=> [:cat :map :keyword [:? :map]] Problem]}
+  ([line code] (line-problem line code {}))
+  ([line code data] (merge {:entry-id (:entry-id line) :line-id (:line-id line) :code code} data)))
+
+
+(defn- distinct-by-item
+  {:malli/schema [:=> [:cat [:sequential :map]] [:sequential :map]]}
+  [lines]
+  (vec (vals (into (sorted-map) (map (juxt :stock-item-id identity)) (reverse lines)))))
+
+
+(defn uniqueness
+  "New items: variant unique within the product; barcode and article owned by at most one product. A new supplier's
+  name is unique among all suppliers, archived included."
+  {:malli/schema [:=> [:cat :map [:sequential :map]] [:sequential Problem]]}
+  [{:keys [products stock-items barcodes suppliers]} lines]
+  (let [names    (into {} (map (juxt :product-id :name)) products)
+        taken    (into {} (map (juxt (comp text-key :name) :name)) suppliers)
+        item     (by :stock-item-id stock-items)
+        variants (set (map (juxt :product-id (comp text-key :variant-label)) stock-items))
+        article  (reduce (fn [m i] (if-let [k (text-key (:article i))] (update m k (fnil conj #{}) (:product-id i)) m)) {} stock-items)
+        owner    (reduce (fn [m b] (update m (:barcode b) (fnil conj #{}) (:product-id (item (:stock-item-id b))))) {} barcodes)
+        fresh    (filter :new-item? lines)
+        conflict (fn [line owners]
+                   (when-let [other (first (remove #{(:product-id line)} owners))]
+                     (line-problem line :uniqueness-conflict {:owner-product (or (names other) other)})))]
+    (concat
+      (for [e     (distinct (keep #(when (:new-supplier? (:entry %)) (:entry %)) lines))
+            :let  [owner (taken (text-key (:supplier-name e)))]
+            :when owner]
+        {:entry-id (:entry-id e) :line-id nil :code :supplier-name-taken :field :supplier-id :owner-supplier owner})
+      ;; Lines naming one new product and variant share one item, so only an existing (archived) item can collide.
+      (for [line  (distinct-by-item fresh)
+            :when (variants [(:product-id line) (text-key (:variant-label line))])]
+        (line-problem line :duplicate-variant))
+      (keep #(conflict % (get article (text-key (:article %)))) fresh)
+      (for [line fresh code (:barcodes line) :let [found (conflict line (owner code))] :when found] found)
+      (for [[code claims] (group-by second (for [l fresh c (:barcodes l)] [l c]))
+            :when         (< 1 (count (distinct (map (comp :product-id first) claims))))
+            [line]        claims]
+        (line-problem line :uniqueness-conflict {:owner-product code})))))
+
+
 (def ^:private change-field
   "Stock item field each change key writes."
   {:variant-label  :variant-label :article          :article  :unit :unit :store-id :store-id :product-id :product-id :archive :status :restore :status
