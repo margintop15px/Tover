@@ -928,7 +928,7 @@
 ;; Connections due for sync (spans workspaces; read only by the scheduler)
 
 
-(defn- workspace-ids
+(defn workspace-ids
   "Every workspace holding a marketplace connection, from the shared RDF repository."
   {:malli/schema [:=> [:cat :map] [:vector :uuid]]}
   [system]
@@ -941,7 +941,7 @@
                                    (rdf/select conn '{:select [?ws] :where [[?s ?p ?ws]]} {:p predicate})))))))))
 
 
-(defn- workspace-connections
+(defn workspace-connections
   {:malli/schema [:=> [:cat :map :uuid] [:vector :map]]}
   [system workspace-id]
   (records/all-records {:bel/system system :scope {:workspace-id workspace-id}} ::connections/connections :connection-id))

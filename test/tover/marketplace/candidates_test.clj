@@ -159,3 +159,10 @@
     (is (= {:attributes {"1" ["M"] "3" ["red"] "4" ["x"]} :pack "2" :unit "pcs" :variant-label "M"} basis))
     (is (= {"1" ["M"] "2" ["cotton"] "3" ["red"] "4" ["x"]}
            (:attributes (identity-basis {:attributes attributes} [] nil))))))
+
+
+(deftest identity-basis-keeps-attributes-without-definition
+  (let [attributes  [{:attribute-id "1" :values [{:value "cotton"}]} {:attribute-id "9" :values [{:value "XL"}]}]
+        definitions [{:attribute-id "1" :name "Материал" :separates-variants false}]]
+    (is (= {"9" ["XL"]} (:attributes (identity-basis {:attributes attributes} definitions nil)))
+        "an unknown definition separates, so the Mapping Guard fails closed")))

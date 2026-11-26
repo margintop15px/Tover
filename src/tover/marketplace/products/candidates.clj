@@ -113,20 +113,28 @@
           :else (or attributes []))))
 
 
+(defn separating-attributes
+  "A predicate on attribute ids: true when the attribute separates variants. Its definition says so or is named
+  like size or colour; an attribute without a definition counts, so a missing definition never lets an identity
+  change pass the Mapping Guard."
+  {:malli/schema [:=> [:cat Rows] [:=> [:cat :any] :boolean]]}
+  [definitions]
+  (let [index (definition-index definitions)]
+    (fn [attribute-id]
+      (let [d (get index (str attribute-id))]
+        (boolean (or (nil? d) (true? (:separates-variants d)) (contains? variant-attribute-names (:name d))))))))
+
+
 (defn identity-basis
-  "What a confirmed mapping stands on: the listing's variant-separating attributes (by attribute id), its pack,
-  and the item's unit and variant label. Attributes separate variants when their definition says so or is
-  named like size or colour; with no definition at all every attribute counts."
+  "What a confirmed mapping stands on: the listing's variant-separating attributes (by attribute id, see
+  `separating-attributes`), its pack, and the item's unit and variant label."
   {:malli/schema [:=> [:cat Row Rows [:maybe Row]]
                   [:map [:attributes [:map-of :string [:vector :string]]] [:pack [:maybe :string]]
                    [:unit [:maybe :string]] [:variant-label [:maybe :string]]]]}
   [listing definitions item]
-  (let [index  (definition-index definitions)
-        keep?  (fn [{:keys [attribute-id]}]
-                 (or (empty? index)
-                     (let [d (get index attribute-id)]
-                       (and d (or (true? (:separates-variants d)) (contains? variant-attribute-names (:name d)))))))
-        values (fn [attribute] (into [] (keep #(let [v (trimmed (:value %))] (when-not (str/blank? v) v))) (:values attribute)))]
+  (let [separating? (separating-attributes definitions)
+        keep?       (fn [{:keys [attribute-id]}] (separating? attribute-id))
+        values      (fn [attribute] (into [] (keep #(let [v (trimmed (:value %))] (when-not (str/blank? v) v))) (:values attribute)))]
     {:attributes    (into {}
                           (keep (fn [attribute]
                                   (let [vs (values attribute)]

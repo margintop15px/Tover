@@ -457,9 +457,11 @@
         _          (when-not (= connection-id (get-in details [:listing :connection-id]))
                      (access/failure 404 :unknown-listing "Unknown listing"))
         catalogue  (index (runtime/read-model context :tover.inventory.references/draft-catalogue {}))
-        actors     (actors/labels context (keep #(some->> % (hash-map :actor))
-                                                (concat [(get-in details [:mapping :confirmed-by]) (get-in details [:mapping :deferred-by])]
-                                                        (map :changed-by (:history details)))))]
+        ;; `enrich` also names the connector principal (`connector:<connection id>`) that suspends mappings.
+        actors     (into {} (map (juxt :actor :actor-label))
+                         (actors/enrich context (keep #(some->> % (hash-map :actor))
+                                                      (concat [(get-in details [:mapping :confirmed-by]) (get-in details [:mapping :deferred-by])]
+                                                              (map :changed-by (:history details))))))]
     {:request request :connection connection :details details :catalogue catalogue :actors actors}))
 
 
