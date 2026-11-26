@@ -93,6 +93,13 @@
   (str "cutover:" connection-id "|"))
 
 
+(defn cutover-entry?
+  "Whether a shared entry id is a cutover entry's, of any connection."
+  {:malli/schema [:=> [:cat [:maybe :string]] :boolean]}
+  [entry-id]
+  (boolean (some-> entry-id (str/starts-with? "cutover:"))))
+
+
 (defn baseline-id
   {:malli/schema [:=> [:cat :string :string :string] :string]}
   [connection-id stock-item-id warehouse-id]

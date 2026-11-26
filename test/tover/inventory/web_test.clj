@@ -2,6 +2,7 @@
   "Board chapters 13, 14, 16, 17 and 32a on the stock page: grid models and one command descriptor per action."
   (:require
     [bel.runtime :as runtime]
+    [clojure.string :as str]
     [clojure.test :refer [deftest is testing]]
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
@@ -266,6 +267,21 @@
     (is (= ["c" 2 false] ((juxt :entry :revision :shared) (:target main))))
     (is (= "10" (:value (column model "tee-m" "total"))) "the total counts 7 instead of 5")
     (is (= [{:entry-id "c" :revision 2 :rowId "tee-m"}] (:pending model)))))
+
+
+(deftest a-pending-cutover-correction-is-not-the-rows-correction
+  (let [cutover (assoc correction :entry-id "cutover:c-1|tee-m|main#1" :revision 1)
+        model   (web/stock-grid counted {:mode "units" :entries [cutover] :scope {:pending true}})
+        main    (column model "tee-m" "main")]
+    (testing "outside the connection's Cutover Review a new count opens a Correction of its own"
+      (is (some? main) "the row stays in Preview")
+      (is (str/starts-with? (get-in main [:target :entry]) "correction-"))
+      (is (= 0 (get-in main [:target :revision])))
+      (is (nil? (:target (column model "tee-m" "occurred-at"))) "the occurrence time does not write into the cutover entry"))
+    (testing "in the Cutover Review the cutover entry is the row's correction, so its count is edited"
+      (let [review (column (web/stock-grid counted {:mode "units" :entries [cutover] :scope {:pending true :cutover "c-1"}}) "tee-m" "main")]
+        (is (= ["5 → " "7"] ((juxt :prefix :value) review)))
+        (is (= ["cutover:c-1|tee-m|main#1" 1] ((juxt :entry :revision) (:target review))))))))
 
 
 (deftest item-fields-propose-changes

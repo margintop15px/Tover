@@ -497,10 +497,14 @@
         replaced (update-vals (group-by :stock-item-id (for [{:keys [kind replaces]} entries :when (= "opening" kind) l replaces] l))
                               (fn [ls] {:quantity (reduce + 0 (keep :quantity-change ls))
                                         :value    (reduce + 0M (for [l ls :when (:unit-cost l)] (* (:quantity-change l 0) (bigdec (:unit-cost l)))))}))
-        corrected (into {} (for [{:keys [lines changes] :as c} (reverse corrections)
+        ;; A pending cutover correction keeps its scope and instant (chapter 44), so outside the connection's Cutover
+        ;; Review a new count of the row opens a Correction of its own; the cutover entry still keeps its row shown.
+        cutover? #(and (not (:cutover scope)) (provenance/cutover-entry? (:entry-id %)))
+        corrected (into {} (for [{:keys [lines changes] :as c} (reverse (remove cutover? corrections))
                                  :let [item (or (:stock-item-id (first lines)) (:stock-item-id (first changes)))]
                                  :when item]
                              [item c]))
+        held (into #{} (comp (filter cutover?) (keep (comp :stock-item-id first :lines))) corrections)
         known (set (map :id warehouses))
         warehouses (cond-> (vec warehouses)
                      (not-every? (comp known :warehouse-id) lines) (conj {:id no-warehouse :name (i18n/t "No warehouse")}))
@@ -555,6 +559,7 @@
                                              :operations    (group-by :warehouse-id (operations stock-item-id))
                                              :replaced      (replaced stock-item-id)
                                              :item          (assoc item :product-id product-id) :correction correction
+                                             :held?         (contains? held stock-item-id)
                                              :correction-id (or (:entry-id correction) (str "correction-" (random-uuid)))})
                                           (when-not itemId (new-rows product-id #(hash-map "product-id" product-id "variant" %)))
                                           (when (and (blank? product-id) (not archived?)) [(blank-row product-id {"product-id" product-id} taken)]))]
@@ -580,7 +585,7 @@
                   :rows  [(blank-row "new" {"product" productName} #{})]}])
         ;; The product being created comes first; it does not filter the table.
         named? (fn [{:keys [named]}] (and productName named (= (key productName) (key named))))
-        real? (fn [row] (or (seq (:lines row)) (:correction row) (editing (:id row))))
+        real? (fn [row] (or (seq (:lines row)) (:correction row) (:held? row) (editing (:id row))))
         groups (cond->> (let [all (concat created fresh existing)] (concat (filter named? all) (remove named? all)))
                  preview? (keep (fn [{:keys [id rows named] :as group}]
                                   (when (or named (some real? rows) (editing (str "product:" id)) (some #(= newRowId (:id %)) rows))
