@@ -58,8 +58,8 @@
 (def mappings
   {"c1:mug-red"  {:external-product-id "c1:mug-red" :connection-id  connection :stock-item-id "red" :state "confirmed"
                   :mapping-revision    1            :identity-basis (basis (first listings) (first stock-items))}
-   "c1:mug-blue" {:external-product-id "c1:mug-blue" :connection-id connection :stock-item-id "blue" :state "confirmed"
-                  :mapping-revision    1}})
+   "c1:mug-blue" {:external-product-id "c1:mug-blue" :connection-id  connection :stock-item-id "blue" :state "confirmed"
+                  :mapping-revision    1             :identity-basis (basis (second listings) (second stock-items))}})
 
 
 (def warehouse-mappings
@@ -189,6 +189,7 @@
    :aside              {}
    :operations         operations
    :catalogue          catalogue
+   :guard-facts        catalogue
    :history            stocked
    :entries            []
    :currency           "RUB"
@@ -406,7 +407,8 @@
     (is (not-any? :entry-id results))
     (testing "matching one listing moves its operations to their next step"
       (let [matched (assoc-in facts [:mappings "c1:listing-0"]
-                              {:external-product-id "c1:listing-0" :connection-id connection :stock-item-id "red" :state "confirmed" :mapping-revision 1})
+                              {:external-product-id "c1:listing-0" :connection-id connection :stock-item-id "red" :state "confirmed" :mapping-revision 1
+                               :identity-basis      (basis (first listings) (first stock-items))})
             steps   (frequencies (map #(step matched %) ops))]
         (is (= 29 (get steps "automatic")))
         (is (= 311 (get steps "match product")))))))
@@ -457,15 +459,30 @@
     (baselined) posting []
     (paused) posting ["connection state"]
     (assoc-in (baselined) [:connection :credentials-state] "rejected") posting ["connection state"]
-    (unmatched) posting ["mapping"]
-    (no-baseline) posting ["baseline"]
-    (baselined) before-cutover ["baseline"]
-    (baselined) no-time-terminal ["completeness"]
+    (unmatched) posting ["mapping" "validation"]
+    (no-baseline) posting ["baseline" "validation"]
+    (baselined) before-cutover ["baseline" "validation"]
+    (baselined) no-time-terminal ["completeness" "validation"]
     (aside) posting ["set aside"]
     (edited-conflict) posting ["member edit" "source conflict"]
     (balance 2) posting ["validation"])
   (testing "an archived item or warehouse"
-    (is (= ["mapping"] (:failing-conditions (steps/classify (assoc-in (baselined) [:catalogue :warehouses 0 :status] "archived") posting))))))
+    (is (= ["mapping" "validation"] (:failing-conditions (steps/classify (assoc-in (baselined) [:catalogue :warehouses 0 :status] "archived") posting))))))
+
+
+(deftest missing-facts-never-make-an-operation-automatic
+  (testing "without the Mapping Guard's facts the mapping is not known to hold"
+    (let [facts (dissoc (baselined) :guard-facts)]
+      (is (= ["mapping"] (:failing-conditions (steps/classify facts posting))))
+      (is (false? (steps/eligible? facts posting)))))
+  (testing "without the review instant a time in the future is not ruled out"
+    (let [facts    (dissoc (baselined) :now)
+          tomorrow (assoc posting :source-operation-id "c1:fbs-posting:F9" :occurred-at "2026-11-26T09:00:00Z")]
+      (is (= ["validation"] (:failing-conditions (steps/classify facts posting))))
+      (is (false? (steps/eligible? facts posting)))
+      (is (= ["validation"] (:failing-conditions (steps/classify (baselined) tomorrow))) "with it, the future time fails")))
+  (testing "no review ran: validation does not pass by default"
+    (is (some #{"validation"} (:failing-conditions (steps/classify (unmatched) posting))))))
 
 
 (deftest member-fills-the-gap

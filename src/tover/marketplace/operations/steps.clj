@@ -41,7 +41,8 @@
   "`proposals/Facts`, and: `connection` the connection row, `guard-facts` the Mapping Guard's catalogue (products,
   stock items, barcodes, definitions; a mapping it finds reasons for counts as suspended), `imports`,
   `acceptances` and `aside` by source operation id, `catalogue` and `history` as acceptance reviews them, `entries`
-  the pending entries, `now` the review instant."
+  the pending entries, `now` the review instant. Without `guard-facts` \"mapping\" fails, without `now`
+  \"validation\" fails: an operation is never automatic on facts nobody supplied."
   [:map
    [:connection {:optional true} [:maybe :map]]
    [:products {:optional true} [:sequential :map]]
@@ -309,13 +310,15 @@
   [facts operation {:keys [lines kind missing itemized mapped result active edited conflict]}]
   (let [fails {"connection state" (not active)
                "kind"             (not (and (= "sale" kind) (#{"fbs-posting" "fbo-posting"} (:kind operation))))
-               "mapping"          (not mapped)
+               ;; Missing facts never pass a condition: without the guard's facts a suspension may be due, without
+               ;; `now` a future time is not ruled out, and without a review nothing was validated.
+               "mapping"          (or (not mapped) (nil? (:guard-facts facts)))
                "baseline"         (not-every? :after-baseline itemized)
                "completeness"     (or (nil? kind) (empty? lines) (boolean (seq missing)))
                "set aside"        (set-aside? facts (:source-operation-id operation))
                "member edit"      edited
                "source conflict"  conflict
-               "validation"       (boolean (and result (not (:valid? result))))}]
+               "validation"       (or (nil? result) (not (:valid? result)) (nil? (:now facts)))}]
     (filterv fails conditions)))
 
 
