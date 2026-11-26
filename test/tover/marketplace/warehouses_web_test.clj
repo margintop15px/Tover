@@ -10,6 +10,7 @@
     [tover.catalogues.categories.model]
     [tover.catalogues.products.model]
     [tover.catalogues.suppliers.model]
+    [tover.inventory.acceptance.model]
     [tover.inventory.entries.model]
     [tover.inventory.references]
     [tover.marketplace.connections-test :as scenarios]
@@ -28,7 +29,7 @@
   [f]
   (bel/build-registry! ['tover.catalogues.warehouses.model 'tover.catalogues.stores.model 'tover.catalogues.products.model
                         'tover.inventory.stock-items.model 'tover.catalogues.suppliers.model 'tover.catalogues.categories.model
-                        'tover.inventory.entries.model 'tover.marketplace.provenance 'tover.inventory.references
+                        'tover.inventory.entries.model 'tover.inventory.acceptance.model 'tover.marketplace.provenance 'tover.inventory.references
                         'tover.marketplace.connections.model 'tover.marketplace.sync.model 'tover.marketplace.products.model
                         'tover.marketplace.warehouses.model
                         'tover.shared.web.core 'tover.marketplace.connections.web 'tover.marketplace.grid

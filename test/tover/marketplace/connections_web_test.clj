@@ -14,6 +14,7 @@
     [dev.onionpancakes.chassis.core :as chassis]
     [tover.catalogues.products.model]
     [tover.catalogues.stores.model :as stores]
+    [tover.inventory.acceptance.model]
     [tover.inventory.entries.model]
     [tover.inventory.stock-items.model]
     [tover.marketplace.connections-test :as scenarios]
@@ -36,7 +37,7 @@
   [f]
   (bel/build-registry! ['tover.catalogues.warehouses.model 'tover.catalogues.stores.model
                         'tover.catalogues.products.model 'tover.inventory.stock-items.model 'tover.marketplace.products.model 'tover.marketplace.warehouses.model
-                        'tover.marketplace.connections.model 'tover.marketplace.sync.model 'tover.marketplace.provenance 'tover.catalogues.suppliers.model 'tover.catalogues.categories.model 'tover.inventory.entries.model 'tover.shared.web.core
+                        'tover.marketplace.connections.model 'tover.marketplace.sync.model 'tover.marketplace.provenance 'tover.catalogues.suppliers.model 'tover.catalogues.categories.model 'tover.inventory.entries.model 'tover.inventory.acceptance.model 'tover.shared.web.core
                         'tover.marketplace.connections.web 'tover.workspaces.currency.model])
   (f))
 

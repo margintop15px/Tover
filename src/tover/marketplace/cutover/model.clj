@@ -146,16 +146,23 @@
 ;; Accepted history at the instant
 
 
+(defn- recorded-pairs
+  "Pairs [item warehouse] with any effective accepted record."
+  {:malli/schema [:=> [:cat [:maybe :map]] [:set :any]]}
+  [{:keys [records lines]}]
+  (let [current (set (map :record-revision-id (valuation/effective (or records []))))]
+    (set (keep #(when (current (:record-revision-id %)) [(:stock-item-id %) (:warehouse-id %)]) lines))))
+
+
 (defn- history-at
   "Balances at `at` (all accepted history without one) and the pairs with any accepted record."
   {:malli/schema [:=> [:cat [:maybe :map] [:maybe inst?]] [:map [:balances :map] [:recorded [:set :any]]]]}
-  [{:keys [records lines] :or {records [] lines []}} at]
-  (let [effective (valuation/effective records)
-        current   (set (map :record-revision-id effective))
-        kept      (set (keep #(when (or (nil? at) (not (.isAfter ^Instant (instant (:occurred-at %)) at))) (:record-id %)) effective))
-        before    (filterv (comp kept :record-id) records)]
+  [{:keys [records lines] :or {records [] lines []} :as history} at]
+  (let [kept   (set (keep #(when (or (nil? at) (some-> (instant (:occurred-at %)) (.isAfter ^Instant at) not)) (:record-id %))
+                          (valuation/effective records)))
+        before (filterv (comp kept :record-id) records)]
     {:balances (:balances (valuation/replay before lines))
-     :recorded (set (keep #(when (current (:record-revision-id %)) [(:stock-item-id %) (:warehouse-id %)]) lines))}))
+     :recorded (recorded-pairs history)}))
 
 
 (defn- item-average
@@ -182,9 +189,11 @@
 
 (defn- classify
   "Scopes {[item warehouse] {:listings {id mapping} :warehouses {id mapping}}} and the unmatched listings and
-  external warehouses the last pass found stock for."
+  external warehouses the last pass found stock for. A scope is a mapped pair the pass has a figure for, a pair
+  of a mapped item and mapped warehouse with accepted history (Ozon may state no row for it), or a pair with a
+  pending cutover entry or a baseline."
   {:malli/schema [:=> [:cat :map :string] :map]}
-  [{:keys [passes figures product-mappings warehouse-mappings provenance]} connection-id]
+  [{:keys [passes figures product-mappings warehouse-mappings provenance history]} connection-id]
   (let [run      (:run-id (first passes))
         figures  (filter #(and run (= run (:run-id %)) (:external-warehouse-id %)) figures)
         products (confirmed product-mappings connection-id)
@@ -195,6 +204,8 @@
                                      :let [p (get products external-product-id) w (get places external-warehouse-id)]
                                      :when (and p w)]
                                  [(:stock-item-id p) (:warehouse-id w)])
+                               (let [items (set (map :stock-item-id (vals products))) homes (set (map :warehouse-id (vals places)))]
+                                 (filter (fn [[i w]] (and (items i) (homes w))) (recorded-pairs history)))
                                (map (juxt :stock-item-id :warehouse-id) (filter own (vals (:cutover-entries provenance))))
                                (map (juxt :stock-item-id :warehouse-id) (filter own (vals (:baselines provenance))))))]
     {:scopes               (into (sorted-map)
@@ -217,11 +228,16 @@
 
 (defn- observed
   "What the pass states of a scope: the figures of every mapped listing it speaks for in every mapped external
-  warehouse, summed; nil when it speaks for none."
+  warehouse, summed; nil when it speaks for none. Without any figure in the scope, only an FBO warehouse reads
+  as 0: Ozon lists every FBO warehouse holding an asked listing, not seller warehouses."
   {:malli/schema [:=> [:cat [:maybe :map] [:sequential :map] :map] [:maybe :int]]}
   [pass figures {:keys [listings warehouses]}]
-  (let [stated (for [l (keys listings) w (keys warehouses)] (sync/stated-present pass figures l w))]
-    (when (some some? stated) (reduce + 0 (remove nil? stated)))))
+  (let [stated   (for [l (keys listings) w (keys warehouses)] (sync/stated-present pass figures l w))
+        figured? (some #(and (= (:run-id pass) (:run-id %)) (contains? listings (:external-product-id %))
+                             (contains? warehouses (:external-warehouse-id %)))
+                       figures)
+        fbo?     (and (seq warehouses) (every? (comp warehouses/fbo? :warehouse-type) (vals warehouses)))]
+    (when (and (some some? stated) (or figured? fbo?)) (reduce + 0 (remove nil? stated)))))
 
 
 (defn scopes
@@ -298,20 +314,22 @@
 
 
 (defn- load-facts
+  "Facts of one connection; `full?` adds what only the readiness read needs: currency, listing costs, positions
+  and readable domains."
   {:malli/schema [:=> [:cat :map :string :boolean] :map]}
-  [context connection-id with-history?]
+  [context connection-id full?]
   (let [passes (sync/finished-passes context connection-id "stock-by-warehouse")]
-    (cond-> {:currency           (currency/current (first (records/all-records context ::currency/workspace-currencies :currency-key)))
-             :passes             passes
+    (cond-> {:passes             passes
              :figures            (if-let [run (:run-id (first passes))] (sync/stock-figures context connection-id run) [])
-             :listings           (runtime/coeffect ::products/listings context {:connection-id connection-id})
              :product-mappings   (runtime/coeffect ::products/mappings context {:connection-id connection-id})
              :warehouse-mappings (runtime/coeffect ::warehouses/mappings context {:connection-id connection-id})
-             :provenance         (runtime/coeffect ::provenance/facts context {})}
-      with-history? (assoc :history (runtime/coeffect :tover.inventory.acceptance.model/history context {})
-                           :positions (runtime/coeffect ::sync/connection-positions context {:connection-id connection-id})
-                           :readable (some-> (runtime/coeffect ::sync/connection context {:connection-id connection-id})
-                                             :readable-domains connections/decode-domains set)))))
+             :provenance         (runtime/coeffect ::provenance/facts context {})
+             :history            (runtime/coeffect :tover.inventory.acceptance.model/history context {})}
+      full? (assoc :currency (currency/current (first (records/all-records context ::currency/workspace-currencies :currency-key)))
+                   :listings (runtime/coeffect ::products/listings context {:connection-id connection-id})
+                   :positions (runtime/coeffect ::sync/connection-positions context {:connection-id connection-id})
+                   :readable (some-> (runtime/coeffect ::sync/connection context {:connection-id connection-id})
+                                     :readable-domains connections/decode-domains set)))))
 
 
 (defmethod runtime/coeffect ::facts

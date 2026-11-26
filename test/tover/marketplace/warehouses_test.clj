@@ -11,6 +11,7 @@
     [tover.catalogues.stores.model]
     [tover.catalogues.suppliers.model]
     [tover.catalogues.warehouses.model]
+    [tover.inventory.acceptance.model]
     [tover.inventory.entries.model]
     [tover.inventory.stock-items.model]
     [tover.marketplace.connections.model :as connections]
@@ -32,7 +33,7 @@
                         'tover.inventory.stock-items.model 'tover.marketplace.connections.model
                         'tover.marketplace.sync.model 'tover.marketplace.products.model 'tover.marketplace.warehouses.model
                         'tover.workspaces.currency.model 'tover.catalogues.suppliers.model 'tover.catalogues.categories.model
-                        'tover.inventory.entries.model 'tover.marketplace.provenance])
+                        'tover.inventory.entries.model 'tover.inventory.acceptance.model 'tover.marketplace.provenance])
   (f))
 
 

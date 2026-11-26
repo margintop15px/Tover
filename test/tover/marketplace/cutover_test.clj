@@ -220,6 +220,34 @@
       (is (every? #(not-any? % [:suggested-quantity :suggested-cost :cost-source :result]) (rest rows))))))
 
 
+(deftest sold-out-at-ozon-with-tover-stock
+  (testing "a mapped pair Tover holds stock for, without an Ozon row, is listed: observed 0 at an FBO warehouse"
+    (let [facts (assoc base
+                       :figures [(figure "r1" "c1:p1" hub 120)]
+                       :product-mappings {"c1:p1" (product-mapping "red") "c1:p2" (product-mapping "blue")}
+                       :history (history (record "o1" "opening" 1 ["blue" "main" 5 "100.00"])))
+          row   (scope facts "blue" "main")]
+      (is (= ["ready" 0 snapshot 0 5 "correction"]
+             ((juxt :readiness :observed-quantity :observed-at :suggested-quantity :balance :result) row)))))
+  (testing "at a seller warehouse there is no observation"
+    (let [facts (assoc base
+                       :figures []
+                       :warehouse-mappings {seller-a (warehouse-mapping "shop" "fbs")}
+                       :history (history (record "o1" "opening" 1 ["red" "shop" 5 "100.00"])))
+          row   (scope facts "red" "shop")]
+      (is (= ["ready" "correction"] ((juxt :readiness :result) row)))
+      (is (not-any? row [:observed-quantity :observed-at :suggested-quantity]))))
+  (testing "a listing the pass did not ask for has no observation"
+    (let [facts (assoc base
+                       :passes [{:run-id "r1" :observed-at snapshot :asked #{"c1:p1"}}]
+                       :product-mappings {"c1:p1" (product-mapping "red") "c1:p2" (product-mapping "blue")}
+                       :history (history (record "o1" "opening" 1 ["blue" "main" 5 "100.00"])))]
+      (is (not (contains? (scope facts "blue" "main") :observed-quantity)))))
+  (testing "history alone lists no pair without both confirmed mappings"
+    (let [facts (assoc base :history (history (record "o1" "opening" 1 ["green" "main" 5] ["red" "back" 2])))]
+      (is (= [["red" "main"]] (mapv (juxt :stock-item-id :warehouse-id) (scopes facts)))))))
+
+
 (deftest pending-and-baselined-scopes-are-marked
   (let [entry {:entry-id    "cutover:c1|red|main#1" :connection-id c :stock-item-id "red" :warehouse-id "main" :instant snapshot
                :proposed-by "m" :proposed-at snapshot}
@@ -317,6 +345,7 @@
                {:connection-id listings/c :workspace-id      (str listings/workspace) :provider         "ozon" :provider-account-id "123"
                 :secret-ref    "secret"   :account-currency  "RUB"                    :readable-domains "products stock-by-warehouse"
                 :sync-state    "active"   :credentials-state "valid"                  :connected-by     "m" :connected-at           snapshot})
+        ;; The run stays open: a finished stock-by-warehouse pass is used even while other domains are still syncing.
         (seed! ctx ::sync/marketplace-sync-started
                {:run-id             "r1" :connection-id listings/c :trigger   "member" :triggered-by "m" :domains "stock-by-warehouse"
                 :starting-positions "{}" :started-at    snapshot   :run-state "open"})
