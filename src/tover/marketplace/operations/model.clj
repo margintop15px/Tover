@@ -193,10 +193,12 @@
 
 (defn- withdrawal-events
   {:malli/schema [:=> [:cat :string :map] [:vector :map]]}
-  [source-operation-id {stored :entry lines :lines}]
+  [source-operation-id {stored :entry lines :lines changes :changes}]
   (let [entry-id (provenance/import-entry-id source-operation-id)]
     (-> [{:type ::entries/inventory-draft-discarded :data {:entry-id entry-id :status "discarded" :revision (inc (:revision stored))}}]
         (into (entries/line-events entry-id lines []))
+        ;; A member may have made the entry a correction with stock item changes; they go with it.
+        (into (entries/change-events entry-id (or changes []) []))
         (conj {:type ::provenance/imported-operation-withdrawn :data {:source-operation-id source-operation-id :entry-id entry-id}}))))
 
 
@@ -325,7 +327,8 @@
                [id {:operation (get found id)
                     :accepted? (or (contains? accepted id) (= "accepted" (:status entry)))
                     :entry     entry
-                    :lines     (if (= "pending" (:status entry)) (runtime/coeffect ::entries/lines context {:entry-id entry-id}) [])}]))))
+                    :lines     (if (= "pending" (:status entry)) (runtime/coeffect ::entries/lines context {:entry-id entry-id}) [])
+                    :changes   (if (= "pending" (:status entry)) (runtime/coeffect ::entries/changes context {:entry-id entry-id}) [])}]))))
 
 
 (defn set-aside-events
@@ -337,7 +340,7 @@
     (when (and reason (< 500 (count reason))) (fail! :reason-too-long))
     (vec (mapcat
            (fn [{:keys [source-operation-id revision entry-revision]}]
-             (let [{:keys [operation accepted? entry lines]} (get selected source-operation-id)
+             (let [{:keys [operation accepted? entry lines changes]} (get selected source-operation-id)
                    pending? (= "pending" (:status entry))]
                (when-not operation (fail! :not-found))
                (when accepted? (fail! :already-accepted))
@@ -350,7 +353,7 @@
                                      :set-by              (str actor)         :set-at        (str now)}
                               reason (assoc :reason reason)
                               (and aside pending?) (assoc :removed-entry-id (:entry-id entry)))}
-                     (when (and aside pending?) (withdrawal-events source-operation-id {:entry entry :lines lines})))))
+                     (when (and aside pending?) (withdrawal-events source-operation-id {:entry entry :lines lines :changes changes})))))
            (vals (into (sorted-map) (map (juxt :source-operation-id identity)) operations))))))
 
 
@@ -360,7 +363,8 @@
    :policy ::records/workspace-member
    :cofx   [[:selected ::selected (fn [_ input] (select-keys input [:operations]))]]
    :emits  #{::provenance/source-operation-set-aside ::provenance/imported-operation-withdrawn ::entries/inventory-draft-discarded
-             ::entries/inventory-entry-line-removed ::entries/inventory-entry-line-barcode-removed}}
+             ::entries/inventory-entry-line-removed ::entries/inventory-entry-line-barcode-removed
+             ::entries/inventory-entry-change-removed ::entries/inventory-entry-change-barcode-removed}}
   [{:keys [scope actor now selected]} input]
   (let [events (set-aside-events selected input actor now)]
     {:events events

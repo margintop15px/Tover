@@ -277,12 +277,14 @@
 (defn save-problem
   "Board `Save Shared Inventory Entry`: a pending cutover entry (`entry-before` has a cutover row) and an amendment of
   a baseline's record keep the scope's instant, item and warehouse; only count and cost change. A baseline is never
-  cancelled."
+  cancelled. An import entry never amends or cancels: its acceptance must record the source operation."
   {:malli/schema [:=> [:cat [:maybe :map] [:maybe :map] :map] [:maybe [:map [:field :keyword] [:message :string]]]]}
-  [facts entry-before {:keys [amends cancel occurred-at lines]}]
+  [facts entry-before {:keys [entry-id amends cancel occurred-at lines]}]
   (let [target (when amends (of-record facts (record-id amends)))
         row    (or (get-in facts [:cutover-entries (:entry-id entry-before)]) target)]
     (cond
+      (and (import-entry-id? entry-id) (or amends cancel))
+      {:field (if cancel :cancel :amends) :message "An imported operation cannot amend or cancel an accepted record."}
       (and target cancel) {:field :cancel :message "A cutover baseline cannot be cancelled."}
       (and row (not cancel)) (when-let [field (moved-field row occurred-at (or lines []))]
                                {:field field :message fixed}))))

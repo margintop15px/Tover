@@ -760,3 +760,47 @@
                  (rejection #(execute! ctx ::acceptance/accept-reviewed-inventory-changes "acc-twice"
                                        (merge selection {:workspace-id workspace :acceptance-id "acc-twice" :fingerprint (:fingerprint review)})))))
           (is (some? (pending id))))))))
+
+
+;; Task 4 review fixes
+
+
+(deftest setting-aside-clears-stock-item-changes
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! pending source-id entry-of]} (setup! repo)
+            id (entry-of "P1")]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (testing "Given a member turned the import entry into a count with a stock item change"
+          (save! ctx id 1 {:kind    "correction" :occurred-at "2026-11-10T09:00:00Z"
+                           :lines   [{:line-id (str (source-id "P1") "/1") :stock-item-id "red" :warehouse-id "home" :quantity 10}]
+                           :changes [{:stock-item-id "red" :article "R-1"}]})
+          (is (= ["red"] (mapv :stock-item-id (:changes (pending id)))))
+          (testing "when it is set aside and brought back"
+            (set-aside! ctx "aside" [{:source-operation-id (source-id "P1") :revision 1}] true)
+            (is (empty? (records-of ctx ::entries/entry-changes :entry-change-id)) "its changes are removed with it")
+            (set-aside! ctx "back" [{:source-operation-id (source-id "P1") :revision 1}] false)
+            (is (= 1 (intake!)))
+            (testing "then the proposed Sale carries no old change"
+              (is (= ["sale" connector nil] ((juxt :kind :saved-by :changes) (pending id)))))))))))
+
+
+(deftest import-entries-cannot-amend-or-cancel
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! pending source-id entry-of]} (setup! repo)
+            id (entry-of "P1")
+            line {:line-id (str (source-id "P1") "/1") :stock-item-id "red" :warehouse-id "home" :quantity 3}
+            message "An imported operation cannot amend or cancel an accepted record."]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (execute! ctx ::entries/save-shared-inventory-entry "manual"
+                  {:workspace-id workspace :entry-id "m1" :kind "sale" :occurred-at "2026-11-11T09:00:00Z"
+                   :lines        [{:line-id "m1/1" :stock-item-id "red" :warehouse-id "home" :quantity 1}]})
+        (accept-all! ctx "acc-m" [["m1" 1]])
+        (is (= [:validation message]
+               (take 2 (rejection #(save! ctx id 1 {:occurred-at "2026-11-10T09:00:00Z" :lines [line] :amends "m1#1"})))))
+        (is (= [:validation message]
+               (take 2 (rejection #(save! ctx id 1 {:amends "m1#1" :cancel true :reason "wrong"})))))
+        (is (= [1 connector] ((juxt :revision :saved-by) (pending id))) "the entry is unchanged")))))
