@@ -249,6 +249,11 @@
 ;; Page
 
 
+(def ^:private example-instant
+  "The picker's placeholder: an example value, not text to translate."
+  "2026-11-20T10:00:00Z")
+
+
 (defn instant-picker
   "Cutover Setup's instant: a GET of this view at another instant; the earliest allowed one and the last snapshot are
   named."
@@ -258,8 +263,8 @@
     [:div.management-form.cutover-instant
      [:form {:method "get" :action (cutover-path connection-id)}
       [:label (i18n/t "Cutover instant")
-       [:input {:type        "text"                 :name "instant" :value (or instant default-instant "") :required true :maxlength 100
-                :placeholder "2026-11-20T10:00:00Z"}]]
+       [:input {:type        "text"          :name "instant" :value (or instant default-instant "") :required true :maxlength 100
+                :placeholder example-instant}]]
       [:button {:type "submit"} (i18n/t "Show")]]
      [:p.management-secondary
       (str/join " · " (remove nil? [(i18n/t "An instant with its UTC offset, such as Z or +03:00.")
