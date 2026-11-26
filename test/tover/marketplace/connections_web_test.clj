@@ -468,9 +468,9 @@
       (doseq [[locale names] {"en" ["Warehouses" "FBO postings"] "ru" ["Склады" "Отправления FBO"]}]
         (binding [i18n/*locale* locale]
           (let [html   (page ctx ::web/connection {:connection-id "c-1"})
-                failed (chassis/html (#'web/sync-panel {} {:last-outcome "failed" :found-counts {}
-                                                           :last-failure {:failed-domain "fbo-postings" :reason "retries exhausted"
-                                                                          :failed-at     scenarios/now}} "c-1"))]
+                failed (chassis/html (#'web/sync-panel {:last-outcome "failed" :found-counts {}
+                                                        :last-failure {:failed-domain "fbo-postings" :reason "retries exhausted"
+                                                                       :failed-at     scenarios/now}} "c-1"))]
             (is (every? #(str/includes? html (str "<td>" % "</td>")) names))
             (is (not-any? #(str/includes? html (str "<td>" % "</td>")) connector/domains))
             (is (str/includes? failed (second names)))

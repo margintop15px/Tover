@@ -88,11 +88,14 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 .management-form > p, .management-form > dl { margin: 0 0 12px; }
 /* A row of actions: the first is primary, the rest are outlined; a link in the row looks like a button. */
 .management-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.management-buttons form { margin: 0; }
+.management-buttons button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--iw-ink); border-radius: 3px; background: var(--iw-ink); color: var(--iw-bg); }
 .management-buttons > a { display: inline-flex; align-items: center; min-height: 32px; padding: 5px 12px; border: 1px solid var(--iw-ink); border-radius: 3px; background: var(--iw-ink); color: var(--iw-bg); text-decoration: none; }
 .management-buttons > :not(:first-child) button, .management-buttons > a:not(:first-child) { border-color: var(--iw-line); background: var(--iw-bg); color: var(--iw-ink); }
-.invitation-details { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; }
-.invitation-details dt { color: var(--iw-muted); font-size: 12px; line-height: 20px; }
-.invitation-details dd { margin: 0; line-height: 20px; }
+.invitation-details, .management-details { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; }
+.management-details { margin: 12px 0 16px; }
+.invitation-details dt, .management-details dt { color: var(--iw-muted); font-size: 12px; line-height: 20px; }
+.invitation-details dd, .management-details dd { margin: 0; line-height: 20px; }
 .invitation-details dd span { color: var(--iw-muted); font-size: 12px; }
 .management-form input, .management-form select { width: 100%; min-height: 32px; padding: 5px 8px; border: 1px solid var(--iw-line); border-radius: 3px; background-color: var(--iw-bg); color: var(--iw-ink); }
 .management-form input { min-width: 240px; }

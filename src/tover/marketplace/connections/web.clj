@@ -261,12 +261,12 @@
 
 (defn- sync-panel
   "Marketplace Sync Status: refreshes every few seconds while a run is open. Plain categories only."
-  {:malli/schema [:=> [:cat :map :map :string] schema/Hiccup]}
-  [request {:keys [current-run last-outcome last-failure found-counts scheduling-stopped? can-sync-now]} connection-id]
+  {:malli/schema [:=> [:cat :map :string [:* :any]] schema/Hiccup]}
+  [{:keys [current-run last-outcome last-failure found-counts scheduling-stopped?]} connection-id & details]
   [:section.management-section
    (cond-> {:aria-labelledby "sync-title" :role "status"}
      current-run (assoc :data-on-interval__duration.5s (str "@get('" (connection-link connection-id) "')")))
-   [:h2#sync-title (i18n/t "Sync")]
+   [:div.management-section-heading [:h2#sync-title (i18n/t "Sync")]]
    (cond
      current-run
      [:p (i18n/t "Sync running since") " " (team/moment (:started-at current-run)) " · "
@@ -282,8 +282,7 @@
                  {:listings (:listings found-counts) :warehouses (:warehouses found-counts) :operations (:operations found-counts)})])
    (when scheduling-stopped?
      [:p.management-secondary (i18n/t "Scheduling stopped after 5 failed syncs. Use Sync now to try again.")])
-   (when (and can-sync-now (not current-run))
-     (action-form request ::sync-now (i18n/t "Sync now") connection-id))])
+   details])
 
 
 (defpage connection
@@ -310,36 +309,42 @@
                [:section.management-section
                 [:p (i18n/t "Paused by {name}" {:name (or (get-in paused [:paused-by :display-name]) (i18n/t "Unavailable user"))})
                  " " (team/moment (:paused-at paused))]
-                (when (:can-resume? paused) (action-form request ::resume (i18n/t "Resume") connection-id))])
+                (when (:can-resume? paused) [:div.management-buttons (action-form request ::resume (i18n/t "Resume") connection-id)])])
              (when (:currency-notice? status)
-               [:p {:role "status"}
+               [:p.management-section {:role "status"}
                 (i18n/t "The seller account uses {account} and the workspace uses {workspace}. Imported prices and costs are left blank."
                         {:account (:account-currency status) :workspace (:workspace-currency status)})])
-             (sync-panel request sync connection-id)
-             [:dl
-              [:dt (i18n/t "Account currency")]
-              [:dd (:account-currency status)]
-              (when-let [at (:key-expires-at status)]
-                (list [:dt (i18n/t "API key expires")] [:dd (team/moment at)]))
-              [:dt (i18n/t "Last sync")]
-              [:dd (if-let [at (:last-completed-sync-at status)] (team/moment at) (i18n/t "Not yet"))]
-              [:dt (i18n/t "Next sync")]
-              [:dd (if-let [at (:next-sync-at status)] (team/moment at) (i18n/t "Not scheduled"))]
-              [:dt (i18n/t "Unmatched listings")]
-              [:dd (:unmatched-listings status)]
-              [:dt (i18n/t "Unmatched warehouses")]
-              [:dd (:unmatched-warehouses status)]
-              [:dt (i18n/t "Scopes without baseline")]
-              [:dd (:scopes-without-baseline status)]
-              [:dt (i18n/t "Imported operations by next step")]
-              [:dd (if-let [steps (seq (:imported-operations-by-next-step status))]
-                     (str/join ", " (map (fn [{:keys [next-step count]}] (str next-step ": " count)) steps))
-                     "0")]
-              [:dt (i18n/t "Automatic acceptance")]
-              [:dd (if (:automatic-acceptance-possible? status)
-                     (i18n/t "On")
-                     (str/join ", " (map #(i18n/t (reason-labels %)) (:blocking-reasons status))))]]
-             [:div.management-table-wrap
+             (sync-panel
+               sync connection-id
+               [:dl.management-details
+                [:dt (i18n/t "Account currency")]
+                [:dd (:account-currency status)]
+                (when-let [at (:key-expires-at status)]
+                  (list [:dt (i18n/t "API key expires")] [:dd (team/moment at)]))
+                [:dt (i18n/t "Last sync")]
+                [:dd (if-let [at (:last-completed-sync-at status)] (team/moment at) (i18n/t "Not yet"))]
+                [:dt (i18n/t "Next sync")]
+                [:dd (if-let [at (:next-sync-at status)] (team/moment at) (i18n/t "Not scheduled"))]
+                [:dt (i18n/t "Unmatched listings")]
+                [:dd (:unmatched-listings status)]
+                [:dt (i18n/t "Unmatched warehouses")]
+                [:dd (:unmatched-warehouses status)]
+                [:dt (i18n/t "Scopes without baseline")]
+                [:dd (:scopes-without-baseline status)]
+                [:dt (i18n/t "Imported operations by next step")]
+                [:dd (if-let [steps (seq (:imported-operations-by-next-step status))]
+                       (str/join ", " (map (fn [{:keys [next-step count]}] (str next-step ": " count)) steps))
+                       "0")]
+                [:dt (i18n/t "Automatic acceptance")]
+                [:dd (if (:automatic-acceptance-possible? status)
+                       (i18n/t "On")
+                       (str/join ", " (map #(i18n/t (reason-labels %)) (:blocking-reasons status))))]]
+               (let [buttons (remove nil? [(when (and (:can-sync-now sync) (not (:current-run sync)))
+                                             (action-form request ::sync-now (i18n/t "Sync now") connection-id))
+                                           (when (and can-manage? (= "active" (:sync-state status)))
+                                             (action-form request ::pause (i18n/t "Pause") connection-id))])]
+                 (when (seq buttons) (into [:div.management-buttons] buttons))))
+             [:div.management-section.management-table-wrap
               [:table.management-table
                [:thead [:tr [:th {:scope "col"} (i18n/t "Data")] [:th {:scope "col"} (i18n/t "Covered until")]]]
                (into [:tbody]
@@ -350,7 +355,6 @@
                                    :else (i18n/t "Not yet"))]]))]]
              (when can-manage?
                (list
-                 (when (= "active" (:sync-state status)) (action-form request ::pause (i18n/t "Pause") connection-id))
                  ;; The refresh keeps it open or closed; the id keeps that from reaching another connection's page.
                  [:details.management-disclosure {:id                 (str "replace-credentials-" connection-id)
                                                   :open               (some? attention)
