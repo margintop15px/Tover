@@ -29,10 +29,11 @@
 (def Row
   "Cell values by column key: text, a vector of lines, an option value, or `{:value :label}` for a reference.
   Row `:options` override a column's options for that row; `:href` opens the row's details page; `:revisions` are
-  further reviewed revisions the row sends with its command."
+  further reviewed revisions the row sends with its command, and `:observation` the evidence it was read from."
   [:map
    [:id :string] [:revision :int] [:label {:optional true} :string]
    [:revisions {:optional true} [:map-of :keyword :int]]
+   [:observation {:optional true} [:string {:max 200}]]
    [:cells [:map-of :keyword :any]]
    [:findings {:optional true} [:map-of :keyword :string]]
    [:options {:optional true} [:map-of :keyword [:vector Option]]]
@@ -99,7 +100,7 @@
      :columns (cond->> (mapv (fn [{:keys [key label width]}] {:key (name key) :label (i18n/t label) :width (or width 160)}) columns)
                 select? (into [{:key "select" :label "" :width 40}]))
      :rows    (vec (map-indexed
-                     (fn [index {:keys [id revision revisions label href selectable?] :or {selectable? true} :as row}]
+                     (fn [index {:keys [id revision revisions observation label href selectable?] :or {selectable? true} :as row}]
                        (let [cells (mapv #(cell % row) columns)
                              cells (cond-> cells
                                      href (update 0 assoc :actions [{:type  "marketplace-open"      :href href :icon "›"
@@ -109,7 +110,8 @@
                                            select? (into [(if selectable?
                                                             {:selection {:id id :label (i18n/t "Select {name}" {:name (or label id)})}}
                                                             {:value "" :readOnly true})]))}
-                           revisions (assoc :revisions revisions))))
+                           revisions (assoc :revisions revisions)
+                           observation (assoc :observation observation))))
                      rows))}))
 
 

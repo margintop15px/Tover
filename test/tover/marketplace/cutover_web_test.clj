@@ -199,6 +199,56 @@
         (is (= "Only an Owner or Admin proposes the cutover." (:message ((:bel/fn (bel/get-view ::grid/failed)) (:input caught)))))))))
 
 
+(deftest only-a-manager-is-offered-propose
+  (with-cutover
+    (fn [ctx]
+      (let [member (assoc ctx :memberships [{:workspace-id scenarios/workspace :role :member}])
+            html   (forms/page member ::web/cutover-view {:connection-id c})]
+        (is (not (str/includes? html "data-command=\"propose\"")))
+        (is (empty? (:selection-actions (web/table member c nil))))
+        (is (str/includes? (forms/page ctx ::web/cutover-view {:connection-id c}) "data-command=\"propose\""))))))
+
+
+(defn- finish-newer-pass!
+  "Pass r2 of the connection finishes after the page was read: red is now 130 at the hub."
+  {:malli/schema [:=> [:cat :map] :nil]}
+  [ctx]
+  (let [seed! #'propose/seed! r2 (str c "-r2") at "2026-11-21T10:00:00Z" listing (str c ":p1")]
+    (seed! ctx :tover.marketplace.sync.model/marketplace-sync-started
+           {:run-id r2 :connection-id c :trigger "member" :triggered-by "m" :domains "stock-by-warehouse" :starting-positions "{}"
+            :started-at at :run-state "open"})
+    (seed! ctx :tover.marketplace.sync.model/source-batch-recorded
+           {:position-id (str c "/stock-by-warehouse") :connection-id c :domain "stock-by-warehouse" :run-id r2 :cursor "" :batch-key ""
+            :refetch-ids "[]" :finished true :found-listings 1 :found-warehouses 0 :found-operations 0 :recorded-at at})
+    (seed! ctx :tover.marketplace.sync.model/source-domain-traversed
+           {:run-id r2 :connection-id c :domain "stock-by-warehouse" :covered-until at :traversed-at at
+            :position-id (str c "/stock-by-warehouse") :finished-domains "stock-by-warehouse" :first-covered-at at
+            :pass-id (str r2 "/stock-by-warehouse") :asked "[\"p1\"]"})
+    (seed! ctx :tover.marketplace.sync.model/source-stock-observed
+           {:stock-id (str listing "|warehouse-stock|" hub "|" r2) :connection-id c :run-id r2 :external-product-id listing
+            :external-warehouse-id hub :source "warehouse-stock" :fulfilment-type "fbo" :present 130 :parts "[]" :observed-at at})))
+
+
+(deftest propose-keeps-the-instant-and-observation-the-page-read
+  (with-cutover
+    (fn [ctx]
+      (let [html (forms/page ctx ::web/cutover-view {:connection-id c})
+            row  (get (rows ctx) "red|main")]
+        (is (str/includes? html "&quot;instant&quot;:&quot;2026-11-20T10:00:00Z&quot;") "the query carries the instant read")
+        (is (= (str c "-r1") (:observation row)) "a ready row names the pass it was read from")
+        (is (= (str c "-r1") (get-in (act ctx {:instant "2026-11-20T10:00:00Z" :rows [(assoc red-row :observation (:observation row))]})
+                                     [:input :scopes 0 :observation])))
+        (finish-newer-pass! ctx)
+        (testing "a pass finishing between load and Propose is refused as stale, not proposed with the new instant"
+          (let [caught (handler/execute-action ctx ::web/command {:connectionId c :commandId "attempt-5" :command "propose"
+                                                                  :instant "2026-11-20T10:00:00Z"
+                                                                  :rows [(assoc red-row :observation (:observation row))]})
+                answer ((:bel/fn (bel/get-view ::grid/failed)) (:input caught))]
+            (is (= ::grid/failed (:id caught)))
+            (is (= [{:id "red|main" :path "readiness" :message "A mapping or observation changed since review. Review the scope again."}]
+                   (:rows answer)))))))))
+
+
 (deftest a-refused-date-move-of-a-cutover-entry-names-the-board-rejection
   (with-cutover
     (fn [ctx]

@@ -88,9 +88,10 @@
 
 (defn scope-row
   "One scope of `Cutover Readiness and Observed Balances`; a pending scope shows its proposed count and the
-  difference against Tover's balance (`reviewed`, from `Cutover Review`)."
-  {:malli/schema [:=> [:cat :map [:maybe :map] :map] grid/Row]}
-  [label reviewed {:keys [stock-item-id warehouse-id external-product-id external-warehouse-id readiness observed-quantity observed-at
+  difference against Tover's balance (`reviewed`, from `Cutover Review`). A ready scope sends `run-id`, the pass it
+  was read from, back as its observation."
+  {:malli/schema [:=> [:cat :map [:maybe :map] [:maybe :string] :map] grid/Row]}
+  [label reviewed run-id {:keys [stock-item-id warehouse-id external-product-id external-warehouse-id readiness observed-quantity observed-at
                           balance result suggested-quantity suggested-cost cost-source mapping-revisions]}]
   (let [id (cond stock-item-id (cutover/scope-id stock-item-id warehouse-id)
                  external-product-id (str "product:" external-product-id)
@@ -110,7 +111,8 @@
                            :quantity    (if reviewed (str (:proposed-quantity reviewed)) (some-> suggested-quantity str))
                            :unit-cost   (when (= "opening" result) suggested-cost)
                            :cost-source (some-> cost-source i18n/t)}}
-      mapping-revisions (assoc :revisions (revisions mapping-revisions)))))
+      mapping-revisions (assoc :revisions (revisions mapping-revisions))
+      (and run-id (= "ready" readiness)) (assoc :observation run-id))))
 
 
 (defn table
@@ -127,9 +129,11 @@
        {:id                "marketplace-cutover"
         :label             "Cutover"
         :columns           columns
-        :selection-actions [{:command "propose" :label "Propose" :primary? true}]
+        ;; Only an Owner or Admin proposes; the command checks it again.
+        :selection-actions (if (:can-propose? read) [{:command "propose" :label "Propose" :primary? true}] [])
         :read              (dissoc read :scopes)
-        :rows              (mapv (fn [s] (scope-row label (when (:stock-item-id s) (reviewed (cutover/scope-id (:stock-item-id s) (:warehouse-id s)))) s))
+        :rows              (mapv (fn [s] (scope-row label (when (:stock-item-id s) (reviewed (cutover/scope-id (:stock-item-id s) (:warehouse-id s))))
+                                                  (:run-id read) s))
                                  (:scopes read))})))
 
 
@@ -194,7 +198,8 @@
 (def CommandRow
   [:map [:id [:string {:min 1 :max 1000}]] [:revision :int]
    [:values {:optional true} [:map-of :any [:maybe [:string {:max 1000}]]]]
-   [:revisions {:optional true} [:map-of :any :int]]])
+   [:revisions {:optional true} [:map-of :any :int]]
+   [:observation {:optional true} [:maybe [:string {:max 200}]]]])
 
 
 (def Command
@@ -216,13 +221,14 @@
   [{:keys [connectionId rows]} scopes instant]
   {:connection-id connectionId
    :instant       (or instant "")
-   :scopes        (mapv (fn [{:keys [id values] sent :revisions}]
+   :scopes        (mapv (fn [{:keys [id values observation] sent :revisions}]
                           (let [values (update-keys (or values {}) name)
                                 {:keys [stock-item-id warehouse-id]} (get scopes id)
                                 [item warehouse] (if stock-item-id [stock-item-id warehouse-id] (str/split id #"\|" 2))]
                             (merge {:stock-item-id item :warehouse-id (or warehouse "") :quantity (or (some-> (get values "quantity") str/trim) "")}
                                    (mapping-revisions sent)
-                                   (when-let [cost (some-> (get values "unit-cost") str/trim not-empty)] {:unit-cost cost}))))
+                                   (when-let [cost (some-> (get values "unit-cost") str/trim not-empty)] {:unit-cost cost})
+                                   (when (not-empty observation) {:observation observation}))))
                         rows)})
 
 
@@ -284,7 +290,7 @@
    :schema     [:map [:connection-id connections/ConnectionId] [:instant {:optional true} [:string {:max 100}]]]
    :route-data access
    :query      query-cutover}
-  [{:keys [connection connections instant table coverage]}]
+  [{:keys [connection connections table coverage]}]
   (let [{:keys [connection-id account-label]} connection
         retry (fn [what] [:p.management-empty {:role "alert"} (i18n/t what) " " [:a {:href (cutover-path connection-id)} (i18n/t "Retry")]])]
     {:type :elements
@@ -297,7 +303,9 @@
             (if table
               (grid/workbench (-> table
                                   (dissoc :read)
-                                  (assoc :query (cond-> {:connectionId connection-id} instant (assoc :instant instant))
+                                  ;; The instant read, not only a typed one: a later pass must not move what Propose sends.
+                                  (assoc :query (cond-> {:connectionId connection-id}
+                                                  (:instant (:read table)) (assoc :instant (:instant (:read table))))
                                          :query-view ::table-view :command-action ::command)))
               (retry "Cutover scopes could not be loaded."))
             [:div.management-page [:h2 (i18n/t "Cutover coverage")]]

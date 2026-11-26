@@ -350,24 +350,29 @@
 
 
 (def ReadinessAndBalances
+  "`run-id` is the pass the observations come from; a proposal sends it back as each scope's `observation`.
+  `can-propose?` holds for an Owner or Admin, the only ones `Propose Marketplace Cutover` accepts."
   [:map [:connection-id Ref] [:instant {:optional true} At] [:default-instant {:optional true} At]
-   [:earliest {:optional true} At] [:scopes [:vector Scope]]])
+   [:earliest {:optional true} At] [:run-id {:optional true} Ref] [:can-propose? {:optional true} :boolean]
+   [:scopes [:vector Scope]]])
 
 
 (defreadmodel cutover-readiness-and-observed-balances
   {:input  [:map [:connection-id Ref] [:instant {:optional true} At]]
    :output ReadinessAndBalances
    :policy ::records/workspace-member
-   :cofx   [[:facts ::facts (fn [_ input] (select-keys input [:connection-id]))]]}
-  [{:keys [facts]} {:keys [connection-id] :as input}]
+   :cofx   [[:facts ::facts (fn [_ input] (select-keys input [:connection-id]))]
+            [:viewer ::connections/viewer (constantly {})]]}
+  [{:keys [facts viewer]} {:keys [connection-id] :as input}]
   (let [start    (default-instant (:passes facts))
         at       (or (:instant input) start)
         first-at (earliest (:positions facts) (:readable facts))]
-    (cond-> {:connection-id connection-id
+    (cond-> {:connection-id connection-id :can-propose? (boolean (:manager? viewer))
              :scopes        (scopes facts {:connection-id connection-id :instant at})}
       at (assoc :instant at)
       start (assoc :default-instant start)
-      first-at (assoc :earliest first-at))))
+      first-at (assoc :earliest first-at)
+      (:run-id (first (:passes facts))) (assoc :run-id (:run-id (first (:passes facts)))))))
 
 
 (defreadmodel baseline-coverage-by-stock-item-and-warehouse

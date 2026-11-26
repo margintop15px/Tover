@@ -136,7 +136,8 @@ class MarketplaceWorkbench extends HTMLElement {
   command(name) {
     if (this.pending || !this.selected.length) return;
     const rows = this.selected.map(id => this.rows().find(row => row.id === id)).filter(Boolean)
-      .map(row => ({ id: row.id, revision: row.revision, values: this.values(row), ...(row.revisions ? { revisions: row.revisions } : {}) }));
+      .map(row => ({ id: row.id, revision: row.revision, values: this.values(row), ...(row.revisions ? { revisions: row.revisions } : {}),
+        ...(row.observation ? { observation: row.observation } : {}) }));
     const reason = this.querySelector(`[data-command-reason="${name}"]`)?.value;
     const each = this.buttons.find(button => button.dataset.command === name)?.dataset.each === 'true';
     this.queue = each ? rows.map(row => [row]) : [rows];
