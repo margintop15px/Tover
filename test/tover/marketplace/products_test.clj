@@ -145,6 +145,15 @@
     (is (not-any? :preselected? (:candidates row)))))
 
 
+(deftest archived-items-keep-their-barcodes-in-the-conflicts
+  (let [archived (update catalogue :stock-items (partial mapv #(cond-> % (= "plate-1" (:stock-item-id %)) (assoc :status "archived"))))
+        row      (first (:rows (read-handler ::products/unmatched-external-products-and-candidates
+                                             (assoc facts :listings [both] :catalogue archived) {:connection-id c})))]
+    (is (= [{:barcode "4600000000017" :product-ids ["mug"]} {:barcode "plate-code" :product-ids ["plate"]}] (:conflicts row))
+        "the conflict confirming would reject is shown")
+    (is (= ["mug-1"] (mapv :stock-item-id (:candidates row))))))
+
+
 ;; Slice 3 · Matching Progress
 
 
@@ -469,7 +478,9 @@
 
 (deftest two-members
   (let [mapped {:mappings {"c:9001" (mapping blue "mug-1" "confirmed")}}]
-    (is (= [["c:9001" :already-mapped]] (offending #(confirm [(assoc row :stock-item-id "mug-2")] mapped))))
+    (is (= [["c:9001" :stale]] (offending #(confirm [(assoc row :stock-item-id "mug-2")] mapped)))
+        "one is accepted and the other is stale")
+    (is (= :stale (rejection #(confirm [(assoc row :stock-item-id "mug-2")] mapped))))
     (is (= {:events [] :fx []} (confirm [row] mapped)) "the same decision twice changes nothing")
     (is (= [["c:9001" :already-mapped]]
            (offending #(confirm [row] {:mappings {"c:9001" (mapping blue "mug-1" "suspended")}})))
@@ -503,7 +514,13 @@
         (is (= [["c:9002" :barcode-conflict "Mug"]]
                (offending #(confirm [(assoc row :adopt-barcodes ["4600000000024"])
                                      {:external-product-id "c:9002" :listing-revision 1 :stock-item-id "plate-1" :item-revision 1}]
-                                    shared))))))))
+                                    shared))))
+        (is (= [["c:9001" :barcode-conflict "Mug"]]
+               (offending #(confirm [{:external-product-id "c:9001" :listing-revision 1 :stock-item-id "plate-1" :item-revision 1}
+                                     {:external-product-id "c:9002"          :listing-revision 1 :stock-item-id "mug-1" :item-revision 1
+                                      :adopt-barcodes      ["4600000000024"]}]
+                                    shared)))
+            "in either order")))))
 
 
 (deftest archived-and-defective-items-are-not-available
@@ -650,7 +667,7 @@
             input #(hash-map :rows [{:external-product-id (str c ":1") :listing-revision 1 :stock-item-id % :item-revision 1}])]
         (seed-catalogue! ctx)
         (execute! ctx ::products/confirm-product-mapping "first" (input "mug-1"))
-        (is (= :already-mapped (rejection #(execute! other ::products/confirm-product-mapping "second" (input "mug-2")))))
+        (is (= :stale (rejection #(execute! other ::products/confirm-product-mapping "second" (input "mug-2")))))
         (is (map? (execute! other ::products/confirm-product-mapping "third" (input "mug-1"))))
         (is (= ["mapped"] (mapv :change (:history (runtime/read-model ctx ::products/mapping-details-and-source-evidence
                                                                       {:external-product-id (str c ":1")})))))))))
@@ -659,13 +676,18 @@
 (deftest remap
   (support/with-store
     (fn [repo _]
-      (let [ctx (context repo)
-            id  (str c ":1")]
+      (let [marketplace {:dirty (atom #{}) :swept (atom nil)}
+            ctx         (runtime/prepare-context {:bel/system   (support/bel-system {:repo repo :marketplace marketplace}) :repo repo
+                                                  :workspace-id workspace :user-id member
+                                                  :memberships  [{:workspace-id workspace :role :member}]})
+            id          (str c ":1")]
         (seed-catalogue! ctx)
         (execute! ctx ::products/confirm-product-mapping "confirm-1"
                   {:rows [{:external-product-id id :listing-revision 1 :stock-item-id "mug-1" :item-revision 1}]})
+        (reset! (:dirty marketplace) #{})
         (execute! ctx ::products/change-product-mapping "change-1"
                   {:external-product-id id :mapping-revision 1 :stock-item-id "mug-2" :item-revision 1})
+        (is (= #{c} @(:dirty marketplace)) "the waiting operations are evaluated again, against B")
         (let [details (runtime/read-model ctx ::products/mapping-details-and-source-evidence {:external-product-id id})]
           (is (= [[1 "mapped" "mug-1" nil] [2 "changed" "mug-2" "mug-1"]]
                  (mapv (juxt :mapping-revision :change :stock-item-id :previous-stock-item-id) (:history details)))

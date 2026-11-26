@@ -67,10 +67,11 @@
 
 
 (defn barcode-products
-  "Barcode to the set of products whose items (not archived) hold it."
+  "Barcode to the set of products whose items hold it, archived items and products included: a barcode stays
+  reserved to its product (board `Stock Item Barcode Assigned`)."
   {:malli/schema [:=> [:cat Rows Rows] [:map-of :string [:set :string]]]}
   [barcodes stock-items]
-  (let [product-of (into {} (map (juxt :stock-item-id :product-id)) (remove #(= "archived" (:status %)) stock-items))]
+  (let [product-of (into {} (map (juxt :stock-item-id :product-id)) stock-items)]
     (reduce (fn [owners {:keys [stock-item-id barcode]}]
               (let [barcode (usable-barcode barcode)
                     product (product-of stock-item-id)]
@@ -80,7 +81,7 @@
 
 
 (defn barcode-owners
-  "Barcode to the product that owns it, among items not archived. A barcode held by items of several products
+  "Barcode to the product that owns it, archived items included. A barcode held by items of several products
   has no single owner and is left out; `barcode-products` lists all of them."
   {:malli/schema [:=> [:cat Rows Rows] [:map-of :string :string]]}
   [barcodes stock-items]
@@ -173,7 +174,7 @@
   {:malli/schema [:=> [:cat [:set :string] [:map-of :string [:set :string]] [:map-of :string [:vector Row]]] [:vector Row]]}
   [named hit items-of]
   (vec (for [product (sort named)
-             item    (by-label (items-of product))
+             item    (by-label (items-of product []))
              :let    [barcode (first (sort (keep (fn [[b ps]] (when (contains? ps product) b)) hit)))]]
          (candidate item "barcode-owner" {:barcode barcode :product-id product}))))
 
@@ -195,7 +196,7 @@
     (if (str/blank? wanted)
       []
       (vec (for [product (sort-by :product-id products)
-                 item    (by-label (items-of (:product-id product)))
+                 item    (by-label (items-of (:product-id product) []))
                  :let    [base (fold (:name product))]
                  :when   (or (= wanted base) (= wanted (fold (str base " " (:variant-label item)))))]
              (candidate item "name-equal" {:name (trimmed listing-name) :product-id (:product-id product)}))))))
@@ -221,8 +222,9 @@
 (defn indexed-candidates
   "`candidates` over a `catalogue-index`."
   {:malli/schema [:=> [:cat Row Row] [:map [:candidates [:vector Row]] [:conflicts [:vector Row]]]]}
-  [{::keys [live live? items-of owners definitions]} listing]
-  (let [hit          (into {} (keep (fn [b] (when-let [ps (seq (filter live? (owners b)))] [b (set ps)])))
+  [{::keys [live items-of owners definitions]} listing]
+  ;; Archived products and items still own their barcodes: they show as conflicts and are never candidates.
+  (let [hit          (into {} (keep (fn [b] (when-let [ps (seq (owners b))] [b (set ps)])))
                            (listing-values listing "barcode" usable-barcode))
         by-barcode   (apply set/union #{} (vals hit))
         articles     (set (listing-values listing "article" #(let [a (fold %)] (when-not (str/blank? a) a))))
@@ -232,7 +234,7 @@
                        (when (and (= 1 (count by-barcode)) (or (empty? by-article) (= by-article by-barcode)))
                          (first by-barcode))
                        (when (= 1 (count by-article)) (first by-article)))
-        chosen       (when named (preselectable (items-of named) listing definitions))
+        chosen       (when named (preselectable (items-of named []) listing definitions))
         all          (->> (concat (barcode-candidates by-barcode hit items-of)
                                   article-hits
                                   (name-candidates (:name listing) live items-of))

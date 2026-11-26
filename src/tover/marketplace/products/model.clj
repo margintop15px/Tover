@@ -642,25 +642,13 @@
     (records/fail! (rejection-type code code) message {:rows (vec problems)})))
 
 
-(defn- holders
-  "Barcode to the products whose items hold it, archived items included: a barcode stays reserved to its product."
-  {:malli/schema [:=> [:cat :map] [:map-of :string [:set :string]]]}
-  [{:keys [barcodes stock-items]}]
-  (let [product-of (into {} (map (juxt :stock-item-id :product-id)) stock-items)]
-    (reduce (fn [owners {:keys [stock-item-id barcode]}]
-              (let [barcode (candidates/usable-barcode barcode)
-                    product (product-of stock-item-id)]
-                (if (and barcode product) (update owners barcode (fnil conj #{}) product) owners)))
-            {}
-            barcodes)))
-
-
 (defn- catalogue-index
+  "Items and products by id, and barcode owners as the unmatched read counts them (archived items included)."
   {:malli/schema [:=> [:cat :map] :map]}
   [catalogue]
   {:items    (by-id (:stock-items catalogue) :stock-item-id)
    :products (by-id (:products catalogue) :product-id)
-   :owners   (holders catalogue)
+   :owners   (candidates/barcode-products (:barcodes catalogue) (:stock-items catalogue))
    :held     (set (map (juxt :stock-item-id :barcode) (:barcodes catalogue)))})
 
 
@@ -772,10 +760,23 @@
   [:map [:rows [:vector {:min 1 :max 5000} ConfirmRow]]])
 
 
+(defn- with-adoptions
+  "Barcode owners once every row of the batch has adopted its barcodes, whatever the row order."
+  {:malli/schema [:=> [:cat :map [:sequential :map]] :map]}
+  [index rows]
+  (reduce (fn [owners {:keys [stock-item-id adopt-barcodes]}]
+            (if-let [product (get-in index [:items stock-item-id :product-id])]
+              (reduce #(update %1 %2 (fnil conj #{}) product) owners (keep candidates/usable-barcode adopt-barcodes))
+              owners))
+          (:owners index)
+          rows))
+
+
 (defn- confirm-row
-  "Adds the row's problems, or the accepted row, to `acc`. A listing already confirmed to the same item is skipped."
+  "Adds the row's problems, or the accepted row, to `acc`. A listing already confirmed to the same item is skipped;
+  one confirmed to another item is stale: another member decided since review."
   {:malli/schema [:=> [:cat :map :map :map] :map]}
-  [{:keys [listings mappings index twice]} {:keys [owners] :as acc}
+  [{:keys [listings mappings index twice]} acc
    {:keys [external-product-id listing-revision stock-item-id item-revision adopt-barcodes]}]
   (let [listing  (get listings external-product-id)
         mapping  (get mappings external-product-id)
@@ -785,19 +786,17 @@
         code     (cond (twice external-product-id) :listed-twice
                        (or (nil? listing) (not= listing-revision (:revision listing))) :stale
                        (and (= "confirmed" (:state mapping)) (= stock-item-id (:stock-item-id mapping))) :same
+                       (= "confirmed" (:state mapping)) :stale
                        (mapped? mapping) :already-mapped
                        :else (item-code index stock-item-id item-revision :item-not-available))
         problems (cond (= :same code) []
                        code [(problem external-product-id code)]
                        :else (into (vec (for [b (sort adopt) :when (not (barcodes b))]
                                           (problem external-product-id :barcode-not-on-listing :barcode b)))
-                                   (conflicts (assoc index :owners owners) external-product-id barcodes (:product-id item))))]
+                                   (conflicts index external-product-id barcodes (:product-id item))))]
     (cond (= :same code) acc
           (seq problems) (update acc :problems into problems)
-          :else (-> acc
-                    (update :accepted conj {:listing listing :mapping mapping :item item :adopt adopt})
-                    ;; Adopted in this batch: a later row may not give the barcode to another product.
-                    (update :owners #(reduce (fn [o b] (update o b (fnil conj #{}) (:product-id item))) % adopt))))))
+          :else (update acc :accepted conj {:listing listing :mapping mapping :item item :adopt adopt}))))
 
 
 (defcommand confirm-product-mapping
@@ -809,8 +808,10 @@
         twice (set (keep (fn [[id n]] (when (> n 1) id)) (frequencies (map :external-product-id rows))))
         index (catalogue-index catalogue)
         {:keys [problems accepted]}
-        (reduce (partial confirm-row {:listings listings :mappings mappings :index index :twice twice})
-                {:owners (:owners index) :problems [] :accepted []}
+        ;; Every adoption of the batch counts for every row: one row may not give a barcode to another product.
+        (reduce (partial confirm-row {:listings listings :mappings mappings :twice twice
+                                      :index    (assoc index :owners (with-adoptions index rows))})
+                {:problems [] :accepted []}
                 rows)]
     (reject! problems)
     (if (empty? accepted)

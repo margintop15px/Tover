@@ -129,11 +129,23 @@
     (is (= {:candidates-preselected 0 :conflicts 0} (counts (candidates catalogue (sized "L")))))))
 
 
-(deftest barcode-owners-skip-shared-and-archived
+(deftest barcode-owners-skip-shared-and-keep-archived
   (is (= {"4600000000017" "mug" "mug-code" "mug" "plate-code" "plate"}
          (candidates/barcode-owners (:barcodes catalogue) (:stock-items catalogue))))
   (is (= {} (candidates/barcode-owners [(barcode "a" "x") (barcode "b" "x")] [(item "a" "p1") (item "b" "p2")])))
-  (is (= {} (candidates/barcode-owners [(barcode "a" "x")] [(item "a" "p1" :status "archived")]))))
+  (is (= {"x" "p1"} (candidates/barcode-owners [(barcode "a" "x")] [(item "a" "p1" :status "archived")]))
+      "a barcode stays reserved to its product after the item is archived"))
+
+
+(deftest archived-owner-shows-as-a-conflict
+  (let [catalogue (-> catalogue
+                      (update :stock-items (partial mapv #(cond-> % (= "plate-1" (:stock-item-id %)) (assoc :status "archived")))))
+        result    (candidates catalogue (listing {:barcodes ["4600000000017" "plate-code"]}))]
+    (is (= [{:barcode "4600000000017" :product-ids ["mug"]} {:barcode "plate-code" :product-ids ["plate"]}] (:conflicts result)))
+    (is (not-any? #(= "plate-1" (:stock-item-id %)) (:candidates result)) "an archived item is no candidate")
+    (is (not-any? :preselected? (:candidates result)))
+    (is (= {:candidates [] :conflicts []} (candidates catalogue (listing {:barcodes ["plate-code"]})))
+        "a barcode only an archived item holds proposes nothing")))
 
 
 (deftest identity-basis-keeps-variant-attributes
