@@ -31,7 +31,7 @@ button:disabled { cursor: default; opacity: .45; }
 .app-nav { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--iw-line); padding: 8px 16px; }
 .app-nav-pages { display: flex; align-items: stretch; gap: 8px; }
 .app-nav-pages a { display: flex; align-items: center; padding: 8px 12px; color: var(--iw-muted); }
-.app-nav-pages a[aria-current=page] { color: var(--iw-ink); }
+.app-nav-pages a[aria-current=page], .app-nav-pages a:hover { color: var(--iw-ink); text-decoration: none; }
 .app-nav-tools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .nav-icon, .theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 5px; border: 0; border-radius: 4px; background: transparent; }
 .nav-icon { color: var(--iw-muted); }
