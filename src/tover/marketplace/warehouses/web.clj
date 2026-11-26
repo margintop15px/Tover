@@ -12,6 +12,7 @@
     [clojure.string :as str]
     [tover.identity.access :as access]
     [tover.inventory.actors :as actors]
+    [tover.inventory.operations.web :as operations]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.grid :as grid]
     [tover.marketplace.products.web :as products-web]
@@ -34,7 +35,7 @@
 (defn warehouses-path
   {:malli/schema [:=> [:cat :string [:* :any]] :string]}
   [connection-id & [state]]
-  (str (products-web/connection-path connection-id) "/warehouses" (when (= "confirmed" state) "?state=confirmed")))
+  (str (operations/marketplace-path connection-id) "/warehouses" (when (= "confirmed" state) "?state=confirmed")))
 
 
 ;; Table
@@ -245,24 +246,25 @@
   [context {:keys [connection-id state]}]
   (let [connection (products-web/connection! context connection-id)
         state      (if (some #{state} states) state "unmatched")]
-    {:connection connection :state state :table (table context connection-id state)}))
+    {:connection connection :connections (operations/query-connections context) :state state :table (table context connection-id state)}))
 
 
 (defpage warehouse-matching
-  {:route      "/settings/marketplace/:connection-id/warehouses"
+  {:route      "/operations/marketplace/:connection-id/warehouses"
    :title      "Warehouse matching · Tover"
    :parent     :tover.shared.web.core/shell
    :schema     [:map [:connection-id connections/ConnectionId] [:state {:optional true} [:string {:max 20}]]]
    :route-data access
    :query      query-warehouses}
-  [{:keys [connection state table]}]
+  [{:keys [connection connections state table]}]
   (let [{:keys [connection-id account-label]} connection]
     {:type :elements
      :html [:section.marketplace-page {:aria-labelledby "warehouse-matching-title" :data-connection-id connection-id}
             [:div.management-page
-             (products-web/header {:id        "warehouse-matching-title"                   :title      (i18n/t "Warehouse matching")
+             (operations/operations-views {:current [:warehouses connection-id] :connections connections})
+             (products-web/header {:id        "warehouse-matching-title"    :title      (i18n/t "Warehouse matching")
                                    :subtitle  (str "Ozon · " account-label)
-                                   :back-href (products-web/connection-path connection-id) :back-label (i18n/t "Back to the connection")})]
+                                   :back-href "/operations"                 :back-label (i18n/t "Back to operations")})]
             (if table
               (grid/workbench (assoc table
                                      :query {:connectionId connection-id :state state}

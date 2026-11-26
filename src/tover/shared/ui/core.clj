@@ -54,7 +54,7 @@
      (when (:workspace-id identity)
        (for [[url label] [["/" (i18n/t "Stock")] ["/operations" (i18n/t "Operations")] ["/catalogues" (i18n/t "Catalogues")]
                           ["/settings" (i18n/t "Settings")]]
-             :let        [active? (if (#{"/catalogues" "/settings"} url) (str/starts-with? path url) (= url path))]]
+             :let        [active? (if (#{"/operations" "/catalogues" "/settings"} url) (str/starts-with? path url) (= url path))]]
          [:a (nav/link url {:class        (when active? "active")
                             :aria-current (when active? "page")}) label]))]
     [:div.app-nav-tools

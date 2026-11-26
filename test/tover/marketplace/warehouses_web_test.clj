@@ -82,7 +82,8 @@
         (is (= 1 (count (re-seq #"<marketplace-workbench" html))))
         (is (not (str/includes? html "<form")))
         (is (str/includes? html "management-header"))
-        (is (str/includes? html "href=\"/settings/marketplace/c-1\"") "a link back to the connection")
+        (is (str/includes? html "href=\"/operations\">Back to operations<") "a link back to the operations page")
+        (is (re-find #"aria-current=\"page\" href=\"/operations/marketplace/c-1/warehouses\"[^>]*>Warehouse matching · " html) "this view is current")
         (is (str/includes? html "data-command=\"confirm\""))))))
 
 
@@ -90,7 +91,7 @@
   (with-warehouses
     (fn [ctx]
       (is (str/includes? (forms/page ctx ::connections-web/connection {:connection-id c})
-                         "href=\"/settings/marketplace/c-1/warehouses\"")))))
+                         "href=\"/operations/marketplace/c-1/warehouses\"")))))
 
 
 (deftest ozon-text-is-escaped

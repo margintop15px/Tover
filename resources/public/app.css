@@ -192,6 +192,8 @@ html[data-theme=dark] .theme-icon-dark { display: none; }
 /* Marketplace pages: the connection-page header above the catalogue workbench's table (marketplace.js). */
 .marketplace-page { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .marketplace-page > .management-page { padding-bottom: 0; }
+.marketplace-page > .operations-views { padding: 8px 16px 0; }
+.management-page > .operations-views { margin-bottom: 12px; }
 .marketplace-page .management-header { margin-bottom: 12px; }
 /* #page-content outranks the workbench toolbar rules of stock.css, which name an id. */
 #page-content .marketplace-workbench .sheet-toolbar { height: auto; flex-wrap: wrap; }

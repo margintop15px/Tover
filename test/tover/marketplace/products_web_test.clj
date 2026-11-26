@@ -14,6 +14,7 @@
     [tover.catalogues.suppliers.model]
     [tover.fixtures :as fixtures]
     [tover.inventory.entries.model]
+    [tover.inventory.operations.web :as operations]
     [tover.inventory.references]
     [tover.inventory.stock-items.model :as stock-items]
     [tover.marketplace.connections-routes-test :as routes]
@@ -26,6 +27,7 @@
     [tover.marketplace.products.web :as web]
     [tover.marketplace.sync.model :as sync]
     [tover.marketplace.sync.observations :as observations]
+    [tover.shared.ui.core :as ui]
     [tover.support :as support]))
 
 
@@ -37,7 +39,7 @@
                         'tover.inventory.entries.model 'tover.inventory.references
                         'tover.marketplace.connections.model 'tover.marketplace.sync.model 'tover.marketplace.products.model 'tover.marketplace.warehouses.model
                         'tover.shared.web.core 'tover.marketplace.connections.web 'tover.marketplace.grid
-                        'tover.marketplace.products.web 'tover.workspaces.currency.model])
+                        'tover.marketplace.products.web 'tover.workspaces.currency.model 'tover.inventory.operations.web 'tover.inventory.stock.model 'tover.inventory.acceptance.model])
   (f))
 
 
@@ -95,17 +97,47 @@
         (is (= 1 (count (re-seq #"<inventory-grid" html))))
         (is (= 1 (count (re-seq #"<marketplace-workbench" html))))
         (is (not (str/includes? html "<form")))
-        (is (str/includes? html "href=\"/settings/marketplace/c-1\"") "a link back to the connection")
+        (is (str/includes? html "href=\"/operations\">Back to operations<") "a link back to the operations page")
         (is (str/includes? html "management-header"))
         (is (str/includes? html "Mapped 0 · Unmatched 3 · Deferred 0 · Suspended 0"))
         (doseq [command ["confirm" "register" "defer"]]
           (is (str/includes? html (str "data-command=\"" command "\""))))))))
 
 
+(defn- switcher-link
+  "Whether `html` has the switcher link to `href` showing `label`, marked current or not."
+  {:malli/schema [:=> [:cat :string :string :string :boolean] :boolean]}
+  [html href label current?]
+  (boolean (re-find (re-pattern (str (if current? "aria-current=\"page\" " "<a ") "href=\"" (java.util.regex.Pattern/quote href) "\"[^>]*>" (java.util.regex.Pattern/quote label)))
+                    html)))
+
+
+(deftest matching-is-a-view-of-the-operations-page
+  (with-listings
+    (fn [ctx]
+      (let [html (page ctx ::web/product-matching {:connection-id c})]
+        (is (switcher-link html "/operations" "Operations" false) "the switcher leads back to Operations")
+        (is (switcher-link html "/operations/marketplace/c-1/products" "Product matching · " true) "this view is current")
+        (is (switcher-link html "/operations/marketplace/c-1/warehouses" "Warehouse matching · " false)))
+      (is (switcher-link (page ctx ::web/mapping {:connection-id c :listing-id mug}) "/operations/marketplace/c-1/products" "Product matching · " true)
+          "mapping details belong to product matching")
+      (let [html (page ctx ::operations/page {})]
+        (is (switcher-link html "/operations" "Operations" true) "Operations is current on its own page")
+        (is (switcher-link html "/operations/marketplace/c-1/products" "Product matching · " false) "one entry per connection")
+        (is (switcher-link html "/operations/marketplace/c-1/warehouses" "Warehouse matching · " false))))))
+
+
+(deftest the-operations-tab-stays-current-on-the-matching-pages
+  (doseq [path ["/operations" "/operations/marketplace/c-1/products" "/operations/marketplace/c-1/warehouses"]]
+    (let [html (chassis/html (ui/app-shell {:identity {:workspace-id "w"} :path path :request {:uri path}}))]
+      (is (str/includes? html "aria-current=\"page\"") path)
+      (is (re-find #"aria-current=\"page\"[^>]*href=\"/operations\"|href=\"/operations\"[^>]*aria-current=\"page\"" html) path))))
+
+
 (deftest the-connection-page-links-to-the-table
   (with-listings
     (fn [ctx]
-      (is (str/includes? (page ctx ::connections-web/connection {:connection-id c}) "href=\"/settings/marketplace/c-1/products\"")))))
+      (is (str/includes? (page ctx ::connections-web/connection {:connection-id c}) "href=\"/operations/marketplace/c-1/products\"")))))
 
 
 (deftest ozon-text-is-escaped
@@ -139,7 +171,7 @@
         (is (= {:value "mug" :label "Mug" :revision 1} (get-in mug-row [:cells :product])) "an existing product of the same name")
         (is (= "4600000000017" (get-in mug-row [:cells :barcodes])))
         (is (= "pcs" (get-in mug-row [:cells :unit])))
-        (is (= "/settings/marketplace/c-1/products/c-1%3A1" (:href mug-row)))
+        (is (= "/operations/marketplace/c-1/products/c-1%3A1" (:href mug-row)))
         (is (= {:value "" :label "Mug set"} (get-in set-row [:cells :product])) "a new product named like the listing")))))
 
 
@@ -209,7 +241,7 @@
       (is (= [odd] (keys (rows ctx "deferred"))))
       (is (= ["Deferred" "later"] (take 2 (get-in (rows ctx "deferred") [odd :cells :status]))))
       (let [html (page ctx ::web/product-matching {:connection-id c :state "deferred"})]
-        (is (str/includes? html "aria-current=\"page\" href=\"/settings/marketplace/c-1/products?state=deferred\"")
+        (is (str/includes? html "aria-current=\"page\" href=\"/operations/marketplace/c-1/products?state=deferred\"")
             "the current filter is marked")))))
 
 
@@ -222,7 +254,7 @@
         (is (str/includes? html "4600000000017"))
         (is (not (str/includes? html "<form")) "read-only evidence and history")
         (is (not (str/includes? html "<select")))
-        (is (str/includes? html "href=\"/settings/marketplace/c-1/products?state=confirmed\"") "a link back to its table"))
+        (is (str/includes? html "href=\"/operations/marketplace/c-1/products?state=confirmed\"") "a link back to its table"))
       (testing "a listing of another connection is not found here"
         (is (= 404 (try (page ctx ::web/mapping {:connection-id "c-2" :listing-id mug}) nil
                         (catch clojure.lang.ExceptionInfo e (:status (ex-data e))))))))))
@@ -318,12 +350,15 @@
             outside (support/browser handler)]
         (testing "a member of the workspace reads the table"
           (support/sign-in! services member "member@example.test" {:workspace-id fixtures/workspace-id})
-          (is (= 200 (:status ((:request! member) :get "/settings/marketplace/c-1/products")))))
+          (is (= 200 (:status ((:request! member) :get "/operations/marketplace/c-1/products")))))
+        (testing "the old settings paths are gone"
+          (is (= 404 (:status ((:request! member) :get "/settings/marketplace/c-1/products"))))
+          (is (= 404 (:status ((:request! member) :get "/settings/marketplace/c-1/warehouses")))))
         (testing "a member of another workspace does not see the connection"
           (support/sign-in! services outside "other@example.test" {:workspace-id fixtures/other-workspace-id})
-          (is (= 404 (:status ((:request! outside) :get "/settings/marketplace/c-1/products")))))
+          (is (= 404 (:status ((:request! outside) :get "/operations/marketplace/c-1/products")))))
         (testing "without a selected workspace the existing access page answers"
-          (let [anonymous ((:request! (support/browser handler)) :get "/settings/marketplace/c-1/products")]
+          (let [anonymous ((:request! (support/browser handler)) :get "/operations/marketplace/c-1/products")]
             (is (= 303 (:status anonymous)))
             (is (str/starts-with? (get-in anonymous [:headers "location"]) "/auth/login"))))))))
 

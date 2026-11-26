@@ -3,6 +3,7 @@ import { signIn } from './auth.fixture.mjs';
 
 // Board 42 · Product Matching: one table; select rows, Confirm, and the mappings survive a reload.
 const connection = '/settings/marketplace/browser-ozon';
+const views = '/operations/marketplace/browser-ozon';
 const grid = page => page.locator('.marketplace-grid');
 const workbench = page => page.locator('marketplace-workbench');
 const row = (page, name) => grid(page).locator('tbody tr').filter({ hasText: name });
@@ -18,13 +19,13 @@ test('select three rows with the keyboard, confirm, reload: still confirmed (400
   await signIn(page);
   await page.goto(connection);
   const unmatched = page.getByRole('link', { name: '5', exact: true });
-  await expect(unmatched).toHaveAttribute('href', `${connection}/products`);
+  await expect(unmatched).toHaveAttribute('href', `${views}/products`);
   // Keyboard only from here: follow the link, move through the table with arrows, tick with Space.
   await unmatched.focus();
   await page.keyboard.press('Enter');
-  await expect(page).toHaveURL(new RegExp(`${connection}/products$`));
+  await expect(page).toHaveURL(new RegExp(`${views}/products$`));
   await expect(page.getByRole('heading', { name: 'Product matching' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Back to the connection' })).toHaveAttribute('href', connection);
+  await expect(page.getByRole('link', { name: 'Back to operations' })).toHaveAttribute('href', '/operations');
   await ready(page, 'marketplace-products-unmatched');
   await expect(page.locator('.marketplace-page form')).toHaveCount(0);
   await expect(grid(page)).toHaveCount(1);
@@ -49,7 +50,7 @@ test('select three rows with the keyboard, confirm, reload: still confirmed (400
   await page.reload();
   await ready(page, 'marketplace-products-unmatched');
   await expect.poll(() => grid(page).evaluate(node => node.model.rows.map(row => row.label))).toEqual(['Gift card']);
-  await page.goto(`${connection}/products?state=confirmed`);
+  await page.goto(`${views}/products?state=confirmed`);
   await ready(page, 'marketplace-products-confirmed');
   for (const name of ['Kettle', 'Teapot', 'Saucer']) await expect(row(page, `${name} (Ozon)`)).toContainText('Mapped');
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
@@ -59,7 +60,7 @@ test('select three rows with the keyboard, confirm, reload: still confirmed (400
 
 test('a rejected row keeps its values and shows why', async ({ page }) => {
   await signIn(page);
-  await page.goto(`${connection}/products`);
+  await page.goto(`${views}/products`);
   await ready(page, 'marketplace-products-unmatched');
   const gift = await grid(page).evaluate(node => node.model.rows.find(row => row.label === 'Gift card').id);
   await workbench(page).evaluate((node, id) => node.select([id]), gift);
@@ -75,10 +76,10 @@ test('confirm several warehouses, reload: still confirmed', async ({ page }) => 
   await signIn(page);
   await page.goto(connection);
   const unmatched = page.getByRole('link', { name: '3', exact: true });
-  await expect(unmatched).toHaveAttribute('href', `${connection}/warehouses`);
+  await expect(unmatched).toHaveAttribute('href', `${views}/warehouses`);
   await unmatched.click();
   await expect(page.getByRole('heading', { name: 'Warehouse matching' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Back to the connection' })).toHaveAttribute('href', connection);
+  await expect(page.getByRole('link', { name: 'Back to operations' })).toHaveAttribute('href', '/operations');
   await ready(page, 'marketplace-warehouses-unmatched');
   await expect(page.locator('.marketplace-page form')).toHaveCount(0);
   await expect(row(page, 'Khorugvino')).toContainText('New warehouse: Khorugvino');
@@ -94,7 +95,7 @@ test('confirm several warehouses, reload: still confirmed', async ({ page }) => 
   await page.reload();
   await ready(page, 'marketplace-warehouses-unmatched');
   await expect.poll(() => grid(page).evaluate(node => node.model.rows.length)).toBe(0);
-  await page.goto(`${connection}/warehouses?state=confirmed`);
+  await page.goto(`${views}/warehouses?state=confirmed`);
   await ready(page, 'marketplace-warehouses-confirmed');
   for (const name of ['Khorugvino', 'Tver', 'Seller stock']) await expect(row(page, name)).toContainText('Mapped');
   expect(errors).toEqual([]);
@@ -104,7 +105,7 @@ test('confirm several warehouses, reload: still confirmed', async ({ page }) => 
 test('reconfirm a suspended row in the table, reload: confirmed', async ({ page }) => {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await signIn(page);
-  await page.goto(`${connection}/products?state=suspended`);
+  await page.goto(`${views}/products?state=suspended`);
   await ready(page, 'marketplace-products-suspended');
   await expect(page.locator('.marketplace-page form')).toHaveCount(0);
   await expect(row(page, 'Ladle (Ozon)')).toContainText('Suspended');
@@ -119,11 +120,28 @@ test('reconfirm a suspended row in the table, reload: confirmed', async ({ page 
   await page.reload();
   await ready(page, 'marketplace-products-suspended');
   await expect.poll(() => grid(page).evaluate(node => node.model.rows.length)).toBe(0);
-  await page.goto(`${connection}/products?state=confirmed`);
+  await page.goto(`${views}/products?state=confirmed`);
   await ready(page, 'marketplace-products-confirmed');
   await expect(row(page, 'Ladle (Ozon)')).toContainText('Mapped');
-  await page.goto(`${connection}/products/${encodeURIComponent(id)}`);
+  await page.goto(`${views}/products/${encodeURIComponent(id)}`);
   await expect(page.locator('section.management-page form')).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'Open in the matching table' })).toHaveAttribute('href', `${connection}/products?state=confirmed`);
+  await expect(page.getByRole('link', { name: 'Open in the matching table' })).toHaveAttribute('href', `${views}/products?state=confirmed`);
+  expect(errors).toEqual([]);
+});
+
+// Matching is a view of the Operations page: the switcher lists it, and the Operations tab stays current.
+test('the view switcher moves between operations and the matching views', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await signIn(page);
+  await page.goto('/operations');
+  const switcher = page.getByRole('navigation', { name: 'Views' });
+  await expect(switcher.getByRole('link', { name: 'Operations', exact: true })).toHaveAttribute('aria-current', 'page');
+  await switcher.getByRole('link', { name: /^Warehouse matching/ }).click();
+  await expect(page).toHaveURL(new RegExp(`${views}/warehouses$`));
+  await expect(page.getByRole('heading', { name: 'Warehouse matching' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Views' }).getByRole('link', { name: /^Warehouse matching/ })).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('.app-nav-pages a[aria-current=page]')).toHaveText('Operations');
+  await page.getByRole('navigation', { name: 'Views' }).getByRole('link', { name: 'Operations', exact: true }).click();
+  await expect(page).toHaveURL(/\/operations$/);
   expect(errors).toEqual([]);
 });

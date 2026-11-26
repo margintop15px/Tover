@@ -14,6 +14,7 @@
     [ring.util.codec :as codec]
     [tover.identity.access :as access]
     [tover.inventory.actors :as actors]
+    [tover.inventory.operations.web :as operations]
     [tover.inventory.stock-items.model :as stock-items]
     [tover.invitations.team.web :as team]
     [tover.marketplace.connections.model :as connections]
@@ -38,13 +39,13 @@
 (defn products-path
   {:malli/schema [:=> [:cat :string [:* :any]] :string]}
   [connection-id & [state]]
-  (str (connection-path connection-id) "/products" (when (and state (not= "unmatched" state)) (str "?state=" state))))
+  (str (operations/marketplace-path connection-id) "/products" (when (and state (not= "unmatched" state)) (str "?state=" state))))
 
 
 (defn listing-path
   {:malli/schema [:=> [:cat :string :string] :string]}
   [connection-id external-product-id]
-  (str (connection-path connection-id) "/products/" (codec/url-encode external-product-id)))
+  (str (operations/marketplace-path connection-id) "/products/" (codec/url-encode external-product-id)))
 
 
 (defn connection!
@@ -447,10 +448,11 @@
   [context {:keys [connection-id state]}]
   (let [connection (connection! context connection-id)
         state      (if (some #{state} states) state "unmatched")]
-    {:connection connection
-     :state      state
-     :progress   (read-or-nil #(runtime/read-model context ::products/matching-progress {:connection-id connection-id}))
-     :table      (table context connection-id state)}))
+    {:connection  connection
+     :state       state
+     :connections (operations/query-connections context)
+     :progress    (read-or-nil #(runtime/read-model context ::products/matching-progress {:connection-id connection-id}))
+     :table       (table context connection-id state)}))
 
 
 (defn header
@@ -464,19 +466,20 @@
 
 
 (defpage product-matching
-  {:route      "/settings/marketplace/:connection-id/products"
+  {:route      "/operations/marketplace/:connection-id/products"
    :title      "Product matching · Tover"
    :parent     :tover.shared.web.core/shell
    :schema     [:map [:connection-id connections/ConnectionId] [:state {:optional true} [:string {:max 20}]]]
    :route-data access
    :query      query-products}
-  [{:keys [connection state progress table]}]
+  [{:keys [connection connections state progress table]}]
   (let [{:keys [connection-id account-label]} connection]
     {:type :elements
      :html [:section.marketplace-page {:aria-labelledby "matching-title" :data-connection-id connection-id}
             [:div.management-page
-             (header {:id        "matching-title"                :title      (i18n/t "Product matching")       :subtitle (str "Ozon · " account-label)
-                      :back-href (connection-path connection-id) :back-label (i18n/t "Back to the connection")})
+             (operations/operations-views {:current [:products connection-id] :connections connections})
+             (header {:id        "matching-title" :title      (i18n/t "Product matching")   :subtitle (str "Ozon · " account-label)
+                      :back-href "/operations"    :back-label (i18n/t "Back to operations")})
              (when progress (progress-line progress))]
             (if table
               (grid/workbench (assoc table
@@ -508,7 +511,7 @@
                          (actors/enrich context (keep #(some->> % (hash-map :actor))
                                                       (concat [(get-in details [:mapping :confirmed-by]) (get-in details [:mapping :deferred-by])]
                                                               (map :changed-by (:history details))))))]
-    {:connection connection :details details :catalogue catalogue :actors actors}))
+    {:connection connection :connections (operations/query-connections context) :details details :catalogue catalogue :actors actors}))
 
 
 (def ^:private guard-rules
@@ -536,18 +539,19 @@
 
 
 (defpage mapping
-  {:route      "/settings/marketplace/:connection-id/products/:listing-id"
+  {:route      "/operations/marketplace/:connection-id/products/:listing-id"
    :title      "Mapping details · Tover"
    :parent     :tover.shared.web.core/shell
    :schema     [:map [:connection-id connections/ConnectionId] [:listing-id products/ListingId]]
    :route-data access
    :query      query-mapping}
-  [{:keys [connection details catalogue actors]}]
+  [{:keys [connection connections details catalogue actors]}]
   (let [{:keys [listing state mapping history stock-item operations other-listings]} details
         {:keys [evidence]} listing
         connection-id (:connection-id connection)]
     {:type :elements
      :html [:section.management-page {:aria-labelledby "mapping-title" :data-listing-id (:external-product-id listing)}
+            (operations/operations-views {:current [:products connection-id] :connections connections})
             (header {:id        "mapping-title"               :title      (or (:name evidence) (:external-product-id listing))
                      :subtitle  (i18n/t (state-labels state))
                      :back-href (products-path connection-id) :back-label (i18n/t "All listings")})

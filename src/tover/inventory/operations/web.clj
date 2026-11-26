@@ -8,9 +8,11 @@
   (:require
     [bel.core :refer [defaction defpage defview]]
     [bel.expressions :refer [->expr]]
+    [bel.nav :as nav]
     [bel.runtime :as runtime]
     [charred.api :as charred]
     [clojure.string :as str]
+    [ring.util.codec :as codec]
     [tover.catalogues.records :as records]
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.actors :as actors]
@@ -20,6 +22,7 @@
     [tover.inventory.stock.model :as stock]
     [tover.inventory.valuation :as valuation]
     [tover.inventory.web :as web]
+    [tover.marketplace.connections.model :as connections]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.core :as ui]
@@ -649,10 +652,42 @@
 ;; Page
 
 
+(defn marketplace-path
+  "The matching views of one connection, under the operations page."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [connection-id]
+  (str "/operations/marketplace/" (codec/url-encode connection-id)))
+
+
+(defn query-connections
+  "The workspace's connections as the view switcher lists them. Read through the connections model, which requires
+  no page namespace, so the matching pages can require this one without a cycle."
+  {:malli/schema [:=> [:cat :map] [:vector [:map [:connection-id :string] [:account-label :string]]]]}
+  [context]
+  (mapv #(select-keys % [:connection-id :account-label])
+        (:connections (runtime/read-model context ::connections/marketplace-connections-and-requirements {}))))
+
+
+(defn operations-views
+  "The views of the operations page: the table of operations, then each connection's Product matching and Warehouse
+  matching. `current` is `:operations`, `[:products connection-id]` or `[:warehouses connection-id]`. Without
+  connections there is nothing to switch to."
+  {:malli/schema [:=> [:cat [:map [:current [:or :keyword [:tuple :keyword :string]]] [:connections [:sequential :map]]]] schema/Hiccup]}
+  [{:keys [current connections]}]
+  (when (seq connections)
+    [:nav.catalogue-kinds.operations-views {:aria-label (i18n/t "Views")}
+     (for [[view href label] (cons [:operations "/operations" (i18n/t "Operations")]
+                                   (for [{:keys [connection-id account-label]} connections
+                                         [kind segment title]                  [[:products "products" "Product matching"] [:warehouses "warehouses" "Warehouse matching"]]]
+                                     [[kind connection-id] (str (marketplace-path connection-id) "/" segment) (str (i18n/t title) " · " account-label)]))]
+       [:a (nav/link href {:aria-current (when (= current view) "page")}) label])]))
+
+
 (defn query-page
   {:malli/schema [:=> [:cat :map :map] :map]}
   [{:keys [request] :as context} _]
   {:workspace-id (get-in request [:tover/identity :workspace-id])
+   :connections  (query-connections context)
    :model        (table-model context {:preview? false})})
 
 
@@ -693,11 +728,13 @@
 
 (defpage page
   {:route "/operations" :title "Operations · Tover" :parent :tover.shared.web.core/shell :route-data access :query query-page}
-  [{:keys [model] :as props}]
+  [{:keys [model connections] :as props}]
   {:type :elements
-   :html (if model
-           (workbench props)
-           [:p.management-empty {:role "alert"} (i18n/t "Operations could not be loaded.") " " [:a {:href "/operations"} (i18n/t "Retry")]])})
+   :html [:section.marketplace-page
+          (operations-views {:current :operations :connections connections})
+          (if model
+            (workbench props)
+            [:p.management-empty {:role "alert"} (i18n/t "Operations could not be loaded.") " " [:a {:href "/operations"} (i18n/t "Retry")]])]})
 
 
 (defn addition-input
