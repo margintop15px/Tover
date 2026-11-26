@@ -108,4 +108,15 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 **Interfaces:** Produces `propose-marketplace-cutover {:connection-id :instant :scopes [{:stock-item-id :warehouse-id :product-mapping-revisions :warehouse-mapping-revisions :quantity :unit-cost? :observation?}]}`, policy `connections/::manager`; emits `marketplace-cutover-proposed` (one per scope), `shared-inventory-entry-saved`, `inventory-entry-line-saved` through `entries/line-events`. Entry id `"cutover:<connection>|<item>|<warehouse>#<n>"`, `n` counting earlier proposals of the scope. Rejections `:not-a-manager :scope-not-ready :instant-out-of-range :cost-required :stale`.
 
 - [ ] **Step 1: Failing tests:** `opening-and-correction` (A 120 at 350 → opening, B 8 → correction, balances unchanged), `cost-missing`, `several-batches`, `instant-before-first-coverage-names-the-earliest`, `future-instant`, `comma-cost`, `member-may-accept-but-not-propose`, `scope-already-pending-or-baselined`, `second-connection-same-scope`, and a store test that proposes, accepts through `accept-reviewed-inventory-changes`, and finds one baseline each.
-- [ ] **Step 2:** FAIL. **Step 3:** Implement; page `/settings/marketplace/:connection-id/cutover` (instant picker plus table; coverage table below). **Step 4:** PASS; browser check. **Step 5:** Commit `feat(marketplace): cutover`; slices → `ready`.
+- [ ] **Step 2:** FAIL. **Step 3:** Implement; Cutover view of the Operations page at `/operations/marketplace/:connection-id/cutover` (instant picker plus table; coverage table below), in the view switcher from Task 5. The connection page shows coverage counts and links there. **Step 4:** PASS; browser check. **Step 5:** Commit `feat(marketplace): cutover`; slices → `ready`.
+
+### Task 5: Matching as Operations views (decided 2026-11-26, runs right after Task 1)
+
+Board chapters 42, 43, 44 UI elements: matching and cutover are views of the Operations page, one per connection, not under Settings. The connection page only links to them.
+
+**Files:** `marketplace/products/web.clj`, `marketplace/warehouses/web.clj`, `marketplace/connections/web.clj`, `inventory/operations/web.clj`, `resources/i18n/messages.json`, tests `products_web_test.clj`, `warehouses_web_test.clj`, `connections_web_test.clj`, `test/browser/marketplace.spec.mjs`.
+
+**Interfaces:** Produces routes `/operations/marketplace/:connection-id/products`, `/operations/marketplace/:connection-id/products/:listing-id`, `/operations/marketplace/:connection-id/warehouses`; a view switcher component in `inventory/operations/web.clj` (`operations-views [{:keys [current connections]}]`) listing Operations, then per active connection Product matching, Warehouse matching (Task 4 adds Cutover). The `/settings/marketplace/:connection-id/{products,warehouses}` routes are removed, not redirected (not deployed).
+
+- [ ] **Step 1: Failing tests:** matching pages answer at the new paths and 404 at the old ones; the connection page links to the new paths; the Operations page shows the view switcher with one entry per connection; the Operations nav tab is current on the matching pages.
+- [ ] **Step 2:** FAIL. **Step 3:** Move the pages; back link goes to `/operations`. **Step 4:** PASS; browser check. **Step 5:** Commit `refactor(marketplace): matching as operations views`.
