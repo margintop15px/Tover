@@ -127,6 +127,26 @@
         (is (switcher-link html "/operations/marketplace/c-1/warehouses" "Warehouse matching · " false))))))
 
 
+(deftest the-switcher-never-breaks-the-operations-page
+  (with-listings
+    (fn [ctx]
+      (let [failing ctx]
+        (with-redefs [runtime/read-model (let [read runtime/read-model]
+                                           (fn [context id input]
+                                             (if (= :tover.marketplace.connections.model/marketplace-connections-and-requirements id)
+                                               (throw (ex-info "boom" {}))
+                                               (read context id input))))]
+          (is (= [] (operations/query-connections failing)))
+          (let [html (page ctx ::operations/page {})]
+            (is (not (str/includes? html "operations-views")) "the page renders without the switcher")
+            (is (str/includes? html "operations-workbench"))
+            (is (not (str/includes? html "marketplace-page")) "inventory markup carries no marketplace class")))))))
+
+
+(deftest marketplace-path-encodes-the-connection-id
+  (is (= "/operations/marketplace/a%2Fb%20c" (operations/marketplace-path "a/b c"))))
+
+
 (deftest the-operations-tab-stays-current-on-the-matching-pages
   (doseq [path ["/operations" "/operations/marketplace/c-1/products" "/operations/marketplace/c-1/warehouses"]]
     (let [html (chassis/html (ui/app-shell {:identity {:workspace-id "w"} :path path :request {:uri path}}))]

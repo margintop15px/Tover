@@ -661,18 +661,20 @@
 
 (defn query-connections
   "The workspace's connections as the view switcher lists them. Read through the connections model, which requires
-  no page namespace, so the matching pages can require this one without a cycle."
+  no page namespace, so the matching pages can require this one without a cycle. A failed read gives no connections:
+  the switcher is a convenience and must not take the page down."
   {:malli/schema [:=> [:cat :map] [:vector [:map [:connection-id :string] [:account-label :string]]]]}
   [context]
-  (mapv #(select-keys % [:connection-id :account-label])
-        (:connections (runtime/read-model context ::connections/marketplace-connections-and-requirements {}))))
+  (try (mapv #(select-keys % [:connection-id :account-label])
+             (:connections (runtime/read-model context ::connections/marketplace-connections-and-requirements {})))
+       (catch Exception _ [])))
 
 
 (defn operations-views
   "The views of the operations page: the table of operations, then each connection's Product matching and Warehouse
   matching. `current` is `:operations`, `[:products connection-id]` or `[:warehouses connection-id]`. Without
   connections there is nothing to switch to."
-  {:malli/schema [:=> [:cat [:map [:current [:or :keyword [:tuple :keyword :string]]] [:connections [:sequential :map]]]] schema/Hiccup]}
+  {:malli/schema [:=> [:cat [:map [:current [:or :keyword [:tuple :keyword :string]]] [:connections [:sequential :map]]]] [:maybe schema/Hiccup]]}
   [{:keys [current connections]}]
   (when (seq connections)
     [:nav.catalogue-kinds.operations-views {:aria-label (i18n/t "Views")}
@@ -730,7 +732,7 @@
   {:route "/operations" :title "Operations · Tover" :parent :tover.shared.web.core/shell :route-data access :query query-page}
   [{:keys [model connections] :as props}]
   {:type :elements
-   :html [:section.marketplace-page
+   :html [:section.operations-page
           (operations-views {:current :operations :connections connections})
           (if model
             (workbench props)
