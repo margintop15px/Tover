@@ -13,7 +13,7 @@
     [clojure.string :as str]
     [tover.catalogues.records :as records :refer [Id]])
   (:import
-    [java.time OffsetDateTime]
+    [java.time Instant OffsetDateTime]
     [java.time.format DateTimeParseException]
     [java.time.temporal ChronoUnit]))
 
@@ -138,7 +138,7 @@
   "Typed or stored instant text as a whole-second instant; nil when blank or unreadable (saving reports it)."
   {:malli/schema [:=> [:cat :any] [:maybe inst?]]}
   [value]
-  (cond (inst? value) value
+  (cond (inst? value) (.truncatedTo ^Instant value ChronoUnit/SECONDS)
         (and (string? value) (not (str/blank? value)))
         (try (.truncatedTo (.toInstant (OffsetDateTime/parse (str/trim value))) ChronoUnit/SECONDS)
              (catch DateTimeParseException _ nil))))
@@ -176,31 +176,29 @@
   amendment of a baseline's record keep its instant, item and warehouse; a scope gets one baseline, so it may not
   have one already nor two cutover entries in one selection. A `picked` entry cancelling a baseline's record is
   refused."
-  {:malli/schema [:function [:=> [:cat [:maybe :map] [:sequential :map]] [:vector :map]]
-                  [:=> [:cat [:maybe :map] [:sequential :map] [:sequential :map]] [:vector :map]]]}
-  ([facts lines] (acceptance-problems facts lines []))
-  ([facts lines picked]
-   (let [scope-of #(when-let [row (get-in facts [:cutover-entries %])] ((juxt :connection-id :stock-item-id :warehouse-id) row))
-         shared   (->> (distinct (keep :entry-id lines))
-                       (group-by scope-of)
-                       (keep (fn [[scope ids]] (when (and scope (< 1 (count ids))) ids)))
-                       (apply concat)
-                       set)]
-     (vec (distinct
-            (concat
-              (for [{:keys [entry-id target cancel]} picked
-                    :when (and cancel (of-record facts (:record-id target)))]
-                {:entry-id entry-id :line-id nil :code :baseline-cancelled})
-              (for [{:keys [entry-id entry] :as line} lines
-                    :let [row (get-in facts [:cutover-entries entry-id])
-                          target (of-record facts (get-in entry [:target :record-id]))
-                          fixed-row (or row target)
-                          code (cond (and fixed-row (moved-field fixed-row (:occurred-at entry) [line])) :cutover-date-fixed
-                                     (and row (or (shared entry-id)
-                                                  (baseline facts (:connection-id row) (:stock-item-id row) (:warehouse-id row))))
-                                     :baseline-exists)]
-                    :when code]
-                {:entry-id entry-id :line-id nil :code code})))))))
+  {:malli/schema [:=> [:cat [:maybe :map] [:sequential :map] [:sequential :map]] [:vector :map]]}
+  [facts lines picked]
+  (let [scope-of #(when-let [row (get-in facts [:cutover-entries %])] ((juxt :connection-id :stock-item-id :warehouse-id) row))
+        shared   (->> (distinct (keep :entry-id lines))
+                      (group-by scope-of)
+                      (keep (fn [[scope ids]] (when (and scope (< 1 (count ids))) ids)))
+                      (apply concat)
+                      set)]
+    (vec (distinct
+           (concat
+             (for [{:keys [entry-id target cancel]} picked
+                   :when (and cancel (of-record facts (:record-id target)))]
+               {:entry-id entry-id :line-id nil :code :baseline-cancelled})
+             (for [{:keys [entry-id entry] :as line} lines
+                   :let [row (get-in facts [:cutover-entries entry-id])
+                         target (of-record facts (get-in entry [:target :record-id]))
+                         fixed-row (or row target)
+                         code (cond (and fixed-row (moved-field fixed-row (:occurred-at entry) [line])) :cutover-date-fixed
+                                    (and row (or (shared entry-id)
+                                                 (baseline facts (:connection-id row) (:stock-item-id row) (:warehouse-id row))))
+                                    :baseline-exists)]
+                   :when code]
+               {:entry-id entry-id :line-id nil :code code}))))))
 
 
 (defn acceptance-events
@@ -224,7 +222,8 @@
 
 (def ReviewRow
   "One pending cutover line: the frozen observation, the proposed absolute count and its difference against Tover's
-  balance at the instant (absent without history, then the difference is the whole count)."
+  balance at the instant as frozen at proposal (absent without history, then the difference is the whole count). The
+  notes say \"at proposal\": history accepted later is not in it."
   [:map
    [:entry-id Id] [:line-id Id] [:stock-item-id Id] [:warehouse-id Id] [:connection-id Ref]
    [:observed-quantity {:optional true} :int] [:proposed-quantity :int] [:balance {:optional true} :int] [:difference :int]])

@@ -190,6 +190,14 @@
       (is (= [:cutover-date-fixed "Cutover date is fixed"] ((juxt :type :message) (failure #(accept f))))))))
 
 
+(deftest an-instant-compares-in-whole-seconds
+  (let [facts {:cutover-entries {cutover-id cutover-row} :baselines {}}
+        save  #(provenance/save-problem facts {:entry-id cutover-id}
+                                        {:occurred-at % :lines [{:stock-item-id "red" :warehouse-id "main"}]})]
+    (is (nil? (save (.plusMillis (Instant/parse "2026-11-10T00:00:00Z") 400))) "a typed instant with a fraction is the same second")
+    (is (= :occurred-at (:field (save (Instant/parse "2026-11-10T00:00:01Z")))))))
+
+
 (deftest pending-cutover-entry-keeps-its-scope
   (let [more  {:entry      pending-cutover :lines (:lines pending-cutover) :history {:records [] :lines []}
                :provenance {:cutover-entries {cutover-id cutover-row} :baselines {}}}
