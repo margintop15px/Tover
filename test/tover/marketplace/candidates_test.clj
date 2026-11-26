@@ -71,8 +71,8 @@
 
 (deftest two-owners
   (let [result (candidates catalogue (listing {:barcodes ["mug-code" "plate-code"]}))]
-    (is (= {:candidates-preselected 0 :conflicts 1} (counts result)))
-    (is (= ["mug" "plate"] (:product-ids (first (:conflicts result)))))
+    (is (= 0 (:candidates-preselected (counts result))))
+    (is (= [{:barcode "mug-code" :product-ids ["mug"]} {:barcode "plate-code" :product-ids ["plate"]}] (:conflicts result)))
     (is (= #{"mug-1" "plate-1"} (set (map :stock-item-id (:candidates result)))))))
 
 

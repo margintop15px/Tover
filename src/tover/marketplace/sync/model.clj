@@ -352,7 +352,7 @@
          (boolean (some #(= (:workspace-id scope) (:workspace-id %)) (:memberships principal))))))
 
 
-(defn- load-rows
+(defn load-rows
   "Rows of `model-id` by id in the scope's workspace; missing ids are left out."
   {:malli/schema [:=> [:cat :map :qualified-keyword [:sequential :string]] [:map-of :string :map]]}
   [context model-id ids]

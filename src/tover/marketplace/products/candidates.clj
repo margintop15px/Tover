@@ -201,18 +201,28 @@
              (candidate item "name-equal" {:name (trimmed listing-name) :product-id (:product-id product)}))))))
 
 
-(defn candidates
-  "Candidate stock items for a listing, strongest rule first (barcode, article, name), items of one product by
-  variant label, and the conflicts the evidence shows: barcodes of the listing that name different products
-  give one conflict listing them all. Only active Regular items of active products are candidates."
-  {:malli/schema [:=> [:cat [:map [:products Rows] [:stock-items Rows] [:barcodes Rows] [:definitions {:optional true} Rows]] Row]
-                  [:map [:candidates [:vector Row]] [:conflicts [:vector Row]]]]}
-  [{:keys [products stock-items barcodes definitions]} listing]
-  (let [live         (filter #(contains? #{nil "active"} (:status %)) products)
-        live?        (set (map :product-id live))
-        items-of     (group-by :product-id (filter #(live? (:product-id %)) (filter active-regular? stock-items)))
-        owners       (barcode-products barcodes stock-items)
-        hit          (into {} (keep (fn [b] (when-let [ps (seq (filter live? (owners b)))] [b (set ps)])))
+(def Catalogue
+  [:map [:products Rows] [:stock-items Rows] [:barcodes Rows] [:definitions {:optional true} Rows]])
+
+
+(defn catalogue-index
+  "The catalogue grouped once for many listings: live products, their eligible items and barcode owners."
+  {:malli/schema [:=> [:cat Catalogue] Row]}
+  [{:keys [products stock-items barcodes definitions]}]
+  (let [live  (filter #(contains? #{nil "active"} (:status %)) products)
+        live? (set (map :product-id live))]
+    {::live        live
+     ::live?       live?
+     ::items-of    (group-by :product-id (filter #(live? (:product-id %)) (filter active-regular? stock-items)))
+     ::owners      (barcode-products barcodes stock-items)
+     ::definitions (vec definitions)}))
+
+
+(defn indexed-candidates
+  "`candidates` over a `catalogue-index`."
+  {:malli/schema [:=> [:cat Row Row] [:map [:candidates [:vector Row]] [:conflicts [:vector Row]]]]}
+  [{::keys [live live? items-of owners definitions]} listing]
+  (let [hit          (into {} (keep (fn [b] (when-let [ps (seq (filter live? (owners b)))] [b (set ps)])))
                            (listing-values listing "barcode" usable-barcode))
         by-barcode   (apply set/union #{} (vals hit))
         articles     (set (listing-values listing "article" #(let [a (fold %)] (when-not (str/blank? a) a))))
@@ -222,7 +232,7 @@
                        (when (and (= 1 (count by-barcode)) (or (empty? by-article) (= by-article by-barcode)))
                          (first by-barcode))
                        (when (= 1 (count by-article)) (first by-article)))
-        chosen       (when named (preselectable (items-of named) listing (or definitions [])))
+        chosen       (when named (preselectable (items-of named) listing definitions))
         all          (->> (concat (barcode-candidates by-barcode hit items-of)
                                   article-hits
                                   (name-candidates (:name listing) live items-of))
@@ -232,7 +242,17 @@
                                   {:ids #{} :rows []})
                           :rows)]
     {:candidates (mapv #(assoc % :preselected? (and (some? chosen) (= chosen (:stock-item-id %)) (not= "name-equal" (:rule %)))) all)
+     ;; Board field: (barcode, owning products), one entry per listing barcode once they name several products.
      :conflicts  (if (> (count by-barcode) 1)
-                   (let [barcodes (vec (sort (keys hit)))]
-                     [{:barcode (first barcodes) :barcodes barcodes :product-ids (vec (sort by-barcode))}])
+                   (mapv (fn [[barcode ps]] {:barcode barcode :product-ids (vec (sort ps))}) (sort-by key hit))
                    [])}))
+
+
+(defn candidates
+  "Candidate stock items for a listing, strongest rule first (barcode, article, name), items of one product by
+  variant label, and the conflicts the evidence shows: once the listing's barcodes name more than one product,
+  each of them with its owning products. Only active Regular items of active products are candidates. For many
+  listings build a `catalogue-index` once and call `indexed-candidates`."
+  {:malli/schema [:=> [:cat Catalogue Row] [:map [:candidates [:vector Row]] [:conflicts [:vector Row]]]]}
+  [catalogue listing]
+  (indexed-candidates (catalogue-index catalogue) listing))
