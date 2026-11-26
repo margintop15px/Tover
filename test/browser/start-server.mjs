@@ -128,6 +128,21 @@ const program = `
            {:barcode-id (str item "|" barcode) :stock-item-id item :barcode barcode})
       (put :tover.marketplace.sync.model/external-product-observed (listing (str "10" n) (str name " (Ozon)") barcode)))
     (put :tover.marketplace.sync.model/external-product-observed (listing "104" "Gift card" nil))
+    ;; A Ladle listing confirmed, then suspended by the Mapping Guard: Reconfirm in the Suspended filter.
+    (put :tover.catalogues.products.model/product-registered {:product-id "browser-product-5" :name "Ladle" :status "active" :revision 1})
+    (put :tover.inventory.stock-items.model/stock-item-registered
+         {:stock-item-id "browser-item-5" :product-id "browser-product-5" :condition "regular" :status "active" :revision 1})
+    (put :tover.inventory.stock-items.model/stock-item-barcode-assigned
+         {:barcode-id "browser-item-5|4600000001005" :stock-item-id "browser-item-5" :barcode "4600000001005"})
+    (put :tover.marketplace.sync.model/external-product-observed (listing "105" "Ladle (Ozon)" "4600000001005"))
+    (let [mapping {:external-product-id "browser-ozon:105" :connection-id "browser-ozon" :stock-item-id "browser-item-5"
+                   :listing-revision 1 :item-revision 1 :identity-basis "{}" :changed-by (str fixtures/owner-id) :changed-at at}]
+      (put :tover.marketplace.products.model/external-product-mapped
+           (assoc mapping :mapping-revision-id "browser-ozon:105#1" :mapping-revision 1 :change "mapped" :state "confirmed"))
+      (put :tover.marketplace.products.model/product-mapping-suspended
+           (assoc mapping :mapping-revision-id "browser-ozon:105#2" :mapping-revision 2 :change "suspended" :state "suspended"
+                          :changed-by "connector:browser-ozon"
+                          :reasons (observations/write-json [{:rule "listing-identity-changed" :before "a" :after "b"}]))))
     ;; Board 43: two FBO warehouses and one seller warehouse, all unmatched.
     (doseq [[type source-id name] [["fbo" "201" "Khorugvino"] ["fbo" "202" "Tver"] ["fbs" "203" "Seller stock"]]
             :let [id (observations/warehouse-id "browser-ozon" type source-id)]]

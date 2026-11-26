@@ -467,7 +467,7 @@
   [:map
    [:external-product-id :string] [:name {:optional true} :string] [:listing-revision :int] [:archived? :boolean]
    [:state ListingState] [:waiting-operations :int]
-   [:stock-item {:optional true} [:map [:stock-item-id :string] [:product-id {:optional true} :string]
+   [:stock-item {:optional true} [:map [:stock-item-id :string] [:revision {:optional true} :int] [:product-id {:optional true} :string]
                                   [:product-name {:optional true} :string] [:variant-label {:optional true} :string]
                                   [:archived? :boolean]]]
    [:mapping-revision {:optional true} :int]
@@ -486,6 +486,7 @@
     (cond-> {:stock-item-id stock-item-id
              :archived?     (boolean (or (nil? item) (= "archived" (:status item))
                                          (contains? #{"archived" "deleted"} (:status product))))}
+      (:revision item) (assoc :revision (:revision item))
       (:product-id item) (assoc :product-id (:product-id item))
       (:name product) (assoc :product-name (:name product))
       (:variant-label item) (assoc :variant-label (:variant-label item)))))
@@ -944,10 +945,15 @@
 
 
 (defn item-id
-  "The stock item a listing registers. Derived from the listing, so one listing never registers two items."
-  {:malli/schema [:=> [:cat :string] :string]}
-  [external-product-id]
-  (str "listing:" external-product-id))
+  "The stock item a listing registers, derived from it: `listing:<id>`, or `listing:<id>:<n>` with the least n from 2
+  when the earlier ones are archived, defective or under an archived or deleted product. An available one is the
+  answer itself, so one listing never registers two available items. `index` holds `:items` and `:products` by id."
+  {:malli/schema [:=> [:cat :map :string] :string]}
+  [{:keys [items] :as index} external-product-id]
+  (let [base (str "listing:" external-product-id)]
+    (some #(let [id (if (= 1 %) base (str base ":" %))]
+             (when (or (nil? (get items id)) (nil? (item-code index id (:revision (get items id)) :unavailable))) id))
+          (iterate inc 1))))
 
 
 (defn new-product-id
@@ -991,7 +997,7 @@
     (or (cond (twice external-product-id) :listed-twice
               (or (nil? listing) (not= listing-revision (:revision listing))) :stale
               (mapped? (get mappings external-product-id)) :already-mapped
-              (get-in index [:items (item-id external-product-id)]) :item-exists)
+              (get-in index [:items (item-id index external-product-id)]) :item-exists)
         (if product-id
           (cond (nil? product) :product-not-available
                 (not= product-revision (:revision product)) :stale
@@ -1004,8 +1010,8 @@
 (defn- register-lines
   "Rows as acceptance lines of new items: `:entry-id` is the listing, the item id derives from it and a new name
   takes the id of the first row naming it."
-  {:malli/schema [:=> [:cat :map [:sequential :map]] [:vector :map]]}
-  [listings rows]
+  {:malli/schema [:=> [:cat :map :map [:sequential :map]] [:vector :map]]}
+  [index listings rows]
   (let [first-row (reduce (fn [m {:keys [external-product-id product-id product-name]}]
                             (let [k (when-not product-id (changes/text-key product-name))]
                               (if (and k (not (contains? m k))) (assoc m k external-product-id) m)))
@@ -1013,7 +1019,7 @@
     (mapv (fn [{:keys [external-product-id product-id product-name variant-label article barcodes unit]}]
             (let [new-key (changes/text-key product-name)]
               (cond-> {:entry-id      external-product-id :line-id   nil             :new-item? true
-                       :stock-item-id (item-id external-product-id)
+                       :stock-item-id (item-id index external-product-id)
                        :product-id    (or product-id (when new-key (new-product-id (first-row new-key))))
                        :variant-label (value variant-label) :article (value article) :unit      (value unit)
                        :barcodes      (vec (distinct (keep candidates/usable-barcode barcodes)))
@@ -1087,8 +1093,9 @@
   (let [rows    (distinct rows)
         twice   (set (keep (fn [[id n]] (when (> n 1) id)) (frequencies (map :external-product-id rows))))
         taken   (into #{} (keep #(when (not= "deleted" (:status %)) (changes/text-key (:name %)))) (:products catalogue))
-        checked {:listings listings :mappings mappings :index (catalogue-index catalogue) :taken taken :twice twice}
-        lines   (register-lines listings rows)]
+        index   (catalogue-index catalogue)
+        checked {:listings listings :mappings mappings :index index :taken taken :twice twice}
+        lines   (register-lines index listings rows)]
     (reject! (for [[row line] (map vector rows lines)
                    p          (if-let [code (register-code checked row)]
                                 [(problem (:external-product-id row) code)]

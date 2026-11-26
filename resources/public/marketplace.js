@@ -2,8 +2,9 @@ import { t } from './i18n.js';
 import './inventory-grid.js';
 
 // The marketplace table workbench (tover.marketplace.grid): server rows are authoritative; a cell edit stays on
-// its row in the browser until a selection action sends the selected rows as one command. A rejected command
-// keeps every attempted value and shows each row's reason on that row.
+// its row in the browser until a selection action sends the selected rows as one command (or, for an action
+// marked data-each, one command per row in turn). A rejected command keeps every attempted value and shows each
+// row's reason on that row.
 document.addEventListener('datastar-fetch', event => {
   const workbench = event.detail?.el?.closest('marketplace-workbench');
   if (workbench && ['error', 'retries-failed'].includes(event.detail.type)) workbench.requestFailed(workbench.pending ? 'command' : 'read');
@@ -135,31 +136,49 @@ class MarketplaceWorkbench extends HTMLElement {
   command(name) {
     if (this.pending || !this.selected.length) return;
     const rows = this.selected.map(id => this.rows().find(row => row.id === id)).filter(Boolean)
-      .map(row => ({ id: row.id, revision: row.revision, values: this.values(row) }));
+      .map(row => ({ id: row.id, revision: row.revision, values: this.values(row), ...(row.revisions ? { revisions: row.revisions } : {}) }));
     const reason = this.querySelector(`[data-command-reason="${name}"]`)?.value;
-    this.pending = { ...this.state, command: name, rows, commandId: crypto.randomUUID(), ...(reason ? { reason } : {}) };
+    const each = this.buttons.find(button => button.dataset.command === name)?.dataset.each === 'true';
+    this.queue = each ? rows.map(row => [row]) : [rows];
+    this.outcome = { command: name, reason, accepted: [], rejected: [], messages: [] };
     this.setStatus('Saving');
+    this.next();
+  }
+  next() {
+    const rows = this.queue.shift();
+    if (!rows) { this.finish(); return; }
+    const { command, reason } = this.outcome;
+    this.pending = { ...this.state, command, rows, commandId: crypto.randomUUID(), ...(reason ? { reason } : {}) };
     this.emit('marketplace-command', this.pending);
   }
   set commandResponse(response) {
     if (!this.pending || !response || response.commandId !== this.pending.commandId) return;
     const request = this.pending; this.pending = null;
-    if (response.status === 'ok') {
-      const sent = new Set(request.rows.map(row => row.id));
-      for (const id of sent) { this.edits.delete(id); this.findings.delete(id); }
-      this.selected = this.selected.filter(id => !sent.has(id));
-      const reason = this.querySelector(`[data-command-reason="${request.command}"]`);
+    if (response.status === 'ok') this.outcome.accepted.push(...request.rows.map(row => row.id));
+    else if ((response.rows || []).length) this.outcome.rejected.push(...response.rows);
+    else this.outcome.messages.push(response.message);
+    this.next();
+  }
+  // Every command of the action answered: accepted rows leave their edits, rejected ones show why.
+  finish() {
+    const { command, accepted, rejected, messages } = this.outcome; this.outcome = null;
+    const sent = new Set(accepted);
+    for (const id of sent) { this.edits.delete(id); this.findings.delete(id); }
+    this.selected = this.selected.filter(id => !sent.has(id));
+    if (!rejected.length && !messages.length) {
+      const reason = this.querySelector(`[data-command-reason="${command}"]`);
       if (reason) reason.value = '';
       this.setStatus('Saved');
       this.refresh();
       return;
     }
     this.findings = new Map();
-    for (const row of response.rows || []) this.findings.set(row.id, [...(this.findings.get(row.id) || []), row]);
+    for (const row of rejected) this.findings.set(row.id, [...(this.findings.get(row.id) || []), row]);
     const labels = new Map(this.rows().map(row => [row.id, row.label]));
-    const reasons = (response.rows || []).map(row => `${labels.get(row.id) ?? row.id}: ${row.message}`);
-    this.setStatus('Failed', reasons.length ? reasons.join(' ') : response.message);
+    const reasons = rejected.map(row => `${labels.get(row.id) ?? row.id}: ${row.message}`);
+    this.setStatus('Failed', [...reasons, ...messages].join(' '));
     this.show();
+    if (sent.size) this.refresh();
   }
   refresh() {
     if (!this.isConnected || !this.grid || this.pending) return;
@@ -185,7 +204,12 @@ class MarketplaceWorkbench extends HTMLElement {
     this.lastChange = value; this.refresh();
   }
   requestFailed(kind) {
-    if (kind === 'command') { this.pending = null; this.setStatus('Failed', t('Could not save. Your edit is retained; retry when connected.')); }
+    if (kind === 'command') {
+      const accepted = this.outcome?.accepted.length;
+      this.pending = null; this.queue = []; this.outcome = null;
+      this.setStatus('Failed', t('Could not save. Your edit is retained; retry when connected.'));
+      if (accepted) this.refresh();
+    }
     else if (kind === 'choices') { if (this.choiceRequest) this.grid.referenceOptionsResponse = { ...this.choiceRequest, status: 'failed', options: [] }; }
     else {
       this.notice.replaceChildren(document.createTextNode(t('Could not load records. ')));

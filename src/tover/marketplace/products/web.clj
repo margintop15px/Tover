@@ -1,8 +1,9 @@
 (ns tover.marketplace.products.web
   "Board chapter 42 screens under a connection's page. Product Matching: one editable table of the connection's
   listings, where members pick a stock item (Confirm), fill a new product (Register) or set listings aside (Defer)
-  for the selected rows; a state filter shows deferred, suspended and confirmed listings. Mapping Details: one
-  listing with its evidence, its mapping and history, and Change, Remove or Reconfirm.
+  for the selected rows. The Mapped and Suspended filters are the same table with each mapped stock item: Change
+  (another item picked in its cell), Remove and, for suspended rows, Reconfirm, one command per selected row.
+  Mapping Details: one listing with its evidence, its mapping and history, read only, linked back to its table.
 
   Everything is read for the selected workspace and the connection in the path. Ozon text reaches the page only
   as escaped attribute or text content."
@@ -19,8 +20,7 @@
     [tover.marketplace.grid :as grid]
     [tover.marketplace.products.model :as products]
     [tover.shared.i18n :as i18n]
-    [tover.shared.schema :as schema]
-    [tover.shared.ui.forms :refer [form]])
+    [tover.shared.schema :as schema])
   (:import
     [clojure.lang ExceptionInfo]))
 
@@ -142,15 +142,21 @@
 
 (def mapped-columns
   [{:key :listing :label "Listing" :type :lines :width 260}
-   {:key :stock-item :label "Stock item" :type :text :width 260}
+   {:key :stock-item :label "Stock item" :type :reference :editable? true :lookup "stock-items" :width 260}
    {:key :waiting :label "Waiting operations" :type :text :width 110}
    {:key :status :label "Status" :type :lines :width 260}])
 
 
 (def selection-actions
-  [{:command "confirm" :label "Confirm" :primary? true}
-   {:command "register" :label "Register"}
-   {:command "defer" :label "Defer" :reason? true}])
+  "By filter. Change, Remove and Reconfirm are about one mapping each, so each selected row is its own command."
+  {"unmatched" [{:command "confirm" :label "Confirm" :primary? true}
+                {:command "register" :label "Register"}
+                {:command "defer" :label "Defer" :reason? true}]
+   "confirmed" [{:command "change" :label "Change mapping" :primary? true :each? true}
+                {:command "remove" :label "Remove mapping" :each? true}]
+   "suspended" [{:command "reconfirm" :label "Reconfirm" :primary? true :each? true}
+                {:command "change" :label "Change mapping" :each? true}
+                {:command "remove" :label "Remove mapping" :each? true}]})
 
 
 (defn- listing-lines
@@ -213,19 +219,24 @@
                :status      (status-lines catalogue row)}}))
 
 
-(defn- mapped-row
+(defn mapped-row
+  "A mapped or suspended listing: its stock item is the picker's value, with the item revision Reconfirm sends; the
+  row revision is the mapping's, and the reviewed listing revision goes along."
   {:malli/schema [:=> [:cat :string :map] grid/Row]}
-  [connection-id {:keys [external-product-id name listing-revision archived? state waiting-operations stock-item reason]}]
-  {:id          external-product-id :revision listing-revision :label (or name external-product-id)
-   :href        (listing-path connection-id external-product-id)
-   :selectable? false
-   :cells       {:listing    (listing-lines {:name name :archived? archived?})
-                 :stock-item (if stock-item
-                               (str (item-label stock-item {:name (:product-name stock-item)})
-                                    (when (:archived? stock-item) (str " " (i18n/t "(archived)"))))
-                               "")
-                 :waiting    (str waiting-operations)
-                 :status     (cond-> [(i18n/t (state-labels state))] reason (conj reason))}})
+  [connection-id {:keys [external-product-id name listing-revision mapping-revision archived? state waiting-operations stock-item reason]}]
+  (let [chosen (when stock-item
+                 (cond-> {:value (:stock-item-id stock-item)
+                          :label (str (item-label stock-item {:name (:product-name stock-item)})
+                                      (when (:archived? stock-item) (str " " (i18n/t "(archived)"))))}
+                   (:revision stock-item) (assoc :revision (:revision stock-item))))]
+    {:id      external-product-id :revision (or mapping-revision 0) :revisions {:listing listing-revision}
+     :label   (or name external-product-id)
+     :href    (listing-path connection-id external-product-id)
+     :options {:stock-item (if chosen [chosen] [])}
+     :cells   {:listing    (listing-lines {:name name :archived? archived?})
+               :stock-item chosen
+               :waiting    (str waiting-operations)
+               :status     (cond-> [(i18n/t (state-labels state))] reason (conj reason))}}))
 
 
 (defn read-or-nil
@@ -246,7 +257,7 @@
        {:id                (str "marketplace-products-" state)
         :label             "Product matching"
         :columns           (if editable? matching-columns mapped-columns)
-        :selection-actions (if editable? selection-actions [])
+        :selection-actions (get selection-actions (if editable? "unmatched" state) [])
         :rows              (if editable?
                              (let [catalogue (index (runtime/read-model context :tover.inventory.references/draft-catalogue {}))]
                                (mapv (partial matching-row connection-id catalogue)
@@ -296,13 +307,15 @@
 
 
 (def CommandRow
+  "`:revision` is the listing's for unmatched and deferred rows, the mapping's for mapped and suspended ones."
   [:map [:id products/ListingId] [:revision products/Revision]
+   [:revisions {:optional true} [:map-of :any :int]]
    [:values {:optional true} [:map-of :any [:maybe [:string {:max 1000}]]]]])
 
 
 (def Command
   [:map
-   [:connectionId connections/ConnectionId] [:command [:enum "confirm" "register" "defer"]]
+   [:connectionId connections/ConnectionId] [:command [:enum "confirm" "register" "defer" "change" "remove" "reconfirm"]]
    [:commandId [:string {:min 1 :max 100}]] [:reason {:optional true} [:maybe [:string {:max 500}]]]
    [:rows [:vector {:min 1 :max 5000} CommandRow]]])
 
@@ -321,19 +334,51 @@
 
 (def ^:private paths
   "Where each rejection code is shown on its row."
-  {"confirm"  {:barcode-conflict "stock-item" :item-not-available "stock-item" :barcode-not-on-listing "adopt"}
-   "register" {:product-not-available "product" :invalid-product-name   "product"    :product-name-taken "product"
-               :unknown-unit          "unit"    :barcode-not-on-listing "barcodes"   :duplicate-variant  "variant"
-               :uniqueness-conflict   "article" :item-exists            "stock-item"}
-   "defer"    {}})
+  {"confirm"   {:barcode-conflict "stock-item" :item-not-available "stock-item" :barcode-not-on-listing "adopt"}
+   "register"  {:product-not-available "product" :invalid-product-name   "product"    :product-name-taken "product"
+                :unknown-unit          "unit"    :barcode-not-on-listing "barcodes"   :duplicate-variant  "variant"
+                :uniqueness-conflict   "article" :item-exists            "stock-item"}
+   "defer"     {}
+   "change"    {:item-not-available "stock-item" :barcode-conflict "stock-item"}
+   "remove"    {}
+   "reconfirm" {:item-archived "stock-item" :barcode-conflict "stock-item"}})
+
+
+(defn- mapping-input
+  "Change, Remove or Reconfirm of one mapped row, or the row's reason it cannot be sent. `mapped` is the row's
+  current stock item id: Reconfirm keeps it."
+  {:malli/schema [:=> [:cat :string :map [:maybe :string]] [:or [:tuple :qualified-keyword :map] [:map [:rows [:vector :map]]]]]}
+  [command {:keys [id revision revisions values]} mapped]
+  (let [item     (text values "stock-item")
+        reviewed (get (update-keys (or revisions {}) name) "listing")
+        input    {:external-product-id id :mapping-revision revision}
+        refuse   (fn [path message] {:rows [{:id id :path path :message (i18n/t message)}]})]
+    (case command
+      "remove" [::products/change-product-mapping input]
+      "change" (if (and item (number values "stock-item-revision"))
+                 [::products/change-product-mapping (assoc input :stock-item-id item :item-revision (number values "stock-item-revision"))]
+                 (refuse "stock-item" "Choose a stock item."))
+      "reconfirm" (cond (not= item mapped)
+                        (refuse "stock-item" "Reconfirm keeps the mapped stock item. Use Change mapping for another one.")
+                        (not (and (number values "stock-item-revision") reviewed))
+                        (refuse "stock-item" "The stock item is archived or defective. Change the mapping instead.")
+                        :else
+                        [::products/reconfirm-product-mapping
+                         (assoc input :listing-revision reviewed :item-revision (number values "stock-item-revision"))]))))
 
 
 (defn command-input
-  "The command and its input for the selected rows, or the rows that cannot be sent with their reasons."
-  {:malli/schema [:=> [:cat :map] [:or [:tuple :qualified-keyword :map] [:map [:rows [:vector :map]]]]]}
-  [{:keys [command rows reason]}]
+  "The command and its input for the selected rows, or the rows that cannot be sent with their reasons. `known`
+  holds the connection's listing rows by id."
+  {:malli/schema [:=> [:cat :map [:map-of :string :map]] [:or [:tuple :qualified-keyword :map] [:map [:rows [:vector :map]]]]]}
+  [{:keys [command rows reason]} known]
   (let [rows (mapv #(update % :values (fn [values] (update-keys (or values {}) name))) rows)]
     (case command
+      ("change" "remove" "reconfirm")
+      (if (next rows)
+        {:rows (mapv (fn [{:keys [id]}] {:id id :path "status" :message (i18n/t "Send one listing at a time.")}) rows)}
+        (let [{:keys [id] :as row} (first rows)]
+          (mapping-input command row (get-in known [id :stock-item :stock-item-id]))))
       "defer" [::products/defer-product-match
                (cond-> {:external-product-ids (mapv :id rows)} (some-> reason str/trim not-empty) (assoc :reason (str/trim reason)))]
       "confirm" (let [missing (filter #(not (and (text (:values %) "stock-item") (number (:values %) "stock-item-revision"))) rows)]
@@ -361,12 +406,14 @@
 
 
 (defn- listings!
-  "Fails as unknown unless every listing is one of the connection's in the selected workspace."
-  {:malli/schema [:=> [:cat :map :string [:sequential :string]] :nil]}
+  "The connection's listing rows by id; fails as unknown unless every listing is one of the connection's in the
+  selected workspace."
+  {:malli/schema [:=> [:cat :map :string [:sequential :string]] [:map-of :string :map]]}
   [context connection-id ids]
-  (let [known (into #{} (map :external-product-id)
+  (let [known (into {} (map (juxt :external-product-id identity))
                     (:rows (runtime/read-model context ::products/mapped-and-remaining-listings {:connection-id connection-id})))]
-    (when-not (every? known ids)
+    (if (every? known ids)
+      known
       (access/failure 404 :unknown-listing "Unknown listing"))))
 
 
@@ -374,8 +421,7 @@
   {:route-data access :schema Command}
   [context {:keys [connectionId commandId rows] :as input}]
   (connection! context connectionId)
-  (listings! context connectionId (mapv :id rows))
-  (let [result (command-input input)]
+  (let [result (command-input input (listings! context connectionId (mapv :id rows)))]
     (if (map? result)
       (grid/rejected commandId (i18n/t "Some rows are not ready.") :rows (:rows result))
       (let [[command-id command-input] result]
@@ -447,7 +493,7 @@
 
 (defn query-mapping
   {:malli/schema [:=> [:cat :map :map] :map]}
-  [{:keys [request] :as context} {:keys [connection-id listing-id]}]
+  [context {:keys [connection-id listing-id]}]
   (let [connection (connection! context connection-id)
         details    (try (runtime/read-model context ::products/mapping-details-and-source-evidence {:external-product-id listing-id})
                         (catch ExceptionInfo error
@@ -462,107 +508,7 @@
                          (actors/enrich context (keep #(some->> % (hash-map :actor))
                                                       (concat [(get-in details [:mapping :confirmed-by]) (get-in details [:mapping :deferred-by])]
                                                               (map :changed-by (:history details))))))]
-    {:request request :connection connection :details details :catalogue catalogue :actors actors}))
-
-
-(def problems
-  {:stale                [409 "The listing, its mapping or the stock item changed since review. Review it again."]
-   :barcode-conflict     [409 "A barcode of the listing belongs to another product."]
-   :item-not-available   [422 "Choose an active, regular stock item of this workspace."]
-   :item-archived        [409 "The stock item is archived or defective. Change the mapping instead."]
-   :not-suspended        [409 "The mapping is not suspended; there is nothing to reconfirm."]
-   :already-mapped       [409 "The listing is already mapped. Change its mapping instead."]
-   :idempotency-conflict [409 "The listing, its mapping or the stock item changed since review. Review it again."]
-   :conflict             [409 "The listing, its mapping or the stock item changed since review. Review it again."]
-   :validation           [422 "Check the entered fields."]})
-
-
-(def MappingForm
-  (into team/Command [[:connection-id connections/ConnectionId] [:listing-id products/ListingId]
-                      [:mapping-revision products/Revision]]))
-
-
-(defn- selected!
-  {:malli/schema [:=> [:cat :map :uuid] :nil]}
-  [{:keys [request]} workspace-id]
-  (when-not (= workspace-id (get-in request [:tover/identity :workspace-id]))
-    (access/failure 409 :workspace-changed "Workspace changed. Reload this page before continuing.")))
-
-
-(defn- mapping-descriptor
-  {:malli/schema [:=> [:cat :map :qualified-keyword :map :map] :map]}
-  [context id {:keys [command-id workspace-id connection-id listing-id]} input]
-  (selected! context workspace-id)
-  (connection! context connection-id)
-  (listings! context connection-id [listing-id])
-  {:type :command :id id :command-id command-id :input (assoc input :external-product-id listing-id)
-   :then {:type :page :id ::mapping :path-params {:connection-id connection-id :listing-id listing-id}}})
-
-
-(def ^:private mapping-route
-  {:tover/access :workspace :bel/error-page ::mapping :tover/problems problems})
-
-
-(defaction change-mapping
-  "A blank stock item removes the mapping."
-  {:route-data mapping-route
-   :schema     (into MappingForm [[:stock-item {:optional true} [:maybe [:or [:= ""] [:re #"\A.{1,180}@[1-9]\d{0,9}\z"]]]]])}
-  [context {:keys [mapping-revision stock-item] :as input}]
-  (let [at (some-> stock-item not-empty (str/last-index-of "@"))]
-    (mapping-descriptor context ::products/change-product-mapping input
-                        (cond-> {:mapping-revision mapping-revision}
-                          at (assoc :stock-item-id (subs stock-item 0 at) :item-revision (parse-long (subs stock-item (inc at))))))))
-
-
-(defaction reconfirm-mapping
-  {:route-data mapping-route
-   :schema     (into MappingForm [[:listing-revision products/Revision] [:item-revision products/Revision]])}
-  [context input]
-  (mapping-descriptor context ::products/reconfirm-product-mapping input (select-keys input [:mapping-revision :listing-revision :item-revision])))
-
-
-(defn- hidden
-  {:malli/schema [:=> [:cat :string :any] schema/Hiccup]}
-  [name value]
-  [:input {:type "hidden" :name name :value (str value)}])
-
-
-(defn- mapping-fields
-  {:malli/schema [:=> [:cat :map :string :string :int] [:vector :any]]}
-  [request connection-id listing-id mapping-revision]
-  (into (team/command-fields request)
-        [(hidden "connection-id" connection-id) (hidden "listing-id" listing-id) (hidden "mapping-revision" mapping-revision)]))
-
-
-(defn- mapping-actions
-  "Change (to another stock item or none), Remove and, for a suspended mapping, Reconfirm."
-  {:malli/schema [:=> [:cat :map] [:maybe schema/Hiccup]]}
-  [{:keys [request connection details catalogue]}]
-  (let [{:keys [state mapping listing stock-item]} details
-        connection-id (:connection-id connection)
-        listing-id (:external-product-id listing)
-        revision (:mapping-revision mapping)
-        fields #(mapping-fields request connection-id listing-id revision)
-        item (get-in catalogue [:items (:stock-item-id stock-item)])]
-    (when (contains? #{"confirmed" "suspended"} state)
-      [:section.management-section {:aria-labelledby "mapping-actions-title"}
-       [:div.management-section-heading [:h2#mapping-actions-title (i18n/t "Change the mapping")]]
-       [:div.management-form
-        (apply form request ::change-mapping (i18n/t "Change")
-               (conj (fields)
-                     [:label (i18n/t "Stock item")
-                      (into [:select {:name "stock-item" :required true}]
-                            (for [option (sort-by (comp str/lower-case :label)
-                                                  (map #(item-option catalogue %) (filter #(choosable? catalogue %) (vals (:items catalogue)))))]
-                              [:option {:value    (str (:value option) "@" (:revision option))
-                                        :selected (= (:value option) (:stock-item-id stock-item))}
-                               (:label option)]))]))]
-       (when (and (= "suspended" state) item)
-         [:div.management-buttons
-          (apply form request ::reconfirm-mapping (i18n/t "Reconfirm")
-                 (conj (fields) (hidden "listing-revision" (:listing-revision listing)) (hidden "item-revision" (:revision item))))])
-       [:div.management-footer
-        (apply form request ::change-mapping (i18n/t "Remove mapping") (conj (fields) (hidden "stock-item" "")))]])))
+    {:connection connection :details details :catalogue catalogue :actors actors}))
 
 
 (def ^:private guard-rules
@@ -596,7 +542,7 @@
    :schema     [:map [:connection-id connections/ConnectionId] [:listing-id products/ListingId]]
    :route-data access
    :query      query-mapping}
-  [{:keys [connection details catalogue actors] :as props}]
+  [{:keys [connection details catalogue actors]}]
   (let [{:keys [listing state mapping history stock-item operations other-listings]} details
         {:keys [evidence]} listing
         connection-id (:connection-id connection)]
@@ -632,7 +578,7 @@
                         (for [{:keys [rule before after]} reasons]
                           [:tr [:td.management-primary (i18n/t (guard-rules rule rule))]
                            [:td.management-diff-before (reason-value before)] [:td.management-diff-after (reason-value after)]]))]]])
-             (mapping-actions props)
+             [:p [:a {:href (products-path connection-id state)} (i18n/t "Open in the matching table")]]
              [:section.management-section {:aria-labelledby "identifiers-title"}
               [:div.management-section-heading [:h2#identifiers-title (i18n/t "Identifiers")]]
               [:div.management-table-wrap

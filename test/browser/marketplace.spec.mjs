@@ -17,7 +17,7 @@ test('select three rows with the keyboard, confirm, reload: still confirmed (400
   await page.setViewportSize({ width: 400, height: 860 });
   await signIn(page);
   await page.goto(connection);
-  const unmatched = page.getByRole('link', { name: '4', exact: true });
+  const unmatched = page.getByRole('link', { name: '5', exact: true });
   await expect(unmatched).toHaveAttribute('href', `${connection}/products`);
   // Keyboard only from here: follow the link, move through the table with arrows, tick with Space.
   await unmatched.focus();
@@ -97,5 +97,33 @@ test('confirm several warehouses, reload: still confirmed', async ({ page }) => 
   await page.goto(`${connection}/warehouses?state=confirmed`);
   await ready(page, 'marketplace-warehouses-confirmed');
   for (const name of ['Khorugvino', 'Tver', 'Seller stock']) await expect(row(page, name)).toContainText('Mapped');
+  expect(errors).toEqual([]);
+});
+
+// Board 42 · a suspended mapping is reconfirmed in the table, not on a details form.
+test('reconfirm a suspended row in the table, reload: confirmed', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await signIn(page);
+  await page.goto(`${connection}/products?state=suspended`);
+  await ready(page, 'marketplace-products-suspended');
+  await expect(page.locator('.marketplace-page form')).toHaveCount(0);
+  await expect(row(page, 'Ladle (Ozon)')).toContainText('Suspended');
+  await expect(row(page, 'Ladle (Ozon)')).toContainText('Ladle');
+  const id = await grid(page).evaluate(node => node.model.rows.find(row => row.label === 'Ladle (Ozon)').id);
+  await workbench(page).evaluate((node, selected) => node.select([selected]), id);
+  await expect(page.locator('.marketplace-selected')).toHaveText('1 selected');
+  await page.getByRole('button', { name: 'Reconfirm', exact: true }).click();
+  await expect.poll(() => grid(page).evaluate(node => node.model.rows.length)).toBe(0);
+  await expect(page.locator('.catalogue-notice')).toHaveText('');
+
+  await page.reload();
+  await ready(page, 'marketplace-products-suspended');
+  await expect.poll(() => grid(page).evaluate(node => node.model.rows.length)).toBe(0);
+  await page.goto(`${connection}/products?state=confirmed`);
+  await ready(page, 'marketplace-products-confirmed');
+  await expect(row(page, 'Ladle (Ozon)')).toContainText('Mapped');
+  await page.goto(`${connection}/products/${encodeURIComponent(id)}`);
+  await expect(page.locator('section.management-page form')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Open in the matching table' })).toHaveAttribute('href', `${connection}/products?state=confirmed`);
   expect(errors).toEqual([]);
 });

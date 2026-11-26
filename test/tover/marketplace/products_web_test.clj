@@ -220,18 +220,95 @@
       (let [html (page ctx ::web/mapping {:connection-id c :listing-id mug})]
         (is (str/includes? html "Mug / blue"))
         (is (str/includes? html "4600000000017"))
-        (is (str/includes? html (bel/action-url ::web/change-mapping))))
-      (testing "Change and Remove send Change Product Mapping and reopen the details"
-        (let [form   {:connection-id c :listing-id mug :mapping-revision 1}
-              change (forms/act ctx ::web/change-mapping (assoc form :command-id "change-1" :stock-item "mug-2@1"))]
-          (is (= [::products/change-product-mapping {:mapping-revision 1 :stock-item-id "mug-2" :item-revision 1 :external-product-id mug}
-                  {:type :page :id ::web/mapping :path-params {:connection-id c :listing-id mug}}]
-                 ((juxt :id :input :then) change)))
-          (is (= {:mapping-revision 1 :external-product-id mug}
-                 (:input (forms/act ctx ::web/change-mapping (assoc form :stock-item "")))))))
+        (is (not (str/includes? html "<form")) "read-only evidence and history")
+        (is (not (str/includes? html "<select")))
+        (is (str/includes? html "href=\"/settings/marketplace/c-1/products?state=confirmed\"") "a link back to its table"))
       (testing "a listing of another connection is not found here"
         (is (= 404 (try (page ctx ::web/mapping {:connection-id "c-2" :listing-id mug}) nil
                         (catch clojure.lang.ExceptionInfo e (:status (ex-data e))))))))))
+
+
+(defn- suspend!
+  "Mug confirmed to mug-1, then suspended by the guard at mapping revision 2."
+  {:malli/schema [:=> [:cat :map] :nil]}
+  [ctx]
+  (forms/accept! ctx (act ctx {:command "confirm" :rows [{:id mug :revision 1 :values {:stock-item "mug-1" :stock-item-revision "1"}}]}))
+  (listings/seed! ctx ::products/product-mapping-suspended
+                  {:external-product-id mug :mapping-revision-id   (products/revision-id mug 2) :connection-id c
+                   :change              "suspended" :stock-item-id "mug-1" :listing-revision                   1           :item-revision 1           :identity-basis "{}"
+                   :reasons             (observations/write-json [{:rule "barcode-moved" :before "4600000000017" :after "none"}])
+                   :mapping-revision    2 :state                   "suspended"                  :changed-by    "connector" :changed-at    listings/at}))
+
+
+(deftest mapped-rows-are-actionable-in-the-table
+  (with-listings
+    (fn [ctx]
+      (forms/accept! ctx (act ctx {:command "confirm" :rows [{:id mug :revision 1 :values {:stock-item "mug-1" :stock-item-revision "1"}}]}))
+      (let [row  (get (rows ctx "confirmed") mug)
+            html (page ctx ::web/product-matching {:connection-id c :state "confirmed"})]
+        (is (= {:value "mug-1" :label "Mug / blue" :revision 1} (get-in row [:cells :stock-item])) "the picker starts at the mapped item")
+        (is (= [1 {:listing 1}] ((juxt :revision :revisions) row)) "the mapping revision, and the reviewed listing revision")
+        (is (not (str/includes? html "<form")))
+        (doseq [command ["change" "remove"]]
+          (is (re-find (re-pattern (str "data-command=\"" command "\" disabled data-each=\"true\"")) html) "one command per selected row"))
+        (is (not (str/includes? html "data-command=\"reconfirm\"")) "Reconfirm only for suspended rows"))
+      (testing "Change sends Change Product Mapping with the picked item"
+        (let [descriptor (act ctx {:command "change" :commandId "change-1" :rows [{:id     mug :revision 1 :revisions {:listing 1}
+                                                                                   :values {:stock-item "mug-2" :stock-item-revision "1"}}]})]
+          (is (= [::products/change-product-mapping {:external-product-id mug :mapping-revision 1 :stock-item-id "mug-2" :item-revision 1}
+                  ::grid/committed]
+                 [(:id descriptor) (:input descriptor) (get-in descriptor [:then :id])]))
+          (is (= ::grid/failed (get-in descriptor [:catch :id])))
+          (forms/accept! ctx descriptor)
+          (is (= "mug-2" (get-in (rows ctx "confirmed") [mug :cells :stock-item :value])))))
+      (testing "a blank picker is not sent as Change"
+        (let [answer (act ctx {:command "change" :rows [{:id mug :revision 2 :values {:stock-item ""}}]})]
+          (is (= :signals (:type answer)))
+          (is (str/includes? (get-in answer [:data :_marketplaceCommandJson]) "Choose a stock item."))))
+      (testing "Remove sends Change Product Mapping without an item"
+        (let [descriptor (act ctx {:command "remove" :commandId "remove-1" :rows [{:id mug :revision 2 :values {:stock-item "mug-2" :stock-item-revision "1"}}]})]
+          (is (= {:external-product-id mug :mapping-revision 2} (:input descriptor)))
+          (forms/accept! ctx descriptor)
+          (is (contains? (rows ctx) mug) "back among the unmatched")))
+      (testing "one row per command"
+        (let [answer (act ctx {:command "remove" :rows [{:id mug :revision 3} {:id odd :revision 1}]})]
+          (is (str/includes? (get-in answer [:data :_marketplaceCommandJson]) "Send one listing at a time.")))))))
+
+
+(deftest reconfirm-a-suspended-row-in-the-table
+  (with-listings
+    (fn [ctx]
+      (suspend! ctx)
+      (let [row  (get (rows ctx "suspended") mug)
+            html (page ctx ::web/product-matching {:connection-id c :state "suspended"})]
+        (is (= [2 {:listing 1}] ((juxt :revision :revisions) row)))
+        (doseq [command ["reconfirm" "change" "remove"]]
+          (is (str/includes? html (str "data-command=\"" command "\""))))
+        (testing "an edited picker is not reconfirmed"
+          (let [answer (act ctx {:command "reconfirm" :rows [{:id     mug :revision 2 :revisions {:listing 1}
+                                                              :values {:stock-item "mug-2" :stock-item-revision "1"}}]})]
+            (is (str/includes? (get-in answer [:data :_marketplaceCommandJson]) "Reconfirm keeps the mapped stock item."))))
+        (let [descriptor (act ctx {:command "reconfirm" :commandId "reconfirm-1" :rows [{:id     mug :revision 2 :revisions {:listing 1}
+                                                                                         :values {:stock-item "mug-1" :stock-item-revision "1"}}]})]
+          (is (= [::products/reconfirm-product-mapping {:external-product-id mug :mapping-revision 2 :listing-revision 1 :item-revision 1}]
+                 ((juxt :id :input) descriptor)))
+          (forms/accept! ctx descriptor)
+          (is (empty? (rows ctx "suspended")))
+          (is (= ["Mapped"] (take 1 (get-in (rows ctx "confirmed") [mug :cells :status])))))))))
+
+
+(deftest a-stale-reconfirm-renders-on-its-row
+  (with-listings
+    (fn [ctx]
+      (suspend! ctx)
+      (let [input  {:connectionId c :commandId "attempt-3" :command "reconfirm"
+                    :rows         [{:id mug :revision 1 :revisions {:listing 1} :values {:stock-item "mug-1" :stock-item-revision "1"}}]}
+            caught (handler/execute-action ctx ::web/command input)
+            answer ((:bel/fn (bel/get-view ::grid/failed)) (:input caught))]
+        (is (= ::grid/failed (:id caught)))
+        (is (= [{:id mug :path "status" :message "The listing, its mapping or the stock item changed since review. Review it again."}]
+               (:rows answer)))
+        (is (contains? (rows ctx "suspended") mug) "nothing was accepted")))))
 
 
 (deftest the-pages-need-the-selected-workspace
@@ -303,7 +380,9 @@
       (let [status #(try (%) nil (catch clojure.lang.ExceptionInfo e (:status (ex-data e))))]
         (doseq [id ["c-2:7" "c-1:999"]]
           (is (= 404 (status #(act ctx {:command "defer" :rows [{:id mug :revision 1} {:id id :revision 1}]})))))
-        (is (= 404 (status #(forms/act ctx ::web/change-mapping {:connection-id c :listing-id "c-2:7" :mapping-revision 1 :stock-item ""}))))
+        (doseq [command ["change" "remove" "reconfirm"]]
+          (is (= 404 (status #(act ctx {:command command :rows [{:id     "c-2:7" :revision 1 :revisions {:listing 1}
+                                                                 :values {:stock-item "mug-1" :stock-item-revision "1"}}]})))))
         (is (= #{mug plate-listing odd} (set (keys (rows ctx)))) "nothing was executed")))))
 
 

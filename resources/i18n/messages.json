@@ -1207,7 +1207,10 @@
     "Listing identifiers changed": "Listing identifiers changed",
     "Reconfirmed": "Reconfirmed",
     "Stock item archived": "Stock item archived",
-    "Stock item changed": "Stock item changed"
+    "Stock item changed": "Stock item changed",
+    "Reconfirm keeps the mapped stock item. Use Change mapping for another one.": "Reconfirm keeps the mapped stock item. Use Change mapping for another one.",
+    "Send one listing at a time.": "Send one listing at a time.",
+    "Open in the matching table": "Open in the matching table"
   },
   "ru": {
     "Stock": "Остатки",
@@ -2421,6 +2424,9 @@
     "Listing identifiers changed": "Изменились идентификаторы карточки",
     "Reconfirmed": "Подтверждено повторно",
     "Stock item archived": "Складская позиция в архиве",
-    "Stock item changed": "Складская позиция изменилась"
+    "Stock item changed": "Складская позиция изменилась",
+    "Reconfirm keeps the mapped stock item. Use Change mapping for another one.": "«Подтвердить снова» оставляет сопоставленную складскую позицию. Для другой позиции используйте «Изменить сопоставление».",
+    "Send one listing at a time.": "Отправляйте по одной карточке.",
+    "Open in the matching table": "Открыть в таблице сопоставления"
   }
 }

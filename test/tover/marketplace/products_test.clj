@@ -174,7 +174,7 @@
             ["deferred" (:external-product-id bowl)] ["confirmed" (:external-product-id mug)]]
            (mapv (juxt :state :external-product-id) (:rows all))))
     (is (= {"confirmed" 1 "unmatched" 2 "deferred" 1 "suspended" 1} (:counts all)))
-    (is (= {:stock-item-id "mug-1" :product-id "mug" :product-name "Mug" :archived? false}
+    (is (= {:stock-item-id "mug-1" :revision 1 :product-id "mug" :product-name "Mug" :archived? false}
            (:stock-item (last (:rows all)))))
     (is (= "later" (:reason (first (:rows (read {:state "deferred"}))))))
     (is (= [(:external-product-id mug)] (ids (:rows (read {:state "confirmed"})))))))
@@ -862,6 +862,58 @@
              (offending #(register-rows [(assoc row :listing-revision 2) (new-row blue-cup :product-name "Cup" :unit "")] facts)))))))
 
 
+;; An earlier item of the listing that cannot take a mapping leaves room for a new one, never a dead end.
+
+
+(defn- with-items
+  {:malli/schema [:=> [:cat :map [:* :map]] :map]}
+  [facts & items]
+  (merge facts {:catalogue (update catalogue :stock-items into items)}))
+
+
+(defn- own-item
+  {:malli/schema [:=> [:cat :string [:* :any]] :map]}
+  [id & {:as item}]
+  (merge {:stock-item-id id :product-id "mug" :condition "regular" :status "active" :revision 1} item))
+
+
+(defn- registered-items
+  {:malli/schema [:=> [:cat :map] [:vector :string]]}
+  [plan]
+  (mapv :stock-item-id (events-of plan :tover.inventory.stock-items.model/stock-item-registered)))
+
+
+(deftest register-after-an-archived-item
+  (let [row   (new-row red-cup :product-name "Cup" :barcodes ["4600000001001"])
+        facts (listings-of red-cup)]
+    (testing "the archived item is not suggested and the new one takes the next free id"
+      (let [plan (register-rows [row] (with-items facts (own-item "listing:c:9101" :status "archived")))]
+        (is (= ["listing:c:9101:2"] (registered-items plan)))
+        (is (= [["c:9101" "listing:c:9101:2" "confirmed"]]
+               (mapv (juxt :external-product-id :stock-item-id :state) (events-of plan ::products/external-product-mapped))))))
+    (testing "every earlier one archived or defective"
+      (is (= ["listing:c:9101:3"]
+             (registered-items (register-rows [row] (with-items facts (own-item "listing:c:9101" :status "archived")
+                                                      (own-item "listing:c:9101:2" :condition "defective")))))))
+    (testing "an available later one is offered instead and stays the only one"
+      (is (= [["c:9101" :item-exists]]
+             (offending #(register-rows [row] (with-items facts (own-item "listing:c:9101" :status "archived")
+                                                (own-item "listing:c:9101:2")))))))))
+
+
+(deftest register-after-an-item-under-a-deleted-product
+  (let [row   (new-row red-cup :product-name "Cup" :barcodes ["4600000001001"])
+        facts (merge (listings-of red-cup)
+                     {:catalogue (-> catalogue
+                                     (update :products conj {:product-id "gone" :name "Gone" :status "deleted" :revision 2})
+                                     (update :stock-items conj (own-item "listing:c:9101" :product-id "gone")))})]
+    (is (= ["listing:c:9101:2"] (registered-items (register-rows [row] facts))))
+    (testing "and under an archived product"
+      (is (= ["listing:c:9101:2"]
+             (registered-items (register-rows [row] (update-in facts [:catalogue :products] conj
+                                                               {:product-id "gone" :name "Gone" :status "archived" :revision 3}))))))))
+
+
 (defn seed-all!
   "Applies every event in one transaction."
   {:malli/schema [:=> [:cat :map [:sequential :map]] :nil]}
@@ -908,6 +960,24 @@
         (is (= [(str "listing:" c ":1")] (stock-item-ids ctx)) "one item exists for the listing")
         (is (= :already-mapped (rejection #(execute! ctx ::products/register-product-for-external-listing "attempt-2" input))))
         (is (= [(str "listing:" c ":1")] (stock-item-ids ctx)))))))
+
+
+(deftest retry-after-an-archived-item
+  (support/with-store
+    (fn [repo _]
+      (let [ctx   (context repo)
+            input {:rows [{:external-product-id (str c ":1") :listing-revision 1 :product-name "Cup" :unit "pcs"}]}]
+        (seed-catalogue! ctx)
+        (seed! ctx :tover.inventory.stock-items.model/stock-item-registered
+               {:stock-item-id (str "listing:" c ":1") :product-id "mug" :condition "regular" :status "archived" :revision 2})
+        (let [first-receipt (execute! ctx ::products/register-product-for-external-listing "attempt-1" input)]
+          (is (= first-receipt (execute! ctx ::products/register-product-for-external-listing "attempt-1" input))
+              "the same attempt recovers its outcome"))
+        (is (= [(str "listing:" c ":1") (str "listing:" c ":1:2")] (filterv #(clojure.string/starts-with? % "listing:") (stock-item-ids ctx)))
+            "one new item next to the archived one")
+        (is (= {:state "confirmed" :stock-item {:stock-item-id (str "listing:" c ":1:2")}}
+               (-> (runtime/read-model ctx ::products/mapping-details-and-source-evidence {:external-product-id (str c ":1")})
+                   (select-keys [:state :stock-item]) (update :stock-item select-keys [:stock-item-id]))))))))
 
 
 (deftest two-thousand-rows

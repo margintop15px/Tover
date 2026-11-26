@@ -28,9 +28,11 @@
 
 (def Row
   "Cell values by column key: text, a vector of lines, an option value, or `{:value :label}` for a reference.
-  Row `:options` override a column's options for that row; `:href` opens the row's details page."
+  Row `:options` override a column's options for that row; `:href` opens the row's details page; `:revisions` are
+  further reviewed revisions the row sends with its command."
   [:map
    [:id :string] [:revision :int] [:label {:optional true} :string]
+   [:revisions {:optional true} [:map-of :keyword :int]]
    [:cells [:map-of :keyword :any]]
    [:findings {:optional true} [:map-of :keyword :string]]
    [:options {:optional true} [:map-of :keyword [:vector Option]]]
@@ -39,7 +41,9 @@
 
 
 (def SelectionAction
-  [:map [:command :string] [:label :string] [:primary? {:optional true} :boolean] [:reason? {:optional true} :boolean]])
+  "`:each?` sends one command per selected row, one after another, for commands about one record."
+  [:map [:command :string] [:label :string] [:primary? {:optional true} :boolean] [:reason? {:optional true} :boolean]
+   [:each? {:optional true} :boolean]])
 
 
 (def Filter
@@ -95,16 +99,17 @@
      :columns (cond->> (mapv (fn [{:keys [key label width]}] {:key (name key) :label (i18n/t label) :width (or width 160)}) columns)
                 select? (into [{:key "select" :label "" :width 40}]))
      :rows    (vec (map-indexed
-                     (fn [index {:keys [id revision label href selectable?] :or {selectable? true} :as row}]
+                     (fn [index {:keys [id revision revisions label href selectable?] :or {selectable? true} :as row}]
                        (let [cells (mapv #(cell % row) columns)
                              cells (cond-> cells
                                      href (update 0 assoc :actions [{:type  "marketplace-open"      :href href :icon "›"
                                                                      :label (i18n/t "Open details")}]))]
-                         {:id    id :groupId id :label (or label id) :revision revision :rowIndex index :groupIndex index
-                          :cells (cond->> cells
-                                   select? (into [(if selectable?
-                                                    {:selection {:id id :label (i18n/t "Select {name}" {:name (or label id)})}}
-                                                    {:value "" :readOnly true})]))}))
+                         (cond-> {:id    id :groupId id :label (or label id) :revision revision :rowIndex index :groupIndex index
+                                  :cells (cond->> cells
+                                           select? (into [(if selectable?
+                                                            {:selection {:id id :label (i18n/t "Select {name}" {:name (or label id)})}}
+                                                            {:value "" :readOnly true})]))}
+                           revisions (assoc :revisions revisions))))
                      rows))}))
 
 
@@ -197,13 +202,14 @@
      [:span.marketplace-selected.quiet {:role "status"}]]
     (when (seq selection-actions)
       [:div.sheet-actions
-       (for [{:keys [command label primary? reason?]} selection-actions]
+       (for [{:keys [command label primary? reason? each?]} selection-actions]
          (list
            (when reason?
              [:input.marketplace-reason {:type        "text" :maxlength 500 :data-command-reason command
                                          :placeholder (i18n/t "Reason (optional)") :aria-label (i18n/t "Reason (optional)")}])
-           [:button {:type  "button" :data-command command :disabled true
-                     :class (if primary? "catalogue-save-new" "catalogue-discard-new")}
+           [:button (cond-> {:type  "button" :data-command command :disabled true
+                             :class (if primary? "catalogue-save-new" "catalogue-discard-new")}
+                      each? (assoc :data-each "true"))
             (i18n/t label)]))])]
    [:div.catalogue-notice {:role "status"}]
    [:inventory-grid.catalogue-grid.marketplace-grid {:id (str id "-grid") :data-ignore-morph "" :aria-label (i18n/t label)}]])
