@@ -29,7 +29,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 
 **Files:** Create `operations/corrections.clj`, `test/tover/marketplace/corrections_test.clj`; modify `provenance.clj`. Board slices 7, 8.
 
-**Interfaces:** Consumes `proposals/proposal`, `sync/::source-revisions`, `provenance/::source-acceptances`, `entries` amendments. Produces `corrections/difference [accepted-proposal new-proposal] → nil | {:kind "amendment" :entry} | {:kind "cancellation"}` comparing only lines, quantities, warehouses and time, resolved with the accepted mapping revisions; command `propose-source-correction {:source-operation-id :revision}`; event `source-correction-proposed`, model `::source-corrections` id `:record-id`; processor `source-correction-intake`. Entry id `"import:<source-operation-id>@<record-revision>"`, `:amends` the latest record revision.
+**Interfaces:** Consumes `proposals/proposal`, `sync/::source-revisions`, `provenance/::source-acceptances`, `entries` amendments. Produces `corrections/difference [accepted-proposal new-proposal] → nil | {:kind "amendment" :entry} | {:kind "cancellation"}` comparing only lines, quantities, warehouses and time, resolved with the accepted mapping revisions; command `propose-source-correction {:source-operation-id :revision}`; event `source-correction-proposed`, model `::source-corrections` id `:record-id`; processor `source-correction-intake`. Entry id `"correction:<source-operation-id>@<record-revision>"` (not `import:`: plan 4 refuses `:amends` and cancel on `import:` entries and parses the source id from that prefix), `:amends` the latest record revision. Plan 4 carry-in: `source-operation-accepted :revision` currently records the import row revision; record the revision the accepted entry reflects, and compare against that.
 
 - [ ] **Step 1: Failing tests:** `quantity-changed` (one amendment to 2, stock unchanged), `newer-revision` (same entry, now 1), `edited-proposal-is-kept-with-a-conflict`, `members-own-edit-is-not-proposed-back`, `status-and-price-changes-propose-nothing`, `withdrawn-effect-is-a-cancellation`, `cancelled-after-handover-proposes-nothing`, `already-cancelled`, `discarded-is-not-repeated-for-the-same-revision`, `change-back-withdraws-the-unedited-proposal`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat(marketplace): source corrections`.
@@ -38,7 +38,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 
 **Files:** `operations/model.clj`, `inventory/operations/web.clj` (source badge, provenance panel and link; there is no marketplace operations page), tests. Board slice 9.
 
-**Interfaces:** Produces read model `accepted-imported-operations-and-provenance {:connection-id}`: record, source operation and revision, accepted by, edited, mapping per line, later revisions, pending proposals.
+**Interfaces:** Produces read model `accepted-imported-operations-and-provenance {:connection-id}`: record, source operation and revision, accepted by, edited, mapping per line, later revisions, pending proposals. The source badge also marks accepted imported records on `/operations` (plan 4 left them unbadged).
 
 - [ ] **Step 1:** Failing tests for one automatic and one edited acceptance, and a record with a pending amendment. **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat(marketplace): provenance of accepted imports`.
 
@@ -69,7 +69,7 @@ All of [the roadmap's rules](2026-11-25-marketplace-0-roadmap.md#rules-binding-e
 
 **Files:** `moves/model.clj`, `moves/web.clj`, tests. Board slice c.
 
-**Interfaces:** Produces `propose-detected-move {:connection-id :stock-item-id :last-agreeing-run :current-run}` (moves computed on commit facts), event `detected-move-proposed`, model `::detected-moves` id `"<connection>|<item>|<last-agreeing-run>"` (`:current-run :moves(JSON) :entries(JSON) :proposed-at`); entry id `"move:<key>|<from>|<to>"`; processor `move-detection`; page `/settings/marketplace/:connection-id/differences`.
+**Interfaces:** Produces `propose-detected-move {:connection-id :stock-item-id :last-agreeing-run :current-run}` (moves computed on commit facts), event `detected-move-proposed`, model `::detected-moves` id `"<connection>|<item>|<last-agreeing-run>"` (`:current-run :moves(JSON) :entries(JSON) :proposed-at`); entry id `"move:<key>|<from>|<to>"`; processor `move-detection`; Operations view `/operations/marketplace/:connection-id/differences`, listed in `operations-views` (user ruling 2026-11-26: matching and acceptance live on Operations, never Settings).
 
 - [ ] **Step 1: Failing tests:** `member-accepts` (dated one second after the last agreeing snapshot; stock changes only then), `still-there-next-day`, `explained-later` (withdrawn), `different-moves-replace-unedited`, `edited-transfer-is-kept`, `discarded-is-not-repeated`, `paused-connection`, `stale-when-a-newer-pass-exists`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS; browser check. **Step 5:** Commit `feat(marketplace): detected moves`; slices → `ready`.
