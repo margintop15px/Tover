@@ -443,3 +443,70 @@
           (is (= 8 (balance "red" "home")))
           (testing "then transit shows the 2 accepted units"
             (is (= [[sale "1" "red" 2 "travelling" true]] (rows (read-transit ctx))))))))))
+
+
+(defn- suspend!
+  "The Mapping Guard suspends listing 100, as the connector does."
+  {:malli/schema [:=> [:cat :map] :any]}
+  [as-connector]
+  (runtime/execute! as-connector ::guard/suspend-product-mapping
+                    {:command-id "suspend"
+                     :input      {:external-product-id (str c ":100") :mapping-revision 1
+                                  :reasons             [{:rule "listing-identity-changed" :before "1" :after "2"}]}}))
+
+
+(defn- remap!
+  "A member moves listing 100 from red to blue."
+  {:malli/schema [:=> [:cat :map] :any]}
+  [ctx]
+  (runtime/execute! ctx ::products/change-product-mapping
+                    {:command-id "remap"
+                     :input      {:external-product-id (str c ":100") :mapping-revision 1 :stock-item-id "blue" :item-revision 1}}))
+
+
+(defn- return-follows-the-sale
+  "After `change!`, a return of 1 of P's 2 accepted red mugs: it takes its unit from the accepted red line, counts
+  once and blocks archiving red."
+  {:malli/schema [:=> [:cat :any fn?] :nil]}
+  [repo change!]
+  (let [{:keys [ctx observe! intake!] :as s} (setup! repo)]
+    (accepted-sale! s :quantity "2")
+    (change! s)
+    (observe! (return-of))
+    (intake!)
+    (let [read (read-transit ctx)]
+      (is (= [[sale "1" "red" 1 "delivered" true] [return "1" "red" 1 "returning" true]] (rows read)))
+      (is (= {"delivered" 1 "returning" 1} (:totals read)) "the returning unit is counted once")
+      (is (= {"red" [return]} (transit/blocking-items (:shipments read))))
+      (is (contains? (set (archive-blockers ctx)) return)))
+    nil))
+
+
+(deftest return-after-a-remap-follows-the-accepted-sale
+  (support/with-store
+    (fn [repo _]
+      (testing "Given listing 100 moved to blue after the Sale of 2 red mugs, then a return of 1 of them"
+        (return-follows-the-sale repo (fn [{:keys [ctx]}] (remap! ctx)))))))
+
+
+(deftest return-after-a-suspension-follows-the-accepted-sale
+  (support/with-store
+    (fn [repo _]
+      (testing "Given listing 100 suspended after the Sale of 2 red mugs, then a return of 1 of them"
+        (return-follows-the-sale repo (fn [{:keys [as-connector]}] (suspend! as-connector)))))))
+
+
+(deftest a-line-added-at-acceptance-has-its-own-key
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake!]} (setup! repo)
+            id (provenance/import-entry-id sale)]
+        (testing "Given P of 2 red mugs whose Sale a member accepted with an added line of 1 blue"
+          (observe! (posting :status "delivering" :terminal false :quantity "2"))
+          (intake!)
+          (save! ctx id 1 {:occurred-at "2026-11-10T09:00:00Z"
+                           :lines       [{:line-id (str sale "/1") :stock-item-id "red" :warehouse-id "home" :quantity 2}
+                                         {:line-id "extra" :stock-item-id "blue" :warehouse-id "home" :quantity 1}]})
+          (accept-all! ctx "acc-added" [[id 2]])
+          (testing "then each line keeps a key of its own"
+            (is (= [[sale "1" "red" 2 "travelling" true] [sale "added-1" "blue" 1 "travelling" true]] (rows (read-transit ctx))))))))))

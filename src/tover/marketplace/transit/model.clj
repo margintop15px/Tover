@@ -23,6 +23,7 @@
     [tover.marketplace.operations.model :as operations]
     [tover.marketplace.operations.proposals :as proposals]
     [tover.marketplace.operations.steps :as steps]
+    [tover.marketplace.provenance :as provenance]
     [tover.marketplace.sync.model :as sync]
     [tover.marketplace.sync.observations :as observations])
   (:import
@@ -54,8 +55,8 @@
 
 
 (def Facts
-  "`steps/Facts` of one connection (`operations/load-facts`), with its `connection-id`."
-  [:map [:connection-id Ref]])
+  "`steps/Facts` of one connection (`operations/load-facts`), with its `connection-id` and `entry-lines`."
+  [:map [:connection-id Ref] [:entry-lines {:optional true} [:map-of :string [:vector :string]]]])
 
 
 ;; Statuses
@@ -140,7 +141,8 @@
     (into {} (for [[record-id revisions] (group-by :record-id records)
                    :let                  [ordered (sort-by :revision revisions)
                                           facts (or (last (remove :cancelled ordered)) (last ordered))]]
-               [record-id {:cancelled   (boolean (:cancelled (last ordered)))
+               [record-id {:record-id   record-id :revision (:revision facts)
+                           :cancelled   (boolean (:cancelled (last ordered)))
                            :occurred-at (:occurred-at facts)
                            :lines       (into {} (map (juxt :position identity)) (by-revision (:record-revision-id facts)))}]))))
 
@@ -153,15 +155,48 @@
     (when-not (:cancelled record) record)))
 
 
+(defn- record-entry-id
+  "The shared entry whose acceptance gave the record's facts revision: the import itself, or the source correction
+  that amended the revision before it. A member's own amendment has another id, and is not found."
+  {:malli/schema [:=> [:cat :map :string] [:maybe :string]]}
+  [{:keys [record-id revision]} source-operation-id]
+  (if (= 1 revision) record-id (when (and revision (< 1 revision)) (provenance/correction-entry-id source-operation-id (dec revision)))))
+
+
 (defn- accepted-lines
-  "The lines of a live accepted record in position order: the stock item and quantity whose stock it changed, keyed
-  by the source line at the same position."
-  {:malli/schema [:=> [:cat :map [:vector :map]] [:vector :map]]}
-  [record source-lines]
-  (vec (for [[position {:keys [stock-item-id quantity-change]}] (sort-by key (:lines record))]
-         (cond-> {:line-key       (or (:line-key (get source-lines position)) (str position)) :stock-item-id stock-item-id
-                  :after-baseline true}
-           quantity-change (assoc :quantity (abs quantity-change))))))
+  "The lines of a live accepted record in position order: the stock item and quantity whose stock it changed. Each
+  is keyed by its draft line's source line key (`<source-operation-id>/<line-key>`) with that source line's listing;
+  a line a member added, or one whose draft is not found, is keyed `added-<position>`."
+  {:malli/schema [:=> [:cat :map :map :string [:vector :map]] [:vector :map]]}
+  [facts record source-operation-id source-lines]
+  (let [line-ids (get-in facts [:entry-lines (record-entry-id record source-operation-id)])
+        prefix   (str source-operation-id "/")
+        listing  (into {} (map (juxt :line-key :external-product-id)) source-lines)]
+    (vec (for [[position {:keys [stock-item-id quantity-change]}] (sort-by key (:lines record))
+               :let [line-id (get line-ids position)
+                     line-key (when (some-> line-id (str/starts-with? prefix)) (subs line-id (count prefix)))]]
+           (cond-> {:line-key (or line-key (str "added-" position)) :stock-item-id stock-item-id :after-baseline true}
+             quantity-change (assoc :quantity (abs quantity-change))
+             (listing line-key) (assoc :external-product-id (listing line-key)))))))
+
+
+(defn- posting-items
+  "A return's lines with the stock item its posting's live accepted Sale holds for the same listing: the units that
+  come back are those that left. A line whose listing the Sale does not hold, or a return whose posting has no live
+  Sale, keeps what today's mapping resolves."
+  {:malli/schema [:=> [:cat :map :map [:maybe :string] [:vector :map]] [:vector :map]]}
+  [facts records related lines]
+  (let [posting (get-in facts [:operations related])
+        record  (when posting (live-record facts records related))
+        items   (when record
+                  (into {} (keep (fn [{:keys [external-product-id stock-item-id]}]
+                                   (when external-product-id [external-product-id stock-item-id])))
+                        (accepted-lines facts record related (proposals/resolve-lines facts posting))))]
+    (mapv (fn [{:keys [external-product-id] :as line}]
+            (if-let [item (get items external-product-id)]
+              (assoc line :stock-item-id item :after-baseline true)
+              line))
+          lines)))
 
 
 (defn- sale-decided?
@@ -198,9 +233,11 @@
             accepted-r                  (some->> (get-in facts [:acceptances source-operation-id :record-id]) records)
             actual (or (:occurred-at operation) (:occurred-at accepted-r))]
         ;; What was accepted left the warehouse: a mapping suspended or changed since, or a quantity edited at
-        ;; acceptance, never moves a live record's units to another item or quantity.
+        ;; acceptance, never moves a live record's units, or a return of them, to another item or quantity.
         (vec (for [[position {:keys [line-key stock-item-id after-baseline] :as line}]
-                   (map-indexed vector (if record (accepted-lines record lines) lines))
+                   (map-indexed vector (cond record (accepted-lines facts record source-operation-id lines)
+                                             (return? kind) (posting-items facts records related-operation lines)
+                                             :else lines))
                    :when (and stock-item-id after-baseline)
                    :let  [quantity (or (:quantity line) (some-> (get-in accepted-r [:lines position :quantity-change]) abs))]]
                (cond-> {:source-operation-id source-operation-id            :connection-id (:connection-id operation) :kind kind
@@ -270,10 +307,18 @@
 
 
 (defn load-facts
-  "`Facts` of one connection: plan 4's operation facts."
+  "`Facts` of one connection: plan 4's operation facts, and the line ids of every imported or source correction
+  entry by position (`entry-lines`), which key an accepted record's lines."
   {:malli/schema [:=> [:cat :map :string] Facts]}
   [context connection-id]
-  (assoc (operations/load-facts context connection-id) :connection-id connection-id))
+  (let [imported #(or (provenance/import-entry-id? %) (provenance/correction-entry-id? %))]
+    (assoc (operations/load-facts context connection-id)
+           :connection-id connection-id
+           ;; ponytail: one scan of draft lines per load, as `::acceptance/history` scans record lines.
+           :entry-lines (update-vals (group-by :entry-id (filter (comp imported :entry-id)
+                                                                 (records/all-records context :tover.inventory.entries.model/entry-lines
+                                                                                      :entry-line-id)))
+                                     #(mapv :line-id (sort-by :position %))))))
 
 
 (defmethod runtime/coeffect ::facts
