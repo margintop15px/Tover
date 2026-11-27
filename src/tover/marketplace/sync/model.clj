@@ -1005,7 +1005,7 @@
 
 (def consumers
   "Who re-evaluates marked connections; each drains its own marks, so none takes another's."
-  [:mapping-guard :marketplace-operation-intake :automatic-acceptance :source-correction-intake])
+  [:mapping-guard :marketplace-operation-intake :automatic-acceptance :source-correction-intake :move-detection])
 
 
 (defmethod runtime/effect! ::mark-dirty

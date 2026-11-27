@@ -244,6 +244,22 @@
   (subs entry-id (count "correction:") (or (str/last-index-of entry-id "@") (count entry-id))))
 
 
+(defn move-entry-id?
+  "Board 45 slice c · whether a shared entry id is a detected move's pending Transfer, `move:<connection>|<item>|<last
+  agreeing run>|<from>|<to>`: an ordinary transfer, never `import:` or `correction:`."
+  {:malli/schema [:=> [:cat [:maybe :string]] :boolean]}
+  [entry-id]
+  (boolean (some-> entry-id (str/starts-with? "move:"))))
+
+
+(defn move-connection
+  "The connection a detected move's entry id names."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [entry-id]
+  (let [key (subs entry-id (count "move:"))]
+    (subs key 0 (or (str/index-of key "|") (count key)))))
+
+
 (def Facts
   "`imports` and `source-acceptances` (by source operation id) are those of pending import entries; `corrections`
   (by record id) those of pending correction entries."
@@ -495,10 +511,12 @@
 
 
 (defn connection-of
-  "The connection a pending import or correction entry came from, or nil."
+  "The connection a pending import, correction or detected move entry came from, or nil."
   {:malli/schema [:=> [:cat [:maybe :map] [:maybe :string]] [:maybe :string]]}
   [facts entry-id]
-  (:connection-id (or (import-row facts entry-id) (correction-row facts entry-id))))
+  (if (move-entry-id? entry-id)
+    (move-connection entry-id)
+    (:connection-id (or (import-row facts entry-id) (correction-row facts entry-id)))))
 
 
 (defn review-facts

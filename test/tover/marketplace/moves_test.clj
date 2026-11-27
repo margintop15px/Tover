@@ -10,6 +10,8 @@
     [clojure.test :refer [deftest is testing use-fixtures]]
     [tover.catalogues.records :as records]
     [tover.inventory.acceptance.model :as acceptance]
+    [tover.inventory.entries.model :as entries]
+    [tover.marketplace.connections.model :as connections]
     [tover.marketplace.corrections-test :as corrections-test]
     [tover.marketplace.guard-test :as guard-test]
     [tover.marketplace.moves.model :as moves]
@@ -457,3 +459,224 @@
           (is (= 0 (corrections!)) "nothing to propose")
           (testing "then the item is compared as before"
             (is (= "equal" (:state (item (differences) "red"))))))))))
+
+
+;; Board 45 slice c · Propose the detected move
+
+
+(def ^:private failure #'operations-test/failure)
+(def ^:private accept-all! #'operations-test/accept-all!)
+
+
+(defn- move-id
+  "The pending Transfer of red from `from` to `to`, keyed by the last agreeing run."
+  {:malli/schema [:=> [:cat :string :string :string] :string]}
+  [last-agreeing from to]
+  (str "move:" c "|red|" last-agreeing "|" from "|" to))
+
+
+(defn- detection
+  {:malli/schema [:=> [:cat :map] :map]}
+  [{:keys [ctx system marketplace] :as setup}]
+  (assoc setup
+         :detect! (fn []
+                    ;; As `runtime/run-processors!` runs Move Detection, with a full sweep each time.
+                    (reset! (:swept marketplace) nil)
+                    (let [found (runtime/coeffect ::moves/moves-to-propose {:bel/system system} {})]
+                      (doseq [request (map moves/move-detection found)]
+                        (runtime/execute! (merge (:scope request) {:bel/system system :bel/service ::moves/move-detection :user-id (:actor request)})
+                                          (:id request)
+                                          {:command-id (runtime/processor-command-id ::moves/move-detection request) :input (:input request)}))
+                      (count found)))
+         :propose! (fn [command-id input]
+                     (runtime/execute! {:workspace-id workspace :bel/system system :bel/service ::moves/move-detection :user-id connector}
+                                       ::moves/propose-detected-move {:command-id command-id :input input}))
+         :detected (fn [last-agreeing]
+                     (some #(when (= (str c "|red|" last-agreeing) (:detected-move-id %)) %)
+                           (records/all-records ctx ::moves/detected-moves :detected-move-id)))
+         :moved (fn []
+                  (vec (sort (keep #(when (provenance/move-entry-id? (:entry-id %)) (:entry-id %))
+                                   (runtime/coeffect ::entries/pending ctx {})))))))
+
+
+(defn- transfer
+  "A pending Transfer as [kind from to occurred-at saved-by [[item quantity]]]."
+  {:malli/schema [:=> [:cat [:maybe :map]] [:maybe [:vector :any]]]}
+  [entry]
+  (when entry
+    [(:kind entry) (:from-warehouse-id entry) (:to-warehouse-id entry) (some-> (:occurred-at entry) str) (:saved-by entry)
+     (mapv (juxt :stock-item-id :quantity) (:lines entry))]))
+
+
+(defn- status-of
+  {:malli/schema [:=> [:cat :map :string] [:maybe :string]]}
+  [ctx entry-id]
+  (some #(when (= entry-id (:entry-id %)) (:status %)) (records/all-records ctx ::entries/entries :entry-id)))
+
+
+(deftest member-accepts
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx pass! detect! pending balance detected differences]} (detection (setup! repo))
+            id (move-id "D1" "ozon-7" "ozon-8")]
+        (pass! "D1" (day 21) equal)
+        (pass! "D2" (day 22) moved-5)
+        (testing "Given a detected move of 5 from W1 to W2, when it is proposed"
+          (is (= 1 (detect!)))
+          (testing "then one pending Transfer exists, dated right after the last agreeing snapshot"
+            (is (= ["transfer" "ozon-7" "ozon-8" "2026-11-21T06:00:01Z" connector [["red" 5]]] (transfer (pending id))))
+            (let [row (detected "D1")]
+              (is (= [c "red" "D1" "D2" [{:from "ozon-7" :to "ozon-8" :quantity 5}] [id]]
+                     ((juxt :connection-id :stock-item-id :last-agreeing-run :current-run
+                            (comp observations/read-json :moves) (comp observations/read-json :entries))
+                      row)))
+              (is (some? (:proposed-at row)))))
+          (testing "and stock is unchanged"
+            (is (= [10 10] [(balance "red" "ozon-7") (balance "red" "ozon-8")]))
+            (is (= "moved" (:state (item (differences) "red")))))
+          (testing "and stock changes only when a member accepts it"
+            (accept-all! ctx "acc-move" [[id 1]])
+            (is (nil? (pending id)))
+            (is (= [5 15] [(balance "red" "ozon-7") (balance "red" "ozon-8")]))
+            (is (= "equal" (:state (item (differences) "red"))))
+            (is (= 0 (detect!)) "nothing more to propose")))))))
+
+
+(deftest still-there-next-day
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [pass! detect! pending moved]} (detection (setup! repo))
+            id (move-id "D1" "ozon-7" "ozon-8")]
+        (pass! "D1" (day 21) equal)
+        (pass! "D2" (day 22) moved-5)
+        (is (= 1 (detect!)))
+        (testing "Given that pending Transfer and the same differences the next day"
+          (pass! "D3" (day 23) moved-5)
+          (testing "then nothing new is proposed"
+            (is (= 0 (detect!)))
+            (is (= [id] (moved)))
+            (is (= 1 (:revision (pending id))))))))))
+
+
+(deftest explained-later
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx pass! detect! pending detected moved]} (detection (setup! repo))
+            id (move-id "D1" "ozon-7" "ozon-8")]
+        (pass! "D1" (day 21) equal)
+        (pass! "D2" (day 22) moved-5)
+        (is (= 1 (detect!)))
+        (testing "Given that Transfer, unedited, when the next snapshot no longer shows the difference"
+          (pass! "D3" (day 23) equal)
+          (is (= 1 (detect!)))
+          (testing "then the pending Transfer is withdrawn"
+            (is (nil? (pending id)))
+            (is (= [] (moved)))
+            (is (= "discarded" (status-of ctx id)))
+            (is (= [[] [] "D3"] ((juxt (comp observations/read-json :moves) (comp observations/read-json :entries) :current-run) (detected "D1"))))
+            (is (= 0 (detect!)) "once")))))))
+
+
+(deftest different-moves-replace-unedited
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [pass! detect! pending detected moved]} (detection (setup! repo))
+            id (move-id "D1" "ozon-7" "ozon-8")]
+        (pass! "D1" (day 21) equal)
+        (pass! "D2" (day 22) moved-5)
+        (is (= 1 (detect!)))
+        (testing "Given the unedited Transfer of 5, when the next snapshot shows 7 moved"
+          (pass! "D3" (day 23) {["100" hub-7] 3 ["100" hub-8] 17})
+          (is (= 1 (detect!)))
+          (testing "then the same key's Transfer is replaced"
+            (is (= [id] (moved)))
+            (is (= ["transfer" "ozon-7" "ozon-8" "2026-11-21T06:00:01Z" connector [["red" 7]]] (transfer (pending id))))
+            (is (= 2 (:revision (pending id))))
+            (is (= [{:from "ozon-7" :to "ozon-8" :quantity 7}] (observations/read-json (:moves (detected "D1")))))))))))
+
+
+(deftest edited-transfer-is-kept
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx pass! detect! pending]} (detection (setup! repo))
+            id (move-id "D1" "ozon-7" "ozon-8")]
+        (pass! "D1" (day 21) equal)
+        (pass! "D2" (day 22) moved-5)
+        (is (= 1 (detect!)))
+        (testing "Given a member edited the Transfer to 4"
+          (runtime/execute! ctx ::entries/save-shared-inventory-entry
+                            {:command-id "edit-move"
+                             :input      {:workspace-id workspace :entry-id id :expected-revision 1 :kind "transfer"
+                                          :occurred-at  "2026-11-21T06:00:01Z" :from-warehouse-id "ozon-7" :to-warehouse-id "ozon-8"
+                                          :lines        [{:line-id "1" :stock-item-id "red" :quantity 4}]}})
+          (is (= member (:saved-by (pending id))))
+          (testing "when different moves are detected"
+            (pass! "D3" (day 23) {["100" hub-7] 3 ["100" hub-8] 17})
+            (is (= 0 (detect!)))
+            (testing "then the member's Transfer is kept"
+              (is (= ["transfer" "ozon-7" "ozon-8" "2026-11-21T06:00:01Z" member [["red" 4]]] (transfer (pending id))))))
+          (testing "nor is it withdrawn when the difference goes away"
+            (pass! "D4" (day 24) equal)
+            (is (= 0 (detect!)))
+            (is (= 2 (:revision (pending id))))))))))
+
+
+(deftest discarded-is-not-repeated
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx pass! detect! pending moved]} (detection (setup! repo))
+            id (move-id "D1" "ozon-7" "ozon-8")]
+        (pass! "D1" (day 21) equal)
+        (pass! "D2" (day 22) moved-5)
+        (is (= 1 (detect!)))
+        (testing "Given a member discarded the Transfer"
+          (runtime/execute! ctx ::entries/discard-inventory-draft {:command-id "discard-move" :input {:workspace-id workspace :entry-id id :revision 1}})
+          (is (nil? (pending id)))
+          (testing "when the same moves are seen again"
+            (pass! "D3" (day 23) moved-5)
+            (testing "then it is not proposed again for the same key and moves"
+              (is (= 0 (detect!)))
+              (is (= [] (moved)))))
+          (testing "but different moves are proposed"
+            (pass! "D4" (day 24) {["100" hub-7] 3 ["100" hub-8] 17})
+            (is (= 1 (detect!)))
+            (is (= [["red" 7]] (last (transfer (pending id)))))))))))
+
+
+(deftest paused-connection
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx pass! detect! propose! moved]} (detection (setup! repo))]
+        (pass! "D1" (day 21) equal)
+        (pass! "D2" (day 22) moved-5)
+        (testing "Given the connection is paused"
+          (seed-all! ctx [[::connections/marketplace-connection-paused
+                           {:connection-id c :sync-state "paused" :reason "manager" :paused-by (str member) :paused-at (day 22)}]])
+          (testing "then no move is proposed"
+            (is (= 0 (detect!)))
+            (is (= :connection-paused (failure #(propose! "p" {:connection-id c :stock-item-id "red" :last-agreeing-run "D1" :current-run "D2"}))))
+            (is (= [] (moved)))))))))
+
+
+(deftest stale-when-a-newer-pass-exists
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [system observe! pass! propose! moved]} (detection (setup! repo))
+            input {:connection-id c :stock-item-id "red" :last-agreeing-run "D1" :current-run "D2"}]
+        (pass! "D1" (day 21) equal)
+        (pass! "D2" (day 22) moved-5)
+        (testing "Given a newer snapshot than the one read"
+          (pass! "D3" (day 23) moved-5)
+          (testing "then the proposal is stale"
+            (is (= :stale (failure #(propose! "p1" input))))
+            (is (= [] (moved)))))
+        (testing "as it is with another last agreeing snapshot"
+          (is (= :stale (failure #(propose! "p2" (assoc input :current-run "D3" :last-agreeing-run "D2"))))))
+        (testing "or with an undecided operation of the item"
+          (observe! (operation "P1" 1))
+          (is (= :stale (failure #(propose! "p3" (assoc input :current-run "D3"))))))
+        (testing "and only the connector of the connection proposes"
+          (is (= :not-permitted (failure #(runtime/execute! {:workspace-id workspace :bel/system system :bel/service ::moves/move-detection
+                                                             :user-id      (sync/connector-actor "other")}
+                                                            ::moves/propose-detected-move
+                                                            {:command-id "p4" :input (assoc input :current-run "D3")})))))))))

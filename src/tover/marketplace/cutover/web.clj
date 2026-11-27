@@ -33,7 +33,7 @@
 ;; Labels
 
 
-(defn- names
+(defn names
   "Display names of stock items (`Product / variant`) and warehouses."
   {:malli/schema [:=> [:cat [:maybe :map]] :map]}
   [{:keys [products stock-items warehouses]}]

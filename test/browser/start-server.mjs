@@ -206,7 +206,7 @@ const program = `
       (put :tover.marketplace.sync.model/source-domain-traversed
            {:run-id "browser-r1" :connection-id "browser-ozon" :domain "stock-by-warehouse" :covered-until at :traversed-at at
             :position-id "browser-ozon/stock-by-warehouse" :finished-domains "stock-by-warehouse" :first-covered-at at
-            :pass-id "browser-r1/stock-by-warehouse" :asked (observations/write-json ["106"])})
+            :pass-id "browser-r1/stock-by-warehouse" :asked (observations/write-json ["106" "107"])})
       (put :tover.marketplace.sync.model/source-stock-observed
            {:stock-id (str "browser-ozon:106|warehouse-stock|" hub "|browser-r1") :connection-id "browser-ozon"
             :run-id "browser-r1" :external-product-id "browser-ozon:106" :external-warehouse-id hub :source "warehouse-stock"
@@ -244,14 +244,76 @@ const program = `
            {:source-operation-id id :connection-id "browser-ozon" :revision 1 :reflected-revision 1 :record-id sale
             :accepted-by (str (tover.marketplace.sync.model/connector-actor "browser-ozon")) :edited false
             :mappings-used (observations/write-json [{:line-key "1" :external-product-id "browser-ozon:106" :mapping-revision 1}])
-            :accepted-at at})))
+            :accepted-at at}))
+    ;; Board 45 slices b and c: a Sieve listing on two matched FBO hubs with 10 each from the 1st, their cutover. A
+    ;; snapshot on the 19th agrees; the last one (browser-r1, the 20th) shows 5 and 15: a move of 5 from Hub A to
+    ;; Hub B, which Move Detection proposes as a pending Transfer.
+    (put :tover.catalogues.products.model/product-registered {:product-id "browser-product-7" :name "Sieve" :status "active" :revision 1})
+    (put :tover.inventory.stock-items.model/stock-item-registered
+         {:stock-item-id "browser-item-7" :product-id "browser-product-7" :unit "pcs" :condition "regular" :status "active" :revision 1})
+    (put :tover.marketplace.sync.model/external-product-observed
+         (assoc (listing "107" "Sieve (Ozon)" nil) :identifiers (observations/write-json [{:type "sku" :value "107" :active true}])))
+    (put :tover.marketplace.products.model/external-product-mapped
+         {:external-product-id "browser-ozon:107" :connection-id "browser-ozon" :stock-item-id "browser-item-7" :listing-revision 1
+          :item-revision 1 :identity-basis (observations/write-json {:attributes {} :pack nil :unit "pcs" :variant-label nil})
+          :changed-by (str fixtures/owner-id) :changed-at at :mapping-revision-id "browser-ozon:107#1" :mapping-revision 1 :change "mapped" :state "confirmed"})
+    (doseq [[source-id warehouse name] [["205" "browser-hub-a" "Hub A"] ["206" "browser-hub-b" "Hub B"]]
+            :let [hub (observations/warehouse-id "browser-ozon" "fbo" source-id) record (str "browser-opening-" warehouse)
+                  rid (str record "#1") acceptance (str "browser-acc-" record)]]
+      (put :tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id warehouse :name name :status "active" :revision 1})
+      (put :tover.marketplace.sync.model/external-warehouse-observed
+           {:external-warehouse-id hub :entity-id hub :connection-id "browser-ozon" :source-id source-id :revision 1
+            :payload-hash (apply str (repeat 64 "e")) :adapter-version "test" :observed-at at :last-observed-at at
+            :source-revision-id (str hub "#1") :name name :warehouse-type "fbo" :active true :facts (observations/write-json {:name name})})
+      (put :tover.marketplace.warehouses.model/external-warehouse-mapped
+           {:external-warehouse-id hub :mapping-revision-id (str hub "#1") :connection-id "browser-ozon" :warehouse-type "fbo"
+            :mapping-revision 1 :changed-by (str fixtures/owner-id) :changed-at at :change "mapped" :warehouse-id warehouse :state "confirmed"})
+      (put :tover.inventory.acceptance.model/inventory-changes-accepted
+           {:acceptance-id acceptance :actor fixtures/owner-id :recorded-at (java.time.Instant/parse at) :record-count 1})
+      (put :tover.inventory.acceptance.model/inventory-record-accepted
+           {:record-revision-id rid :record-id record :revision 1 :acceptance-id acceptance :kind "opening"
+            :occurred-at (java.time.Instant/parse "2026-11-01T00:00:00Z") :sequence 0 :cancelled false})
+      (put :tover.inventory.acceptance.model/inventory-record-line-accepted
+           {:record-line-id (str rid "/0") :record-revision-id rid :position 0 :stock-item-id "browser-item-7" :warehouse-id warehouse
+            :quantity-change 10 :unit-cost "40.00"})
+      (put :tover.marketplace.provenance/cutover-baseline-established
+           {:baseline-id (str "browser-ozon|browser-item-7|" warehouse) :connection-id "browser-ozon" :stock-item-id "browser-item-7"
+            :warehouse-id warehouse :instant "2026-11-01T00:00:00Z" :record-id record :established-at "2026-11-02T00:00:00Z"}))
+    (let [d1 "2026-11-19T10:00:00Z"
+          figure (fn [run-id observed source-id present]
+                   (let [hub (observations/warehouse-id "browser-ozon" "fbo" source-id)]
+                     (put :tover.marketplace.sync.model/source-stock-observed
+                          {:stock-id (str "browser-ozon:107|warehouse-stock|" hub "|" run-id) :connection-id "browser-ozon"
+                           :run-id run-id :external-product-id "browser-ozon:107" :external-warehouse-id hub :source "warehouse-stock"
+                           :fulfilment-type "fbo" :present present :parts "[]" :observed-at observed})))]
+      (put :tover.marketplace.sync.model/marketplace-sync-started
+           {:run-id "browser-m0" :connection-id "browser-ozon" :trigger "member" :triggered-by (str fixtures/owner-id)
+            :domains "stock-by-warehouse" :starting-positions "{}" :started-at d1 :run-state "open"})
+      (put :tover.marketplace.sync.model/source-batch-recorded
+           {:position-id "browser-ozon/stock-by-warehouse" :connection-id "browser-ozon" :domain "stock-by-warehouse"
+            :run-id "browser-m0" :cursor "" :batch-key "" :refetch-ids "[]" :finished true :found-listings 1
+            :found-warehouses 0 :found-operations 0 :recorded-at d1})
+      (put :tover.marketplace.sync.model/source-domain-traversed
+           {:run-id "browser-m0" :connection-id "browser-ozon" :domain "stock-by-warehouse" :covered-until d1 :traversed-at d1
+            :position-id "browser-ozon/stock-by-warehouse" :finished-domains "stock-by-warehouse" :first-covered-at d1
+            :pass-id "browser-m0/stock-by-warehouse" :asked (observations/write-json ["107"])})
+      (figure "browser-m0" d1 "205" 10) (figure "browser-m0" d1 "206" 10)
+      (figure "browser-r1" at "205" 5) (figure "browser-r1" at "206" 15)))
   ;; This server runs no processors (no journal worker); propose the connection's operations each second as
   ;; Marketplace Operation Intake would. Local only: it reads this store and calls no marketplace.
-  (require '[tover.marketplace.operations.model :as imported])
+  (require '[tover.marketplace.operations.model :as imported] '[tover.marketplace.moves.model :as moves])
   (future
-    (let [bel-system (:bel/system services) requests @#'imported/connection-requests]
+    (let [bel-system (:bel/system services) requests @#'imported/connection-requests detect @#'moves/connection-requests]
       (loop []
         (Thread/sleep 1000)
+        ;; Move Detection likewise: a detected move becomes pending Transfers, never accepted here.
+        (try
+          (doseq [request (map moves/move-detection (detect bel-system fixtures/workspace-id "browser-ozon" (java.time.Instant/now)))]
+            (try (runtime/execute! (merge (:scope request) {:bel/system bel-system :bel/service ::moves/move-detection :user-id (:actor request)})
+                                   (:id request)
+                                   {:command-id (runtime/processor-command-id ::moves/move-detection request) :input (:input request)})
+                 (catch Exception _ nil)))
+          (catch Exception _ nil))
         (try
           (doseq [request (map imported/marketplace-operation-intake
                                (requests bel-system fixtures/workspace-id "browser-ozon" (java.time.Instant/now)))]

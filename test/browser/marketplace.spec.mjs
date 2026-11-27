@@ -298,3 +298,39 @@ test('an accepted imported record shows its badge and its provenance in the Revi
   await expect(page.locator('#history-panel tbody tr')).toHaveCount(1);
   expect(errors).toEqual([]);
 });
+
+// Board 45 slices b and c · Stock differences: a view of the Operations page; one read-only table of the newest
+// snapshot's differences, and the detected move waits as a pending Transfer on the Operations table.
+test('the stock differences view shows the detected move, and its Transfer waits on Operations', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const sieve = page.locator('#marketplace-differences-grid tbody tr').filter({ hasText: 'Sieve' });
+  const transfer = 'move:browser-ozon|browser-item-7|browser-m0|browser-hub-a|browser-hub-b';
+  await page.setViewportSize({ width: 400, height: 860 });
+  await signIn(page);
+  await page.goto('/operations');
+  await page.getByRole('navigation', { name: 'Views' }).getByRole('link', { name: /^Stock differences/ }).click();
+  await expect(page).toHaveURL(new RegExp(`${views}/differences$`));
+  await expect(page.getByRole('heading', { name: 'Stock differences', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Views' }).getByRole('link', { name: /^Stock differences/ })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('link', { name: 'Back to operations' })).toHaveAttribute('href', '/operations');
+  await expect(page.locator('.marketplace-page form')).toHaveCount(0);
+  await expect(page.locator('.marketplace-page [data-command]')).toHaveCount(0);
+  await ready(page, 'marketplace-differences');
+  // The fixture's detection loop (each second) proposes the move; reload until the Transfer is listed.
+  await expect.poll(async () => {
+    await page.reload();
+    await ready(page, 'marketplace-differences');
+    return grid(page).evaluate(node => node.model.rows.flatMap(row => row.cells.flatMap(cell => (cell.lines || []).map(line => line.value))));
+  }, { timeout: 20000, intervals: [1000] }).toContain('5 from Hub A to Hub B · Pending');
+  await expect(sieve.first()).toContainText('Moved');
+  await expect(sieve.first()).toContainText('2026-11-19T10:00:00Z');
+  await expect(sieve).toHaveCount(2);
+  const width = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(width).toBeLessThanOrEqual(400);
+
+  await page.getByRole('link', { name: 'Review and accept them on Operations' }).click();
+  await expect(page).toHaveURL(/\/operations$/);
+  await expect.poll(() => page.locator('operations-workbench').evaluate((node, id) => (node.model?.rows || []).some(row => row.groupId === id), transfer))
+    .toBe(true);
+  expect(errors).toEqual([]);
+});

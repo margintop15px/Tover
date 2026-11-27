@@ -996,8 +996,9 @@
 
 (defn operations-views
   "The views of the operations page: the table of operations, then each connection's Product matching, Warehouse
-  matching and Cutover. `current` is `:operations`, `[:products connection-id]`, `[:warehouses connection-id]` or
-  `[:cutover connection-id]`. Without connections there is nothing to switch to."
+  matching, Cutover and Stock differences. `current` is `:operations`, `[:products connection-id]`,
+  `[:warehouses connection-id]`, `[:cutover connection-id]` or `[:differences connection-id]`. Without connections
+  there is nothing to switch to."
   {:malli/schema [:=> [:cat [:map [:current [:or :keyword [:tuple :keyword :string]]] [:connections [:sequential :map]]]] [:maybe schema/Hiccup]]}
   [{:keys [current connections]}]
   (when (seq connections)
@@ -1005,7 +1006,7 @@
      (for [[view href label] (cons [:operations "/operations" (i18n/t "Operations")]
                                    (for [{:keys [connection-id account-label]} connections
                                          [kind segment title]                  [[:products "products" "Product matching"] [:warehouses "warehouses" "Warehouse matching"]
-                                                                                [:cutover "cutover" "Cutover"]]]
+                                                                                [:cutover "cutover" "Cutover"] [:differences "differences" "Stock differences"]]]
                                      [[kind connection-id] (str (marketplace-path connection-id) "/" segment) (str (i18n/t title) " · " account-label)]))]
        [:a (nav/link href {:aria-current (when (= current view) "page")}) label])]))
 
