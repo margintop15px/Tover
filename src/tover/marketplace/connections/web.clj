@@ -335,9 +335,10 @@
                 [:dt (i18n/t "Baselines")]
                 [:dd [:a {:href (str (operations/marketplace-path connection-id) "/cutover")} (:baselines status)]]
                 [:dt (i18n/t "Imported operations by next step")]
-                [:dd (if-let [steps (seq (:imported-operations-by-next-step status))]
-                       (str/join ", " (map (fn [{:keys [next-step count]}] (str next-step ": " count)) steps))
-                       "0")]
+                [:dd [:a {:href (operations/imported-path connection-id)}
+                      (if-let [steps (seq (:imported-operations-by-next-step status))]
+                        (str/join ", " (map (fn [{:keys [next-step count]}] (str (operations/step-label next-step) ": " count)) steps))
+                        "0")]]
                 [:dt (i18n/t "Automatic acceptance")]
                 [:dd (if (:automatic-acceptance-possible? status)
                        (i18n/t "On")

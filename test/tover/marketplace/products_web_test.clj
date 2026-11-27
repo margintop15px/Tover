@@ -253,6 +253,17 @@
           (is (contains? (rows ctx) mug)))))))
 
 
+(deftest a-group-on-the-operations-page-opens-its-listing
+  ;; Board 45 slice 5: "Match Mug – 48 operations" opens matching with that listing filtered.
+  (with-listings
+    (fn [ctx]
+      (is (= [mug] (map :id (:rows (web/table ctx c "unmatched" mug)))))
+      (let [html (page ctx ::web/product-matching {:connection-id c :listing mug})]
+        (is (str/includes? html "Mug"))
+        (is (not (str/includes? html "Mug set")) "only that listing")
+        (is (str/includes? html (str "&quot;listing&quot;:&quot;" mug "&quot;")) "a refresh keeps the filter")))))
+
+
 (deftest the-filter-shows-each-state
   (with-listings
     (fn [ctx]

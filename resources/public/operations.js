@@ -17,6 +17,8 @@ class OperationsWorkbench extends InventoryWorkbench {
     if (!this.isConnected || this._connected) return;
     this._connected = true;
     this.workspaceId = this.dataset.workspaceId;
+    this.source = this.dataset.source || '';
+    this.marked = [];
     this.scope = {};
     this.grid = this.querySelector('.stock-grid');
     this.notice = this.querySelector('.stock-notice');
@@ -60,10 +62,28 @@ class OperationsWorkbench extends InventoryWorkbench {
       this.emit('operations-suppliers', { requestId: event.detail.requestId, text: event.detail.text });
     });
     this.addEventListener('review-selection', event => {
-      this.excluded = this.model.pending.map(entry => entry.rowId).filter(id => !event.detail.selected.includes(id));
       this.grid.selectedEntries = event.detail.selected;
-      this.selected = event.detail.selected; this.showSubmit();
+      if (this.scope.pending) {
+        this.excluded = this.model.pending.map(entry => entry.rowId).filter(id => !event.detail.selected.includes(id));
+        this.selected = event.detail.selected; this.showSubmit();
+      } else this.marked = event.detail.selected;
+      this.showAside();
     });
+    // Board 45 slice 5: the Imported filter, Set aside and Bring back on a selection, a group's decision and the
+    // correction a shortage proposes.
+    this.sourceMenu = this.querySelector('.operations-source');
+    this.sourceMenu?.addEventListener('change', () => {
+      this.source = this.sourceMenu.value;
+      this.marked = [];
+      history.replaceState(null, '', this.source ? `${location.pathname}?source=${encodeURIComponent(this.source)}` : location.pathname);
+      this.refreshTable();
+    });
+    this.asideButtons = { set: this.querySelector('.operations-set-aside'), back: this.querySelector('.operations-bring-back') };
+    this.asideReason = this.querySelector('.operations-aside-reason');
+    this.asideButtons.set?.addEventListener('click', () => this.setAside(true));
+    this.asideButtons.back?.addEventListener('click', () => this.setAside(false));
+    this.addEventListener('operations-open', event => location.assign(event.detail.href));
+    this.addEventListener('operation-correction', event => this.addCorrection(event.detail));
     this.setupSmart();
     for (const property of ['tableResponse', 'itemsResponse', 'suppliersResponse', 'reviewResponse', 'saveResponse', 'changed']) {
       if (Object.prototype.hasOwnProperty.call(this, property)) { const value = this[property]; delete this[property]; this[property] = value; }
@@ -121,7 +141,40 @@ class OperationsWorkbench extends InventoryWorkbench {
     this.tableRequest = crypto.randomUUID();
     this.emit('operations-query', { requestId: this.tableRequest, preview: Boolean(this.scope.pending),
       mode: this.scope.pending ? 'units' : this.mode, sort: this.order.sort, direction: this.order.direction, filters: this.order.filters,
-      editing: this.scope.editing ?? [], below: this.below });
+      editing: this.scope.editing ?? [], below: this.below, source: this.source || null });
+  }
+  // The selected imported rows that Set aside (or Bring back) applies to, as the rows showed them. A row with an
+  // entry sends the entry's newest revision this page knows, so a later edit by someone else is stale, never lost.
+  asideRows(aside) {
+    const imported = this.model.imported ?? {};
+    const ids = (this.scope.pending ? (this.selected ?? []) : this.marked).filter(id => imported[id] && imported[id].aside !== aside);
+    return ids.map(id => {
+      const { sourceOperationId, revision, entryRevision } = imported[id];
+      return { sourceOperationId, revision, ...(entryRevision != null ? { entryRevision: Math.max(entryRevision, this.revisions.get(id) ?? 0) } : {}) };
+    });
+  }
+  showAside() {
+    if (!this.asideButtons?.set) return;
+    const shown = Boolean(this.model.imported);
+    for (const node of [this.asideButtons.set, this.asideButtons.back, this.asideReason]) node.hidden = !shown;
+    this.asideButtons.set.disabled = !shown || Boolean(this.pending) || !this.asideRows(true).length;
+    this.asideButtons.back.disabled = !shown || Boolean(this.pending) || !this.asideRows(false).length;
+  }
+  setAside(aside) {
+    const operations = this.asideRows(aside);
+    if (this.pending || !operations.length) return;
+    const reason = aside ? this.asideReason.value.trim() : '';
+    this.pending = { kind: 'aside', commandId: crypto.randomUUID(), then: () => { this.marked = []; this.asideReason.value = ''; this.refreshTable(); } };
+    this.setStatus('Saving');
+    this.showAside();
+    this.emit('operations-aside', { workspaceId: this.workspaceId, aside, operations, ...(reason ? { reason } : {}), commandId: this.pending.commandId });
+  }
+  // Fix shortage: the proposed correction becomes a pending entry beside its operation; Preview then holds both.
+  addCorrection({ entry, stockItemId, warehouseId, instant, count }) {
+    if (this.pending) return;
+    this.pending = { kind: 'correct', commandId: crypto.randomUUID(), then: () => { this.scope = { pending: true }; this.showPreview(); this.refreshTable(); } };
+    this.setStatus('Saving');
+    this.emit('operations-correct', { workspaceId: this.workspaceId, entryId: entry, stockItemId, warehouseId, instant, count, commandId: this.pending.commandId });
   }
   showModel(model) {
     this.model = model;
@@ -134,8 +187,10 @@ class OperationsWorkbench extends InventoryWorkbench {
     this.pendingButton.classList.toggle('has-pending', Boolean(model.pending.length) && !this.scope.pending);
     if (!this.scope.pending) this.excluded = [];
     this.selected = this.scope.pending ? model.pending.map(entry => entry.rowId).filter(id => !(this.excluded ?? []).includes(id)) : null;
-    this.grid.selectedEntries = this.selected ?? [];
+    this.marked = (this.marked ?? []).filter(id => model.imported?.[id]);
+    this.grid.selectedEntries = this.selected ?? this.marked;
     this.showSubmit();
+    this.showAside();
   }
   // Revisions of an accepted operation, below its rows.
   toggleRevisions({ id, row, expanded }) {
@@ -242,7 +297,7 @@ class OperationsWorkbench extends InventoryWorkbench {
     this.grid.referenceOptionsResponse = response;
   }
   requestFailed(kind) {
-    if (kind === 'save') { this.pending = null; this.smart.busy = false; this.setStatus('Failed', t('Could not save. Your edit is retained; retry when connected.')); }
+    if (kind === 'save') { this.pending = null; this.smart.busy = false; this.showAside(); this.setStatus('Failed', t('Could not save. Your edit is retained; retry when connected.')); }
     else if (kind === 'table') this.retryNotice(this.notice, () => this.refreshTable());
     else if (kind === 'review') this.setStatus('Failed', t('Could not check the pending changes. Try again.'));
     else if (kind === 'items') { this.smart.items = []; this.grid.itemOptionsResponse = { requestId: this.itemsRequest, status: 'failed', options: [] }; }

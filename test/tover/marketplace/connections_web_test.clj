@@ -388,7 +388,8 @@
     (fn [ctx _]
       (accept! ctx (act ctx ::web/connect connect-form))
       ;; Chapter 42's own method is put back afterwards, so later tests count real listings.
-      (let [unmatched (get-method model/count-part :unmatched-listings)]
+      (let [unmatched (get-method model/count-part :unmatched-listings)
+            steps     (get-method model/count-part :next-steps)]
         (defmethod model/count-part :unmatched-listings [_ _ _] 3)
         (defmethod model/count-part :next-steps [_ _ _] {"Confirm <b>" 5})
         (try
@@ -398,11 +399,13 @@
             (is (str/includes? html "Imported operations by next step"))
             (is (str/includes? html "Confirm &lt;b&gt;") "text from outside is escaped")
             (is (not (str/includes? html "Confirm <b>")))
+            (is (str/includes? html "<a href=\"/operations?source=c-1\">Confirm &lt;b&gt;: 5</a>")
+                "the counts open the connection's imported operations on the Operations page")
             (is (str/includes? html "href=\"/operations/marketplace/c-1/products\">3</a>") "the unmatched count opens Product Matching")
             (is (str/includes? html "href=\"/operations/marketplace/c-1/warehouses\">0</a>") "the unmatched count opens Warehouse Matching")
             (is (every? #(str/includes? html (str "<td>" (web/domain-labels %) "</td>")) connector/domains) "one row per domain"))
           (finally (.addMethod ^clojure.lang.MultiFn model/count-part :unmatched-listings unmatched)
-                   (defmethod model/count-part :next-steps [_ _ _] {})))))))
+                   (.addMethod ^clojure.lang.MultiFn model/count-part :next-steps steps)))))))
 
 
 (deftest missing-connector-key-is-refused-before-contacting-ozon

@@ -23,6 +23,7 @@
     [tover.inventory.valuation :as valuation]
     [tover.inventory.web :as web]
     [tover.marketplace.connections.model :as connections]
+    [tover.marketplace.operations.review :as review]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.core :as ui]
@@ -489,71 +490,290 @@
 
 
 (def ^:private column-labels
-  {"select"  ""        "actions" ""     "kind"      "Kind"      "occurred-at" "Occurred at" "supplier" "Supplier"   "store" "Store" "reason" "Reason" "item" "Stock item"
-   "article" "Article" "unit"    "Unit" "warehouse" "Warehouse" "quantity"    "Quantity"    "price"    "Unit price"})
+  {"select"    ""          "actions" ""     "kind"      "Kind"      "occurred-at" "Occurred at" "supplier" "Supplier"   "store"  "Store"  "reason" "Reason" "item" "Stock item"
+   "article"   "Article"   "unit"    "Unit" "warehouse" "Warehouse" "quantity"    "Quantity"    "price"    "Unit price" "source" "Source"
+   "next-step" "Next step"})
 
 
 (def ^:private column-widths
-  {"select"   40  "actions" 130 "kind" 150 "occurred-at" 180 "supplier" 150 "store" 140 "reason" 150 "item" 220 "article" 110 "unit" 90 "warehouse" 140
-   "quantity" 130 "price"   140})
+  {"select"   40  "actions" 130 "kind"   150 "occurred-at" 180 "supplier" 150 "store" 140 "reason" 150 "item" 220 "article" 110 "unit" 90 "warehouse" 140
+   "quantity" 130 "price"   140 "source" 150 "next-step"   170})
+
+
+;; Imported operations (board chapter 45 slice 5)
+
+
+(def ^:private extra-columns
+  "The connection and next step of an imported operation, after its kind, while the workspace has connections."
+  ["source" "next-step"])
+
+
+(def hidden-steps
+  "Finished next steps, shown only when the next step is filtered."
+  #{"history" "set aside" "no effect"})
+
+
+(defn- fix?
+  {:malli/schema [:=> [:cat :map] :boolean]}
+  [{:keys [entry-id kind]}]
+  (boolean (and (= "correction" kind) (str/starts-with? entry-id "fix:"))))
+
+
+(defn step-label
+  "A next step as the member reads it."
+  {:malli/schema [:=> [:cat [:maybe :string]] :string]}
+  [step]
+  (if (str/blank? step) "" (i18n/t (str (str/upper-case (subs step 0 1)) (subs step 1)))))
+
+
+(def ^:private decision-names
+  "A decision's label as `steps` builds it, and the template that translates it."
+  {"match product"         [#"^Match (.+)$" "Match {name}"]
+   "confirm match again"   [#"^Confirm (.+) again$" "Confirm {name} again"]
+   "match warehouse"       [#"^Match warehouse (.+)$" "Match warehouse {name}"]
+   "accept the sale first" [#"^Accept sale (.+)$" "Accept sale {name}"]
+   "fix shortage"          [#"^Fix shortage of (.+)$" "Fix shortage of {name}"]})
+
+
+(defn decision-label
+  "\"Match Mug red – 48 operations\": what unblocks the group and how many operations it unblocks."
+  {:malli/schema [:=> [:cat :map :int] :string]}
+  [{:keys [decision label]} n]
+  (let [[pattern template] (decision-names decision)
+        named              (some-> pattern (re-matches label) second)
+        text               (if named (i18n/t template {:name named}) (i18n/t label))]
+    (if (= 1 n)
+      (i18n/t "{label} – 1 operation" {:label text})
+      (i18n/t "{label} – {count} operations" {:label text :count n}))))
+
+
+(defn decision-href
+  "Where the decision is taken: product matching filtered to the listing, warehouse matching, the cutover or the
+  connection."
+  {:malli/schema [:=> [:cat :map] [:maybe :string]]}
+  [{:keys [decision id connection-id listing-state]}]
+  (let [base (str "/operations/marketplace/" (codec/url-encode connection-id))]
+    (case decision
+      ("match product" "confirm match again")
+      (str base "/products"
+           (when listing-state
+             (str "?" (when (not= "unmatched" listing-state) (str "state=" listing-state "&")) "listing=" (codec/url-encode id))))
+      "match warehouse" (str base "/warehouses")
+      "set cutover" (str base "/cutover")
+      "connection stopped" (str "/settings/marketplace/" (codec/url-encode connection-id))
+      nil)))
+
+
+(defn- ro
+  {:malli/schema [:=> [:cat :any] :map]}
+  [value]
+  {:value (str (or value "")) :readOnly true})
+
+
+(defn- selection
+  {:malli/schema [:=> [:cat :string] :map]}
+  [source-operation-id]
+  {:selection {:id (str "import:" source-operation-id) :label (i18n/t "Select operation")}})
+
+
+(defn- source-cells
+  "The connection badge and next step of an imported operation, its missing facts and findings as the title; blank
+  for any other operation."
+  {:malli/schema [:=> [:cat [:maybe :map]] [:vector :map]]}
+  [{:keys [connection-label next-step missing findings]}]
+  (if-not connection-label
+    [(ro "") (ro "")]
+    (let [notes (concat (when (seq missing) [(i18n/t "Missing: {facts}" {:facts (str/join ", " (map i18n/t missing))})])
+                        (map i18n/t findings))]
+      [(assoc (ro connection-label) :className "operations-source")
+       (cond-> (assoc (ro (step-label next-step)) :className "operations-next-step")
+         (seq notes) (assoc :title (str/join "\n" notes))
+         (seq findings) (add-class "stock-finding stock-finding-warning"))])))
+
+
+(defn- decorate
+  "An operation's rows with the source and next-step cells after its kind and, when `select?` (imported rows outside
+  Preview), a selection cell first."
+  {:malli/schema [:=> [:cat [:sequential :map] [:maybe :map] :boolean :boolean] [:vector :map]]}
+  [rows op preview? select?]
+  (let [at (if preview? 2 1)]
+    (vec (map-indexed
+           (fn [index row]
+             (update row :cells
+                     (fn [cells]
+                       (cond->> (vec (concat (subvec (vec cells) 0 at) (source-cells op) (subvec (vec cells) at)))
+                         select? (into [(if (and op (zero? index)) (selection (:source-operation-id op)) {:value ""})])))))
+           rows))))
+
+
+(defn- item-cells
+  {:malli/schema [:=> [:cat :map [:maybe :string] :string [:maybe :string] :any] [:vector :map]]}
+  [{:keys [catalogue label]} stock-item-id name warehouse-id quantity]
+  (let [i (some #(when (= stock-item-id (:stock-item-id %)) %) (:stock-items catalogue))]
+    [(ro (or (get-in label [:item stock-item-id]) name)) (ro (:article i)) (ro (or (i18n/unit-label (:unit i)) (:unit i)))
+     (ro (get-in label [:warehouse warehouse-id])) (assoc (ro quantity) :className "inventory-cell-number") (ro "")]))
+
+
+(defn- loose-rows
+  "A downloaded operation without an entry, read only but selectable: one row per stated line."
+  {:malli/schema [:=> [:cat :map :map] [:vector :map]]}
+  [ctx {:keys [source-operation-id entry-kind kind occurred-at lines] :as op}]
+  (vec (map-indexed
+         (fn [index {:keys [stock-item-id warehouse-id quantity label]}]
+           {:id    (str source-operation-id "|" index) :groupId source-operation-id :className "operations-imported"
+            :cells (-> [(selection source-operation-id) (assoc (ro (if entry-kind (web/kind-label entry-kind nil) kind)) :className "operations-kind")]
+                       (into (source-cells op))
+                       (into [(assoc (ro occurred-at) :date true) (ro "") (ro "") (ro "")])
+                       (into (item-cells ctx stock-item-id (or label "") warehouse-id quantity))
+                       (conj (ro "")))})
+         (if (seq lines) lines [{}]))))
+
+
+(defn- suggested-rows
+  "The correction `fix shortage` offers, highlighted just before its operation, until a member takes it."
+  {:malli/schema [:=> [:cat :map :map :boolean] [:vector :map]]}
+  [ctx {:keys [entry-id connection-label] {:keys [stock-item-id warehouse-id instant count]} :suggested-correction} select?]
+  (let [id (str "suggested|" entry-id)]
+    [{:id    id :groupId id :className "operations-suggested"
+      :cells (cond->> (-> [(assoc (ro (web/kind-label "correction" nil)) :className "operations-kind")
+                           (assoc (ro connection-label) :className "operations-source") (ro (i18n/t "Proposed correction"))
+                           (assoc (ro instant) :date true) (ro "") (ro "") (ro "")]
+                          (into (item-cells ctx stock-item-id "" warehouse-id count))
+                          (conj {:value   ""
+                                 :actions [{:type    "operation-correction" :entry entry-id :stockItemId stock-item-id :warehouseId                   warehouse-id
+                                            :instant instant                :count count    :label       (i18n/t "Add the proposed correction") :icon "+"}]}))
+               select? (into [{:value ""}]))}]))
+
+
+(defn- header-rows
+  "The decision that unblocks a group, across the table, with a link to where it is taken."
+  {:malli/schema [:=> [:cat :map :int :int] [:vector :map]]}
+  [{:keys [decision id] :as g} n width]
+  (let [href (decision-href g)
+        key  (str "decision|" decision "|" id)]
+    [{:id    key :groupId key :header true :className "operations-decision"
+      :cells (into [(cond-> (ro (decision-label g n))
+                      href (assoc :actions [{:type "operations-open" :href href :label (i18n/t "Open") :icon "›"}]))]
+                   (repeat (dec width) (ro "")))}]))
+
+
+(defn- arrange-units
+  "`arrange` over units, each the blocks of one operation: the correction proposed for it stays with it."
+  {:malli/schema [:=> [:cat [:sequential [:sequential [:sequential :map]]] [:sequential :string] :map] [:sequential [:sequential [:sequential :map]]]]}
+  [units keys view]
+  (let [units (vec units)]
+    (for [rows (arrange (map-indexed (fn [i unit] (mapv #(assoc % ::unit i) (apply concat unit))) units) keys view)]
+      (units (::unit (first rows))))))
+
+
+(defn- in-source?
+  {:malli/schema [:=> [:cat [:maybe :string] :map] :boolean]}
+  [source {:keys [connection-id]}]
+  (or (= "imported" source) (= source connection-id)))
 
 
 (defn operations-grid
   "New pending operations first (oldest first), then accepted ones newest first, with their pending revisions and
   cancellations in place; in preview only pending ones, each with \"Include in submit\", and the accepted ones in
   `:editing`. Quantities, or amounts in money mode (never in preview). Draft findings and blockers mark the
-  cells they concern; `:sort`, `:direction` and `:filters` order and narrow the operations."
+  cells they concern; `:sort`, `:direction` and `:filters` order and narrow the operations.
+
+  Chapter 45: with `:sources` (the workspace's connections) rows have a source and a next-step column, and an
+  imported entry shows its connection and next step from `:imported` (`Imported Operations Needing Review`).
+  `:source` (\"imported\" or a connection id) shows only imported operations, those without an entry too, under the
+  decision that unblocks them, most operations first, each selectable for Set aside and Bring back; history, set
+  aside and no effect only while the next step is filtered. A shortage's proposed correction is highlighted just
+  before its operation; once taken it is pending there and is submitted with it."
   {:malli/schema [:=> [:cat :map] :map]}
-  [{:keys [catalogue pending findings accepted currency preview? mode below editing actors] :as view}]
-  (let [ctx    {:catalogue catalogue :currency currency :label (names catalogue) :actors actors}
-        money? (and (= "money" mode) (not preview?))
-        mine   (filter (comp (set operation-kinds) :kind) pending)
-        keys   (vec (concat (if preview? group-columns (rest group-columns)) line-columns))
-        groups (arrange (for [g (groups mine accepted below editing (boolean preview?))] (group ctx g (boolean preview?) money?)) keys view)
-        offset (if preview? 0 1)
-        marks  (group-by (fn [{:keys [entry-id line-id field]}] [entry-id line-id (finding-column field "item")])
-                         (concat findings
-                                 (for [{:keys [entry-id blockers]} mine b blockers
-                                       :when (or (nil? (:line-id b)) (= :archived-reference (:code b)))]
-                                   (assoc b :entry-id entry-id :level :error :blocker? true))))
-        text   (fn [f] (if (:blocker? f) (web/problem-message f {}) (web/finding-text f {})))
-        mark   (fn [{:keys [entry line new-line?] :as row}]
-                 (cond-> row
-                   entry (update :cells
-                                 (fn [cells]
-                                   (mapv (fn [k cell]
-                                           (let [fs (concat (get marks [entry line k])
-                                                            (when ((cond-> #{"kind" "occurred-at" "supplier" "store" "reason"} (not new-line?) (conj "warehouse" "quantity")) k)
-                                                              (get marks [entry nil k])))]
-                                             (if (seq fs)
-                                               (-> cell
-                                                   (add-class (str "stock-finding stock-finding-" (name (or (some (comp #{:error} :level) fs) (:level (first fs)) :error))))
-                                                   (assoc :title (str/join "\n" (distinct (map text fs)))))
-                                               cell)))
-                                         keys cells)))))
-        rows   (vec (map mark (apply concat (map-indexed (fn [g rows] (map #(assoc % :groupIndex g) rows)) groups))))
-        merges (second (reduce (fn [[start acc] group]
-                                 [(+ start (count group))
-                                  (into acc (when (< 1 (count group))
-                                              (for [col (range (- (count group-columns) offset))] {:row start :col col :rowspan (count group)})))])
-                               [0 []] groups))]
-    {:id          "operations" :editable true :rowHeaders false :merges merges :editStates []
-     :layoutScope "operations"
-     :pending     (vec (for [{:keys [entry-id revision]} mine] {:entry-id entry-id :revision revision :rowId entry-id}))
-     :revisions   (into {} (for [op accepted] [(:record-id op) (revisions ctx op)]))
-     :columns     (mapv (fn [k] (cond-> {:key k :label (i18n/t (if (and money? (= "quantity" k)) "Amount" (column-labels k))) :width (column-widths k)}
-                                  (not (#{"select" "actions"} k)) (assoc :sortKey k :filterKey k)
-                                  (#{"kind" "item"} k) (assoc :required true)
-                                  (= "kind" k) (assoc :fixed true)))
-                        keys)
-     :rows        (mapv #(dissoc % :new-line?) rows)
-     ;; Choices for the smart input.
-     :choices     {:suppliers  (vec (for [r (rest (options (:suppliers catalogue) :supplier-id nil))] {:id (:value r) :name (:label r)}))
-                   :stores     (vec (for [r (rest (options (:stores catalogue) :store-id nil))] {:id (:value r) :name (:label r)}))
-                   :warehouses (vec (for [r (rest (options (:warehouses catalogue) :warehouse-id nil))] {:id (:value r) :name (:label r)}))
-                   :kinds      (vec (for [k operation-kinds :let [{:keys [party price reason? new-items]} (entries/operation-rules k)]]
-                                      {:kind     k :label (web/kind-label k nil) :party (some-> party name) :price (boolean price) :reason (boolean reason?)
-                                       :newItems (case new-items true "all" :outputs "outputs" nil)}))}}))
+  [{:keys [catalogue pending findings accepted currency preview? mode below editing actors imported sources source filters] :as view}]
+  (let [ctx       {:catalogue catalogue :currency currency :label (names catalogue) :actors actors}
+        preview?  (boolean preview?)
+        money?    (and (= "money" mode) (not preview?))
+        sources?  (boolean (seq sources))
+        filtered? (boolean (and sources? source))
+        select?   (and filtered? (not preview?))
+        ops       (for [g (:groups imported) op (:operations g)] op)
+        op-of     (into {} (for [op ops :when (:entry-id op)] [(:entry-id op) op]))
+        fixes     (into {} (for [e pending :when (and sources? (fix? e))] [(subs (:entry-id e) 4) e]))
+        mine      (filter #(or (contains? (set operation-kinds) (:kind %)) (and sources? (fix? %))) pending)
+        heads     (cond->> (concat (if preview? (take 2 group-columns) [(second group-columns)]) (when sources? extra-columns) (drop 2 group-columns))
+                    select? (cons "select"))
+        keys      (vec (concat heads line-columns))
+        shared    (count heads)
+        render    (fn [g op] (cond-> (group ctx g preview? money?) sources? (decorate op preview? select?)))
+        steps?    (seq (or (get filters "next-step") (get filters :next-step)))
+        by-entry  (by :entry-id mine)
+        unit      (fn [{:keys [entry-id next-step suggested-correction] :as op}]
+                    (let [entry (by-entry entry-id) fix (fixes entry-id)]
+                      (when (and (or steps? (not (hidden-steps next-step))) (or entry (not preview?)))
+                        (cond-> []
+                          fix (conj (render {:gid (:entry-id fix) :entry fix} op))
+                          (and entry suggested-correction (not fix)) (conj (suggested-rows ctx op select?))
+                          entry (conj (render {:gid entry-id :entry entry} op))
+                          (not entry) (conj (loose-rows ctx op))))))
+        blocks    (if-not filtered?
+                    (apply concat (arrange-units (for [g (groups mine accepted below editing preview?)] [(render g (op-of (:entry-id (:entry g))))]) keys view))
+                    (mapcat (fn [{:keys [operations] :as g}]
+                              (let [kept (arrange-units (keep unit (filter (partial in-source? source) operations)) keys view)]
+                                (when (seq kept) (cons (header-rows g (count kept) (count keys)) (apply concat kept)))))
+                            (:groups imported)))
+        marks     (group-by (fn [{:keys [entry-id line-id field]}] [entry-id line-id (finding-column field "item")])
+                            (concat findings
+                                    (for [{:keys [entry-id blockers]} mine b blockers
+                                          :when (or (nil? (:line-id b)) (= :archived-reference (:code b)))]
+                                      (assoc b :entry-id entry-id :level :error :blocker? true))))
+        text      (fn [f] (if (:blocker? f) (web/problem-message f {}) (web/finding-text f {})))
+        mark      (fn [{:keys [entry line new-line?] :as row}]
+                    (cond-> row
+                      entry (update :cells
+                                    (fn [cells]
+                                      (mapv (fn [k cell]
+                                              (let [fs (concat (get marks [entry line k])
+                                                               (when ((cond-> #{"kind" "occurred-at" "supplier" "store" "reason"} (not new-line?) (conj "warehouse" "quantity")) k)
+                                                                 (get marks [entry nil k])))]
+                                                (if (seq fs)
+                                                  (-> cell
+                                                      (add-class (str "stock-finding stock-finding-" (name (or (some (comp #{:error} :level) fs) (:level (first fs)) :error))))
+                                                      (assoc :title (str/join "\n" (distinct (map text fs)))))
+                                                  cell)))
+                                            keys cells)))))
+        indexed   (second (reduce (fn [[n acc] block]
+                                    (if (:header (first block))
+                                      [n (conj acc block)]
+                                      [(inc n) (conj acc (mapv #(assoc % :groupIndex n) block))]))
+                                  [0 []] blocks))
+        rows      (vec (map (comp mark #(dissoc % ::unit)) (apply concat indexed)))
+        merges    (second (reduce (fn [[start acc] block]
+                                    [(+ start (count block))
+                                     (into acc (cond (:header (first block)) [{:row start :col 0 :colspan (count keys)}]
+                                                     (< 1 (count block)) (for [col (range shared)] {:row start :col col :rowspan (count block)})))])
+                                  [0 []] indexed))
+        revision  (into {} (map (juxt :entry-id :revision)) mine)
+        listed    (if filtered? (filter revision (distinct (keep :entry rows))) (map :entry-id mine))]
+    (cond-> {:id          "operations" :editable true :rowHeaders false :merges merges :editStates []
+             :layoutScope "operations"
+             :pending     (vec (for [id listed] {:entry-id id :revision (revision id) :rowId id}))
+             :revisions   (into {} (for [op accepted] [(:record-id op) (revisions ctx op)]))
+             :columns     (mapv (fn [k] (cond-> {:key k :label (i18n/t (if (and money? (= "quantity" k)) "Amount" (column-labels k))) :width (column-widths k)}
+                                          (not (#{"select" "actions"} k)) (assoc :sortKey k :filterKey k)
+                                          (#{"kind" "item"} k) (assoc :required true)
+                                          (= "kind" k) (assoc :fixed true)))
+                                keys)
+             :rows        (mapv #(dissoc % :new-line?) rows)
+             ;; Choices for the smart input.
+             :choices     {:suppliers  (vec (for [r (rest (options (:suppliers catalogue) :supplier-id nil))] {:id (:value r) :name (:label r)}))
+                           :stores     (vec (for [r (rest (options (:stores catalogue) :store-id nil))] {:id (:value r) :name (:label r)}))
+                           :warehouses (vec (for [r (rest (options (:warehouses catalogue) :warehouse-id nil))] {:id (:value r) :name (:label r)}))
+                           :kinds      (vec (for [k operation-kinds :let [{:keys [party price reason? new-items]} (entries/operation-rules k)]]
+                                              {:kind     k :label (web/kind-label k nil) :party (some-> party name) :price (boolean price) :reason (boolean reason?)
+                                               :newItems (case new-items true "all" :outputs "outputs" nil)}))}}
+      ;; What Set aside and Bring back send for each selectable row: the revisions it shows, with its entry's.
+      filtered? (assoc :imported (into {} (for [op    ops
+                                                :let  [id (str "import:" (:source-operation-id op))]
+                                                :when (some #(= id (get-in % [:cells 0 :selection :id])) rows)]
+                                            [id (cond-> {:sourceOperationId (:source-operation-id op)       :revision (:revision op)
+                                                         :aside             (= "set aside" (:next-step op))}
+                                                  (revision (:entry-id op)) (assoc :entryRevision (revision (:entry-id op))))]))))))
 
 
 ;; Reads
@@ -567,15 +787,34 @@
              [(:stock-item-id i) (vec (keep (fn [[w c]] (when (pos? (:quantity c 0)) w)) (:cells i)))])))
 
 
+(declare query-connections)
+
+
+(defn source-of
+  "The asked source when it is \"imported\" or one of the workspace's connections, else none."
+  {:malli/schema [:=> [:cat [:maybe :string] [:sequential :map]] [:maybe :string]]}
+  [source connections]
+  (when (or (= "imported" source) (some #(= source (:connection-id %)) connections)) source))
+
+
 (defn- table-model
+  "The table of `view`. With connections it reads `Imported Operations Needing Review` once: under a source filter
+  for every operation of that source, else only for the pending imported entries it marks. Unreadable under a
+  filter, the table is too; unfiltered, its entries are shown without their marks."
   {:malli/schema [:=> [:cat :map :map] [:maybe :map]]}
-  [context view]
+  [context {:keys [source] :as view}]
   (let [work      (web/read-or-nil context ::entries/pending-entries {})
         catalogue (web/read-or-nil context ::references/draft-catalogue {})
         accepted  (web/read-or-nil context ::acceptance/accepted-operations {})
-        currency  (or (:currency (web/read-or-nil context ::currency/workspace-currency {})) "EUR")]
-    (when (and work catalogue accepted)
+        currency  (or (:currency (web/read-or-nil context ::currency/workspace-currency {})) "EUR")
+        sources   (query-connections context)
+        source    (source-of source sources)
+        imported  (when (seq sources)
+                    (web/read-or-nil context ::review/imported-operations-needing-review
+                                     (cond (nil? source) {:entries-only? true} (= "imported" source) {} :else {:connection-id source})))]
+    (when (and work catalogue accepted (or (nil? source) imported))
       (operations-grid (assoc view :catalogue catalogue :pending (:entries work) :findings (:findings work) :accepted accepted :currency currency
+                              :sources sources :source source :imported imported
                               :actors (into {} (map (juxt (comp str :actor) :actor-label))
                                             (actors/enrich context (map #(hash-map :actor %) (distinct (keep :actor (mapcat :revisions accepted)))))))))))
 
@@ -584,12 +823,13 @@
   {:route-data access :schema [:map [:requestId :string] [:preview :boolean] [:mode {:optional true} [:maybe [:enum "units" "money"]]]
                                [:sort {:optional true} [:maybe :string]] [:direction {:optional true} [:maybe [:enum "asc" "desc"]]]
                                [:filters {:optional true} [:maybe :map]] [:editing {:optional true} [:vector :string]]
-                               [:below {:optional true} [:vector [:map [:entry :string] [:group :string]]]]]
+                               [:below {:optional true} [:vector [:map [:entry :string] [:group :string]]]]
+                               [:source {:optional true} [:maybe [:string {:max 200}]]]]
    :query      (fn [context input] {:context context :input input})}
   [{:keys [context] {:keys [requestId preview] :as input} :input}]
   {:type :signals
    :data {:_operationsTableJson (json {:requestId requestId
-                                       :model     (table-model context (assoc (select-keys input [:mode :sort :direction :filters :editing :below]) :preview? preview))})}})
+                                       :model     (table-model context (assoc (select-keys input [:mode :sort :direction :filters :editing :below :source]) :preview? preview))})}})
 
 
 (defn item-options
@@ -650,6 +890,45 @@
                     (operation-input catalogue (stocked table) workspaceId entryId revision values saved))))
 
 
+(defn correction-entry-id
+  "The entry of the correction proposed for an imported operation's shortage."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [entry-id]
+  (str "fix:" entry-id))
+
+
+(defaction set-aside-operations
+  "Board 45 slice a · Set aside or Bring back the selected imported operations, each at the revisions its row
+  showed. A row without an entry revision saw no entry and says so (0): a member's later edit makes it stale
+  instead of being discarded."
+  {:route-data access
+   :schema     [:map [:workspaceId :uuid] [:aside :boolean] [:reason {:optional true} [:maybe [:string {:max 500}]]]
+                [:operations [:vector {:min 1 :max 500} [:map [:sourceOperationId [:string {:min 1 :max 700}]] [:revision [:int {:min 1}]]
+                                                         [:entryRevision {:optional true} [:maybe [:int {:min 0}]]]]]]
+                [:commandId [:string {:min 1 :max 100}]]]}
+  [_ {:keys [aside reason operations commandId]}]
+  (web/descriptor :tover.marketplace.operations.model/set-source-operations-aside commandId
+                  (cond-> {:aside      aside
+                           :operations (mapv (fn [{:keys [sourceOperationId revision entryRevision]}]
+                                               {:source-operation-id sourceOperationId :revision revision :entry-revision (or entryRevision 0)})
+                                             operations)}
+                    (not (str/blank? reason)) (assoc :reason reason))))
+
+
+(defaction add-correction
+  "Board 45 slice 5 · Fix shortage: saves the proposed correction, a count just before the operation, as a pending
+  entry beside it, so one acceptance takes both."
+  {:route-data access
+   :schema     [:map [:workspaceId :uuid] [:entryId [:string {:min 1 :max 490}]] [:stockItemId [:string {:min 1 :max 500}]]
+                [:warehouseId [:string {:min 1 :max 500}]] [:instant [:string {:min 1 :max 40}]] [:count [:int {:min 0}]]
+                [:commandId [:string {:min 1 :max 100}]]]}
+  [_ {:keys [workspaceId entryId stockItemId warehouseId instant count commandId]}]
+  (let [id (correction-entry-id entryId)]
+    (web/descriptor ::entries/save-shared-inventory-entry commandId
+                    {:workspace-id workspaceId :entry-id id :kind "correction" :occurred-at instant
+                     :lines        [{:line-id (str id "-0") :stock-item-id stockItemId :warehouse-id warehouseId :quantity count}]})))
+
+
 ;; Page
 
 
@@ -658,6 +937,13 @@
   {:malli/schema [:=> [:cat :string] :string]}
   [connection-id]
   (str "/operations/marketplace/" (codec/url-encode connection-id)))
+
+
+(defn imported-path
+  "The Operations page filtered to one connection's imported operations."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [connection-id]
+  (str "/operations?source=" (codec/url-encode connection-id)))
 
 
 (defn query-connections
@@ -689,19 +975,40 @@
 
 (defn query-page
   {:malli/schema [:=> [:cat :map :map] :map]}
-  [{:keys [request] :as context} _]
-  {:workspace-id (get-in request [:tover/identity :workspace-id])
-   :connections  (query-connections context)
-   :model        (table-model context {:preview? false})})
+  [{:keys [request] :as context} {:keys [source] :as view}]
+  (let [connections (query-connections context)
+        source      (source-of source connections)]
+    {:workspace-id (get-in request [:tover/identity :workspace-id])
+     :connections  connections
+     :source       source
+     :model        (table-model context (assoc (select-keys view [:filters]) :preview? false :source source))}))
+
+
+(defn source-filter
+  "Board 45 `Inventory Review` · the Imported filter: every operation, only imported ones, or one connection's."
+  {:malli/schema [:=> [:cat [:map [:connections [:sequential :map]] [:source {:optional true} [:maybe :string]]]] [:maybe [:sequential schema/Hiccup]]]}
+  [{:keys [connections source]}]
+  (when (seq connections)
+    (list
+      (into [:select.operations-source {:aria-label (i18n/t "Operation source")}]
+            (for [[value label] (into [["" (i18n/t "All operations")] ["imported" (i18n/t "Imported")]]
+                                      (for [{:keys [connection-id account-label]} connections] [connection-id (str "Ozon · " account-label)]))]
+              [:option {:value value :selected (= value (or source ""))} label]))
+      [:input.operations-aside-reason {:type "text" :maxlength 500 :hidden true :placeholder (i18n/t "Reason (optional)") :aria-label (i18n/t "Reason (optional)")}]
+      [:button.catalogue-discard-new.operations-set-aside {:type "button" :hidden true :disabled true} (i18n/t "Set aside")]
+      [:button.catalogue-discard-new.operations-bring-back {:type "button" :hidden true :disabled true} (i18n/t "Bring back")])))
 
 
 (defn workbench
   {:malli/schema [:=> [:cat :map] schema/Hiccup]}
-  [{:keys [workspace-id model]}]
+  [{:keys [workspace-id model source] :as props}]
   (let [options {:requestCancellation "cleanup" :retry "never" :retryMaxCount 0}]
     [:operations-workbench.operations-workbench.catalogue-workbench
      {:data-workspace-id            (str workspace-id)
+      :data-source                  (or source "")
       :data-model                   (json model)
+      :data-on:operations-aside     (->expr (.catch (@action ::set-aside-operations evt.detail ~options) (fn [_] (.requestFailed el "save"))))
+      :data-on:operations-correct   (->expr (.catch (@action ::add-correction evt.detail ~options) (fn [_] (.requestFailed el "save"))))
       :data-on:operations-query     (->expr (.catch (@view ::table evt.detail ~options) (fn [_] (.requestFailed el "table"))))
       :data-on:operations-items     (->expr (.catch (@view ::item-choices evt.detail ~options) (fn [_] (.requestFailed el "items"))))
       :data-on:operations-suppliers (->expr (.catch (@view ::supplier-choices evt.detail ~options) (fn [_] (.requestFailed el "suppliers"))))
@@ -720,6 +1027,7 @@
      [:div.sheet-toolbar
       [:div.sheet-change-status [:span.stock-save-status.quiet {:role "status"}]]
       [:div.sheet-actions
+       (source-filter props)
        (into [:select.operations-add {:aria-label (i18n/t "Add operation")} [:option {:value ""} (i18n/t "Add operation")]]
              (for [k operation-kinds] [:option {:value k} (web/kind-label k nil)]))
        (web/mode-switch {})
@@ -731,7 +1039,8 @@
 
 
 (defpage page
-  {:route "/operations" :title "Operations · Tover" :parent :tover.shared.web.core/shell :route-data access :query query-page}
+  {:route  "/operations" :title "Operations · Tover" :parent :tover.shared.web.core/shell :route-data access :query query-page
+   :schema [:map [:source {:optional true} [:string {:max 200}]]]}
   [{:keys [model connections] :as props}]
   {:type :elements
    :html [:section.operations-page

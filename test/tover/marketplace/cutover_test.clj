@@ -319,7 +319,7 @@
                      :product-mappings {"c1:p1" (product-mapping "red") "c1:p2" (product-mapping "blue")}
                      :provenance {:cutover-entries {} :baselines {(:baseline-id blue) blue}})]
     (is (= {:connection-id    c
-            :baselines        [{:stock-item-id "blue" :warehouse-id "main" :instant snapshot :record-id "o9"}]
+            :baselines        [{:stock-item-id "blue" :warehouse-id "main" :instant snapshot :record-id "o9" :waiting-operations 0}]
             :without-baseline [{:stock-item-id "red" :warehouse-id "main" :readiness "ready" :waiting-operations 0}]}
            (cutover/coverage facts c {})))
     (is (= {:without-baseline [{:stock-item-id "red" :warehouse-id "main" :readiness "ready" :waiting-operations 2}]}
@@ -380,5 +380,5 @@
                 :warehouse-id "main" :instant snapshot :record-id "o1" :established-at snapshot})
         (is (= 0 (connections/count-part :scopes-without-baseline ctx listings/c)))
         (is (= 1 (connections/count-part :baselines ctx listings/c)))
-        (is (= [{:stock-item-id "red" :warehouse-id "main" :instant snapshot :record-id "o1"}]
+        (is (= [{:stock-item-id "red" :warehouse-id "main" :instant snapshot :record-id "o1" :waiting-operations 0}]
                (:baselines (runtime/read-model ctx ::cutover/baseline-coverage-by-stock-item-and-warehouse {:connection-id listings/c}))))))))

@@ -127,7 +127,16 @@ const program = `
       (put :tover.inventory.stock-items.model/stock-item-barcode-assigned
            {:barcode-id (str item "|" barcode) :stock-item-id item :barcode barcode})
       (put :tover.marketplace.sync.model/external-product-observed (listing (str "10" n) (str name " (Ozon)") barcode)))
-    (put :tover.marketplace.sync.model/external-product-observed (listing "104" "Gift card" nil))
+    (put :tover.marketplace.sync.model/external-product-observed
+         (assoc (listing "104" "Gift card" nil) :identifiers (observations/write-json [{:type "sku" :value "104" :active true}])))
+    ;; Board 45: one delivered FBS posting of the unmatched Gift card listing waits on the Operations page.
+    (let [id "browser-ozon:fbs-posting:P1"]
+      (put :tover.marketplace.sync.model/source-operation-observed
+           {:source-operation-id id :entity-id id :connection-id "browser-ozon" :source-id "P1" :revision 1
+            :payload-hash (apply str (repeat 64 "c")) :adapter-version "test" :observed-at at :last-observed-at at
+            :source-revision-id (str id "#1") :facts (observations/write-json {}) :kind "fbs-posting" :status "delivered"
+            :terminal true :occurred-at "2026-11-10T09:00:00Z" :from-warehouse "browser-ozon:fbs:203" :complete true
+            :lines (observations/write-json [{:line-key "1" :identifiers [{:type "sku" :value "104"}] :quantity "2"}])}))
     ;; A Ladle listing confirmed, then suspended by the Mapping Guard: Reconfirm in the Suspended filter.
     (put :tover.catalogues.products.model/product-registered {:product-id "browser-product-5" :name "Ladle" :status "active" :revision 1})
     (put :tover.inventory.stock-items.model/stock-item-registered

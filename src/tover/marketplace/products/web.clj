@@ -249,8 +249,7 @@
          (if (:status (ex-data error)) (throw error) nil))))
 
 
-(defn table
-  "The workbench props of `state` for the connection, or nil when they cannot be read."
+(defn- table-of
   {:malli/schema [:=> [:cat :map :string :string] [:maybe :map]]}
   [context connection-id state]
   (read-or-nil
@@ -269,16 +268,25 @@
                                                               {:connection-id connection-id :state state}))))})))
 
 
+(defn table
+  "The workbench props of `state` for the connection, or nil when they cannot be read; with `listing`, only that
+  listing's row (a group on the Operations page opens matching so)."
+  {:malli/schema [:=> [:cat :map :string :string [:* :any]] [:maybe :map]]}
+  [context connection-id state & [listing]]
+  (some-> (table-of context connection-id state)
+          (cond-> listing (update :rows #(filterv (comp #{listing} :id) %)))))
+
+
 (def Query
   [:map [:connectionId connections/ConnectionId] [:state [:enum "unmatched" "deferred" "suspended" "confirmed"]]
-   [:requestId [:string {:max 100}]]])
+   [:listing {:optional true} [:maybe products/ListingId]] [:requestId [:string {:max 100}]]])
 
 
 (defview table-view
   {:route-data access :schema Query :query (fn [context input] {:context context :input input})}
-  [{:keys [context] {:keys [connectionId state requestId]} :input}]
+  [{:keys [context] {:keys [connectionId state listing requestId]} :input}]
   (connection! context connectionId)
-  (grid/table-signal requestId (some-> (table context connectionId state) grid/model)))
+  (grid/table-signal requestId (some-> (table context connectionId state listing) grid/model)))
 
 
 (defn choices
@@ -445,14 +453,15 @@
 
 (defn query-products
   {:malli/schema [:=> [:cat :map :map] :map]}
-  [context {:keys [connection-id state]}]
+  [context {:keys [connection-id state listing]}]
   (let [connection (connection! context connection-id)
         state      (if (some #{state} states) state "unmatched")]
     {:connection  connection
      :state       state
+     :listing     listing
      :connections (operations/query-connections context)
      :progress    (read-or-nil #(runtime/read-model context ::products/matching-progress {:connection-id connection-id}))
-     :table       (table context connection-id state)}))
+     :table       (table context connection-id state listing)}))
 
 
 (defn header
@@ -469,10 +478,11 @@
   {:route      "/operations/marketplace/:connection-id/products"
    :title      "Product matching · Tover"
    :parent     :tover.shared.web.core/shell
-   :schema     [:map [:connection-id connections/ConnectionId] [:state {:optional true} [:string {:max 20}]]]
+   :schema     [:map [:connection-id connections/ConnectionId] [:state {:optional true} [:string {:max 20}]]
+                [:listing {:optional true} products/ListingId]]
    :route-data access
    :query      query-products}
-  [{:keys [connection connections state progress table]}]
+  [{:keys [connection connections state listing progress table]}]
   (let [{:keys [connection-id account-label]} connection]
     {:type :elements
      :html [:section.marketplace-page {:aria-labelledby "matching-title" :data-connection-id connection-id}
@@ -483,7 +493,7 @@
              (when progress (progress-line progress))]
             (if table
               (grid/workbench (assoc table
-                                     :query {:connectionId connection-id :state state}
+                                     :query (cond-> {:connectionId connection-id :state state} listing (assoc :listing listing))
                                      :query-view ::table-view :command-action ::command :choices-view ::choices-view
                                      :filters (mapv (fn [s] {:label (state-labels s) :href (products-path connection-id s) :current? (= s state)})
                                                     states)))

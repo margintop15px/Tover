@@ -201,3 +201,39 @@ test('propose the cutover of a ready scope, reload, review it filtered and accep
   await expect(page.locator('#marketplace-cutover-coverage-grid tbody tr').filter({ hasText: 'Whisk' })).toContainText('Baseline at 2026-11-20T10:00:00Z');
   expect(errors).toEqual([]);
 });
+
+// Board 45 · Inventory Review: imported operations on the Operations page, grouped by what unblocks them; a
+// selection is set aside, hidden until its next step is filtered, and brought back.
+test('an imported operation waits under its decision; set aside and bring back a selection, reload', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const sheet = page.locator('#operations-grid');
+  const checkbox = sheet.locator('input[data-review-entry="import:browser-ozon:fbs-posting:P1"]');
+  const header = sheet.locator('td.operations-decision').first();
+  await signIn(page);
+  await page.goto(connection);
+  await page.locator('a[href="/operations?source=browser-ozon"]').click();
+  await expect(page).toHaveURL(/\/operations\?source=browser-ozon$/);
+  await expect(page.locator('select.operations-source')).toHaveValue('browser-ozon');
+  await expect(header).toContainText('Match Gift card – 1 operation');
+  await expect(sheet.locator('td.operations-source').first()).toHaveText('Ozon · Browser shop');
+  await checkbox.check();
+  await page.getByLabel('Reason (optional)').fill('Gift card is not stock');
+  await page.getByRole('button', { name: 'Set aside', exact: true }).click();
+  await expect(checkbox).toHaveCount(0);
+  await page.reload();
+  await expect.poll(() => sheet.evaluate(node => !!node.worksheet)).toBe(true);
+  await expect(header).toHaveCount(0);
+
+  // Filtered by next step, the set-aside row shows again and comes back.
+  await page.locator('operations-workbench').evaluate(node => node.setFilters({ 'next-step': [{ type: 'begins', value: 'Set' }] }));
+  await checkbox.check();
+  await page.getByRole('button', { name: 'Bring back', exact: true }).click();
+  await expect(checkbox).toHaveCount(0);
+  await page.locator('operations-workbench').evaluate(node => node.setFilters({}));
+  await expect(header).toContainText('Match Gift card – 1 operation');
+  await expect(checkbox).toHaveCount(1);
+  // The group opens matching with its listing.
+  await header.getByRole('button', { name: 'Open' }).click();
+  await expect(page).toHaveURL(/\/operations\/marketplace\/browser-ozon\/products\?listing=/);
+  expect(errors).toEqual([]);
+});

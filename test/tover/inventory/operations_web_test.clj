@@ -417,3 +417,109 @@
     (let [copy (saved-input [(assoc edited :entry-id "x")] accepted 0 (assoc values "copies" "x"))]
       (is (= [["e-0" "2"] ["e-1" "1"]] (map (juxt :line-id :quantity) (:lines copy))) "a pending revision is copied as edited")
       (is (nil? (:amends copy))))))
+
+
+;; 45 · Imported operations on the Operations page
+
+
+(def import-sale
+  {:entry-id "import:c:fbs-posting:P9" :revision 1 :kind "sale" :occurred-at (.plusSeconds at 60) :status "pending"
+   :lines    [{:line-id "c:fbs-posting:P9/1" :stock-item-id "tee-m" :warehouse-id "main" :quantity 1}]})
+
+
+(defn- imported-row
+  {:malli/schema [:=> [:cat :string :string [:* :any]] :map]}
+  [id step & {:as more}]
+  (merge {:source-operation-id (str "c:fbs-posting:" id) :connection-id "c"         :connection-label "Ozon · Shop"          :kind     "fbs-posting"
+          :entry-kind          "sale"                    :status        "delivered" :occurred-at      "2026-11-18T10:00:00Z" :revision 1             :next-step step
+          :missing             [] :findings [] :lines [{:label "Mug red" :quantity 1}]}
+         more))
+
+
+(def review-groups
+  {:groups [{:decision   "match product" :id "c:100" :label "Match Mug red" :count 2 :connection-id "c" :listing-state "unmatched"
+             :operations [(imported-row "P1" "match product") (imported-row "P2" "match product" :lines [{:label "Mug red" :quantity 2}])]}
+            {:decision   "accept" :id "accept" :label "Accept" :count 1 :connection-id "c"
+             :operations [(imported-row "P9" "accept" :entry-id (:entry-id import-sale) :entry-revision 1)]}
+            {:decision   "history" :id "history" :label "History" :count 1 :connection-id "c"
+             :operations [(imported-row "P0" "history")]}]})
+
+
+(defn- imported
+  {:malli/schema [:=> [:cat :map] :map]}
+  [view]
+  (shown (merge {:pending [purchase import-sale] :imported review-groups :sources [{:connection-id "c" :account-label "Shop"}]} view)))
+
+
+(deftest the-imported-filter-groups-most-operations-first
+  (let [model (imported {:source "imported"})]
+    (is (= ["Match Mug red – 2 operations" "Accept – 1 operation"] (keep #(when (:header %) (get-in % [:cells 0 :value])) (:rows model))))
+    (is (= ["header" "c:fbs-posting:P1" "c:fbs-posting:P2" "header" (:entry-id import-sale)]
+           (map #(if (:header %) "header" (:groupId %)) (:rows model)))
+        "only imported rows; an operation with an entry is the entry's own row")
+    (is (= ["Ozon · Shop" "Match product" "Mug red" "2"]
+           (map #(column model "c:fbs-posting:P2|0" %) ["source" "next-step" "item" "quantity"])))
+    (is (not-any? #(or (:editor %) (:target %)) (:cells (some #(when (= "c:fbs-posting:P1|0" (:id %)) %) (:rows model))))
+        "a row without an entry is read-only")
+    (is (some #(= {:colspan (count (:columns model)) :row 0 :col 0} (select-keys % [:colspan :row :col])) (:merges model))
+        "the decision spans the table")))
+
+
+(deftest hidden-steps-show-only-when-filtered
+  (is (not-any? #(= "c:fbs-posting:P0" (:groupId %)) (:rows (imported {:source "imported"}))))
+  (is (= ["c:fbs-posting:P0"] (keep #(when-not (:header %) (:groupId %)) (:rows (imported {:source "imported" :filters {"next-step" [{:type "eq" :value "History"}]}}))))))
+
+
+(deftest imported-entries-carry-their-connection-and-next-step
+  (let [model (imported {})]
+    (is (= ["p" (:entry-id import-sale) "s"] (distinct (map :groupId (:rows model)))))
+    (is (= ["Ozon · Shop" "Accept"] (map #(column model (str (:entry-id import-sale) "|c:fbs-posting:P9/1") %) ["source" "next-step"])))
+    (is (= ["" ""] (map #(column model "p|p-0" %) ["source" "next-step"])))
+    (is (nil? (some :selection (mapcat :cells (:rows model)))) "outside the filter nothing is selected outside Preview")))
+
+
+(deftest the-table-is-unchanged-without-connections
+  (is (= ["kind" "occurred-at" "supplier" "store" "reason" "item" "article" "unit" "warehouse" "quantity" "price" "actions"]
+         (map :key (:columns (grid false)))))
+  (is (nil? (:imported (grid false)))))
+
+
+(deftest selected-rows-name-what-was-seen
+  (let [model (imported {:source "imported"})]
+    (is (= {"import:c:fbs-posting:P1" {:sourceOperationId "c:fbs-posting:P1" :revision 1 :aside false}
+            "import:c:fbs-posting:P2" {:sourceOperationId "c:fbs-posting:P2" :revision 1 :aside false}
+            (:entry-id import-sale)   {:sourceOperationId "c:fbs-posting:P9" :revision 1 :entryRevision 1 :aside false}}
+           (:imported model)))
+    (is (= ["import:c:fbs-posting:P1" "import:c:fbs-posting:P2" (:entry-id import-sale)]
+           (keep #(get-in % [:cells 0 :selection :id]) (:rows model)))))
+  (is (= {:type  :command :id :tover.marketplace.operations.model/set-source-operations-aside :command-id "c1"
+          :input {:aside      true :reason "Not tracked"
+                  :operations [{:source-operation-id "c:fbs-posting:P1" :revision 1 :entry-revision 0}
+                               {:source-operation-id "c:fbs-posting:P9" :revision 1 :entry-revision 2}]}
+          :then  {:type :view :id ::web/saved :input {:commandId "c1"}}
+          :catch {:type :view :id ::web/failed :input {:commandId "c1"}}}
+         (operations/set-aside-operations {} {:workspaceId workspace :aside true :reason "Not tracked" :commandId "c1"
+                                              :operations  [{:sourceOperationId "c:fbs-posting:P1" :revision 1}
+                                                            {:sourceOperationId "c:fbs-posting:P9" :revision 1 :entryRevision 2}]}))
+      "a row without an entry revision is sent as one that saw no entry"))
+
+
+(deftest the-proposed-correction-is-highlighted
+  (let [short  (imported-row "P9" "fix shortage" :entry-id (:entry-id import-sale) :entry-revision 1
+                             :suggested-correction {:stock-item-id "tee-m" :warehouse-id "main" :instant "2026-11-19T09:59:59Z" :count 3})
+        review {:groups [{:decision "fix shortage" :id "tee-m|main" :label "Fix shortage of T-shirt M" :count 1 :connection-id "c" :operations [short]}]}
+        model  (imported {:source "imported" :imported review})
+        fix    (some #(when (re-find #"operations-suggested" (or (:className %) "")) %) (:rows model))]
+    (is (= ["header" (:id fix) (str (:entry-id import-sale) "|c:fbs-posting:P9/1")] (map #(if (:header %) "header" (:id %)) (:rows model))))
+    (is (= ["Correction" "T-shirt / M" "Main" "3"] (map #(column model (:id fix) %) ["kind" "item" "warehouse" "quantity"])))
+    (is (= {:type "operation-correction" :entry (:entry-id import-sale) :stockItemId "tee-m" :warehouseId "main" :instant "2026-11-19T09:59:59Z" :count 3}
+           (select-keys (first (:actions (last (:cells fix)))) [:type :entry :stockItemId :warehouseId :instant :count])))
+    (testing "once taken it is a pending correction before its sale, and both are submitted together"
+      (let [taken {:entry-id    (operations/correction-entry-id (:entry-id import-sale)) :revision 1 :kind "correction"
+                   :occurred-at (Instant/parse "2026-11-19T09:59:59Z") :status "pending"
+                   :lines       [{:line-id "fix-0" :stock-item-id "tee-m" :warehouse-id "main" :quantity 3}]}
+            model (imported {:source "imported" :imported review :pending [purchase import-sale taken] :preview? true})]
+        (is (not-any? #(re-find #"operations-suggested" (or (:className %) "")) (:rows model)))
+        (is (= [(:entry-id taken) (:entry-id import-sale)] (map :entry-id (:pending model))))
+        (is (= ["header" (:entry-id taken) (:entry-id import-sale)]
+               (distinct (map #(if (:header %) "header" (:groupId %)) (:rows model)))))))))

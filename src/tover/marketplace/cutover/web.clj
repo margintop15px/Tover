@@ -162,11 +162,10 @@
 (defn coverage-rows
   {:malli/schema [:=> [:cat :map cutover/Coverage] [:vector grid/Row]]}
   [label {:keys [baselines without-baseline]}]
-  ;; ponytail: a baselined scope shows 0 waiting; chapter 45 supplies the imported operations still in Review.
-  (into (mapv (fn [{:keys [stock-item-id warehouse-id instant]}]
+  (into (mapv (fn [{:keys [stock-item-id warehouse-id instant waiting-operations]}]
                 {:id    (cutover/scope-id stock-item-id warehouse-id) :revision 1 :label (label stock-item-id stock-item-id)
                  :cells {:item     (label stock-item-id stock-item-id)                   :warehouse (label warehouse-id warehouse-id)
-                         :coverage [(i18n/t "Baseline at {instant}" {:instant instant})] :waiting   "0"}})
+                         :coverage [(i18n/t "Baseline at {instant}" {:instant instant})] :waiting   (str waiting-operations)}})
               baselines)
         (map (fn [{:keys [stock-item-id warehouse-id readiness waiting-operations]}]
                {:id    (cutover/scope-id stock-item-id warehouse-id) :revision 1 :label (label stock-item-id stock-item-id)

@@ -261,3 +261,10 @@ inventory-grid .inventory-cell-placeholder{color:var(--iw-muted);font-weight:400
 #stock-grid .stock-timeline-bar.is-empty{background:var(--iw-soft);border-style:dashed;color:var(--iw-muted)}
 #stock-grid .stock-timeline-mark{position:absolute;top:9px;width:2px;height:30px;margin-left:-1px;background:var(--iw-green)}
 #stock-grid .stock-timeline-mark.is-out{background:var(--iw-red)}
+/* Imported marketplace operations: a decision heads its group, the proposed correction stands out */
+#operations-grid .jss_worksheet>tbody>tr>td.operations-decision{background:var(--iw-blue-fill);color:var(--iw-blue);font-weight:600;cursor:pointer}
+#operations-grid .jss_worksheet>tbody>tr>td.operations-suggested{background:color-mix(in srgb,var(--iw-amber) 14%,var(--iw-bg));font-style:italic}
+#operations-grid .jss_worksheet>tbody>tr>td.operations-source{color:var(--iw-muted);white-space:nowrap}
+#operations-grid .jss_worksheet>tbody>tr>td.operations-next-step{font-weight:600}
+#operations-grid .jss_worksheet>tbody>tr>td.operations-imported{color:var(--iw-muted)}
+.operations-workbench .sheet-actions .operations-aside-reason{width:140px}
