@@ -94,8 +94,9 @@
 
 
 (def Group
-  "The decision that unblocks the operation: one decision unblocks every operation of its group."
-  [:map [:decision NextStep] [:id :string] [:label :string]])
+  "The decision that unblocks the operation: one decision unblocks every operation of its group. `:label` reads it
+  in English; `:label-key` with `:label-args` is the message the page translates."
+  [:map [:decision NextStep] [:id :string] [:label :string] [:label-key :string] [:label-args [:map-of :keyword :string]]])
 
 
 (def Correction
@@ -300,6 +301,14 @@
       line-key))
 
 
+(defn- posting-number
+  "How Ozon numbers a source operation: its source id, else the last part of its id."
+  {:malli/schema [:=> [:cat :map :string] :string]}
+  [facts source-operation-id]
+  (or (not-empty (str (get-in facts [:operations source-operation-id :source-id])))
+      (last (str/split source-operation-id #":"))))
+
+
 (defn- item-label
   {:malli/schema [:=> [:cat :map :string] :string]}
   [{:keys [catalogue]} stock-item-id]
@@ -309,9 +318,11 @@
 
 
 (defn- group
-  {:malli/schema [:=> [:cat NextStep [:maybe :string] [:maybe :string]] Group]}
-  [step id label]
-  {:decision step :id (or id step) :label (or label (capitalized step))})
+  "The group of `step`: `template` names it with `name` (\"Match {name}\"), else the step does."
+  {:malli/schema [:=> [:cat NextStep [:maybe :string] [:* :string]] Group]}
+  [step id & [template name]]
+  (let [key (or template (capitalized step)) args (if name {:name name} {})]
+    {:decision step :id (or id step) :label (str/replace key "{name}" (or name "")) :label-key key :label-args args}))
 
 
 (defn- evaluate
@@ -369,30 +380,30 @@
         short      (when (and result own) (correction (assoc facts :history (:history evaluated)) own result))
         incomplete (or (nil? kind) (empty? lines) (seq missing))]
     (cond
-      conflict ["resolve conflict" (group "resolve conflict" nil nil)]
+      conflict ["resolve conflict" (group "resolve conflict" nil)]
       (seq unmatched) (let [line (first unmatched)]
                         ["match product" (group "match product" (or (:external-product-id line) (line-label facts operation line))
-                                                (str "Match " (line-label facts operation line)))])
+                                                "Match {name}" (line-label facts operation line))])
       (seq suspended) (let [line (first suspended)]
                         ["confirm match again" (group "confirm match again" (:external-product-id line)
-                                                      (str "Confirm " (line-label facts operation line) " again"))])
+                                                      "Confirm {name} again" (line-label facts operation line))])
       (seq warehouses) (let [id (first warehouses)]
                          ["match warehouse" (group "match warehouse" id
-                                                   (str "Match warehouse " (or (get-in facts [:warehouse-mappings id :name]) id)))])
-      (some (comp nil? :baseline) itemized) ["set cutover" (group "set cutover" (:connection-id operation) nil)]
+                                                   "Match warehouse {name}" (or (get-in facts [:warehouse-mappings id :name]) id))])
+      (some (comp nil? :baseline) itemized) ["set cutover" (group "set cutover" (:connection-id operation))]
       (and (some :after-baseline itemized) (some (complement :after-baseline) itemized))
-      ["remove old lines" (group "remove old lines" nil nil)]
-      (and incomplete (not (:terminal operation))) ["waiting for Ozon" (group "waiting for Ozon" nil nil)]
-      incomplete ["enter missing facts" (group "enter missing facts" nil nil)]
+      ["remove old lines" (group "remove old lines" nil)]
+      (and incomplete (not (:terminal operation))) ["waiting for Ozon" (group "waiting for Ozon" nil)]
+      incomplete ["enter missing facts" (group "enter missing facts" nil)]
       (and returned? (= "return" (:kind operation)) (not undecided?)
            (#{"returned" "returnedtoozon" "receivedbyseller"} (status operation)))
-      ["confirm return warehouse" (group "confirm return warehouse" nil nil)]
-      undecided? ["accept the sale first" (group "accept the sale first" related (str "Accept sale " related))]
+      ["confirm return warehouse" (group "confirm return warehouse" nil)]
+      undecided? ["accept the sale first" (group "accept the sale first" related "Accept sale {name}" (posting-number facts related))]
       short ["fix shortage" (group "fix shortage" (str (:stock-item-id short) "|" (:warehouse-id short))
-                                   (str "Fix shortage of " (item-label facts (:stock-item-id short))))]
-      (not active) ["connection stopped" (group "connection stopped" (:connection-id operation) nil)]
-      (seq fails) ["accept" (group "accept" nil nil)]
-      :else ["automatic" (group "automatic" nil nil)])))
+                                   "Fix shortage of {name}" (item-label facts (:stock-item-id short)))]
+      (not active) ["connection stopped" (group "connection stopped" (:connection-id operation))]
+      (seq fails) ["accept" (group "accept" nil)]
+      :else ["automatic" (group "automatic" nil)])))
 
 
 (defn classify
@@ -405,7 +416,7 @@
     (let [{:keys [lines entry proposal own result missing] :as evaluated} (evaluate facts operation)
           fails (failing facts operation evaluated)
           done (finished facts operation lines)
-          [step grp] (if done [done (group done nil nil)] (table facts operation evaluated fails))
+          [step grp] (if done [done (group done nil)] (table facts operation evaluated fails))
           shortage (when (= "fix shortage" step) (correction (assoc facts :history (:history evaluated)) own result))]
       (cond-> {:next-step          step
                :group              grp

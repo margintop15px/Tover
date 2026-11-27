@@ -301,9 +301,9 @@
 (def Coverage
   [:map
    [:connection-id Ref]
-   [:baselines [:vector [:map [:stock-item-id Ref] [:warehouse-id Ref] [:instant At] [:record-id :string] [:waiting-operations :int]]]]
+   [:baselines [:vector [:map [:stock-item-id Ref] [:warehouse-id Ref] [:instant At] [:record-id :string] [:waiting-operations [:maybe :int]]]]]
    [:without-baseline [:vector [:map [:stock-item-id Ref] [:warehouse-id Ref] [:readiness [:enum "ready" "pending"]]
-                                [:waiting-operations :int]]]]])
+                                [:waiting-operations [:maybe :int]]]]]])
 
 
 (defn coverage
@@ -316,12 +316,12 @@
                           (filter #(= connection-id (:connection-id %)))
                           (sort-by (juxt :stock-item-id :warehouse-id))
                           (mapv #(assoc (select-keys % [:stock-item-id :warehouse-id :instant :record-id])
-                                        :waiting-operations (get waiting [(:stock-item-id %) (:warehouse-id %)] 0))))
+                                        :waiting-operations (when waiting (get waiting [(:stock-item-id %) (:warehouse-id %)] 0)))))
    :without-baseline (vec (for [[[item warehouse] _] (:scopes (classify facts connection-id))
                                 :let                 [state (readiness provenance connection-id item warehouse)]
                                 :when                (not= "has baseline" state)]
                             {:stock-item-id      item :warehouse-id warehouse :readiness state
-                             :waiting-operations (get waiting [item warehouse] 0)}))})
+                             :waiting-operations (when waiting (get waiting [item warehouse] 0))}))})
 
 
 ;; Facts and reads

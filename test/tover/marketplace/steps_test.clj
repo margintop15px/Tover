@@ -403,7 +403,8 @@
         results  (map #(steps/classify facts %) ops)]
     (is (= #{"match product"} (set (map :next-step results))))
     (is (= 12 (count (distinct (map :group results)))))
-    (is (= {:decision "match product" :id "c1:listing-0" :label "Match Listing 0"} (:group (first results))))
+    (is (= {:decision "match product" :id "c1:listing-0" :label "Match Listing 0" :label-key "Match {name}" :label-args {:name "Listing 0"}}
+           (:group (first results))))
     (is (not-any? :entry-id results))
     (testing "matching one listing moves its operations to their next step"
       (let [matched (assoc-in facts [:mappings "c1:listing-0"]
@@ -490,6 +491,16 @@
         facts (assoc (baselined) :entries [entry])]
     (is (= [] (:missing (steps/classify facts no-time-terminal))))
     (is (= "accept" (step facts no-time-terminal)))))
+
+
+(deftest a-group-names-its-decision-for-translation
+  (testing "the label is a message key with its arguments, so the page translates it without reading English"
+    (is (= {:decision "set cutover" :id connection :label "Set cutover" :label-key "Set cutover" :label-args {}}
+           (:group (steps/classify (no-baseline) posting)))))
+  (testing "accept the sale first names the sale by its posting number, never its source operation id"
+    (is (= {:decision   "accept the sale first" :id "c1:fbo-posting:F0" :label "Accept sale F0" :label-key "Accept sale {name}"
+            :label-args {:name "F0"}}
+           (:group (steps/classify (assoc-in (posting-undecided) [:operations "c1:fbo-posting:F0" :source-id] "F0") fbo-return-operation))))))
 
 
 (deftest an-indexed-history-classifies-alike

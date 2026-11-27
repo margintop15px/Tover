@@ -24,6 +24,8 @@
     [tover.inventory.web :as web]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.operations.review :as review]
+    [tover.marketplace.provenance :as provenance]
+    [tover.marketplace.sync.model :as sync]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]
     [tover.shared.ui.core :as ui]
@@ -526,22 +528,12 @@
   (if (str/blank? step) "" (i18n/t (str (str/upper-case (subs step 0 1)) (subs step 1)))))
 
 
-(def ^:private decision-names
-  "A decision's label as `steps` builds it, and the template that translates it."
-  {"match product"         [#"^Match (.+)$" "Match {name}"]
-   "confirm match again"   [#"^Confirm (.+) again$" "Confirm {name} again"]
-   "match warehouse"       [#"^Match warehouse (.+)$" "Match warehouse {name}"]
-   "accept the sale first" [#"^Accept sale (.+)$" "Accept sale {name}"]
-   "fix shortage"          [#"^Fix shortage of (.+)$" "Fix shortage of {name}"]})
-
-
 (defn decision-label
-  "\"Match Mug red – 48 operations\": what unblocks the group and how many operations it unblocks."
+  "\"Match Mug red – 48 operations\": what unblocks the group, translated from the message key `steps` names it by,
+  and how many operations it unblocks."
   {:malli/schema [:=> [:cat :map :int] :string]}
-  [{:keys [decision label]} n]
-  (let [[pattern template] (decision-names decision)
-        named              (some-> pattern (re-matches label) second)
-        text               (if named (i18n/t template {:name named}) (i18n/t label))]
+  [{:keys [label label-key label-args]} n]
+  (let [text (if label-key (i18n/t label-key (or label-args {})) (i18n/t label))]
     (if (= 1 n)
       (i18n/t "{label} – 1 operation" {:label text})
       (i18n/t "{label} – {count} operations" {:label text :count n}))))
@@ -573,7 +565,7 @@
 (defn- selection
   {:malli/schema [:=> [:cat :string] :map]}
   [source-operation-id]
-  {:selection {:id (str "import:" source-operation-id) :label (i18n/t "Select operation")}})
+  {:selection {:id (provenance/import-entry-id source-operation-id) :label (i18n/t "Select operation")}})
 
 
 (defn- source-cells
@@ -630,9 +622,10 @@
 
 
 (defn- suggested-rows
-  "The correction `fix shortage` offers, highlighted just before its operation, until a member takes it."
+  "The correction `fix shortage` offers, highlighted just before its operation, until a member takes it. `lead?`
+  when the table starts with a select or include column, which the correction leaves blank."
   {:malli/schema [:=> [:cat :map :map :boolean] [:vector :map]]}
-  [ctx {:keys [entry-id connection-label] {:keys [stock-item-id warehouse-id instant count]} :suggested-correction} select?]
+  [ctx {:keys [entry-id connection-label] {:keys [stock-item-id warehouse-id instant count]} :suggested-correction} lead?]
   (let [id (str "suggested|" entry-id)]
     [{:id    id :groupId id :className "operations-suggested"
       :cells (cond->> (-> [(assoc (ro (web/kind-label "correction" nil)) :className "operations-kind")
@@ -642,18 +635,22 @@
                           (conj {:value   ""
                                  :actions [{:type    "operation-correction" :entry entry-id :stockItemId stock-item-id :warehouseId                   warehouse-id
                                             :instant instant                :count count    :label       (i18n/t "Add the proposed correction") :icon "+"}]}))
-               select? (into [{:value ""}]))}]))
+               lead? (into [{:value ""}]))}]))
 
 
 (defn- header-rows
-  "The decision that unblocks a group, across the table, with a link to where it is taken."
+  "The decision that unblocks a group, across the table, with a link to where it is taken; Accept the sale first
+  moves to the sale's own rows on this page (its entry's, or its downloaded operation's)."
   {:malli/schema [:=> [:cat :map :int :int] [:vector :map]]}
   [{:keys [decision id] :as g} n width]
-  (let [href (decision-href g)
-        key  (str "decision|" decision "|" id)]
+  (let [href   (decision-href g)
+        key    (str "decision|" decision "|" id)
+        action (cond
+                 (= "accept the sale first" decision)
+                 {:type "operations-focus" :groups [(provenance/import-entry-id id) id] :label (i18n/t "Open") :icon "›"}
+                 href {:type "operations-open" :href href :label (i18n/t "Open") :icon "›"})]
     [{:id    key :groupId key :header true :className "operations-decision"
-      :cells (into [(cond-> (ro (decision-label g n))
-                      href (assoc :actions [{:type "operations-open" :href href :label (i18n/t "Open") :icon "›"}]))]
+      :cells (into [(cond-> (ro (decision-label g n)) action (assoc :actions [action]))]
                    (repeat (dec width) (ro "")))}]))
 
 
@@ -708,7 +705,7 @@
                       (when (and (or steps? (not (hidden-steps next-step))) (or entry (not preview?)))
                         (cond-> []
                           fix (conj (render {:gid (:entry-id fix) :entry fix} op))
-                          (and entry suggested-correction (not fix)) (conj (suggested-rows ctx op select?))
+                          (and entry suggested-correction (not fix)) (conj (suggested-rows ctx op (or select? preview?)))
                           entry (conj (render {:gid entry-id :entry entry} op))
                           (not entry) (conj (loose-rows ctx op))))))
         blocks    (if-not filtered?
@@ -984,19 +981,27 @@
      :model        (table-model context (assoc (select-keys view [:filters]) :preview? false :source source))}))
 
 
-(defn source-filter
-  "Board 45 `Inventory Review` · the Imported filter: every operation, only imported ones, or one connection's."
-  {:malli/schema [:=> [:cat [:map [:connections [:sequential :map]] [:source {:optional true} [:maybe :string]]]] [:maybe [:sequential schema/Hiccup]]]}
+(defn source-select
+  "Board 45 `Inventory Review` · the Imported filter: every operation, only imported ones, or one connection's;
+  nothing without connections."
+  {:malli/schema [:=> [:cat [:map [:connections [:sequential :map]] [:source {:optional true} [:maybe :string]]]] [:maybe schema/Hiccup]]}
   [{:keys [connections source]}]
   (when (seq connections)
-    (list
-      (into [:select.operations-source {:aria-label (i18n/t "Operation source")}]
-            (for [[value label] (into [["" (i18n/t "All operations")] ["imported" (i18n/t "Imported")]]
-                                      (for [{:keys [connection-id account-label]} connections] [connection-id (str "Ozon · " account-label)]))]
-              [:option {:value value :selected (= value (or source ""))} label]))
-      [:input.operations-aside-reason {:type "text" :maxlength 500 :hidden true :placeholder (i18n/t "Reason (optional)") :aria-label (i18n/t "Reason (optional)")}]
-      [:button.catalogue-discard-new.operations-set-aside {:type "button" :hidden true :disabled true} (i18n/t "Set aside")]
-      [:button.catalogue-discard-new.operations-bring-back {:type "button" :hidden true :disabled true} (i18n/t "Bring back")])))
+    (into [:select.operations-source {:aria-label (i18n/t "Operation source")}]
+          (for [[value label] (into [["" (i18n/t "All operations")] ["imported" (i18n/t "Imported")]]
+                                    (for [connection connections] [(:connection-id connection) (sync/connector-label connection)]))]
+            [:option {:value value :selected (= value (or source ""))} label]))))
+
+
+(defn aside-actions
+  "Set aside, with its optional reason, and Bring back: hidden until the table shows imported operations, enabled
+  by a selection of them."
+  {:malli/schema [:=> [:cat] schema/Hiccup]}
+  []
+  [:span.operations-aside
+   [:input.operations-aside-reason {:type "text" :maxlength 500 :hidden true :placeholder (i18n/t "Reason (optional)") :aria-label (i18n/t "Reason (optional)")}]
+   [:button.catalogue-discard-new.operations-set-aside {:type "button" :hidden true :disabled true} (i18n/t "Set aside")]
+   [:button.catalogue-discard-new.operations-bring-back {:type "button" :hidden true :disabled true} (i18n/t "Bring back")]])
 
 
 (defn workbench
@@ -1027,7 +1032,8 @@
      [:div.sheet-toolbar
       [:div.sheet-change-status [:span.stock-save-status.quiet {:role "status"}]]
       [:div.sheet-actions
-       (source-filter props)
+       (source-select props)
+       (when (seq (:connections props)) (aside-actions))
        (into [:select.operations-add {:aria-label (i18n/t "Add operation")} [:option {:value ""} (i18n/t "Add operation")]]
              (for [k operation-kinds] [:option {:value k} (web/kind-label k nil)]))
        (web/mode-switch {})

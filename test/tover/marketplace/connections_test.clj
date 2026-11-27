@@ -164,10 +164,11 @@
 
 
 (deftest counts-are-zero-until-a-chapter-supplies-them
-  ;; Chapters 42, 43 and 44 supply their parts; set aside here, as this context has no store.
-  (let [parts [:unmatched-listings :unmatched-warehouses :scopes-without-baseline :baselines]
+  ;; Chapters 42, 43, 44 and 45 supply their parts; set aside here, as this context has no store.
+  (let [parts [:unmatched-listings :unmatched-warehouses :scopes-without-baseline :baselines :next-steps]
         saved (into {} (keep #(when-let [m (get (methods model/count-part) %)] [% m])) parts)]
     (doseq [part parts] (remove-method model/count-part part))
+    (defmethod model/count-part :next-steps [_ _ _] {})
     (try
       (is (= {:unmatched-listings 0 :unmatched-warehouses 0 :scopes-without-baseline 0 :baselines 0 :next-steps {}}
              (runtime/coeffect ::model/counts {} {:connection-id c})))

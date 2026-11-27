@@ -165,13 +165,13 @@
   (into (mapv (fn [{:keys [stock-item-id warehouse-id instant waiting-operations]}]
                 {:id    (cutover/scope-id stock-item-id warehouse-id) :revision 1 :label (label stock-item-id stock-item-id)
                  :cells {:item     (label stock-item-id stock-item-id)                   :warehouse (label warehouse-id warehouse-id)
-                         :coverage [(i18n/t "Baseline at {instant}" {:instant instant})] :waiting   (str waiting-operations)}})
+                         :coverage [(i18n/t "Baseline at {instant}" {:instant instant})] :waiting   (products-web/count-text waiting-operations)}})
               baselines)
         (map (fn [{:keys [stock-item-id warehouse-id readiness waiting-operations]}]
                {:id    (cutover/scope-id stock-item-id warehouse-id) :revision 1 :label (label stock-item-id stock-item-id)
                 :cells {:item     (label stock-item-id stock-item-id) :warehouse (label warehouse-id warehouse-id)
                         :coverage [(i18n/t "No cutover baseline") (i18n/t (readiness-labels readiness readiness))]
-                        :waiting  (str waiting-operations)}}))
+                        :waiting  (products-web/count-text waiting-operations)}}))
         without-baseline))
 
 

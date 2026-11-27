@@ -185,15 +185,15 @@
 
 
 (defn- waiting-of
-  "`waiting` of one connection; a count that cannot be read is none: the counts guide, they must not take a page
-  down."
-  {:malli/schema [:=> [:cat :map :string :keyword] :map]}
+  "`waiting` of one connection; counts that cannot be read are nil (shown as unknown, never zero): the counts
+  guide, they must not take a page down."
+  {:malli/schema [:=> [:cat :map :string :keyword] [:maybe :map]]}
   [context connection-id part]
   (try (get (waiting (assoc (operations/load-facts context connection-id) :now (runtime/coeffect ::acceptance/now context {}))) part {})
        (catch InterruptedException error (throw error))
        (catch Exception error
          (mu/log ::waiting-skipped :connection-id connection-id :error-type (or (:type (ex-data error)) (.getName (class error))))
-         {})))
+         nil)))
 
 
 (defmethod products/waiting-operations :imported-operations

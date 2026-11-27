@@ -22,6 +22,7 @@
     [tover.marketplace.operations-test :as ot]
     [tover.marketplace.operations.review :as review]
     [tover.marketplace.products.model :as products]
+    [tover.marketplace.products.web :as products-web]
     [tover.marketplace.sync.model :as sync]
     [tover.marketplace.sync.observations :as observations]
     [tover.shared.web.core]
@@ -268,7 +269,15 @@
           (is (= "1" (some #(when (= (cutover/scope-id "red" "home") (:id %)) (get-in % [:cells :waiting]))
                            (:rows (cutover-web/coverage-table ctx c))))))
         (testing "the connection counts its operations by next step"
-          (is (= {"fix shortage" 1 "match product" 2 "history" 1} (connections/count-part :next-steps ctx c))))))))
+          (is (= {"fix shortage" 1 "match product" 2 "history" 1} (connections/count-part :next-steps ctx c))))
+        (testing "counts that cannot be read are unknown: nil, shown as —, never zero"
+          (with-redefs [tover.marketplace.operations.model/load-facts (fn [& _] (throw (ex-info "down" {})))]
+            (is (nil? (products/waiting-operations ctx c)))
+            (is (nil? (cutover/waiting-operations ctx c)))
+            (is (nil? (connections/count-part :next-steps ctx c)))
+            (is (= "—" (some #(when (= (cutover/scope-id "red" "home") (:id %)) (get-in % [:cells :waiting]))
+                             (:rows (cutover-web/coverage-table ctx c)))))
+            (is (= "—" (some #(when (= (str c ":999") (:id %)) (get-in % [:cells :waiting])) (:rows (products-web/table ctx c "unmatched")))))))))))
 
 
 (deftest no-buyer-data-on-the-page

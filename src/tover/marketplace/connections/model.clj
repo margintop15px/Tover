@@ -524,7 +524,7 @@
    [:next-sync-at {:optional true} validation/Instant]
    [:domains [:vector [:map [:domain Domain] [:readable? :boolean] [:covered-until {:optional true} validation/Instant]]]]
    [:unmatched-listings :int] [:unmatched-warehouses :int] [:scopes-without-baseline :int] [:baselines :int]
-   [:imported-operations-by-next-step [:vector [:map [:next-step :string] [:count :int]]]]
+   [:imported-operations-by-next-step [:maybe [:vector [:map [:next-step :string] [:count :int]]]]]
    [:currency-notice? :boolean] [:workspace-currency {:optional true} :string]
    [:automatic-acceptance-possible? :boolean]
    [:blocking-reasons [:vector BlockingReason]]
@@ -553,7 +553,8 @@
 
 (defmulti count-part
   "One part of the coverage counts for a connection: `:unmatched-listings`, `:unmatched-warehouses`,
-  `:scopes-without-baseline`, `:baselines` (whole numbers) and `:next-steps` ({next step count}). The chapters
+  `:scopes-without-baseline`, `:baselines` (whole numbers) and `:next-steps` ({next step count}, nil when it
+  could not be counted). The chapters
   that own the data add a method each (42, 43, 44, 45); until then a part is zero."
   (fn [part _context _connection-id] part))
 
@@ -588,8 +589,8 @@
                    :domains (domain-rows connection covered)
                    :unmatched-listings unmatched-listings :unmatched-warehouses unmatched-warehouses
                    :scopes-without-baseline scopes-without-baseline :baselines baselines
-                   :imported-operations-by-next-step (->> next-steps (filter (comp pos? val)) (sort-by key)
-                                                          (mapv (fn [[step n]] {:next-step step :count n})))
+                   :imported-operations-by-next-step (some->> next-steps (filter (comp pos? val)) (sort-by key)
+                                                              (mapv (fn [[step n]] {:next-step step :count n})))
                    :currency-notice? (boolean (and currency (not= currency (:account-currency connection))))
                    :automatic-acceptance-possible? (empty? reasons)
                    :blocking-reasons reasons

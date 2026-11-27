@@ -84,7 +84,7 @@
     {:id      external-warehouse-id :revision revision :label (or name external-warehouse-id)
      :options {:warehouse (if chosen [chosen] [])}
      :cells   {:ozon      (ozon-lines row)
-               :waiting   (str waiting-operations)
+               :waiting   (products-web/count-text waiting-operations)
                :warehouse (or chosen {:value "" :label new-name})
                :status    (cond-> [(i18n/t "Unmatched")]
                             new-name (conj (i18n/t "New warehouse: {name}" {:name new-name})))}}))
@@ -97,7 +97,7 @@
     {:id      external-warehouse-id :revision mapping-revision :label (or name external-warehouse-id)
      :options {:warehouse [chosen]}
      :cells   {:ozon      (ozon-lines row)
-               :waiting   (str waiting-operations)
+               :waiting   (products-web/count-text waiting-operations)
                :warehouse chosen
                :status    (cond-> [(i18n/t "Mapped")]
                             (:archived? warehouse) (conj (i18n/t "The warehouse is archived."))

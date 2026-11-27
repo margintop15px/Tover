@@ -1301,7 +1301,9 @@
     "Operation source": "Operation source",
     "All operations": "All operations",
     "Imported": "Imported",
-    "Bring back": "Bring back"
+    "Bring back": "Bring back",
+    "Could not be counted": "Could not be counted",
+    "The sale is not on this page.": "The sale is not on this page."
   },
   "ru": {
     "Stock": "Остатки",
@@ -2614,6 +2616,8 @@
     "Operation source": "Источник операций",
     "All operations": "Все операции",
     "Imported": "Загруженные",
-    "Bring back": "Вернуть"
+    "Bring back": "Вернуть",
+    "Could not be counted": "Не удалось подсчитать",
+    "The sale is not on this page.": "Продажи нет на этой странице."
   }
 }

@@ -268,3 +268,4 @@ inventory-grid .inventory-cell-placeholder{color:var(--iw-muted);font-weight:400
 #operations-grid .jss_worksheet>tbody>tr>td.operations-next-step{font-weight:600}
 #operations-grid .jss_worksheet>tbody>tr>td.operations-imported{color:var(--iw-muted)}
 .operations-workbench .sheet-actions .operations-aside-reason{width:140px}
+.operations-workbench .sheet-actions .operations-aside{display:contents}

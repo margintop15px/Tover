@@ -286,8 +286,9 @@
         (testing "Slice b · the suspended read names the change and the item"
           (is (= [{:external-product-id id :name                   "Mug" :listing-revision 2 :mapping-revision 2
                    :stock-item          {:stock-item-id "mug-1" :product-name "Mug"}
-                   :reasons             [pack] :waiting-operations 0}]
-                 (mapv #(dissoc % :suspended-at) (suspended)))))))))
+                   :reasons             [pack] :waiting-operations nil}]
+                 (mapv #(dissoc % :suspended-at) (suspended)))
+              "this store has no imported operations' reads: the waiting count is unknown, never 0"))))))
 
 
 (deftest reconfirm-makes-current-values-the-basis

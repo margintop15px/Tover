@@ -323,7 +323,9 @@
             :without-baseline [{:stock-item-id "red" :warehouse-id "main" :readiness "ready" :waiting-operations 0}]}
            (cutover/coverage facts c {})))
     (is (= {:without-baseline [{:stock-item-id "red" :warehouse-id "main" :readiness "ready" :waiting-operations 2}]}
-           (select-keys (cutover/coverage facts c {["red" "main"] 2}) [:without-baseline])))))
+           (select-keys (cutover/coverage facts c {["red" "main"] 2}) [:without-baseline])))
+    (testing "counts that could not be read are unknown, never zero"
+      (is (= [nil nil] (map :waiting-operations (mapcat (cutover/coverage facts c nil) [:baselines :without-baseline])))))))
 
 
 ;; Store

@@ -190,6 +190,13 @@
           (vals products))))
 
 
+(defn count-text
+  "A count as a cell shows it: unknown (it could not be read) is —, never 0."
+  {:malli/schema [:=> [:cat [:maybe :int]] :string]}
+  [n]
+  (if (some? n) (str n) "—"))
+
+
 (defn matching-row
   "One unmatched or deferred listing: its evidence, the suggested stock item and what Register starts from."
   {:malli/schema [:=> [:cat :string :map :map] grid/Row]}
@@ -206,7 +213,7 @@
      :options {:stock-item options}
      :cells   {:listing     (listing-lines evidence)
                :identifiers (identifier-lines (:identifiers evidence))
-               :waiting     (str waiting-operations)
+               :waiting     (count-text waiting-operations)
                :stock-item  (when-let [option (some #(when (= chosen (:value %)) %) options)] option)
                :adopt       ""
                :product     (if existing
@@ -236,7 +243,7 @@
      :options {:stock-item (if chosen [chosen] [])}
      :cells   {:listing    (listing-lines {:name name :archived? archived?})
                :stock-item chosen
-               :waiting    (str waiting-operations)
+               :waiting    (count-text waiting-operations)
                :status     (cond-> [(i18n/t (state-labels state))] reason (conj reason))}}))
 
 

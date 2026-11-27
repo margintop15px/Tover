@@ -7,7 +7,8 @@
     [clojure.test :refer [deftest is testing]]
     [tover.inventory.entries.model :as entries]
     [tover.inventory.operations.web :as operations]
-    [tover.inventory.web :as web])
+    [tover.inventory.web :as web]
+    [tover.shared.i18n :as i18n])
   (:import
     [java.time Instant]))
 
@@ -482,6 +483,50 @@
   (is (= ["kind" "occurred-at" "supplier" "store" "reason" "item" "article" "unit" "warehouse" "quantity" "price" "actions"]
          (map :key (:columns (grid false)))))
   (is (nil? (:imported (grid false)))))
+
+
+(deftest the-proposed-correction-fits-its-columns-in-preview
+  (let [short  (imported-row "P9" "fix shortage" :entry-id (:entry-id import-sale) :entry-revision 1
+                             :suggested-correction {:stock-item-id "tee-m" :warehouse-id "main" :instant "2026-11-19T09:59:59Z" :count 3})
+        review {:groups [{:decision "fix shortage" :id "tee-m|main" :label "Fix shortage of T-shirt M" :count 1 :connection-id "c" :operations [short]}]}
+        model  (imported {:source "imported" :imported review :preview? true})
+        fix    (some #(when (re-find #"operations-suggested" (or (:className %) "")) %) (:rows model))]
+    (is (= "select" (:key (first (:columns model)))))
+    (is (= (count (:columns model)) (count (:cells fix))) "one cell under each column, the include column first")
+    (is (= ["Correction" "Ozon · Shop" "T-shirt / M" "Main" "3"] (map #(column model (:id fix) %) ["kind" "source" "item" "warehouse" "quantity"])))
+    (is (= "operation-correction" (get-in (last (:cells fix)) [:actions 0 :type])) "the action stays in the last column")))
+
+
+(deftest decision-labels-translate-from-their-key
+  (testing "the page translates the decision from its message key, not from the English label"
+    (is (= "Сопоставить Mug red – 48 операций"
+           (binding [i18n/*locale* "ru"]
+             (operations/decision-label {:decision "match product" :label "Pair Mug red" :label-key "Match {name}" :label-args {:name "Mug red"}} 48))))
+    (is (= "Задать дату перехода – 1 операция"
+           (binding [i18n/*locale* "ru"]
+             (operations/decision-label {:decision "set cutover" :label "Set cutover" :label-key "Set cutover" :label-args {}} 1))))))
+
+
+(deftest accept-the-sale-first-points-at-the-sale
+  (let [return (imported-row "R1" "accept the sale first" :kind "return")
+        review {:groups [{:decision   "accept the sale first" :id    "c:fbs-posting:P0" :label         "Accept sale P0" :label-key  "Accept sale {name}"
+                          :label-args {:name "P0"}            :count 1                  :connection-id "c"              :operations [return]}]}
+        model  (imported {:source "imported" :imported review})
+        header (first (filter :header (:rows model)))]
+    (is (re-find #"^Accept sale P0 – 1 operation$" (get-in header [:cells 0 :value])))
+    (is (= {:type "operations-focus" :groups ["import:c:fbs-posting:P0" "c:fbs-posting:P0"]}
+           (select-keys (get-in header [:cells 0 :actions 0]) [:type :groups]))
+        "Open moves to the sale's own rows on the page")))
+
+
+(deftest the-source-select-and-the-aside-actions-are-one-node-each
+  (let [select (operations/source-select {:connections [{:connection-id "c-1" :account-label "Shop"}] :source "c-1"})
+        aside  (operations/aside-actions)]
+    (is (= :select.operations-source (first select)))
+    (is (= [["" false] ["imported" false] ["c-1" true]] (map (fn [[_ {:keys [value selected]}]] [value selected]) (drop 2 select))))
+    (is (= "Ozon · Shop" (last (last select))) "the connection reads as its rows do")
+    (is (= :span.operations-aside (first aside)))
+    (is (nil? (operations/source-select {:connections []})))))
 
 
 (deftest selected-rows-name-what-was-seen

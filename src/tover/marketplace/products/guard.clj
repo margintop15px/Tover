@@ -327,7 +327,7 @@
    [:external-product-id :string] [:name {:optional true} :string] [:listing-revision :int] [:mapping-revision :int]
    [:stock-item [:map [:stock-item-id :string] [:product-name {:optional true} :string]
                  [:variant-label {:optional true} :string]]]
-   [:reasons [:vector Reason]] [:suspended-at :any] [:waiting-operations :int]])
+   [:reasons [:vector Reason]] [:suspended-at :any] [:waiting-operations [:maybe :int]]])
 
 
 (defn suspended-rows
@@ -349,9 +349,9 @@
                                            (:variant-label item) (assoc :variant-label (:variant-label item)))
                     :reasons             (stored-reasons mapping)
                     :suspended-at        (connections/at (:changed-at mapping))
-                    :waiting-operations  (get waiting external-product-id 0)}
+                    :waiting-operations  (when waiting (get waiting external-product-id 0))}
              (:name listing) (assoc :name (:name listing))))
-         (sort-by (juxt (comp - :waiting-operations) (comp str/lower-case #(or (:name %) "")) :external-product-id))
+         (sort-by (juxt (comp - #(or (:waiting-operations %) 0)) (comp str/lower-case #(or (:name %) "")) :external-product-id))
          vec)))
 
 

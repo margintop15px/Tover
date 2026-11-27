@@ -257,23 +257,23 @@
   [:map
    [:external-warehouse-id :string] [:revision :int] [:name {:optional true} :string] [:source-id :string]
    [:warehouse-type observations/WarehouseType] [:active :boolean]
-   [:suggestion Suggestion] [:waiting-operations :int]])
+   [:suggestion Suggestion] [:waiting-operations [:maybe :int]]])
 
 
 (defn- by-waiting
   "Most waiting operations first, then by name and id."
   {:malli/schema [:=> [:cat [:sequential :map]] [:vector :map]]}
   [rows]
-  (vec (sort-by (juxt (comp - :waiting-operations) (comp fold :name) :external-warehouse-id) rows)))
+  (vec (sort-by (juxt (comp - #(or (:waiting-operations %) 0)) (comp fold :name) :external-warehouse-id) rows)))
 
 
 (defn- evidence
-  {:malli/schema [:=> [:cat :map :map] :map]}
+  {:malli/schema [:=> [:cat :map [:maybe :map]] :map]}
   [external waiting]
-  (cond-> {:external-warehouse-id (:external-warehouse-id external)                 :revision (:revision external)
-           :source-id             (:source-id external) :warehouse-type (:warehouse-type external)
+  (cond-> {:external-warehouse-id (:external-warehouse-id external) :revision (:revision external)
+           :source-id             (:source-id external) :warehouse-type       (:warehouse-type external)
            :active                (not (false? (:active external)))
-           :waiting-operations    (get waiting (:external-warehouse-id external) 0)}
+           :waiting-operations    (when waiting (get waiting (:external-warehouse-id external) 0))}
     (some-> (:name external) str/trim not-empty) (assoc :name (str/trim (:name external)))))
 
 
@@ -327,7 +327,7 @@
 (def MappingRow
   [:map
    [:external-warehouse-id :string] [:revision :int] [:name {:optional true} :string] [:source-id :string]
-   [:warehouse-type observations/WarehouseType] [:active :boolean] [:waiting-operations :int]
+   [:warehouse-type observations/WarehouseType] [:active :boolean] [:waiting-operations [:maybe :int]]
    [:state [:enum "unmatched" "confirmed"]]
    [:mapping-revision {:optional true} :int]
    [:warehouse {:optional true} [:map [:warehouse-id :string] [:name :string] [:archived? :boolean]]]
@@ -351,7 +351,7 @@
                                   :archived?    (not= "active" (:status w))})
                     :confirmed-by (:changed-by mapping)
                     :confirmed-at (connections/at (:changed-at mapping)))))
-         (sort-by (juxt #(if (= "unmatched" (:state %)) 0 1) (comp - :waiting-operations) (comp fold :name)
+         (sort-by (juxt #(if (= "unmatched" (:state %)) 0 1) (comp - #(or (:waiting-operations %) 0)) (comp fold :name)
                         :external-warehouse-id))
          vec)))
 

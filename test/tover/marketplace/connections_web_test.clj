@@ -404,6 +404,9 @@
             (is (str/includes? html "href=\"/operations/marketplace/c-1/products\">3</a>") "the unmatched count opens Product Matching")
             (is (str/includes? html "href=\"/operations/marketplace/c-1/warehouses\">0</a>") "the unmatched count opens Warehouse Matching")
             (is (every? #(str/includes? html (str "<td>" (web/domain-labels %) "</td>")) connector/domains) "one row per domain"))
+          (defmethod model/count-part :next-steps [_ _ _] nil)
+          (is (str/includes? (page ctx ::web/connection {:connection-id "c-1"}) "<a href=\"/operations?source=c-1\">Could not be counted</a>")
+              "counts that could not be read are never shown as zero")
           (finally (.addMethod ^clojure.lang.MultiFn model/count-part :unmatched-listings unmatched)
                    (.addMethod ^clojure.lang.MultiFn model/count-part :next-steps steps)))))))
 

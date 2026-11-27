@@ -83,6 +83,11 @@ class OperationsWorkbench extends InventoryWorkbench {
     this.asideButtons.set?.addEventListener('click', () => this.setAside(true));
     this.asideButtons.back?.addEventListener('click', () => this.setAside(false));
     this.addEventListener('operations-open', event => location.assign(event.detail.href));
+    // Accept the sale first: the sale's own rows, when this page shows them.
+    this.addEventListener('operations-focus', event => {
+      const row = this.model.rows.find(candidate => !candidate.header && event.detail.groups.includes(candidate.groupId));
+      if (row) this.grid.selectRow(row.id); else this.notice.textContent = t('The sale is not on this page.');
+    });
     this.addEventListener('operation-correction', event => this.addCorrection(event.detail));
     this.setupSmart();
     for (const property of ['tableResponse', 'itemsResponse', 'suppliersResponse', 'reviewResponse', 'saveResponse', 'changed']) {
@@ -143,11 +148,13 @@ class OperationsWorkbench extends InventoryWorkbench {
       mode: this.scope.pending ? 'units' : this.mode, sort: this.order.sort, direction: this.order.direction, filters: this.order.filters,
       editing: this.scope.editing ?? [], below: this.below, source: this.source || null });
   }
-  // The selected imported rows that Set aside (or Bring back) applies to, as the rows showed them. A row with an
-  // entry sends the entry's newest revision this page knows, so a later edit by someone else is stale, never lost.
+  // The imported rows the member checked for Set aside (or Bring back), as the rows showed them; never Preview's
+  // "Include in submit", which starts with every row. A row with an entry sends the entry's newest revision this
+  // page knows, so a later edit by someone else is stale, never lost.
   asideRows(aside) {
     const imported = this.model.imported ?? {};
-    const ids = (this.scope.pending ? (this.selected ?? []) : this.marked).filter(id => imported[id] && imported[id].aside !== aside);
+    if (this.scope.pending) return [];
+    const ids = this.marked.filter(id => imported[id] && imported[id].aside !== aside);
     return ids.map(id => {
       const { sourceOperationId, revision, entryRevision } = imported[id];
       return { sourceOperationId, revision, ...(entryRevision != null ? { entryRevision: Math.max(entryRevision, this.revisions.get(id) ?? 0) } : {}) };
@@ -155,7 +162,7 @@ class OperationsWorkbench extends InventoryWorkbench {
   }
   showAside() {
     if (!this.asideButtons?.set) return;
-    const shown = Boolean(this.model.imported);
+    const shown = Boolean(this.model.imported) && !this.scope.pending;
     for (const node of [this.asideButtons.set, this.asideButtons.back, this.asideReason]) node.hidden = !shown;
     this.asideButtons.set.disabled = !shown || Boolean(this.pending) || !this.asideRows(true).length;
     this.asideButtons.back.disabled = !shown || Boolean(this.pending) || !this.asideRows(false).length;

@@ -362,7 +362,7 @@
    [:evidence Evidence]
    [:candidates [:vector :map]]
    [:conflicts [:vector [:map [:barcode :string] [:product-ids [:vector :string]]]]]
-   [:waiting-operations :int]
+   [:waiting-operations [:maybe :int]]
    [:proposed Proposed]
    [:deferral {:optional true} [:map [:reason {:optional true} :string] [:deferred-by :string] [:deferred-at :any]]]])
 
@@ -371,7 +371,7 @@
   "Most waiting operations first, then by name and id."
   {:malli/schema [:=> [:cat [:sequential :map]] [:vector :map]]}
   [rows]
-  (vec (sort-by (juxt (comp - :waiting-operations) (comp fold :name :evidence) :external-product-id) rows)))
+  (vec (sort-by (juxt (comp - #(or (:waiting-operations %) 0)) (comp fold :name :evidence) :external-product-id) rows)))
 
 
 (defn unmatched-rows
@@ -389,7 +389,7 @@
                         :listing-revision    (:revision listing)
                         :state               state
                         :evidence            (evidence listing (get earlier external-product-id []))
-                        :waiting-operations  (get waiting external-product-id 0)
+                        :waiting-operations  (when waiting (get waiting external-product-id 0))
                         :proposed            (proposed listing)}
                        (candidates/indexed-candidates index listing))
           (= "deferred" state) (assoc :deferral (-> (select-keys deferral [:reason :deferred-by])
@@ -466,7 +466,7 @@
 (def ListingRow
   [:map
    [:external-product-id :string] [:name {:optional true} :string] [:listing-revision :int] [:archived? :boolean]
-   [:state ListingState] [:waiting-operations :int]
+   [:state ListingState] [:waiting-operations [:maybe :int]]
    [:stock-item {:optional true} [:map [:stock-item-id :string] [:revision {:optional true} :int] [:product-id {:optional true} :string]
                                   [:product-name {:optional true} :string] [:variant-label {:optional true} :string]
                                   [:archived? :boolean]]]
@@ -507,13 +507,13 @@
                     :listing-revision    (:revision listing)
                     :archived?           (boolean (:archived listing))
                     :state               current
-                    :waiting-operations  (get waiting external-product-id 0)}
+                    :waiting-operations  (when waiting (get waiting external-product-id 0))}
              (:name listing) (assoc :name (:name listing))
              (and (#{"confirmed" "suspended"} current) (:stock-item-id mapping))
              (assoc :stock-item (stock-item-label items products (:stock-item-id mapping))
                     :mapping-revision (:mapping-revision mapping))
              (and (= "deferred" current) (:reason deferral)) (assoc :reason (:reason deferral))))
-         (sort-by (juxt (comp state-order :state) (comp - :waiting-operations) (comp fold :name) :external-product-id))
+         (sort-by (juxt (comp state-order :state) (comp - #(or (:waiting-operations %) 0)) (comp fold :name) :external-product-id))
          vec)))
 
 

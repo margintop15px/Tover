@@ -208,7 +208,7 @@ test('an imported operation waits under its decision; set aside and bring back a
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const sheet = page.locator('#operations-grid');
   const checkbox = sheet.locator('input[data-review-entry="import:browser-ozon:fbs-posting:P1"]');
-  const header = sheet.locator('td.operations-decision').first();
+  const header = sheet.locator('td.operations-decision').filter({ hasText: 'Match Gift card' });
   await signIn(page);
   await page.goto(connection);
   await page.locator('a[href="/operations?source=browser-ozon"]').click();
@@ -235,5 +235,43 @@ test('an imported operation waits under its decision; set aside and bring back a
   // The group opens matching with its listing.
   await header.getByRole('button', { name: 'Open' }).click();
   await expect(page).toHaveURL(/\/operations\/marketplace\/browser-ozon\/products\?listing=/);
+  expect(errors).toEqual([]);
+});
+
+// Board 45 · Inventory Review: in Preview the proposed correction sits under its own columns, and Set aside never
+// takes Preview's "Include in submit" (every row by default) as its selection.
+test('in Preview the proposed correction fits its columns and Set aside waits for an explicit selection', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const sheet = page.locator('#operations-grid');
+  const header = sheet.locator('td.operations-decision').filter({ hasText: 'Fix shortage of Whisk' });
+  const setAside = page.getByRole('button', { name: 'Set aside', exact: true });
+  await signIn(page);
+  // The intake proposes the sale once the cutover test's baseline is accepted (at the latest on its minute sweep).
+  await expect.poll(async () => {
+    await page.goto('/operations?source=browser-ozon');
+    await expect.poll(() => sheet.evaluate(node => !!node.worksheet)).toBe(true);
+    return page.locator('operations-workbench').evaluate(node => node.model?.imported?.['import:browser-ozon:fbo-posting:W1']?.entryRevision ?? null);
+  }, { timeout: 90000, intervals: [2000] }).not.toBeNull();
+  await expect(header).toContainText('Fix shortage of Whisk – 1 operation');
+  await expect(setAside).toBeDisabled();
+
+  await page.locator('.stock-pending-filter').click();
+  await expect(page.locator('.stock-pending-filter')).toHaveAttribute('aria-pressed', 'true');
+  // Preview has come back: only operations with an entry, so not the Gift card sale.
+  await expect.poll(() => page.locator('operations-workbench').evaluate(node => node.model.rows.filter(row => row.header).map(row => row.cells[0].value)))
+    .toEqual([expect.stringContaining('Fix shortage of Whisk')]);
+  expect(errors).toEqual([]);
+  const columns = await page.locator('operations-workbench').evaluate(node => node.model.columns.map(column => column.key));
+  expect(columns[0]).toBe('select');
+  const suggested = 'suggested|import:browser-ozon:fbo-posting:W1';
+  const cell = key => sheet.locator(`td[data-row-id="${suggested}"][data-column-key="${key}"]`);
+  await expect(cell('kind')).toHaveText('Correction');
+  await expect(cell('source')).toHaveText('Ozon · Browser shop');
+  await expect(cell('warehouse')).toHaveText('Cutover hub');
+  await expect(cell('quantity')).toHaveText(/^[1-9][0-9]*$/);
+  await expect(sheet.locator(`td[data-row-id="${suggested}"][data-x="${columns.length - 1}"]`).getByRole('button', { name: 'Add the proposed correction' })).toHaveCount(1);
+  // Every pending row is included in submit, and none of them is chosen for Set aside.
+  await expect(sheet.locator('td[data-row-id^="import:browser-ozon:fbo-posting:W1|"] input[type=checkbox]').first()).toBeChecked();
+  await expect(setAside).toBeHidden();
   expect(errors).toEqual([]);
 });

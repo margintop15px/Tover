@@ -166,11 +166,12 @@ const program = `
     (put :tover.catalogues.products.model/product-registered {:product-id "browser-product-6" :name "Whisk" :status "active" :revision 1})
     (put :tover.inventory.stock-items.model/stock-item-registered
          {:stock-item-id "browser-item-6" :product-id "browser-product-6" :unit "pcs" :condition "regular" :status "active" :revision 1})
-    (put :tover.marketplace.sync.model/external-product-observed (listing "106" "Whisk (Ozon)" nil))
+    (put :tover.marketplace.sync.model/external-product-observed
+         (assoc (listing "106" "Whisk (Ozon)" nil) :identifiers (observations/write-json [{:type "sku" :value "106" :active true}])))
     (put :tover.marketplace.products.model/external-product-mapped
          {:external-product-id "browser-ozon:106" :connection-id "browser-ozon" :stock-item-id "browser-item-6" :listing-revision 1
-          :item-revision 1 :identity-basis "{}" :changed-by (str fixtures/owner-id) :changed-at at
-          :mapping-revision-id "browser-ozon:106#1" :mapping-revision 1 :change "mapped" :state "confirmed"})
+          :item-revision 1 :identity-basis (observations/write-json {:attributes {} :pack nil :unit "pcs" :variant-label nil})
+          :changed-by (str fixtures/owner-id) :changed-at at :mapping-revision-id "browser-ozon:106#1" :mapping-revision 1 :change "mapped" :state "confirmed"})
     (let [hub (observations/warehouse-id "browser-ozon" "fbo" "204")
           domains ["fbs-postings" "fbo-postings" "returns" "rfbs-returns" "supplies" "removals"]
           earliest "2026-11-01T00:00:00Z"]
@@ -209,7 +210,34 @@ const program = `
       (put :tover.marketplace.sync.model/source-stock-observed
            {:stock-id (str "browser-ozon:106|warehouse-stock|" hub "|browser-r1") :connection-id "browser-ozon"
             :run-id "browser-r1" :external-product-id "browser-ozon:106" :external-warehouse-id hub :source "warehouse-stock"
-            :fulfilment-type "fbo" :present 7 :parts "[]" :observed-at at})))
+            :fulfilment-type "fbo" :present 7 :parts "[]" :observed-at at})
+      ;; Board 45: a sale of 10 whisks from the hub after the cutover; once the baseline of 7 is accepted it is
+      ;; proposed, 3 short, with its correction.
+      (let [id "browser-ozon:fbo-posting:W1"]
+        (put :tover.marketplace.sync.model/source-operation-observed
+             {:source-operation-id id :entity-id id :connection-id "browser-ozon" :source-id "W1" :revision 1
+              :payload-hash (apply str (repeat 64 "d")) :adapter-version "test" :observed-at at :last-observed-at at
+              :source-revision-id (str id "#1") :facts (observations/write-json {}) :kind "fbo-posting" :status "delivered"
+              :terminal true :occurred-at "2026-11-21T09:00:00Z" :from-warehouse hub :complete true
+              :lines (observations/write-json [{:line-key "1" :identifiers [{:type "sku" :value "106"}] :quantity "10"}])}))))
+  ;; This server runs no processors (no journal worker); propose the connection's operations each second as
+  ;; Marketplace Operation Intake would. Local only: it reads this store and calls no marketplace.
+  (require '[tover.marketplace.operations.model :as imported])
+  (future
+    (let [bel-system (:bel/system services) requests @#'imported/connection-requests]
+      (loop []
+        (Thread/sleep 1000)
+        (try
+          (doseq [request (map imported/marketplace-operation-intake
+                               (requests bel-system fixtures/workspace-id "browser-ozon" (java.time.Instant/now)))]
+            (try (runtime/execute! (merge (:scope request) {:bel/system bel-system :bel/service ::imported/marketplace-operation-intake
+                                                            :user-id (:actor request)})
+                                   (:id request)
+                                   {:command-id (runtime/processor-command-id ::imported/marketplace-operation-intake request)
+                                    :input (:input request)})
+                 (catch Exception _ nil)))
+          (catch Exception _ nil))
+        (recur))))
   ` : ''}
   ;; The team and invitation reads are SQL coeffects; serve them from the same in-memory fixture state.
   (require '[bel.runtime :as runtime] '[tover.invitations.fixtures :as invitations])
