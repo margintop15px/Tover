@@ -640,7 +640,7 @@
              :tover.catalogues.products.model/product-registered :tover.catalogues.warehouses.model/warehouse-registered
              :tover.catalogues.suppliers.model/supplier-registered
              :tover.inventory.entries.model/shared-inventory-entry-accepted ::provenance/cutover-baseline-established
-             ::provenance/source-operation-accepted}}
+             ::provenance/source-operation-accepted ::provenance/source-correction-accepted}}
   [{:keys [scope actor] :as facts} input]
   (entries/check-workspace! scope input)
   (plan facts input {:actor actor}))

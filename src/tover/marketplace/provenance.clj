@@ -87,11 +87,13 @@
   "Board `Imported Operation Proposed`: the source operation's revision and the shared entry it became; `entry-revision`
   the entry revision the connector last saved, `missing` the missing facts as JSON text, `source-conflict` a newer
   revision that differs from a member's edit, `mappings-used` the line keys and mapping revisions of the proposal
-  (JSON text), which its acceptance records."
+  (JSON text), which its acceptance records. `reflected-revision` is the source revision the connector's entry was
+  saved from: `revision` itself, except after a source conflict (absent on rows written before plan 5)."
   [:map
    [:source-operation-id SourceOperationId]
    [:connection-id Ref]
    [:revision [:int {:min 1}]]
+   [:reflected-revision {:optional true} [:int {:min 1}]]
    [:entry-id Id]
    [:entry-revision [:int {:min 1}]]
    [:missing :string]
@@ -102,11 +104,13 @@
 
 (def SourceAcceptance
   "A source operation is accepted at most once: the revision accepted, its record, who accepted it, whether a member
-  edited the entry, and the mappings its lines used (JSON text)."
+  edited the entry, and the mappings its lines used (JSON text). `revision` is the import row's latest revision;
+  `reflected-revision` the source revision the accepted entry reflects (see `reflected-revision`)."
   [:map
    [:source-operation-id SourceOperationId]
    [:connection-id {:optional true} Ref]
    [:revision [:int {:min 1}]]
+   [:reflected-revision {:optional true} [:int {:min 1}]]
    [:record-id Id]
    [:accepted-by Ref]
    [:edited :boolean]
@@ -128,28 +132,73 @@
    [:set-at {:optional true} At]])
 
 
+(def SourceCorrection
+  "Board 45 slice 8 `Source Correction Proposed`, one row per accepted record (`record-id`): the source revision last
+  evaluated, the pending proposal `entry-id` of kind `amendment` or `cancellation`, the connector's last saved entry
+  revision, `source-conflict` when that revision differs from a member's edit, and `reflected-revision`, the source
+  revision the connector's entry was saved from. `accepted-revision` is the source revision of the last correction a
+  member accepted: what the record reflects from then on."
+  [:map
+   [:record-id Id]
+   [:source-operation-id SourceOperationId]
+   [:connection-id Ref]
+   [:revision [:int {:min 1}]]
+   [:reflected-revision {:optional true} [:int {:min 1}]]
+   [:entry-id Id]
+   [:entry-revision {:optional true} [:int {:min 1}]]
+   [:kind {:optional true} [:enum "amendment" "cancellation"]]
+   [:source-conflict {:optional true} :boolean]
+   [:proposed-at {:optional true} At]
+   [:accepted-revision {:optional true} [:int {:min 1}]]])
+
+
 (defevent imported-operation-proposed {:schema Import})
 ;; Intake withdraws an unedited entry whose operation is no longer resolvable: the entry is discarded beside it.
 (defevent imported-operation-withdrawn {:schema [:map [:source-operation-id SourceOperationId] [:entry-id Id]]})
 (defevent source-operation-accepted {:schema SourceAcceptance})
 (defevent source-operation-set-aside {:schema Aside})
+(defevent source-correction-proposed {:schema SourceCorrection})
+;; The source states again what was accepted: an unedited proposal is withdrawn at that revision, its entry
+;; discarded beside it.
+(defevent source-correction-withdrawn {:schema [:map [:record-id Id] [:entry-id Id] [:revision [:int {:min 1}]]
+                                                [:kind {:optional true} :string] [:source-conflict {:optional true} :boolean]]})
+;; A member accepted the proposal: the record reflects its source revision from then on.
+(defevent source-correction-accepted {:schema [:map [:record-id Id] [:connection-id Ref] [:accepted-revision [:int {:min 1}]]]})
 
 
 (defmodel imports
   {:id     :source-operation-id :store :catalogue :schema Import :policy ::records/workspace-member
-   :events {::imported-operation-proposed  {:set [:connection-id :revision :entry-id :entry-revision :missing :source-conflict :mappings-used
-                                                  :proposed-at]}
+   :events {::imported-operation-proposed  {:set [:connection-id :revision :reflected-revision :entry-id :entry-revision :missing
+                                                  :source-conflict :mappings-used :proposed-at]}
             ::imported-operation-withdrawn {:delete true}}})
 
 
 (defmodel source-acceptances
   {:id     :source-operation-id :store :catalogue :schema SourceAcceptance :policy ::records/workspace-member
-   :events {::source-operation-accepted {:create [:connection-id :revision :record-id :accepted-by :edited :mappings-used :accepted-at]}}})
+   :events {::source-operation-accepted {:create [:connection-id :revision :reflected-revision :record-id :accepted-by :edited
+                                                  :mappings-used :accepted-at]}}})
 
 
 (defmodel asides
   {:id     :source-operation-id :store :catalogue :schema Aside :policy ::records/workspace-member
    :events {::source-operation-set-aside {:set [:connection-id :revision :aside :reason :removed-entry-id :set-by :set-at]}}})
+
+
+(defmodel source-corrections
+  {:id     :record-id :store :catalogue :schema SourceCorrection :policy ::records/workspace-member
+   :events {::source-correction-proposed  {:set [:source-operation-id :connection-id :revision :reflected-revision :entry-id
+                                                 :entry-revision :kind :source-conflict :proposed-at]}
+            ;; Kept, with no kind: a discarded proposal is not proposed again for the same revision.
+            ::source-correction-withdrawn {:set [:revision :kind :source-conflict]}
+            ::source-correction-accepted  {:set [:connection-id :accepted-revision]}}})
+
+
+(defn reflected-revision
+  "The source revision an import row or a source acceptance reflects; a row written before plan 5 has no
+  `reflected-revision`, and then its `revision` is it."
+  {:malli/schema [:=> [:cat :map] [:int {:min 1}]]}
+  [row]
+  (or (:reflected-revision row) (:revision row)))
 
 
 (defn import-entry-id
@@ -173,10 +222,34 @@
   (subs entry-id (count "import:")))
 
 
+(defn correction-entry-id
+  "Board 45 slice 8 · the pending proposal against an accepted record: `correction:<source-operation-id>@<record
+  revision>`, never `import:`, so it may amend and cancel."
+  {:malli/schema [:=> [:cat :string [:int {:min 1}]] :string]}
+  [source-operation-id record-revision]
+  (str "correction:" source-operation-id "@" record-revision))
+
+
+(defn correction-entry-id?
+  "Whether a shared entry id is a source correction's."
+  {:malli/schema [:=> [:cat [:maybe :string]] :boolean]}
+  [entry-id]
+  (boolean (some-> entry-id (str/starts-with? "correction:"))))
+
+
+(defn correction-source
+  "The source operation a correction entry id names."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [entry-id]
+  (subs entry-id (count "correction:") (or (str/last-index-of entry-id "@") (count entry-id))))
+
+
 (def Facts
-  "`imports` and `source-acceptances` (by source operation id) are those of pending import entries."
+  "`imports` and `source-acceptances` (by source operation id) are those of pending import entries; `corrections`
+  (by record id) those of pending correction entries."
   [:map [:cutover-entries [:map-of :string CutoverEntry]] [:baselines [:map-of :string Baseline]]
-   [:imports {:optional true} [:map-of :string Import]] [:source-acceptances {:optional true} [:map-of :string SourceAcceptance]]])
+   [:imports {:optional true} [:map-of :string Import]] [:source-acceptances {:optional true} [:map-of :string SourceAcceptance]]
+   [:corrections {:optional true} [:map-of :string SourceCorrection]]])
 
 
 (defn- rows-by-id
@@ -203,6 +276,7 @@
                   (records/all-records context :tover.inventory.entries.model/entries :entry-id))
         pending (into #{} (keep #(when (= "pending" (:status %)) (:entry-id %))) entries)
         sources (into #{} (comp (filter import-entry-id?) (map import-source)) pending)
+        fixed   (into #{} (comp (filter correction-entry-id?) (map (comp import-entry-id correction-source))) pending)
         of      (fn [model id-key ids]
                   (if entry-ids
                     (rows-by-id context model (vec ids))
@@ -211,7 +285,9 @@
              :baselines       (into {} (map (juxt :baseline-id identity)) (records/all-records context ::baselines :baseline-id))}
       ;; Only while import entries are pending.
       (seq sources) (assoc :imports (of ::imports :source-operation-id sources)
-                           :source-acceptances (of ::source-acceptances :source-operation-id sources)))))
+                           :source-acceptances (of ::source-acceptances :source-operation-id sources))
+      ;; Only while correction entries are pending.
+      (seq fixed) (assoc :corrections (of ::source-corrections :record-id fixed)))))
 
 
 (defn import-row
@@ -220,6 +296,15 @@
   [facts entry-id]
   (when (import-entry-id? entry-id)
     (let [row (get-in facts [:imports (import-source entry-id)])]
+      (when (= entry-id (:entry-id row)) row))))
+
+
+(defn correction-row
+  "The source correction row of a pending correction entry, or nil."
+  {:malli/schema [:=> [:cat [:maybe :map] [:maybe :string]] [:maybe SourceCorrection]]}
+  [facts entry-id]
+  (when (correction-entry-id? entry-id)
+    (let [row (get-in facts [:corrections (import-entry-id (correction-source entry-id))])]
       (when (= entry-id (:entry-id row)) row))))
 
 
@@ -365,7 +450,8 @@
 (defn acceptance-events
   "One `Cutover Baseline Established` per accepted cutover entry of `picked`, naming the record its acceptance
   `records` create, established `now`; one `Source Operation Accepted` per accepted import entry, by `actor`,
-  edited when the entry's revision is not the one the connector last saved."
+  edited when the entry's revision is not the one the connector last saved, reflecting the source revision its entry
+  was saved from; one `Source Correction Accepted` per accepted correction entry."
   {:malli/schema [:=> [:cat [:maybe :map] [:sequential :map] [:sequential :map] :any inst?] [:vector :map]]}
   [facts picked records actor now]
   (let [record-of (fn [entry-id] (some #(when (and (= entry-id (:record-id %)) (not (:cancelled %))) %) records))]
@@ -384,9 +470,15 @@
                  :when (and row record)]
              {:type ::source-operation-accepted
               :data {:source-operation-id (:source-operation-id row)            :connection-id (:connection-id row) :revision (:revision row)
+                     :reflected-revision  (reflected-revision row)
                      :record-id           (:record-id record)                   :accepted-by   (str actor)
                      :edited              (not= revision (:entry-revision row))
-                     :mappings-used       (or (:mappings-used row) "[]")        :accepted-at   (str now)}})))))
+                     :mappings-used       (or (:mappings-used row) "[]")        :accepted-at   (str now)}})
+           (for [{:keys [entry-id amends]} (sort-by :entry-id picked)
+                 :let [row (correction-row facts entry-id)]
+                 :when (and row amends (some #(= amends (:amends %)) records))]
+             {:type ::source-correction-accepted
+              :data {:record-id (:record-id row) :connection-id (:connection-id row) :accepted-revision (reflected-revision row)}})))))
 
 
 (defn discard-events
@@ -403,10 +495,10 @@
 
 
 (defn connection-of
-  "The connection a pending import entry came from, or nil."
+  "The connection a pending import or correction entry came from, or nil."
   {:malli/schema [:=> [:cat [:maybe :map] [:maybe :string]] [:maybe :string]]}
   [facts entry-id]
-  (:connection-id (import-row facts entry-id)))
+  (:connection-id (or (import-row facts entry-id) (correction-row facts entry-id))))
 
 
 (defn review-facts

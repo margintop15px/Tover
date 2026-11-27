@@ -227,11 +227,13 @@
         edited?  (and pending? (not= (str (:saved-by stored)) (str actor)))
         missing  (observations/write-json missing)
         used     (mappings-used facts operation)
+        ;; A conflict keeps what the connector's entry was saved from: the revision and mappings it reflects.
         import   (fn [entry-revision conflict?]
                    {:type ::provenance/imported-operation-proposed
-                    :data {:source-operation-id source-operation-id :connection-id  connection-id  :revision revision
-                           :entry-id            entry-id            :entry-revision entry-revision :missing  missing  :source-conflict conflict?
-                           :mappings-used       used                :proposed-at    (str now)}})]
+                    :data {:source-operation-id source-operation-id :connection-id connection-id :revision revision
+                           :reflected-revision  (if (and conflict? row) (provenance/reflected-revision row) revision)
+                           :entry-id            entry-id :entry-revision entry-revision :missing           missing  :source-conflict conflict?
+                           :mappings-used       (or (when conflict? (:mappings-used row)) used) :proposed-at (str now)}})]
     (if edited?
       (if (= revision (:revision row))
         []

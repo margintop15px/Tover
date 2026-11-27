@@ -334,6 +334,32 @@
      :source-revision-id (str (:id facts) "#" revision) :entity-id       (:id facts)}))
 
 
+(defn- operation-fields
+  "What a source operation row stores of a resolved operation observation, beside its identity and revision."
+  {:malli/schema [:=> [:cat :string :map] :map]}
+  [connection-id observation]
+  (cond-> (select-keys observation [:status :terminal :complete :occurred-at :planned-at
+                                    :provider-updated-at :from-warehouse :to-warehouse
+                                    :handed-over-at :refetch-key :return-schema :compensated :disposed])
+    true (assoc :kind (:operation-kind observation)
+                :lines (write-json (vec (:lines observation))))
+    (:related-operation observation) (assoc :related-operation (str connection-id ":" (:related-operation observation)))
+    (seq (:missing observation)) (assoc :missing (write-json (:missing observation)))))
+
+
+(defn revision-operation
+  "The source operation `row` as its earlier `revision` (a `::sync/source-revisions` row of it) stated it: the
+  stored facts read back as `observe` stores them, warehouses resolved against `rows` and with the handover time
+  `row` keeps. Board 45 slice 7 compares an accepted revision with a newer one."
+  {:malli/schema [:=> [:cat [:map-of :string :map] :string :map :map] :map]}
+  [rows connection-id row revision]
+  (let [stated      (assoc (read-json (:facts revision)) :kind "operation")
+        observation (with-handover row (resolved rows connection-id stated))]
+    (merge (select-keys row [:source-operation-id :entity-id :connection-id :source-id])
+           (select-keys revision [:revision :payload-hash :adapter-version :facts :observed-at :source-revision-id])
+           (operation-fields connection-id observation))))
+
+
 (declare observe-product)
 
 
@@ -388,13 +414,7 @@
                               (case kind
                                 "warehouse" (cond-> {:warehouse-type (:warehouse-type observation) :active true}
                                               (:name observation) (assoc :name (:name observation)))
-                                "operation" (cond-> (select-keys observation [:status :terminal :complete :occurred-at :planned-at
-                                                                              :provider-updated-at :from-warehouse :to-warehouse
-                                                                              :handed-over-at :refetch-key :return-schema :compensated :disposed])
-                                              true (assoc :kind (:operation-kind observation)
-                                                          :lines (write-json (vec (:lines observation))))
-                                              (:related-operation observation) (assoc :related-operation (str connection-id ":" (:related-operation observation)))
-                                              (seq (:missing observation)) (assoc :missing (write-json (:missing observation))))
+                                "operation" (operation-fields connection-id observation)
                                 "attribute-definition" (select-keys observation [:category-id :type-id :attribute-id :name :value-type
                                                                                  :multiple :complex :separates-variants :unit
                                                                                  :dictionary-id])))]
