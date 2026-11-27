@@ -15,7 +15,8 @@
     [bel.store :as store]
     [charred.api :as charred]
     [clojure.string :as str]
-    [tover.catalogues.records :as records :refer [Id]])
+    [tover.catalogues.records :as records :refer [Id]]
+    [tover.shared.i18n :as i18n])
   (:import
     [java.time Instant OffsetDateTime]
     [java.time.format DateTimeParseException]
@@ -206,6 +207,19 @@
   {:malli/schema [:=> [:cat :string] :string]}
   [source-operation-id]
   (str "import:" source-operation-id))
+
+
+(defn shipment-label
+  "Board 46 · \"Posting P1\" or \"Return R2\": a posting or return by its number at the marketplace, read from its
+  source operation id (`<connection>:<kind>:<number>`); never its buyer. Any other id is shown as it is."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [source-operation-id]
+  (or (some (fn [[kind label]]
+              (let [marker (str ":" kind ":")]
+                (when-let [at (str/index-of source-operation-id marker)]
+                  (str (i18n/t label) " " (subs source-operation-id (+ at (count marker)))))))
+            [["fbs-posting" "Posting"] ["fbo-posting" "Posting"] ["return" "Return"] ["rfbs-return" "Return"]])
+      source-operation-id))
 
 
 (defn import-entry-id?

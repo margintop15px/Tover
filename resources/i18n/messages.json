@@ -1367,7 +1367,7 @@
     "Status history": "Status history",
     "Accepted records": "Accepted records",
     "No accepted record yet.": "No accepted record yet.",
-    "Cannot archive: units in transit in Ozon {p0}.": "Cannot archive: units in transit in Ozon {p0}."
+    "Cannot archive: {p0} is in transit.": "Cannot archive: {p0} is in transit."
   },
   "ru": {
     "Stock": "Остатки",
@@ -2746,6 +2746,6 @@
     "Status history": "История статусов",
     "Accepted records": "Принятые записи",
     "No accepted record yet.": "Принятых записей пока нет.",
-    "Cannot archive: units in transit in Ozon {p0}.": "Нельзя архивировать: единицы в пути в Ozon {p0}."
+    "Cannot archive: {p0} is in transit.": "Нельзя архивировать: {p0} в пути."
   }
 }

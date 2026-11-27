@@ -18,7 +18,7 @@
     [tover.support :as support]))
 
 
-(use-fixtures :each bel-test/isolated-registry
+(use-fixtures :each transit-test/pinned-clock bel-test/isolated-registry
   (fn [f]
     (bel/build-registry! ['tover.catalogues.products.model 'tover.catalogues.stores.model 'tover.catalogues.warehouses.model
                           'tover.catalogues.suppliers.model 'tover.catalogues.categories.model

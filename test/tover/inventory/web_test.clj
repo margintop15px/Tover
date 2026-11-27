@@ -7,7 +7,8 @@
     [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.entries.model :as entries]
     [tover.inventory.stock.model :as stock]
-    [tover.inventory.web :as web]))
+    [tover.inventory.web :as web]
+    [tover.shared.i18n :as i18n]))
 
 
 (def workspace #uuid "00000000-0000-0000-0000-000000000001")
@@ -409,9 +410,14 @@
            (web/finding-text {:code :move-conflict :related {:value "T-100" :other-item "tee-l"}} names)))
     (is (= "Cannot archive: pending Opening · T-shirt / M · Main."
            (web/finding-text {:code :archive-blocked :related {:other-entry-id "o"}} names)))
-    (is (= "Cannot archive: units in transit in Ozon fbs-posting:P1."
+    (is (= "Cannot archive: Posting P1 is in transit."
            (web/finding-text {:code :archive-blocked :related {:source-operation-id "c1:fbs-posting:P1"}} names))
-        "board 46: an operation whose units are travelling or returning")
+        "board 46: an operation whose units are travelling or returning, named as the Transit view names it")
+    (is (= "Cannot archive: Return R2 is in transit."
+           (web/finding-text {:code :archive-blocked :related {:source-operation-id "c1:rfbs-return:R2"}} names)))
+    (is (= "Нельзя архивировать: Отправление P1 в пути."
+           (binding [i18n/*locale* "ru"]
+             (web/finding-text {:code :archive-blocked :related {:source-operation-id "c1:fbs-posting:P1"}} names))))
     (testing "Submit uses the same words for a change problem"
       (is (= "The move conflicts with T-100, kept by T-shirt / L."
              (web/problem-message {:entry-id "c" :line-id nil :code :move-conflict :stock-item-id "tee-m" :field :article :value "T-100" :other-item "tee-l"} names)))

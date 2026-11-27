@@ -349,9 +349,9 @@
     :archive-blocked (cond
                        (:warehouse-id related)
                        (let [w (:warehouse-id related)] (i18n/t "Cannot archive: stock in {p0}. Count it to 0 there first." {:p0 (warehouse w w)}))
-                       ;; Board 46: the source operation as its connection names it (`fbs-posting:P1`).
+                       ;; Board 46: the shipment as the Transit view names it (`Posting P1`).
                        (:source-operation-id related)
-                       (i18n/t "Cannot archive: units in transit in Ozon {p0}." {:p0 (str/replace-first (:source-operation-id related) #"^[^:]*:" "")})
+                       (i18n/t "Cannot archive: {p0} is in transit." {:p0 (provenance/shipment-label (:source-operation-id related))})
                        (get entry (:other-entry-id related)) (i18n/t "Cannot archive: pending {p0}." {:p0 (get entry (:other-entry-id related))})
                        :else (i18n/t "Cannot archive: another pending entry names this item."))
     :restore-needs-product (i18n/t "Restore the product first.")

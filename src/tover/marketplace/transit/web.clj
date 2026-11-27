@@ -19,6 +19,7 @@
     [tover.marketplace.grid :as grid]
     [tover.marketplace.moves.web :as moves-web]
     [tover.marketplace.products.web :as products-web]
+    [tover.marketplace.provenance :as provenance]
     [tover.marketplace.transit.model :as transit]
     [tover.shared.i18n :as i18n]
     [tover.shared.schema :as schema]))
@@ -52,13 +53,6 @@
    "awaiting facts" "Awaiting facts"})
 
 
-(defn- shipment-label
-  "\"Posting P1\" or \"Return R2\": the operation's kind and its number at Ozon, never its buyer."
-  {:malli/schema [:=> [:cat :string :string :string] :string]}
-  [connection-id kind source-operation-id]
-  (let [prefix (str connection-id ":" kind ":")
-        number (if (str/starts-with? source-operation-id prefix) (subs source-operation-id (count prefix)) source-operation-id)]
-    (str (i18n/t (if (#{"return" "rfbs-return"} kind) "Return" "Posting")) " " number)))
 
 
 (def ^:private columns
@@ -76,13 +70,13 @@
   "One row per shipment line of `shipments`, opening the shipment's details."
   {:malli/schema [:=> [:cat ifn? [:sequential transit/Shipment]] [:vector grid/Row]]}
   [label shipments]
-  (vec (for [{:keys [source-operation-id connection-id kind line-key stock-item-id quantity state counted actual-time observed-at missing next-step]}
+  (vec (for [{:keys [source-operation-id connection-id line-key stock-item-id quantity state counted actual-time observed-at missing next-step]}
              shipments]
          (cond-> {:id    (str source-operation-id "|" line-key) :revision 1 :label (label stock-item-id stock-item-id) :selectable? false
                   :href  (shipment-path connection-id source-operation-id)
-                  :cells {:shipment  (shipment-label connection-id kind source-operation-id) :item (label stock-item-id stock-item-id)
+                  :cells {:shipment  (provenance/shipment-label source-operation-id) :item        (label stock-item-id stock-item-id)
                           :quantity  (some-> quantity str) :state (i18n/t (state-labels state state))
-                          :counted   (i18n/t (if counted "Yes" "No")) :actual-time                 actual-time :observed-at observed-at
+                          :counted   (i18n/t (if counted "Yes" "No"))                :actual-time actual-time :observed-at observed-at
                           :next-step (operations/step-label next-step)}}
            (seq missing) (assoc :findings {:state (i18n/t "Missing: {facts}" {:facts (str/join ", " (map i18n/t missing))})})))))
 
@@ -209,12 +203,12 @@
    :route-data access
    :query      query-shipment}
   [{:keys [connection connections history label]}]
-  (let [{:keys [connection-id account-label]} connection
-        {:keys [source-operation-id kind lines statuses records]} history]
+  (let [{:keys [connection-id account-label]}                connection
+        {:keys [source-operation-id lines statuses records]} history]
     {:type :elements
      :html [:section.management-page {:aria-labelledby "shipment-title" :data-source-operation-id source-operation-id}
             (operations/operations-views {:current [:transit connection-id] :connections connections})
-            (products-web/header {:id        "shipment-title"              :title      (shipment-label connection-id kind source-operation-id)
+            (products-web/header {:id        "shipment-title"              :title      (provenance/shipment-label source-operation-id)
                                   :subtitle  (str "Ozon · " account-label)
                                   :back-href (transit-path connection-id)  :back-label (i18n/t "All shipments in transit")})
             [:div.management-content

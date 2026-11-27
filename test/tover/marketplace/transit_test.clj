@@ -19,7 +19,21 @@
     [java.time Duration Instant]))
 
 
-(use-fixtures :each bel-test/isolated-registry
+(def now
+  "The instant every transit test runs at: five days after the observations, well inside `stale-after`."
+  (Instant/parse "2026-11-25T10:00:00Z"))
+
+
+(defn pinned-clock
+  "Fixture: `::acceptance/now` answers `now`, so a test's states never depend on the day it runs."
+  {:malli/schema [:=> [:cat fn?] :any]}
+  [f]
+  (let [previous (get-method runtime/coeffect ::acceptance/now)]
+    (.addMethod ^clojure.lang.MultiFn runtime/coeffect ::acceptance/now (fn [& _] now))
+    (try (f) (finally (.addMethod ^clojure.lang.MultiFn runtime/coeffect ::acceptance/now previous)))))
+
+
+(use-fixtures :each pinned-clock bel-test/isolated-registry
   (fn [f]
     (bel/build-registry! ['tover.catalogues.products.model 'tover.catalogues.stores.model 'tover.catalogues.warehouses.model
                           'tover.catalogues.suppliers.model 'tover.catalogues.categories.model
@@ -316,7 +330,21 @@
           (is (= [sale] (archive-blockers ctx)))
           (testing "and the draft shows it on the item before Submit"
             (is (= [{:code :archive-blocked :related {:source-operation-id sale}}]
-                   (mapv #(select-keys % [:code :related]) (:findings (runtime/read-model ctx ::entries/pending-entries {})))))))))))
+                   (mapv #(select-keys % [:code :related]) (:findings (runtime/read-model ctx ::entries/pending-entries {}))))))
+          (testing "and Accept rejects the archive"
+            (let [selection {:selection [{:entry-id "archive-red" :revision 1}] :order ["archive-red"]}
+                  review    (runtime/read-model ctx ::acceptance/inventory-review selection)
+                  failure   (try (runtime/execute! ctx ::acceptance/accept-reviewed-inventory-changes
+                                                   {:command-id "acc-archive"
+                                                    :input      (merge selection {:workspace-id workspace             :acceptance-id "acc-archive"
+                                                                                  :fingerprint  (:fingerprint review)})})
+                                 nil
+                                 (catch clojure.lang.ExceptionInfo error (ex-data error)))]
+              (is (= :archive-blocked (:type failure)))
+              (is (= sale (get-in failure [:problem :source-operation-id])))
+              (is (= "active" (:status (some #(when (= "red" (:stock-item-id %)) %)
+                                             (:stock-items (runtime/coeffect ::entries/catalogue ctx {})))))
+                  "red stays active"))))))))
 
 
 (deftest returning-units-block-archiving
