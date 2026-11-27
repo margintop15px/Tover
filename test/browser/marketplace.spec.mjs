@@ -328,9 +328,20 @@ test('the stock differences view shows the detected move, and its Transfer waits
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(width).toBeLessThanOrEqual(400);
 
+  // Each row links to its pending Transfer, which Operations opens with its connection and evidence.
+  await expect(sieve.first().getByRole('button', { name: 'Open the pending transfer' })).toHaveCount(1);
+  await sieve.first().getByRole('button', { name: 'Open the pending transfer' }).click();
+  await expect(page).toHaveURL(/\/operations$/);
+  const workbench = page.locator('operations-workbench');
+  await expect.poll(() => workbench.evaluate((node, id) => (node.model?.rows || []).some(row => row.groupId === id), transfer)).toBe(true);
+  const row = page.locator('#operations-grid tbody tr').filter({ has: page.locator('td.operations-next-step', { hasText: 'Detected move' }) }).first();
+  await expect(row.locator('td.operations-source')).toHaveText('Ozon · Browser shop');
+  await expect(row.locator('td.operations-next-step')).toHaveAttribute('title', /^Last agreeing snapshot 2026-11-19T10:00:00Z · current snapshot /);
+
+  await page.goBack();
   await page.getByRole('link', { name: 'Review and accept them on Operations' }).click();
   await expect(page).toHaveURL(/\/operations$/);
-  await expect.poll(() => page.locator('operations-workbench').evaluate((node, id) => (node.model?.rows || []).some(row => row.groupId === id), transfer))
+  await expect.poll(() => workbench.evaluate((node, id) => (node.model?.rows || []).some(row => row.groupId === id), transfer))
     .toBe(true);
   expect(errors).toEqual([]);
 });

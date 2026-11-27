@@ -7,9 +7,9 @@
   warehouse holding it (by Ozon's figures or Tover's balance) is matched and has a baseline, and the snapshot is
   not before those baselines. An item with an undecided operation after its cutover is `waiting for operations`;
   `history`, `set aside` and `no effect` count as decided. So does an accepted operation whose source changed
-  until its correction is decided (pending, unproposable, or still to be proposed, it waits). The last agreeing snapshot is the latest earlier finished
-  one without any difference for the item. A move needs one, and differences summing to exactly 0; anything else
-  is only shown. Nothing here proposes or accepts.
+  until its correction is decided: pending or still to be proposed, it waits; one that can never be proposed does
+  not. The last agreeing snapshot is the latest earlier finished one without any difference for the item. A move
+  needs one, and differences summing to exactly 0; anything else is only shown. Nothing here proposes or accepts.
 
   Accepted history is replayed once per read, over the records of the connection's mapped items only, and gives
   the balances at every retained snapshot (`balances-at`)."
@@ -285,11 +285,13 @@
 
 
 (defn- correcting?
-  "Whether an accepted operation's source change is still undecided (plan 5 task 1): its correction is pending,
-  cannot be proposed (the accepted revision is missing or the kind changed), or intake would propose one now."
+  "Whether an accepted operation's source change is still undecided (plan 5 task 1): its correction is pending, or
+  intake would propose or withdraw one now. A refusal (such as a record already cancelled) or a change that cannot
+  be proposed (a changed kind, a missing accepted revision) never makes the item wait: nothing would decide it."
   {:malli/schema [:=> [:cat :map inst?] :boolean]}
   [facts now]
-  (boolean (or (corrections/target facts) (corrections/unproposable facts) (seq (:events (corrections/assess facts now))))))
+  (let [{:keys [refusal events]} (corrections/assess facts now)]
+    (boolean (and (nil? refusal) (or (corrections/target facts) (seq events))))))
 
 
 (defn changed
@@ -396,7 +398,9 @@
 ;; connection, the item and that snapshot (`::detected-moves`). The same moves emit nothing; different moves replace
 ;; the unedited Transfers and withdraw the pairs no longer moved; a Transfer a member edited is kept, an accepted one
 ;; is history. A discard is remembered by the row: its moves are unchanged, so nothing is proposed again until they
-;; change. Nothing here is ever accepted automatically.
+;; change. While the item waits for operations (an undecided import or source correction may explain the same
+;; difference), its unedited pending Transfers are withdrawn under every key, so the two can never both be accepted;
+;; once it settles, the move is proposed again. Nothing here is ever accepted automatically.
 
 
 (def DetectedMove
@@ -439,22 +443,28 @@
 
 
 (def Evaluation
-  [:map [:stock-item-id :string] [:current-run :string] [:last-agreeing Snapshot] [:moves [:vector Move]]])
+  "`waiting` when the item waits for operations: no moves, its unedited pending Transfers withdrawn, and
+  `last-agreeing` absent when none agreed."
+  [:map [:stock-item-id :string] [:current-run :string] [:last-agreeing {:optional true} Snapshot] [:moves [:vector Move]]
+   [:waiting {:optional true} :boolean]])
 
 
 (defn evaluate
-  "What the newest snapshot says of `item`: the moves from its last agreeing snapshot (empty unless `moved`), or
-  `{:refusal :stale}` when it is not compared, waits for operations or has no agreeing snapshot."
+  "What the newest snapshot says of `item`: the moves from its last agreeing snapshot (empty unless `moved`); while
+  it waits for operations, no moves and `waiting`; else `{:refusal :stale}` when it is not compared or has no
+  agreeing snapshot."
   {:malli/schema [:=> [:cat Facts :string] [:or Evaluation [:map [:refusal :keyword]]]]}
-  [{:keys [passes] :as facts} item]
+  [{:keys [passes undecided] :as facts} item]
   (let [pass     (first passes)
         rows     (when pass (item-rows facts pass item))
         agreeing (when rows (last-agreeing facts item))
         st       (when rows (state facts item rows agreeing))]
-    (if (or (nil? agreeing) (= "waiting for operations" st))
-      {:refusal :stale}
-      {:stock-item-id item :current-run (:run-id pass) :last-agreeing agreeing
-       :moves         (if (= "moved" st) (pairs rows) [])})))
+    (cond
+      (and pass (contains? undecided item))
+      (cond-> {:stock-item-id item :current-run (:run-id pass) :moves [] :waiting true} agreeing (assoc :last-agreeing agreeing))
+      (nil? agreeing) {:refusal :stale}
+      :else {:stock-item-id item :current-run (:run-id pass) :last-agreeing agreeing
+             :moves         (if (= "moved" st) (pairs rows) [])})))
 
 
 (defn- read-list
@@ -518,11 +528,13 @@
   "Board `Propose Detected Move`: what one item's `evaluation` changes, given the item's `::detected-moves` rows by
   id and the `stored` entries ({entry-id {:entry :lines :changes}}) they and the moves name. Rows of the item under
   another key are superseded: their unedited pending Transfers are withdrawn. A move a member discarded under the
-  key is never proposed again for it. Empty when nothing changes."
+  key is never proposed again for it. While the item is `waiting`, every row's unedited pending Transfers are
+  withdrawn and the row keeps no moves, so the move is proposed again once the item settles. Empty when nothing
+  changes."
   {:malli/schema [:=> [:cat :string Evaluation [:map-of :string :map] [:map-of :string :map] :any] [:vector :map]]}
-  [connection-id {:keys [stock-item-id current-run last-agreeing moves]} rows stored now]
+  [connection-id {:keys [stock-item-id current-run last-agreeing moves waiting]} rows stored now]
   (let [actor      (sync/connector-actor connection-id)
-        id-now     (move-key connection-id stock-item-id (:run-id last-agreeing))
+        id-now     (move-key connection-id stock-item-id (or (:run-id last-agreeing) ""))
         withdrawn? #(and (pending? %) (connector? % actor))
         proposed   (fn [row-key last-run moves ids discarded]
                      {:type ::detected-move-proposed
@@ -532,14 +544,14 @@
                              :discarded         (observations/write-json (vec (sort-by (juxt :from :to :quantity) discarded)))
                              :proposed-at       (str now)}})
         superseded (vec (for [[row-key row] (sort-by first rows)
-                              :when         (not= id-now row-key)
+                              :when         (or waiting (not= id-now row-key))
                               :let          [gone (filter withdrawn? (keep stored (read-list (:entries row))))]
                               :when         (seq gone)
                               event         (conj (into [] (mapcat withdrawal) gone) (proposed row-key (:last-agreeing-run row) [] [] (remembered row stored)))]
                           event))
         row        (get rows id-now)
         discarded  (remembered row stored)
-        current    (if (and row (= moves (read-list (:moves row))))
+        current    (if (or waiting (and row (= moves (read-list (:moves row)))))
                      []
                      (let [desired (for [{:keys [from to] :as move} moves
                                          :let [id (move-entry-id id-now from to) s (get stored id)]
@@ -564,7 +576,7 @@
   "The entries one item's proposal reads: those its rows list and those its moves would be."
   {:malli/schema [:=> [:cat :string Evaluation [:maybe [:sequential :map]]] [:set :string]]}
   [connection-id {:keys [stock-item-id last-agreeing moves]} rows]
-  (let [id-now (move-key connection-id stock-item-id (:run-id last-agreeing))]
+  (let [id-now (move-key connection-id stock-item-id (or (:run-id last-agreeing) ""))]
     (into (set (mapcat #(read-list (:entries %)) rows)) (map #(move-entry-id id-now (:from %) (:to %))) moves)))
 
 
@@ -593,8 +605,19 @@
 (def ProposeDetectedMove
   "Board `Propose Detected Move`: the item, the evidence and the moves intake read (part of the processor's command
   id, so a second change within one snapshot is a new command). The moves are computed again on the facts the
-  command commits on; a newer snapshot, an undecided operation, a changed balance or other moves make it stale."
-  [:map [:connection-id Ref] [:stock-item-id records/Id] [:last-agreeing-run Ref] [:current-run Ref] [:moves [:vector Move]]])
+  command commits on; a newer snapshot, an undecided operation, a changed balance or other moves make it stale.
+  `last-agreeing-run` is absent only while the item waits with no agreeing snapshot. `last-proposed-at`, when the
+  item has rows, is when they last changed as read: the same moves proposed again after a withdrawal are a new
+  command, and a row changed since is stale."
+  [:map [:connection-id Ref] [:stock-item-id records/Id] [:last-agreeing-run {:optional true} Ref] [:current-run Ref]
+   [:moves [:vector Move]] [:last-proposed-at {:optional true} :string]])
+
+
+(defn- last-proposed
+  "When the item's `::detected-moves` rows last changed; nil without rows."
+  {:malli/schema [:=> [:cat [:maybe [:map-of :string :map]]] [:maybe :string]]}
+  [rows]
+  (some->> (vals rows) (keep :proposed-at) (map str) seq sort last))
 
 
 (def ^:private messages
@@ -639,14 +662,15 @@
              ::entries/inventory-entry-line-saved ::entries/inventory-entry-line-removed
              ::entries/inventory-entry-line-barcode-added ::entries/inventory-entry-line-barcode-removed
              ::entries/inventory-entry-change-removed ::entries/inventory-entry-change-barcode-removed}}
-  [{:keys [scope actor now facts rows stored]} {:keys [connection-id stock-item-id last-agreeing-run current-run moves]}]
+  [{:keys [scope actor now facts rows stored]} {:keys [connection-id stock-item-id last-agreeing-run current-run moves] :as input}]
   (when (not= actor (sync/connector-actor connection-id)) (fail! :not-permitted))
   (when (not= "active" (get-in facts [:connection :sync-state])) (fail! :connection-paused))
   (let [evaluation (evaluate facts stock-item-id)]
     (when (or (:refusal evaluation)
               (not= current-run (:current-run evaluation))
               (not= last-agreeing-run (get-in evaluation [:last-agreeing :run-id]))
-              (not= moves (:moves evaluation)))
+              (not= moves (:moves evaluation))
+              (not= (:last-proposed-at input) (last-proposed rows)))
       (fail! :stale))
     (let [events (proposal-events connection-id evaluation rows stored now)]
       (if (empty? events)
@@ -676,8 +700,10 @@
         (vec (for [{:keys [stock-item-id current-run last-agreeing moves] :as evaluation} evaluations
                    :when (seq (proposal-events connection-id evaluation (get by-item stock-item-id {}) stored now))]
                {:workspace-id (str workspace-id) :connection-id connection-id
-                :input        {:connection-id     connection-id           :stock-item-id stock-item-id
-                               :last-agreeing-run (:run-id last-agreeing) :current-run   current-run   :moves moves}}))))))
+                :input        (let [proposed (last-proposed (get by-item stock-item-id))]
+                                (cond-> {:connection-id connection-id :stock-item-id stock-item-id :current-run current-run :moves moves}
+                                  last-agreeing (assoc :last-agreeing-run (:run-id last-agreeing))
+                                  proposed (assoc :last-proposed-at proposed)))}))))))
 
 
 (defmethod runtime/coeffect ::moves-to-propose
@@ -760,3 +786,47 @@
             [:lines ::entry-lines (fn [{:keys [stored]} _] {:ids (set (keys stored))})]]}
   [{:keys [rows stored lines]} {:keys [connection-id]}]
   {:proposals (proposals connection-id rows stored lines)})
+
+
+;; What the Operations table shows beside each pending detected Transfer (board `Detected Move Proposed`: the
+;; snapshot runs are evidence, shown with the entry)
+
+
+(def MoveEvidence
+  [:map [:entry-id :string] [:connection-id Ref] [:last-agreeing-run Ref] [:current-run Ref]
+   [:last-agreeing-at {:optional true} :string] [:current-at {:optional true} :string]])
+
+
+(defn evidence
+  "Each pending Transfer a detected move lists, with the runs it was found between and, while their passes are
+  retained, when they were observed (`observed` {connection-id {run-id observed-at}})."
+  {:malli/schema [:=> [:cat [:sequential :map] [:map-of :string :map] [:map-of :string :map]] [:vector MoveEvidence]]}
+  [rows stored observed]
+  (vec (for [{:keys [connection-id last-agreeing-run current-run entries]} (sort-by :detected-move-id rows)
+             entry-id (read-list entries)
+             :when (pending? (get stored entry-id))
+             :let [at (get observed connection-id {})]]
+         (cond-> {:entry-id entry-id :connection-id connection-id :last-agreeing-run last-agreeing-run :current-run current-run}
+           (get at last-agreeing-run) (assoc :last-agreeing-at (str (get at last-agreeing-run)))
+           (get at current-run) (assoc :current-at (str (get at current-run)))))))
+
+
+(defmethod runtime/coeffect ::pending-move-facts
+  ;; Every row once, its listed entries by id, and the finished passes of the connections that still have one pending.
+  [_ context _]
+  (let [rows     (records/all-records context ::detected-moves :detected-move-id)
+        stored   (stored-entries context [] (set (mapcat #(read-list (:entries %)) rows)))
+        pending  (set (for [row rows id (read-list (:entries row)) :when (pending? (get stored id))] (:connection-id row)))
+        observed (into {} (for [connection-id pending]
+                            [connection-id (into {} (map (juxt :run-id :observed-at))
+                                                 (sync/finished-passes context connection-id "stock-by-warehouse"))]))]
+    {:rows rows :stored stored :observed observed}))
+
+
+(defreadmodel pending-move-evidence
+  {:input  [:map]
+   :output [:map [:moves [:vector MoveEvidence]]]
+   :policy ::records/workspace-member
+   :cofx   [[:facts ::pending-move-facts (constantly {})]]}
+  [{{:keys [rows stored observed]} :facts} _]
+  {:moves (evidence rows stored observed)})

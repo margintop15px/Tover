@@ -7,7 +7,9 @@
     [bel.runtime :as runtime]
     [clojure.string :as str]
     [clojure.test :refer [deftest is testing use-fixtures]]
+    [ring.util.codec :as codec]
     [tover.marketplace.connections-web-test :as forms]
+    [tover.marketplace.grid :as grid]
     [tover.marketplace.guard-test :as guard-test]
     [tover.marketplace.moves-test :as moves-test]
     [tover.marketplace.moves.web :as web]
@@ -73,6 +75,19 @@
                     ["Mug / red" "Ozon 8" "15" "10" "+5" nil nil []]]
                    (mapv (comp (juxt :item :warehouse :ozon :tover :difference :state :last-agreeing :transfers) :cells) rows)))
             (is (every? #(false? (:selectable? %)) rows))))
+        (testing "the Operations table reads each pending Transfer's evidence: the snapshots it was found between"
+          (is (= [{:entry-id         (str "move:" c "|red|D1|ozon-7|ozon-8") :connection-id c :last-agreeing-run "D1" :current-run "D2"
+                   :last-agreeing-at "2026-11-21T06:00:00Z"                  :current-at    "2026-11-22T06:00:00Z"}]
+                 (:moves (runtime/read-model ctx :tover.marketplace.moves.model/pending-move-evidence {})))))
+        (testing "a moved row links to its pending Transfer on Operations"
+          (let [id (str "move:" c "|red|D1|ozon-7|ozon-8")]
+            (is (= [[{:href (str "/operations#entry=" (codec/url-encode id)) :label "Open the pending transfer"}]
+                    [{:href (str "/operations#entry=" (codec/url-encode id)) :label "Open the pending transfer"}]]
+                   (mapv #(get-in % [:links :difference]) (:rows (web/table ctx c)))))
+            (is (= [{:type "marketplace-open" :href (str "/operations#entry=" (codec/url-encode id)) :label "Open the pending transfer"}]
+                   (mapv #(select-keys % [:type :href :label])
+                         (get-in (grid/model (web/table ctx c)) [:rows 0 :cells 4 :actions])))
+                "the link is on the row's Difference cell")))
         (testing "an accepted Transfer shows what was accepted"
           (let [id (str "move:" c "|red|D1|ozon-7|ozon-8")]
             (runtime/execute! ctx :tover.inventory.entries.model/save-shared-inventory-entry
@@ -83,3 +98,37 @@
             (accept-all! ctx "acc-3" [[id 2]])
             (is (= 0 (detect!)))
             (is (= ["3 from Ozon 7 to Ozon 8 · Accepted"] (get-in (first (:rows (web/table ctx c))) [:cells :transfers])))))))))
+
+
+(deftest older-transfers-and-unexplained-rows-are-linked
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx pass! detect!]} (detection (setup! repo))
+            old (str "move:" c "|red|D1|ozon-7|ozon-8")
+            new (str "move:" c "|red|D3|ozon-7|ozon-8")
+            open #(hash-map :href (str "/operations#entry=" (codec/url-encode %)) :label "Open the pending transfer")]
+        (pass! "D1" "2026-11-21T06:00:00Z" moves-test/equal)
+        (pass! "D2" "2026-11-22T06:00:00Z" moves-test/moved-5)
+        (is (= 1 (detect!)))
+        (testing "Given a member edited the first Transfer, then a newer agreeing snapshot gives the move a new key"
+          (runtime/execute! ctx :tover.inventory.entries.model/save-shared-inventory-entry
+                            {:command-id "edit-move"
+                             :input      {:workspace-id (:workspace-id support/scope) :entry-id   old      :expected-revision 1        :kind "transfer"
+                                          :occurred-at  "2026-11-21T06:00:01Z" :from-warehouse-id "ozon-7" :to-warehouse-id   "ozon-8"
+                                          :lines        [{:line-id "1" :stock-item-id "red" :quantity 4}]}})
+          (pass! "D3" "2026-11-23T06:00:00Z" moves-test/equal)
+          (pass! "D4" "2026-11-24T06:00:00Z" moves-test/moved-5)
+          (is (= 1 (detect!)))
+          (testing "then the Transfer kept under the older key is still listed and linked"
+            (let [rows (:rows (web/table ctx c))]
+              (is (= ["5 from Ozon 7 to Ozon 8 · Pending" "4 from Ozon 7 to Ozon 8 · Pending, edited"] (get-in (first rows) [:cells :transfers])))
+              (is (= [(open new) (open old)] (get-in (first rows) [:links :difference]))))))
+        (testing "Given the next snapshot shows a difference no move explains"
+          (pass! "D5" "2026-11-25T06:00:00Z" {["100" moves-test/hub-7] 5 ["100" moves-test/hub-8] 13})
+          (detect!)
+          (testing "then each differing row links to recording a correction, beside the pending Transfer it touches"
+            (let [rows (:rows (web/table ctx c))]
+              (is (= "Unexplained" (get-in (first rows) [:cells :state])))
+              (is (= [[(open old) {:href "/" :label "Record a correction on Stock"}]
+                      [(open old) {:href "/" :label "Record a correction on Stock"}]]
+                     (mapv #(get-in % [:links :difference]) rows))))))))))

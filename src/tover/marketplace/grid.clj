@@ -28,8 +28,9 @@
 
 (def Row
   "Cell values by column key: text, a vector of lines, an option value, or `{:value :label}` for a reference.
-  Row `:options` override a column's options for that row; `:href` opens the row's details page; `:revisions` are
-  further reviewed revisions the row sends with its command, and `:observation` the evidence it was read from."
+  Row `:options` override a column's options for that row; `:href` opens the row's details page; `:links` are
+  further pages a column's cell opens; `:revisions` are further reviewed revisions the row sends with its command,
+  and `:observation` the evidence it was read from."
   [:map
    [:id :string] [:revision :int] [:label {:optional true} :string]
    [:revisions {:optional true} [:map-of :keyword :int]]
@@ -38,7 +39,8 @@
    [:findings {:optional true} [:map-of :keyword :string]]
    [:options {:optional true} [:map-of :keyword [:vector Option]]]
    [:selectable? {:optional true} :boolean]
-   [:href {:optional true} :string]])
+   [:href {:optional true} :string]
+   [:links {:optional true} [:map-of :keyword [:vector [:map [:href :string] [:label :string]]]]]])
 
 
 (def SelectionAction
@@ -100,8 +102,13 @@
      :columns (cond->> (mapv (fn [{:keys [key label width]}] {:key (name key) :label (i18n/t label) :width (or width 160)}) columns)
                 select? (into [{:key "select" :label "" :width 40}]))
      :rows    (vec (map-indexed
-                     (fn [index {:keys [id revision revisions observation label href selectable?] :or {selectable? true} :as row}]
-                       (let [cells (mapv #(cell % row) columns)
+                     (fn [index {:keys [id revision revisions observation label href links selectable?] :or {selectable? true} :as row}]
+                       (let [cells (mapv (fn [column]
+                                           (cond-> (cell column row)
+                                             (seq (get links (:key column)))
+                                             (assoc :actions (mapv (fn [{:keys [href label]}] {:type "marketplace-open" :href href :icon "›" :label label})
+                                                                   (get links (:key column))))))
+                                         columns)
                              cells (cond-> cells
                                      href (update 0 assoc :actions [{:type  "marketplace-open"      :href href :icon "›"
                                                                      :label (i18n/t "Open details")}]))]

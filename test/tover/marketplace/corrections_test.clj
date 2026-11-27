@@ -314,6 +314,31 @@
               (is (= :already-cancelled (failure #(propose! "late" {:source-operation-id sale :revision 2})))))))))))
 
 
+(deftest cancelled-by-hand-withdraws-the-pending-correction
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! corrections! propose! pending entry correction] :as s} (setup! repo)
+            id (correction-id sale)]
+        (accepted-sale! s)
+        (testing "Given a member's cancellation of the accepted Sale is pending when a revision states 2"
+          (execute! ctx ::entries/save-shared-inventory-entry "m-cancel"
+                    {:workspace-id workspace :entry-id "m-cancel" :kind "sale" :amends (acceptance/record-revision-id record 1)
+                     :cancel       true      :reason   "Wrong"})
+          (observe! (posting :quantity "2"))
+          (is (= 1 (corrections!)))
+          (is (some? (pending id)) "the unedited amendment is proposed beside it")
+          (testing "when the member accepts the cancellation"
+            (accept-all! ctx "acc-cancel" [["m-cancel" 1]])
+            (testing "then intake withdraws the amendment, which could never be accepted"
+              (is (= 1 (corrections!)))
+              (is (nil? (pending id)))
+              (is (= "discarded" (:status (entry id))))
+              (is (nil? (:kind (correction record))) "the row no longer names a pending correction")
+              (is (= 0 (corrections!)) "once"))
+            (testing "and a new proposal is still refused as already cancelled"
+              (is (= :already-cancelled (failure #(propose! "late" {:source-operation-id sale :revision 2})))))))))))
+
+
 (deftest discarded-is-not-repeated-for-the-same-revision
   (support/with-store
     (fn [repo _]

@@ -189,7 +189,7 @@ class OperationsWorkbench extends InventoryWorkbench {
     if (this.grid.rowDetail && !(model.rows.some(row => row.id === this.grid.rowDetail.rowId) && this.showRevisions())) this.grid.rowDetail = null;
     const focus = this.focusRow ? model.rows.findIndex(row => row.groupId === this.focusRow) : -1;
     this.presentModel(Math.max(0, focus - 66));
-    if (focus >= 0 && this.scope.pending) { this.grid.selectRow(model.rows[focus].id); this.focusRow = null; }
+    if (focus >= 0 && (this.scope.pending || this.linkedRow)) { this.grid.selectRow(model.rows[focus].id); this.focusRow = null; this.linkedRow = false; }
     this.smart.context = this.smartContext();
     this.pendingButton.classList.toggle('has-pending', Boolean(model.pending.length) && !this.scope.pending);
     if (!this.scope.pending) this.excluded = [];
@@ -311,6 +311,9 @@ class OperationsWorkbench extends InventoryWorkbench {
     });
     const asked = location.hash.match(/add=([a-z-]+)/)?.[1];
     if (asked) history.replaceState(null, '', location.pathname);
+    // Board 45 slice c · a Stock differences row opens its pending Transfer here.
+    const linked = location.hash.match(/entry=([^&]+)/)?.[1];
+    if (linked) { this.focusRow = decodeURIComponent(linked); this.linkedRow = true; history.replaceState(null, '', location.pathname + location.search); }
     let kept = null;
     try { kept = JSON.parse(prefs.get(`addition.${this.workspaceId}`, 'null')); } catch { /* unreadable draft */ }
     if (kept?.lines) this.smart.resume(kept); else if (asked) this.smart.begin(asked);

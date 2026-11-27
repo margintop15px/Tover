@@ -726,3 +726,118 @@
                                                              :user-id      (sync/connector-actor "other")}
                                                             ::moves/propose-detected-move
                                                             {:command-id "p4" :input (assoc input :current-run "D3")})))))))))
+
+
+;; Moves wait for corrections (final review I1, I2)
+
+
+(defn- waiting-setup!
+  "Given P1 accepted from Ozon 7 and D1 agreeing, D2 shows the sale shipped from Ozon 8 before its revision arrives:
+  a move of 3 from Ozon 8 to Ozon 7 is proposed. `detection` keys plus the correction setup's."
+  {:malli/schema [:=> [:cat :any] :map]}
+  [repo]
+  (let [s (assoc (detection (setup! repo corrections-setup)) :source-id #(str c ":fbo-posting:" %))]
+    (accepted-fbo-sale! s)
+    ((:pass! s) "D2" (day 22) {["100" hub-7] 10 ["100" hub-8] 7})
+    (is (= 1 ((:detect! s))))
+    (is (some? ((:pending s) (move-id "D1" "ozon-8" "ozon-7"))))
+    s))
+
+
+(deftest correction-withdraws-the-unedited-transfer
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! corrections! detect! pending moved detected differences] :as s} (waiting-setup! repo)
+            id (move-id "D1" "ozon-8" "ozon-7")
+            correction (provenance/correction-entry-id (str c ":fbo-posting:P1") 1)]
+        (testing "Given the pending Transfer, when the revision restating the warehouse proposes a correction"
+          (observe! (fbo-sale "8"))
+          (is (= 1 (corrections!)))
+          (is (some? (pending correction)))
+          (is (= "waiting for operations" (:state (item (differences) "red"))))
+          (testing "then the connector's unedited Transfer is withdrawn, so the two can never both be accepted"
+            (is (= 1 (detect!)))
+            (is (= [] (moved)))
+            (is (= "discarded" (status-of ctx id)))
+            (is (= [[] []] ((juxt (comp observations/read-json :moves) (comp observations/read-json :entries)) (detected "D1"))))
+            (is (= 0 (detect!)) "once"))
+          (testing "and once the member accepts the correction, nothing is proposed again"
+            (accept-all! ctx "acc-correction" [[correction 1]])
+            (is (= "equal" (:state (item (differences) "red"))))
+            (is (= 0 (detect!)))
+            (is (= [] (moved)))))))))
+
+
+(deftest edited-transfer-stays-while-waiting
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! corrections! detect! pending]} (waiting-setup! repo)
+            id (move-id "D1" "ozon-8" "ozon-7")]
+        (testing "Given a member edited the Transfer to 2"
+          (runtime/execute! ctx ::entries/save-shared-inventory-entry
+                            {:command-id "edit-move"
+                             :input      {:workspace-id workspace :entry-id id :expected-revision 1 :kind "transfer"
+                                          :occurred-at  "2026-11-21T06:00:01Z" :from-warehouse-id "ozon-8" :to-warehouse-id "ozon-7"
+                                          :lines        [{:line-id "1" :stock-item-id "red" :quantity 2}]}})
+          (testing "when a correction makes the item wait, the member's Transfer is kept"
+            (observe! (fbo-sale "8"))
+            (is (= 1 (corrections!)))
+            (is (= 0 (detect!)))
+            (is (= [["red" 2]] (last (transfer (pending id)))))))))))
+
+
+(deftest settled-item-is-proposed-again
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! corrections! detect! pending moved]} (waiting-setup! repo)
+            id (move-id "D1" "ozon-8" "ozon-7")
+            correction (provenance/correction-entry-id (str c ":fbo-posting:P1") 1)]
+        (observe! (fbo-sale "8"))
+        (is (= 1 (corrections!)))
+        (is (= 1 (detect!)))
+        (is (= [] (moved)))
+        (testing "Given the member discards the correction, the item settles with the move still shown"
+          (runtime/execute! ctx ::entries/discard-inventory-draft {:command-id "discard-correction" :input {:workspace-id workspace :entry-id correction :revision 1}})
+          (testing "then detection proposes the Transfer again"
+            (is (= 1 (detect!)))
+            (is (= [id] (moved)))
+            (is (= ["transfer" "ozon-8" "ozon-7" "2026-11-21T06:00:01Z" connector [["red" 3]]] (transfer (pending id))))))))))
+
+
+(deftest hand-cancelled-record-stops-the-wait
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! corrections! detect! pending moved differences]} (waiting-setup! repo)
+            correction (provenance/correction-entry-id (str c ":fbo-posting:P1") 1)
+            record (provenance/import-entry-id (str c ":fbo-posting:P1"))]
+        (testing "Given a member's cancellation of the accepted sale is pending when its correction is proposed"
+          (runtime/execute! ctx ::entries/save-shared-inventory-entry
+                            {:command-id "m-cancel"
+                             :input      {:workspace-id workspace :entry-id "m-cancel" :kind "sale" :amends (acceptance/record-revision-id record 1)
+                                          :cancel       true      :reason   "Wrong"}})
+          (observe! (fbo-sale "8"))
+          (is (= 1 (corrections!)))
+          (is (= 1 (detect!)) "the Transfer is withdrawn while the item waits")
+          (is (= [] (moved)))
+          (testing "when the member accepts the cancellation"
+            (accept-all! ctx "acc-cancel" [["m-cancel" 1]])
+            (testing "then intake withdraws the correction, which can no longer be accepted"
+              (is (= 1 (corrections!)))
+              (is (nil? (pending correction))))
+            (testing "and the item no longer waits, so it is compared again"
+              (is (not= "waiting for operations" (:state (item (differences) "red")))))))))))
+
+
+(deftest refusals-do-not-keep-the-item-waiting
+  (let [correcting? #'moves/correcting?
+        now         (Instant/parse "2026-11-26T00:00:00Z")
+        sale        {:entry {:kind "sale" :lines [{:line-id "1" :stock-item-id "red" :quantity 3 :warehouse-id "home"}]} :missing [] :findings []}
+        base        {:operation  {:source-operation-id "s" :connection-id c :revision 2} :acceptance        {:record-id "r"}
+                     :latest     {:revision 1 :record-revision-id "r#1"}                 :accepted-proposal sale             :new-proposal sale
+                     :desired-id "correction:s@1"}]
+    (testing "A changed kind proposes nothing and does not make the item wait"
+      (is (false? (correcting? (assoc-in base [:new-proposal :entry :kind] "transfer") now))))
+    (testing "Nor does a record already cancelled"
+      (is (false? (correcting? (assoc-in (assoc-in base [:new-proposal :entry :lines 0 :quantity] 2) [:latest :cancelled] true) now))))
+    (testing "A change intake would propose does"
+      (is (true? (correcting? (assoc-in base [:new-proposal :entry :lines 0 :quantity] 2) now))))))

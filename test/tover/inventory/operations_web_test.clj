@@ -479,6 +479,34 @@
     (is (nil? (some :selection (mapcat :cells (:rows model)))) "outside the filter nothing is selected outside Preview")))
 
 
+(def ^:private move-transfer
+  {:entry-id          "move:c|tee-m|D1|main|back" :revision 1      :kind "transfer" :occurred-at (.plusSeconds at 120) :status "pending"
+   :from-warehouse-id "main" :to-warehouse-id               "back"
+   :lines             [{:line-id "1" :stock-item-id "tee-m" :quantity 5}]})
+
+
+(deftest a-detected-move-carries-its-connection-and-evidence
+  (let [model (imported {:pending [purchase move-transfer]
+                         :moves   [{:entry-id         (:entry-id move-transfer) :connection-id "c"                    :last-agreeing-run "D1" :current-run "D2"
+                                    :last-agreeing-at "2026-11-21T06:00:00Z"    :current-at    "2026-11-22T06:00:00Z"}]})
+        row   (str (:entry-id move-transfer) "|1")
+        cell  (fn [key] (get-in (some #(when (= row (:id %)) %) (:rows model))
+                                [:cells (.indexOf ^java.util.List (mapv :key (:columns model)) key)]))]
+    (testing "A Transfer the connector proposed shows its connection, not as one a member entered"
+      (is (= ["Ozon · Shop" "Detected move"] (map #(column model row %) ["source" "next-step"]))))
+    (testing "and the snapshots it was found between, with a link to the Stock differences view"
+      (is (= "Last agreeing snapshot 2026-11-21T06:00:00Z · current snapshot 2026-11-22T06:00:00Z" (:title (cell "next-step"))))
+      (is (= [{:type "operations-open" :href "/operations/marketplace/c/differences"}]
+             (map #(select-keys % [:type :href]) (:actions (cell "next-step"))))))
+    (testing "in Russian"
+      (let [model (binding [i18n/*locale* "ru"]
+                    (imported {:pending [move-transfer]
+                               :moves   [{:entry-id (:entry-id move-transfer) :connection-id "c" :last-agreeing-run "D1" :current-run "D2"}]}))]
+        (is (= "Найденное перемещение" (column model row "next-step")))))
+    (testing "without its evidence, it still shows its connection"
+      (is (= ["Ozon · Shop" "Detected move"] (map #(column (imported {:pending [move-transfer]}) row %) ["source" "next-step"]))))))
+
+
 (deftest the-table-is-unchanged-without-connections
   (is (= ["kind" "occurred-at" "supplier" "store" "reason" "item" "article" "unit" "warehouse" "quantity" "price" "actions"]
          (map :key (:columns (grid false)))))

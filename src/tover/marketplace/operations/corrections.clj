@@ -11,7 +11,7 @@
   revision; `::provenance/source-corrections` (one row per record) links it to the source revision. An unedited
   proposal follows newer revisions and is withdrawn when the source states again what was accepted; a member's edit is
   kept and a newer revision records a source conflict. A discarded proposal is not proposed again until the next
-  source revision. Nothing here is ever accepted automatically: a member accepts the entry like any other, and
+  source revision. A record cancelled by hand gets no proposal, and the connector's unedited one is withdrawn. Nothing here is ever accepted automatically: a member accepts the entry like any other, and
   `provenance/acceptance-events` then records the source revision the record reflects."
   (:require
     [bel.core :as bel :refer [defcommand defprocessor]]
@@ -286,7 +286,11 @@
   [{:keys [operation acceptance row latest accepted-proposal new-proposal withdrawn? discarded desired-id desired] :as facts} now]
   (cond
     (or (nil? operation) (nil? acceptance) (nil? latest)) {:refusal :not-found}
-    (:cancelled latest) {:refusal :already-cancelled}
+    ;; A record cancelled by hand: the connector's unedited proposal could never be accepted, so it is withdrawn.
+    (:cancelled latest) (let [current (target facts)]
+                          (if (and current (= (str (get-in current [:entry :saved-by])) (str (sync/connector-actor (:connection-id operation)))))
+                            {:events (withdrawal-events (:record-id acceptance) current (:revision operation))}
+                            {:refusal :already-cancelled}))
     (nil? accepted-proposal) {:events []}
     :else
     (let [{:keys [source-operation-id connection-id revision]} operation

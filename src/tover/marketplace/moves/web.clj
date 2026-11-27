@@ -9,6 +9,7 @@
     [bel.core :refer [defaction defpage defview]]
     [bel.runtime :as runtime]
     [clojure.string :as str]
+    [ring.util.codec :as codec]
     [tover.inventory.operations.web :as operations]
     [tover.marketplace.connections.model :as connections]
     [tover.marketplace.cutover.web :as cutover-web]
@@ -61,24 +62,52 @@
            :status   (str (i18n/t (status-labels status status)) (when (and edited (= "pending" status)) (str ", " (i18n/t "edited"))))}))
 
 
+(defn entry-path
+  "The Operations page, opened at one pending entry."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [entry-id]
+  (str "/operations#entry=" (codec/url-encode entry-id)))
+
+
+(def ^:private correction-path
+  "Where a member records a correction (a count): the Stock page."
+  "/")
+
+
+(defn- item-transfers
+  "The item's Transfers to show: every one of its current key's, then those still pending under older keys (a
+  member's edit is kept when the key changes)."
+  {:malli/schema [:=> [:cat [:sequential moves/Proposal] :string [:maybe :string]] [:vector moves/ProposedTransfer]]}
+  [proposals stock-item-id current-key]
+  (let [own (filter #(= stock-item-id (:stock-item-id %)) proposals)]
+    (into (vec (mapcat :transfers (filter #(= current-key (:last-agreeing-run %)) own)))
+          (comp (remove #(= current-key (:last-agreeing-run %))) (mapcat :transfers) (filter #(= "pending" (:status %))))
+          own)))
+
+
 (defn rows
   "One row per compared item and warehouse of `read` (`Stock Differences`); the item's state, last agreeing
-  snapshot and Transfers (from `proposals`, those of its current key) are on its first row."
+  snapshot and Transfers (from `proposals`) are on its first row. A row links to each pending Transfer from or to its
+  warehouse and, when no move explains its difference, to recording a correction."
   {:malli/schema [:=> [:cat ifn? moves/StockDifferences [:sequential moves/Proposal]] [:vector grid/Row]]}
   [label {:keys [items]} proposals]
-  (let [by-key (into {} (map (juxt (juxt :stock-item-id :last-agreeing-run) :transfers)) proposals)]
-    (vec (for [{:keys [stock-item-id state last-agreeing] :as item} items
-               [index {:keys [warehouse-id ozon tover difference]}] (map-indexed vector (:rows item))
-               :let [first? (zero? index)]]
-           {:id       (str stock-item-id "|" warehouse-id) :revision 1 :label (label stock-item-id stock-item-id) :selectable? false
-            :cells    {:item          (label stock-item-id stock-item-id) :warehouse (label warehouse-id warehouse-id)
-                       :ozon          (str ozon) :tover (str tover) :difference (signed difference)
-                       :state         (when first? (i18n/t (state-labels state state)))
-                       :last-agreeing (when first? (:observed-at last-agreeing))
-                       :transfers     (if first?
-                                        (mapv #(transfer-line label %) (get by-key [stock-item-id (:run-id last-agreeing)] []))
-                                        [])}
-            :findings (when (not (zero? difference)) {:difference (i18n/t (state-labels state state))})}))))
+  (vec (for [{:keys [stock-item-id state last-agreeing] :as item} items
+             :let [transfers (item-transfers proposals stock-item-id (:run-id last-agreeing))]
+             [index {:keys [warehouse-id ozon tover difference]}] (map-indexed vector (:rows item))
+             :let [first? (zero? index)
+                   links (cond-> (vec (for [{:keys [entry-id from to status]} transfers
+                                            :when (and (= "pending" status) (#{from to} warehouse-id))]
+                                        {:href (entry-path entry-id) :label (i18n/t "Open the pending transfer")}))
+                           (and (= "unexplained" state) (not (zero? difference)))
+                           (conj {:href correction-path :label (i18n/t "Record a correction on Stock")}))]]
+         (cond-> {:id       (str stock-item-id "|" warehouse-id) :revision 1 :label (label stock-item-id stock-item-id) :selectable? false
+                  :cells    {:item          (label stock-item-id stock-item-id) :warehouse (label warehouse-id warehouse-id)
+                             :ozon          (str ozon) :tover (str tover) :difference (signed difference)
+                             :state         (when first? (i18n/t (state-labels state state)))
+                             :last-agreeing (when first? (:observed-at last-agreeing))
+                             :transfers     (if first? (mapv #(transfer-line label %) transfers) [])}
+                  :findings (when (not (zero? difference)) {:difference (i18n/t (state-labels state state))})}
+           (seq links) (assoc :links {:difference links})))))
 
 
 (defn table

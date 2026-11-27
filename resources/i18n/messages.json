@@ -1337,7 +1337,11 @@
     "Review and accept them on Operations": "Review and accept them on Operations",
     "Stock differences could not be loaded.": "Stock differences could not be loaded.",
     "Accept or discard the proposed transfers on the Operations table.": "Accept or discard the proposed transfers on the Operations table.",
-    "Ozon quantity": "Ozon quantity"
+    "Ozon quantity": "Ozon quantity",
+    "Open the pending transfer": "Open the pending transfer",
+    "Record a correction on Stock": "Record a correction on Stock",
+    "Detected move": "Detected move",
+    "Last agreeing snapshot {from} · current snapshot {to}": "Last agreeing snapshot {from} · current snapshot {to}"
   },
   "ru": {
     "Stock": "Остатки",
@@ -2686,6 +2690,10 @@
     "Review and accept them on Operations": "Проверьте и примите их в операциях",
     "Stock differences could not be loaded.": "Не удалось загрузить расхождения остатков.",
     "Accept or discard the proposed transfers on the Operations table.": "Примите или отклоните предложенные перемещения в таблице операций.",
-    "Ozon quantity": "Количество в Ozon"
+    "Ozon quantity": "Количество в Ozon",
+    "Open the pending transfer": "Открыть ожидающее перемещение",
+    "Record a correction on Stock": "Записать корректировку в остатках",
+    "Detected move": "Найденное перемещение",
+    "Last agreeing snapshot {from} · current snapshot {to}": "Последний совпавший снимок {from} · текущий снимок {to}"
   }
 }

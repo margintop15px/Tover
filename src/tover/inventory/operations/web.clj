@@ -593,18 +593,37 @@
 
 
 (defn- source-cells
-  "The connection badge and next step of an imported operation, its missing facts and findings as the title; blank
-  for any other operation."
+  "The connection badge and next step of an imported operation or a detected move, its missing facts, findings and
+  evidence as the title, and a link where the next step is taken; blank for any other operation."
   {:malli/schema [:=> [:cat [:maybe :map]] [:vector :map]]}
-  [{:keys [connection-label next-step missing findings]}]
+  [{:keys [connection-label next-step missing findings evidence href]}]
   (if-not connection-label
     [(ro "") (ro "")]
     (let [notes (concat (when (seq missing) [(i18n/t "Missing: {facts}" {:facts (str/join ", " (map i18n/t missing))})])
-                        (map i18n/t findings))]
+                        (map i18n/t findings)
+                        (when evidence [evidence]))]
       [(assoc (ro connection-label) :className "operations-source")
        (cond-> (assoc (ro (step-label next-step)) :className "operations-next-step")
          (seq notes) (assoc :title (str/join "\n" notes))
-         (seq findings) (add-class "stock-finding stock-finding-warning"))])))
+         (seq findings) (add-class "stock-finding stock-finding-warning")
+         href (assoc :actions [{:type "operations-open" :href href :label (i18n/t "Open") :icon "›"}]))])))
+
+
+(defn- move-source
+  "Board 45 slice c: a pending Transfer a detected move produced carries its connection and the snapshots it was found
+  between (`moves` by entry id, from `Detected Move Proposed`), with a link to the connection's Stock differences."
+  {:malli/schema [:=> [:cat :map [:maybe :map]] [:maybe :map]]}
+  [{:keys [sources moves]} entry]
+  (let [entry-id (:entry-id entry)]
+    (when (provenance/move-entry-id? entry-id)
+      (let [connection-id (provenance/move-connection entry-id)
+            connection (or (some #(when (= connection-id (:connection-id %)) %) sources) {:account-label connection-id})
+            {:keys [last-agreeing-run current-run last-agreeing-at current-at]} (get moves entry-id)]
+        (cond-> {:connection-label (sync/connector-label connection) :next-step "detected move" :missing [] :findings []
+                 :href             (str "/operations/marketplace/" (codec/url-encode connection-id) "/differences")}
+          (and last-agreeing-run current-run)
+          (assoc :evidence (i18n/t "Last agreeing snapshot {from} · current snapshot {to}"
+                                   {:from (or last-agreeing-at last-agreeing-run) :to (or current-at current-run)})))))))
 
 
 (defn- decorate
@@ -711,9 +730,10 @@
   aside and no effect only while the next step is filtered. A shortage's proposed correction is highlighted just
   before its operation; once taken it is pending there and is submitted with it."
   {:malli/schema [:=> [:cat :map] :map]}
-  [{:keys [catalogue pending findings accepted currency preview? mode below editing actors imported sources source filters provenance] :as view}]
+  [{:keys [catalogue pending findings accepted currency preview? mode below editing actors imported sources source filters provenance moves] :as view}]
   (let [origin    (by :record-id provenance)
-        ctx       {:catalogue catalogue :currency currency :label (names catalogue) :actors actors :provenance origin}
+        ctx       {:catalogue catalogue :currency currency             :label (names catalogue) :actors actors :provenance origin
+                   :sources   sources   :moves    (by :entry-id moves)}
         preview?  (boolean preview?)
         money?    (and (= "money" mode) (not preview?))
         sources?  (boolean (seq sources))
@@ -740,9 +760,11 @@
                           entry (conj (render {:gid entry-id :entry entry} op))
                           (not entry) (conj (loose-rows ctx op))))))
         blocks    (if-not filtered?
-                    ;; An accepted imported record carries its connection's badge, with no next step (slice 9).
+                    ;; An accepted imported record carries its connection's badge, with no next step (slice 9); a
+                    ;; detected move's Transfer its connection and evidence (slice c).
                     (apply concat (arrange-units (for [g (groups mine accepted below editing preview?)]
                                                    [(render g (or (op-of (:entry-id (:entry g)))
+                                                                  (move-source ctx (:entry g))
                                                                   (some-> (origin (:gid g)) (select-keys [:connection-label]) (assoc :missing [] :findings []))))])
                                                  keys view))
                     (mapcat (fn [{:keys [operations] :as g}]
@@ -847,10 +869,13 @@
                                      (cond (nil? source) {:entries-only? true} (= "imported" source) {} :else {:connection-id source})))
         ;; Read once per table; unreadable, accepted records show without their provenance.
         origin    (when (seq sources)
-                    (:records (web/read-or-nil context :tover.marketplace.operations.model/accepted-imported-operations-and-provenance {})))]
+                    (:records (web/read-or-nil context :tover.marketplace.operations.model/accepted-imported-operations-and-provenance {})))
+        ;; Unreadable, detected Transfers show their connection without their evidence.
+        moves     (when (seq sources)
+                    (:moves (web/read-or-nil context :tover.marketplace.moves.model/pending-move-evidence {})))]
     (when (and work catalogue accepted (or (nil? source) imported))
       (operations-grid (assoc view :catalogue catalogue :pending (:entries work) :findings (:findings work) :accepted accepted :currency currency
-                              :sources sources :source source :imported imported :provenance origin
+                              :sources sources :source source :imported imported :provenance origin :moves moves
                               :actors (into {} (map (juxt (comp str :actor) :actor-label))
                                             (actors/enrich context (map #(hash-map :actor %)
                                                                         (distinct (concat (keep :actor (mapcat :revisions accepted)) (keep :accepted-by origin)))))))))))
