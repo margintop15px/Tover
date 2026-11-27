@@ -142,7 +142,7 @@
     (boolean (and row (not (false? (:aside row)))))))
 
 
-(defn- finished
+(defn finished
   "`no effect`, `set aside` or `history`, decided before the table (roadmap decision 5), else nil. `lines` are the
   operation's resolved lines."
   {:malli/schema [:=> [:cat :map :map [:sequential :map]] [:maybe NextStep]]}

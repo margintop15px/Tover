@@ -229,6 +229,11 @@
 (defevent source-stock-observed {:schema SourceStock})
 
 
+;; Roadmap decision 4: a finishing stock-by-warehouse pass deletes the figures of passes older than the last
+;; `retained-passes` finished ones of its connection.
+(defevent source-stock-pass-expired {:schema [:map [:stock-id [:string {:min 1 :max 2000}]] [:connection-id Ref] [:run-id Ref]]})
+
+
 (defevent external-product-seen {:schema [:map [:external-product-id :string] [:last-observed-at At]]})
 (defevent external-warehouse-seen {:schema [:map [:external-warehouse-id :string] [:last-observed-at At] [:active [:= true]]]})
 (defevent source-operation-seen {:schema [:map [:source-operation-id :string] [:last-observed-at At]]})
@@ -319,8 +324,9 @@
 
 (defmodel source-stock
   {:id     :stock-id :store :catalogue :schema SourceStock :policy ::records/workspace-member
-   :events {::source-stock-observed {:set [:connection-id :run-id :external-product-id :external-warehouse-id :source
-                                           :fulfilment-type :present :reserved :parts :provider-as-of :observed-at]}}})
+   :events {::source-stock-observed     {:set [:connection-id :run-id :external-product-id :external-warehouse-id :source
+                                               :fulfilment-type :present :reserved :parts :provider-as-of :observed-at]}
+            ::source-stock-pass-expired {:delete true}}})
 
 
 (defmodel stock-passes
@@ -677,13 +683,15 @@
            [:pass-rows ::pass-rows (fn [{:keys [run]} input] (assoc (select-keys input [:domain :domain-finished])
                                                                     :connection-id (:connection-id run)))]
            [:named ::named (fn [{:keys [run]} input] (assoc (select-keys input [:domain :domain-finished])
-                                                            :connection-id (:connection-id run) :run-id (:run-id run)))]]
+                                                            :connection-id (:connection-id run) :run-id (:run-id run)))]
+           [:expired ::expired-figures (fn [{:keys [run]} input] (assoc (select-keys input [:domain :domain-finished])
+                                                                        :connection-id (:connection-id run) :run-id (:run-id run)))]]
    :emits #{::source-batch-recorded ::source-domain-traversed ::external-product-observed ::external-product-seen
             ::external-product-aliases-seen ::external-product-bindings-expired ::external-warehouse-expired
             ::external-warehouse-observed ::external-warehouse-seen ::source-operation-observed ::source-operation-seen
             ::attribute-definition-observed ::attribute-definition-seen ::source-stock-observed
-            ::source-domain-unavailable ::provider-throttled}}
-  [{:keys [actor now run connection position existing pass-rows named]}
+            ::source-domain-unavailable ::provider-throttled ::source-stock-pass-expired}}
+  [{:keys [actor now run connection position existing pass-rows named expired]}
    {:keys [run-id domain batch-key next-position domain-finished covered-until observations adapter-version
            resume-not-before domain-unavailable]}]
   (when-not run (fail! :unknown-run "Unknown run"))
@@ -742,7 +750,9 @@
                                        :pass-id          (str run-id "/" domain)}
                                 (= "stock-by-warehouse" domain)
                                 (assoc :asked (observations/write-json
-                                                (spoken-for (or pass-rows {}) (into (set named) (keep (comp :external-product-id :data)) events)))))}))
+                                                (spoken-for (or pass-rows {}) (into (set named) (keep (comp :external-product-id :data)) events)))))})
+                 domain-finished
+                 (into (map #(hash-map :type ::source-stock-pass-expired :data (assoc % :connection-id connection-id))) expired))
        :fx     [[::mark-dirty {:connection-id connection-id}]]})))
 
 
@@ -923,6 +933,33 @@
                  (:present %))
               figures)
         0)))
+
+
+(def retained-passes
+  "Roadmap decision 4: the finished stock-by-warehouse passes of a connection that keep their figures."
+  30)
+
+
+(defmethod runtime/coeffect ::expired-figures
+  ;; The figures the batch finishing a stock-by-warehouse pass deletes: those of the connection's finished passes
+  ;; older than the newest `retained-passes`, counting the finishing one. Only runs that still have figures are read.
+  [_ context {:keys [connection-id run-id domain domain-finished]}]
+  (if (and connection-id domain-finished (= "stock-by-warehouse" domain))
+    (let [older   (drop (dec retained-passes) (remove #(= run-id (:run-id %)) (finished-passes context connection-id domain)))
+          figured (set (values-where context ::source-stock :run-id {:connection-id connection-id :source "warehouse-stock"}))]
+      (vec (for [{expired :run-id} older
+                 :when             (figured expired)
+                 stock-id          (sort (values-where context ::source-stock :stock-id (run-figures connection-id expired)))]
+             {:stock-id stock-id :run-id expired})))
+    []))
+
+
+(defn retained-figures
+  "The warehouse stock figures of every run of the connection that still has them: at most the last
+  `retained-passes` finished passes, and figures of unfinished runs."
+  {:malli/schema [:=> [:cat :map :string] [:vector SourceStock]]}
+  [context connection-id]
+  (rows-where context ::source-stock :stock-id {:connection-id connection-id :source "warehouse-stock"}))
 
 
 ;; Connections due for sync (spans workspaces; read by the scheduler and by the Mapping Guard's sweep)
