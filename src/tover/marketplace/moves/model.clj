@@ -402,7 +402,8 @@
 (def DetectedMove
   "Board `Detected Move Proposed`, one row per key `<connection>|<item>|<last agreeing run>`: the snapshot it was
   last evaluated against, the moves (JSON list of {from to quantity}) and the pending Transfers' entry ids (JSON
-  list, empty when withdrawn)."
+  list, empty when withdrawn). `discarded` (JSON list of moves) is every move a member discarded under this key: none
+  of them is proposed again for it."
   [:map
    [:detected-move-id records/Id]
    [:connection-id Ref]
@@ -411,6 +412,7 @@
    [:current-run Ref]
    [:moves :string]
    [:entries :string]
+   [:discarded {:optional true} :string]
    [:proposed-at At]])
 
 
@@ -419,7 +421,8 @@
 
 (defmodel detected-moves
   {:id     :detected-move-id :store :catalogue :schema DetectedMove :policy ::records/workspace-member
-   :events {::detected-move-proposed {:set [:connection-id :stock-item-id :last-agreeing-run :current-run :moves :entries :proposed-at]}}})
+   :events {::detected-move-proposed {:set [:connection-id :stock-item-id :last-agreeing-run :current-run :moves :entries :discarded
+                                            :proposed-at]}}})
 
 
 (defn move-key
@@ -499,32 +502,48 @@
    [{:line-id "1" :stock-item-id item :quantity quantity}]])
 
 
+(defn- remembered
+  "The moves a member discarded under a row's key: those it recorded, and its listed Transfers now discarded (the
+  connector's own withdrawals unlist theirs)."
+  {:malli/schema [:=> [:cat [:maybe :map] [:map-of :string :map]] [:set Move]]}
+  [row stored]
+  (let [key (:detected-move-id row)]
+    (into (set (read-list (:discarded row)))
+          (filter #(= "discarded" (get-in stored [(move-entry-id key (:from %) (:to %)) :entry :status]))
+                  (let [listed (set (read-list (:entries row)))]
+                    (filter #(listed (move-entry-id key (:from %) (:to %))) (read-list (:moves row))))))))
+
+
 (defn proposal-events
   "Board `Propose Detected Move`: what one item's `evaluation` changes, given the item's `::detected-moves` rows by
   id and the `stored` entries ({entry-id {:entry :lines :changes}}) they and the moves name. Rows of the item under
-  another key are superseded: their unedited pending Transfers are withdrawn. Empty when nothing changes."
+  another key are superseded: their unedited pending Transfers are withdrawn. A move a member discarded under the
+  key is never proposed again for it. Empty when nothing changes."
   {:malli/schema [:=> [:cat :string Evaluation [:map-of :string :map] [:map-of :string :map] :any] [:vector :map]]}
   [connection-id {:keys [stock-item-id current-run last-agreeing moves]} rows stored now]
   (let [actor      (sync/connector-actor connection-id)
         id-now     (move-key connection-id stock-item-id (:run-id last-agreeing))
         withdrawn? #(and (pending? %) (connector? % actor))
-        proposed   (fn [row-key last-run moves ids]
+        proposed   (fn [row-key last-run moves ids discarded]
                      {:type ::detected-move-proposed
-                      :data {:detected-move-id  row-key :connection-id connection-id                 :stock-item-id stock-item-id
-                             :last-agreeing-run last-run :current-run current-run                    :moves         (observations/write-json moves)
-                             :entries           (observations/write-json ids) :proposed-at (str now)}})
+                      :data {:detected-move-id  row-key :connection-id connection-id :stock-item-id stock-item-id
+                             :last-agreeing-run last-run :current-run  current-run   :moves         (observations/write-json moves)
+                             :entries           (observations/write-json ids)
+                             :discarded         (observations/write-json (vec (sort-by (juxt :from :to :quantity) discarded)))
+                             :proposed-at       (str now)}})
         superseded (vec (for [[row-key row] (sort-by first rows)
                               :when         (not= id-now row-key)
                               :let          [gone (filter withdrawn? (keep stored (read-list (:entries row))))]
                               :when         (seq gone)
-                              event         (conj (into [] (mapcat withdrawal) gone) (proposed row-key (:last-agreeing-run row) [] []))]
+                              event         (conj (into [] (mapcat withdrawal) gone) (proposed row-key (:last-agreeing-run row) [] [] (remembered row stored)))]
                           event))
         row        (get rows id-now)
+        discarded  (remembered row stored)
         current    (if (and row (= moves (read-list (:moves row))))
                      []
                      (let [desired (for [{:keys [from to] :as move} moves
                                          :let [id (move-entry-id id-now from to) s (get stored id)]
-                                         :when (not= "accepted" (get-in s [:entry :status]))]
+                                         :when (and (not= "accepted" (get-in s [:entry :status])) (not (discarded move)))]
                                      [id move s])
                            ids     (mapv first desired)
                            saves   (into [] (mapcat (fn [[id move s]]
@@ -537,7 +556,7 @@
                            removed (into [] (mapcat withdrawal)
                                          (filter withdrawn? (keep stored (remove (set ids) (read-list (:entries row))))))
                            changed (into saves removed)]
-                       (if (empty? changed) [] (conj changed (proposed id-now (:run-id last-agreeing) moves ids)))))]
+                       (if (empty? changed) [] (conj changed (proposed id-now (:run-id last-agreeing) moves ids discarded)))))]
     (into superseded current)))
 
 
@@ -572,9 +591,10 @@
 
 
 (def ProposeDetectedMove
-  "Board `Propose Detected Move`: the item and the evidence intake read. The moves are computed again on the facts
-  the command commits on; a newer snapshot, an undecided operation or a changed balance makes the input stale."
-  [:map [:connection-id Ref] [:stock-item-id records/Id] [:last-agreeing-run Ref] [:current-run Ref]])
+  "Board `Propose Detected Move`: the item, the evidence and the moves intake read (part of the processor's command
+  id, so a second change within one snapshot is a new command). The moves are computed again on the facts the
+  command commits on; a newer snapshot, an undecided operation, a changed balance or other moves make it stale."
+  [:map [:connection-id Ref] [:stock-item-id records/Id] [:last-agreeing-run Ref] [:current-run Ref] [:moves [:vector Move]]])
 
 
 (def ^:private messages
@@ -619,13 +639,14 @@
              ::entries/inventory-entry-line-saved ::entries/inventory-entry-line-removed
              ::entries/inventory-entry-line-barcode-added ::entries/inventory-entry-line-barcode-removed
              ::entries/inventory-entry-change-removed ::entries/inventory-entry-change-barcode-removed}}
-  [{:keys [scope actor now facts rows stored]} {:keys [connection-id stock-item-id last-agreeing-run current-run]}]
+  [{:keys [scope actor now facts rows stored]} {:keys [connection-id stock-item-id last-agreeing-run current-run moves]}]
   (when (not= actor (sync/connector-actor connection-id)) (fail! :not-permitted))
   (when (not= "active" (get-in facts [:connection :sync-state])) (fail! :connection-paused))
   (let [evaluation (evaluate facts stock-item-id)]
     (when (or (:refusal evaluation)
               (not= current-run (:current-run evaluation))
-              (not= last-agreeing-run (get-in evaluation [:last-agreeing :run-id])))
+              (not= last-agreeing-run (get-in evaluation [:last-agreeing :run-id]))
+              (not= moves (:moves evaluation)))
       (fail! :stale))
     (let [events (proposal-events connection-id evaluation rows stored now)]
       (if (empty? events)
@@ -652,11 +673,11 @@
             evaluations (vec (remove :refusal (map #(evaluate facts %) (items facts))))
             stored      (stored-entries context (:pending facts)
                                         (into #{} (mapcat #(entry-ids connection-id % (vals (get by-item (:stock-item-id %) {})))) evaluations))]
-        (vec (for [{:keys [stock-item-id current-run last-agreeing] :as evaluation} evaluations
+        (vec (for [{:keys [stock-item-id current-run last-agreeing moves] :as evaluation} evaluations
                    :when (seq (proposal-events connection-id evaluation (get by-item stock-item-id {}) stored now))]
                {:workspace-id (str workspace-id) :connection-id connection-id
                 :input        {:connection-id     connection-id           :stock-item-id stock-item-id
-                               :last-agreeing-run (:run-id last-agreeing) :current-run   current-run}}))))))
+                               :last-agreeing-run (:run-id last-agreeing) :current-run   current-run   :moves moves}}))))))
 
 
 (defmethod runtime/coeffect ::moves-to-propose
@@ -701,10 +722,10 @@
 
 
 (defn proposals
-  "The connection's detected moves with the Transfers they produced: each entry's status, and whether a member edited
-  it. Quantities are the detected ones."
-  {:malli/schema [:=> [:cat :string [:sequential :map] [:map-of :string :map]] [:vector Proposal]]}
-  [connection-id rows stored]
+  "The connection's detected moves with the Transfers they produced: each entry's status, whether a member edited it,
+  and its quantity as saved or accepted (`lines` by entry id; the detected one when it has none)."
+  {:malli/schema [:=> [:cat :string [:sequential :map] [:map-of :string :map] [:map-of :string [:sequential :map]]] [:vector Proposal]]}
+  [connection-id rows stored lines]
   (let [actor (sync/connector-actor connection-id)]
     (vec (for [{:keys [detected-move-id stock-item-id last-agreeing-run current-run moves entries]} (sort-by :detected-move-id rows)
                :let [listed (set (read-list entries))]]
@@ -712,8 +733,17 @@
             :transfers     (vec (for [{:keys [from to quantity]} (read-list moves)
                                       :let [id (move-entry-id detected-move-id from to) s (get stored id)]
                                       :when (and (listed id) s)]
-                                  {:entry-id id :from from :to to :quantity quantity :status (get-in s [:entry :status])
+                                  {:entry-id id :from from :to to :status (get-in s [:entry :status])
+                                   :quantity (or (some #(when (int? (:quantity %)) (:quantity %)) (get lines id)) quantity)
                                    :edited   (not (connector? s actor))}))}))))
+
+
+(defmethod runtime/coeffect ::entry-lines
+  ;; ponytail: scans the workspace's entry lines once per read; by entry id when the store offers it.
+  [_ context {:keys [ids]}]
+  (if (empty? ids)
+    {}
+    (group-by :entry-id (filter (comp ids :entry-id) (records/all-records context ::entries/entry-lines :entry-line-id)))))
 
 
 (defmethod runtime/coeffect ::connection-rows
@@ -726,6 +756,7 @@
    :output [:map [:proposals [:vector Proposal]]]
    :policy ::records/workspace-member
    :cofx   [[:rows ::connection-rows (fn [_ input] (select-keys input [:connection-id]))]
-            [:stored ::stored (fn [{:keys [rows]} _] {:pending [] :ids (set (mapcat #(read-list (:entries %)) rows))})]]}
-  [{:keys [rows stored]} {:keys [connection-id]}]
-  {:proposals (proposals connection-id rows stored)})
+            [:stored ::stored (fn [{:keys [rows]} _] {:pending [] :ids (set (mapcat #(read-list (:entries %)) rows))})]
+            [:lines ::entry-lines (fn [{:keys [stored]} _] {:ids (set (keys stored))})]]}
+  [{:keys [rows stored lines]} {:keys [connection-id]}]
+  {:proposals (proposals connection-id rows stored lines)})

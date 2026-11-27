@@ -643,6 +643,49 @@
             (is (= [["red" 7]] (last (transfer (pending id)))))))))))
 
 
+(deftest discarded-moves-are-remembered-per-key
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx pass! detect! pending moved]} (detection (setup! repo))
+            id (move-id "D1" "ozon-7" "ozon-8")
+            discard (fn [command-id revision]
+                      (runtime/execute! ctx ::entries/discard-inventory-draft
+                                        {:command-id command-id :input {:workspace-id workspace :entry-id id :revision revision}}))]
+        (pass! "D1" (day 21) equal)
+        (testing "Given a member discarded the proposed 5, then the proposed 7"
+          (pass! "D2" (day 22) moved-5)
+          (is (= 1 (detect!)))
+          (discard "discard-5" 1)
+          (pass! "D3" (day 23) {["100" hub-7] 3 ["100" hub-8] 17})
+          (is (= 1 (detect!)))
+          (is (= [["red" 7]] (last (transfer (pending id)))))
+          (discard "discard-7" (:revision (pending id)))
+          (testing "when 5 is seen again under the same key"
+            (pass! "D4" (day 24) moved-5)
+            (testing "then it is not proposed again"
+              (is (= 0 (detect!)))
+              (is (= [] (moved))))))))))
+
+
+(deftest balance-changed-within-the-pass
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [pass! accept! detect! pending moved]} (detection (setup! repo))
+            id (move-id "D1" "ozon-7" "ozon-8")]
+        (pass! "D1" (day 21) equal)
+        (pass! "D2" (day 22) moved-5)
+        (is (= 1 (detect!)))
+        (testing "Given a transfer of 2 accepted later, dated between the snapshots, and no newer pass"
+          (accept! "transfer-2" "transfer" "2026-11-21T12:00:00Z" [["red" "ozon-7" -2] ["red" "ozon-8" 2]])
+          (testing "then the pending Transfer is replaced by the 3 still moved"
+            (is (= 1 (detect!)))
+            (is (= [["red" 3]] (last (transfer (pending id)))))))
+        (testing "and once the rest is accepted the same way, it is withdrawn"
+          (accept! "transfer-3" "transfer" "2026-11-21T13:00:00Z" [["red" "ozon-7" -3] ["red" "ozon-8" 3]])
+          (is (= 1 (detect!)))
+          (is (= [] (moved))))))))
+
+
 (deftest paused-connection
   (support/with-store
     (fn [repo _]
@@ -654,7 +697,7 @@
                            {:connection-id c :sync-state "paused" :reason "manager" :paused-by (str member) :paused-at (day 22)}]])
           (testing "then no move is proposed"
             (is (= 0 (detect!)))
-            (is (= :connection-paused (failure #(propose! "p" {:connection-id c :stock-item-id "red" :last-agreeing-run "D1" :current-run "D2"}))))
+            (is (= :connection-paused (failure #(propose! "p" {:connection-id c :stock-item-id "red" :last-agreeing-run "D1" :current-run "D2" :moves [{:from "ozon-7" :to "ozon-8" :quantity 5}]}))))
             (is (= [] (moved)))))))))
 
 
@@ -662,7 +705,7 @@
   (support/with-store
     (fn [repo _]
       (let [{:keys [system observe! pass! propose! moved]} (detection (setup! repo))
-            input {:connection-id c :stock-item-id "red" :last-agreeing-run "D1" :current-run "D2"}]
+            input {:connection-id c :stock-item-id "red" :last-agreeing-run "D1" :current-run "D2" :moves [{:from "ozon-7" :to "ozon-8" :quantity 5}]}]
         (pass! "D1" (day 21) equal)
         (pass! "D2" (day 22) moved-5)
         (testing "Given a newer snapshot than the one read"
@@ -672,6 +715,9 @@
             (is (= [] (moved)))))
         (testing "as it is with another last agreeing snapshot"
           (is (= :stale (failure #(propose! "p2" (assoc input :current-run "D3" :last-agreeing-run "D2"))))))
+        (testing "or with other moves than those computed on commit"
+          (is (= :stale (failure #(propose! "p5" (assoc input :current-run "D3" :moves [{:from "ozon-7" :to "ozon-8" :quantity 4}])))))
+          (is (= [] (moved))))
         (testing "or with an undecided operation of the item"
           (observe! (operation "P1" 1))
           (is (= :stale (failure #(propose! "p3" (assoc input :current-run "D3"))))))

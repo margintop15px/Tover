@@ -299,21 +299,20 @@ const program = `
             :pass-id "browser-m0/stock-by-warehouse" :asked (observations/write-json ["107"])})
       (figure "browser-m0" d1 "205" 10) (figure "browser-m0" d1 "206" 10)
       (figure "browser-r1" at "205" 5) (figure "browser-r1" at "206" 15)))
+  ;; Move Detection once, before the browser acts, as the processor would after the pass: the detected move becomes a
+  ;; pending Transfer, never accepted here. Once only, so no background write races the specs' own commands.
+  (require '[tover.marketplace.operations.model :as imported] '[tover.marketplace.moves.model :as moves])
+  (let [bel-system (:bel/system services)]
+    (doseq [request (map moves/move-detection (@#'moves/connection-requests bel-system fixtures/workspace-id "browser-ozon" (java.time.Instant/now)))]
+      (runtime/execute! (merge (:scope request) {:bel/system bel-system :bel/service ::moves/move-detection :user-id (:actor request)})
+                        (:id request)
+                        {:command-id (runtime/processor-command-id ::moves/move-detection request) :input (:input request)})))
   ;; This server runs no processors (no journal worker); propose the connection's operations each second as
   ;; Marketplace Operation Intake would. Local only: it reads this store and calls no marketplace.
-  (require '[tover.marketplace.operations.model :as imported] '[tover.marketplace.moves.model :as moves])
   (future
-    (let [bel-system (:bel/system services) requests @#'imported/connection-requests detect @#'moves/connection-requests]
+    (let [bel-system (:bel/system services) requests @#'imported/connection-requests]
       (loop []
         (Thread/sleep 1000)
-        ;; Move Detection likewise: a detected move becomes pending Transfers, never accepted here.
-        (try
-          (doseq [request (map moves/move-detection (detect bel-system fixtures/workspace-id "browser-ozon" (java.time.Instant/now)))]
-            (try (runtime/execute! (merge (:scope request) {:bel/system bel-system :bel/service ::moves/move-detection :user-id (:actor request)})
-                                   (:id request)
-                                   {:command-id (runtime/processor-command-id ::moves/move-detection request) :input (:input request)})
-                 (catch Exception _ nil)))
-          (catch Exception _ nil))
         (try
           (doseq [request (map imported/marketplace-operation-intake
                                (requests bel-system fixtures/workspace-id "browser-ozon" (java.time.Instant/now)))]
