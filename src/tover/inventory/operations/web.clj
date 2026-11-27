@@ -419,7 +419,8 @@
                      (and entry op (not struck?)) (#(compared % (render base) shared (cond-> fixed (not= "payment" kind) inc))))
         do-action  (fn [type label icon & [more]] (merge source {:type type :kind kind :group gid :label label :icon icon} more))
         actions    (cond-> []
-                     op (conj {:type "item-history" :id gid :row (:id (peek rows)) :label (i18n/t "Revisions")})
+                     op (conj {:type  "item-history" :id gid :row (:id (peek rows))
+                               :label (i18n/t (if (contains? (:provenance ctx) gid) "Revisions and source" "Revisions"))})
                      (and preview? entry) (conj (do-action "operation-discard" (i18n/t "Discard pending changes") "🗑"))
                      (not (or preview? cancelled?)) (conj {:type "stock-edit" :id gid :label (i18n/t "Edit") :icon "✎"})
                      (not preview?) (conj (do-action "operation-copy" (i18n/t "Copy") "⧉" {:source (if (and entry (not struck?)) entry-id (:record-revision-id op))}))
@@ -503,6 +504,29 @@
 
 
 ;; Imported operations (board chapter 45 slice 5)
+
+
+(defn- provenance-details
+  "Board 45 slice 9 `Imported Operation Details`: what the Revisions panel of an accepted imported record shows,
+  read-only and translated: its source, source operation and revision, how and by whom it was accepted, the
+  mapping each line used, later source revisions and the pending proposal."
+  {:malli/schema [:=> [:cat :map :map] :map]}
+  [{:keys [label actors]} {:keys [source-operation-id connection-id connection-label revision accepted-by automatic edited accepted-at
+                                  mappings later-revisions pending-proposal]}]
+  (let [prefix (str connection-id ":")]
+    (cond-> {:source     connection-label
+             :operation  (if (str/starts-with? source-operation-id prefix) (subs source-operation-id (count prefix)) source-operation-id)
+             :revision   revision
+             :how        (i18n/t (cond automatic "Accepted automatically" edited "Edited, then accepted" :else "Accepted as proposed"))
+             :acceptedBy (get actors accepted-by (i18n/t "Unavailable user"))
+             :acceptedAt accepted-at
+             :lines      (vec (for [{:keys [listing external-product-id stock-item-id mapping-revision]} mappings]
+                                (i18n/t "{listing} → {item} · mapping revision {revision}"
+                                        {:listing  (or listing external-product-id) :item (get-in label [:item stock-item-id] (or stock-item-id ""))
+                                         :revision (str mapping-revision)})))
+             :later      (vec (for [{:keys [revision observed-at status]} later-revisions]
+                                (cond-> {:revision revision :observedAt (or observed-at "")} status (assoc :status status))))}
+      pending-proposal (assoc :pending (i18n/t (if (= "cancellation" (:kind pending-proposal)) "Cancellation pending" "Amendment pending"))))))
 
 
 (def ^:private extra-columns
@@ -687,8 +711,9 @@
   aside and no effect only while the next step is filtered. A shortage's proposed correction is highlighted just
   before its operation; once taken it is pending there and is submitted with it."
   {:malli/schema [:=> [:cat :map] :map]}
-  [{:keys [catalogue pending findings accepted currency preview? mode below editing actors imported sources source filters] :as view}]
-  (let [ctx       {:catalogue catalogue :currency currency :label (names catalogue) :actors actors}
+  [{:keys [catalogue pending findings accepted currency preview? mode below editing actors imported sources source filters provenance] :as view}]
+  (let [origin    (by :record-id provenance)
+        ctx       {:catalogue catalogue :currency currency :label (names catalogue) :actors actors :provenance origin}
         preview?  (boolean preview?)
         money?    (and (= "money" mode) (not preview?))
         sources?  (boolean (seq sources))
@@ -715,7 +740,11 @@
                           entry (conj (render {:gid entry-id :entry entry} op))
                           (not entry) (conj (loose-rows ctx op))))))
         blocks    (if-not filtered?
-                    (apply concat (arrange-units (for [g (groups mine accepted below editing preview?)] [(render g (op-of (:entry-id (:entry g))))]) keys view))
+                    ;; An accepted imported record carries its connection's badge, with no next step (slice 9).
+                    (apply concat (arrange-units (for [g (groups mine accepted below editing preview?)]
+                                                   [(render g (or (op-of (:entry-id (:entry g)))
+                                                                  (some-> (origin (:gid g)) (select-keys [:connection-label]) (assoc :missing [] :findings []))))])
+                                                 keys view))
                     (mapcat (fn [{:keys [operations] :as g}]
                               (let [kept (arrange-units (keep unit (filter (partial in-source? source) operations)) keys view)]
                                 (when (seq kept) (cons (header-rows g (count kept) (count keys) aside) (apply concat kept)))))
@@ -757,6 +786,7 @@
              :layoutScope "operations"
              :pending     (vec (for [id listed] {:entry-id id :revision (revision id) :rowId id}))
              :revisions   (into {} (for [op accepted] [(:record-id op) (revisions ctx op)]))
+             :provenance  (into {} (for [op accepted :let [row (origin (:record-id op))] :when row] [(:record-id op) (provenance-details ctx row)]))
              :columns     (mapv (fn [k] (cond-> {:key k :label (i18n/t (if (and money? (= "quantity" k)) "Amount" (column-labels k))) :width (column-widths k)}
                                           (not (#{"select" "actions"} k)) (assoc :sortKey k :filterKey k)
                                           (#{"kind" "item"} k) (assoc :required true)
@@ -814,12 +844,16 @@
         source    (source-of source sources)
         imported  (when (seq sources)
                     (web/read-or-nil context ::review/imported-operations-needing-review
-                                     (cond (nil? source) {:entries-only? true} (= "imported" source) {} :else {:connection-id source})))]
+                                     (cond (nil? source) {:entries-only? true} (= "imported" source) {} :else {:connection-id source})))
+        ;; Read once per table; unreadable, accepted records show without their provenance.
+        origin    (when (seq sources)
+                    (:records (web/read-or-nil context :tover.marketplace.operations.model/accepted-imported-operations-and-provenance {})))]
     (when (and work catalogue accepted (or (nil? source) imported))
       (operations-grid (assoc view :catalogue catalogue :pending (:entries work) :findings (:findings work) :accepted accepted :currency currency
-                              :sources sources :source source :imported imported
+                              :sources sources :source source :imported imported :provenance origin
                               :actors (into {} (map (juxt (comp str :actor) :actor-label))
-                                            (actors/enrich context (map #(hash-map :actor %) (distinct (keep :actor (mapcat :revisions accepted)))))))))))
+                                            (actors/enrich context (map #(hash-map :actor %)
+                                                                        (distinct (concat (keep :actor (mapcat :revisions accepted)) (keep :accepted-by origin)))))))))))
 
 
 (defview table

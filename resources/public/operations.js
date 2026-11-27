@@ -209,7 +209,7 @@ class OperationsWorkbench extends InventoryWorkbench {
   showRevisions() {
     const revisions = this.model.revisions[this.revisionsOf];
     if (!revisions) return false;
-    this.revisionsNode.replaceChildren(element('table', { className: 'stock-history-rows operations-revisions' },
+    this.revisionsNode.replaceChildren(...this.provenanceNodes(this.model.provenance?.[this.revisionsOf]), element('table',{ className: 'stock-history-rows operations-revisions' },
       element('thead', {}, element('tr', {}, ...['Revision', 'Recorded at', 'Member', 'Occurred at', 'Facts', 'Reason'].map(label => element('th', { textContent: t(label) })))),
       element('tbody', {}, ...revisions.map(revision => element('tr', {},
         element('td', { textContent: `${revision.revision}${revision.cancelled ? ` ${t('(cancelled)')}` : ''}` }),
@@ -219,6 +219,22 @@ class OperationsWorkbench extends InventoryWorkbench {
         element('td', {}, ...revision.facts.map(fact => element('div', { textContent: fact }))),
         element('td', { textContent: revision.reason }))))));
     return true;
+  }
+  // Board 45 slice 9 · Imported Operation Details: an accepted imported record's provenance, read-only, above its
+  // revisions. The server sends it translated and without buyer data.
+  provenanceNodes(details) {
+    if (!details) return [];
+    const later = details.later.length
+      ? details.later.map(({ revision, observedAt, status }) => [revision, observedAt && formatDate(observedAt), status].filter(Boolean).join(' · '))
+      : [t('None')];
+    const rows = [
+      ['Source', [details.source]], ['Source operation', [details.operation]], ['Source revision', [String(details.revision)]],
+      ['Accepted by', [`${details.acceptedBy} · ${details.how}`]], ['Accepted at', [formatDate(details.acceptedAt)]],
+      ['Mappings', details.lines.length ? details.lines : [t('None')]], ['Later source revisions', later],
+      ['Pending proposal', [details.pending ?? t('None')]],
+    ];
+    return [element('dl', { className: 'operations-provenance' },
+      ...rows.flatMap(([label, values]) => [element('dt', { textContent: t(label) }), element('dd', {}, ...values.map(value => element('div', { textContent: value })))]))];
   }
   set itemsResponse(response) {
     if (!this.grid || !response || !this.fresh(response)) return;

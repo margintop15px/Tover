@@ -219,7 +219,32 @@ const program = `
               :payload-hash (apply str (repeat 64 "d")) :adapter-version "test" :observed-at at :last-observed-at at
               :source-revision-id (str id "#1") :facts (observations/write-json {}) :kind "fbo-posting" :status "delivered"
               :terminal true :occurred-at "2026-11-21T09:00:00Z" :from-warehouse hub :complete true
-              :lines (observations/write-json [{:line-key "1" :identifiers [{:type "sku" :value "106"}] :quantity "10"}])}))))
+              :lines (observations/write-json [{:line-key "1" :identifiers [{:type "sku" :value "106"}] :quantity "10"}])})))
+    ;; Board 45 slice 9: a sale of one whisk from a shelf outside the connection's warehouses, accepted automatically
+    ;; at revision 1 and observed again at revision 2, so the record shows its provenance and a later revision.
+    (let [id "browser-ozon:fbs-posting:K1" sale (str "import:" id)
+          sold (fn [n status] {:source-operation-id id :entity-id id :connection-id "browser-ozon" :source-id "K1" :revision n
+                               :payload-hash (apply str (repeat 64 (str n))) :adapter-version "test" :observed-at at :last-observed-at at
+                               :source-revision-id (str id "#" n) :facts (observations/write-json {:status status}) :kind "fbs-posting" :status status
+                               :terminal true :occurred-at "2026-11-03T09:00:00Z" :complete true
+                               :lines (observations/write-json [{:line-key "1" :identifiers [{:type "sku" :value "106"}] :quantity "1"}])})]
+      (put :tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "browser-shelf" :name "Shelf" :status "active" :revision 1})
+      (doseq [[record kind n occurred line] [["browser-shelf-opening" "opening" 0 "2026-11-02T00:00:00Z" {:quantity-change 5 :unit-cost "100.00"}]
+                                             [sale "sale" 1 "2026-11-03T09:00:00Z" {:quantity-change -1 :unit-price "250.00"}]]
+              :let [rid (str record "#1") acceptance (str "browser-acc-" record)]]
+        (put :tover.inventory.acceptance.model/inventory-changes-accepted {:acceptance-id acceptance :actor fixtures/owner-id :recorded-at (java.time.Instant/parse at) :record-count 1})
+        (put :tover.inventory.acceptance.model/inventory-record-accepted
+             {:record-revision-id rid :record-id record :revision 1 :acceptance-id acceptance :kind kind
+              :occurred-at (java.time.Instant/parse occurred) :sequence n :cancelled false})
+        (put :tover.inventory.acceptance.model/inventory-record-line-accepted
+             (merge {:record-line-id (str rid "/0") :record-revision-id rid :position 0 :stock-item-id "browser-item-6" :warehouse-id "browser-shelf"} line)))
+      (put :tover.marketplace.sync.model/source-operation-observed (sold 1 "delivered"))
+      (put :tover.marketplace.sync.model/source-operation-observed (sold 2 "customer_received"))
+      (put :tover.marketplace.provenance/source-operation-accepted
+           {:source-operation-id id :connection-id "browser-ozon" :revision 1 :reflected-revision 1 :record-id sale
+            :accepted-by (str (tover.marketplace.sync.model/connector-actor "browser-ozon")) :edited false
+            :mappings-used (observations/write-json [{:line-key "1" :external-product-id "browser-ozon:106" :mapping-revision 1}])
+            :accepted-at at})))
   ;; This server runs no processors (no journal worker); propose the connection's operations each second as
   ;; Marketplace Operation Intake would. Local only: it reads this store and calls no marketplace.
   (require '[tover.marketplace.operations.model :as imported])

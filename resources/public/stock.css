@@ -244,6 +244,9 @@
 inventory-grid .inventory-cell-placeholder{color:var(--iw-muted);font-weight:400}
 #operations-grid .jss_worksheet>tbody>tr.operations-cancelled>td .inventory-cell-value{color:var(--iw-muted);text-decoration:line-through}
 #operations-grid .stock-history-rows.operations-revisions td:nth-child(n){text-align:left}
+#operations-grid .operations-provenance{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:0 0 12px;font-size:11px;line-height:1.35}
+#operations-grid .operations-provenance dt{color:var(--iw-muted);font-weight:500}
+#operations-grid .operations-provenance dd{margin:0}
 .operations-add{min-height:32px}
 
 #stock-grid .stock-timeline{min-width:640px;max-width:1100px;border:1px solid var(--iw-line);border-bottom:0}

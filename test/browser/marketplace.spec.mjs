@@ -276,3 +276,25 @@ test('in Preview the proposed correction fits its columns and Set aside waits fo
   await expect(setAside).toBeHidden();
   expect(errors).toEqual([]);
 });
+
+// Board 45 slice 9 · an accepted imported record carries its source badge on the Operations page, and its Revisions
+// panel shows the provenance: source operation and revision, how it was accepted, the mapping and later revisions.
+test('an accepted imported record shows its badge and its provenance in the Revisions panel', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const sheet = page.locator('#operations-grid');
+  const record = 'import:browser-ozon:fbs-posting:K1';
+  await signIn(page);
+  await page.goto('/operations');
+  await expect.poll(() => sheet.evaluate(node => !!node.worksheet)).toBe(true);
+  const rowId = await page.locator('operations-workbench').evaluate((node, id) => node.model.rows.find(row => row.groupId === id)?.id, record);
+  expect(rowId).toBeTruthy();
+  await expect(sheet.locator(`td[data-row-id="${rowId}"][data-column-key="source"]`)).toHaveText('Ozon · Browser shop');
+  await sheet.locator(`td[data-row-id="${rowId}"]`).getByRole('button', { name: 'Revisions and source' }).click();
+  const panel = page.locator('#history-panel .operations-provenance');
+  await expect(panel).toContainText('fbs-posting:K1');
+  await expect(panel).toContainText('Accepted automatically');
+  await expect(panel).toContainText('Whisk (Ozon) → Whisk · mapping revision 1');
+  await expect(panel).toContainText('customer_received');
+  await expect(page.locator('#history-panel tbody tr')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});

@@ -682,3 +682,103 @@
   {:type  :command :id ::accept-imported-operation-automatically :scope {:workspace-id (parse-uuid workspace-id)}
    :actor (sync/connector-actor connection-id)
    :input input})
+
+
+;; Slice 9 · Read accepted imported operations and provenance
+
+
+(def ProvenanceRow
+  "Board `Accepted Imported Operations and Provenance`: an accepted record that came from a connection. `revision` is
+  the source revision the record reflects (the accepted one, or the last accepted correction's); `automatic` when
+  the connector accepted it; `mappings` the product mapping revision each line used; `later-revisions` the source
+  revisions observed since, and `pending-proposal` the correction waiting for a member. Never buyer data: a later
+  revision says only its number, when it was observed and its status."
+  [:map
+   [:record-id :string] [:source-operation-id :string] [:connection-id :string] [:connection-label :string]
+   [:revision :int] [:accepted-by :string] [:automatic :boolean] [:edited :boolean] [:accepted-at :string]
+   [:mappings [:vector [:map [:line-key {:optional true} :string] [:external-product-id :string] [:listing {:optional true} :string]
+                        [:mapping-revision :int] [:stock-item-id {:optional true} :string]]]]
+   [:later-revisions [:vector [:map [:revision :int] [:observed-at {:optional true} :string] [:status {:optional true} :string]]]]
+   [:pending-proposal {:optional true}
+    [:map [:entry-id :string] [:kind [:enum "amendment" "cancellation"]] [:revision :int] [:source-conflict :boolean]]]])
+
+
+(defn- reflected
+  "The source revision a record reflects: its acceptance's, or that of a correction accepted since."
+  {:malli/schema [:=> [:cat :map [:maybe :map]] :int]}
+  [acceptance correction]
+  (max (provenance/reflected-revision acceptance) (or (:accepted-revision correction) 0)))
+
+
+(defmethod runtime/coeffect ::provenance-facts
+  ;; Every source acceptance once, then each related row by id: operations, corrections and their entries, the
+  ;; mapping revisions used, the listings they name and the later source revisions. Never a load per record.
+  [_ context {:keys [connection-id]}]
+  (let [all         (records/all-records context ::provenance/source-acceptances :source-operation-id)
+        operations  (sync/load-rows context ::sync/source-operations (mapv :source-operation-id all))
+        connection  #(or (:connection-id %) (get-in operations [(:source-operation-id %) :connection-id]))
+        acceptances (filterv #(and (connection %) (or (nil? connection-id) (= connection-id (connection %)))) all)
+        corrections (sync/load-rows context ::provenance/source-corrections (mapv :record-id acceptances))
+        used        (into {} (map (juxt :source-operation-id (comp vec observations/read-json :mappings-used))) acceptances)
+        mapping-ids (vec (for [rows  (vals used) {:keys [external-product-id mapping-revision]} rows
+                               :when (and external-product-id mapping-revision)]
+                           (products/revision-id external-product-id mapping-revision)))
+        later-ids   (vec (for [{:keys [source-operation-id record-id] :as a} acceptances
+                               r (range (inc (reflected a (get corrections record-id)))
+                                        (inc (get-in operations [source-operation-id :revision] 0)))]
+                           (str source-operation-id "#" r)))]
+    {:acceptances acceptances
+     :connection  (into {} (map (juxt :source-operation-id connection)) acceptances)
+     :connections (into {} (for [id (distinct (map connection acceptances))]
+                             [id (or (runtime/coeffect ::sync/connection context {:connection-id id}) {:account-label id})]))
+     :operations  operations
+     :corrections corrections
+     :entries     (sync/load-rows context ::entries/entries (vec (keep :entry-id (vals corrections))))
+     :used        used
+     :mappings    (sync/load-rows context ::products/product-mapping-revisions mapping-ids)
+     :listings    (runtime/coeffect ::products/listings-by-id context {:ids (distinct (keep :external-product-id (mapcat val used)))})
+     :revisions   (sync/load-rows context ::sync/source-revisions later-ids)}))
+
+
+(defn provenance-rows
+  "The rows of `Accepted Imported Operations and Provenance` from `::provenance-facts`, newest acceptance first."
+  {:malli/schema [:=> [:cat :map] [:vector ProvenanceRow]]}
+  [{:keys [acceptances connection connections operations corrections entries used mappings listings revisions]}]
+  (->> acceptances
+       (map (fn [{:keys [source-operation-id record-id accepted-by edited accepted-at] :as acceptance}]
+              (let [connection-id (connection source-operation-id)
+                    correction    (get corrections record-id)
+                    revision      (reflected acceptance correction)
+                    pending?      (and (:kind correction) (= "pending" (get-in entries [(:entry-id correction) :status])))]
+                (cond-> {:record-id        record-id :source-operation-id source-operation-id :connection-id connection-id
+                         :connection-label (sync/connector-label (get connections connection-id))
+                         :revision         revision :accepted-by          (str accepted-by)
+                         :automatic        (= (str (sync/connector-actor connection-id)) (str accepted-by))
+                         :edited           (boolean edited) :accepted-at  (str accepted-at)
+                         :mappings         (vec (for [{:keys [line-key external-product-id mapping-revision]} (get used source-operation-id)
+                                                      :when (and external-product-id mapping-revision)
+                                                      :let [m (get mappings (products/revision-id external-product-id mapping-revision))
+                                                            n (some-> (get-in listings [external-product-id :name]) str/trim not-empty)]]
+                                                  (cond-> {:external-product-id external-product-id :mapping-revision mapping-revision}
+                                                    line-key (assoc :line-key (str line-key))
+                                                    n (assoc :listing n)
+                                                    (:stock-item-id m) (assoc :stock-item-id (:stock-item-id m)))))
+                         :later-revisions  (vec (for [r    (range (inc revision) (inc (get-in operations [source-operation-id :revision] 0)))
+                                                      :let [row (get revisions (str source-operation-id "#" r))
+                                                            status (some-> row :facts observations/read-json :status)]]
+                                                  (cond-> {:revision r}
+                                                    (:observed-at row) (assoc :observed-at (str (:observed-at row)))
+                                                    (string? status) (assoc :status status))))}
+                  pending? (assoc :pending-proposal {:entry-id        (:entry-id correction)                  :kind (:kind correction) :revision (:revision correction)
+                                                     :source-conflict (boolean (:source-conflict correction))})))))
+       (sort-by (juxt :accepted-at :record-id) #(compare %2 %1))
+       vec))
+
+
+(defreadmodel accepted-imported-operations-and-provenance
+  {:input  [:map [:connection-id {:optional true} :string]]
+   :output [:map [:records [:vector ProvenanceRow]]]
+   :policy ::records/workspace-member
+   :cofx   [[:facts ::provenance-facts (fn [_ input] (select-keys input [:connection-id]))]]}
+  [{:keys [facts]} _]
+  {:records (provenance-rows facts)})
