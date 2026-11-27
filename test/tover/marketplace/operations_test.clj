@@ -1086,33 +1086,85 @@
           (is (= 0 (automatic!))))))))
 
 
+(deftest remapped-product-makes-the-entry-stale
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! automatic! accept-auto! pending balance source-id entry-of]} (setup! repo)]
+        (observe! (operation "P1" 1))
+        (intake!)
+        (testing "Given a member moves listing 100 from red to blue before intake replaces the entry"
+          (execute! ctx ::products/change-product-mapping "remap"
+                    {:external-product-id (str c ":100") :mapping-revision 1 :stock-item-id "blue" :item-revision 1})
+          (is (= ["red"] (map :stock-item-id (:lines (pending (entry-of "P1"))))))
+          (testing "then the entry on red is stale, and automatic acceptance accepts nothing"
+            (is (= :stale (failure #(accept-auto! "auto" (auto-input (source-id "P1"))))))
+            (automatic!)
+            (is (empty? (accepted-sources ctx)))
+            (is (= [10 10] [(balance "red" "home") (balance "blue" "home")])))
+          (testing "and once intake proposes it again on blue, blue is sold"
+            (is (= 1 (intake!)))
+            (is (= 1 (automatic!)))
+            (is (= [10 7] [(balance "red" "home") (balance "blue" "home")]))))))))
+
+
+(deftest remapped-warehouse-makes-the-entry-stale
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! automatic! accept-auto! pending balance source-id entry-of]} (setup! repo)]
+        (observe! (operation "P1" 1))
+        (seed-all! ctx (into [[:tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "back" :name "Back room" :status "active" :revision 1}]]
+                             (opening "red" "back")))
+        (intake!)
+        (testing "Given a member moves the seller warehouse from Home to Back room before intake replaces the entry"
+          (execute! ctx ::warehouses/change-warehouse-mapping "remap" {:external-warehouse-id seller :mapping-revision 1 :warehouse-id "back"})
+          (is (= ["home"] (map :warehouse-id (:lines (pending (entry-of "P1"))))))
+          (testing "then the entry at Home is stale, and automatic acceptance accepts nothing"
+            (is (= :stale (failure #(accept-auto! "auto" (auto-input (source-id "P1"))))))
+            (automatic!)
+            (is (empty? (accepted-sources ctx)))
+            (is (= [10 10] [(balance "red" "home") (balance "red" "back")])))
+          (testing "and once intake proposes it again in Back room, Back room is sold from"
+            (is (= 1 (intake!)))
+            (is (= 1 (automatic!)))
+            (is (= [10 7] [(balance "red" "home") (balance "red" "back")]))))))))
+
+
+(defn- sync-to-an-empty-queue!
+  "12 listings matched to items with a cutover of 100 at Home and `n` postings of 1, round-robin over them; intake
+  and automatic acceptance run until both send nothing. Returns `[balance-of-the-first-item rounds]`."
+  {:malli/schema [:=> [:cat :any :int] [:tuple :int :int]]}
+  [repo n]
+  (let [{:keys [ctx intake! automatic! balance]} (setup! repo)
+        skus (mapv #(str (+ 900 %)) (range 12))
+        item #(str "item-" %)
+        quiet (fn [] (loop [rounds 1] (if (and (zero? (intake!)) (zero? (automatic!))) rounds (recur (inc rounds)))))]
+    (seed-all! ctx (concat (for [sku skus]
+                             [:tover.inventory.stock-items.model/stock-item-registered
+                              {:stock-item-id (item sku) :product-id "mug" :variant-label sku :unit "pcs" :condition "regular"
+                               :status        "active"   :revision   1}])
+                           (for [sku skus] [::sync/external-product-observed (listing sku (str "Listing " sku))])
+                           (mapcat #(update-in (opening (item %) "home") [2 1] assoc :quantity-change 100) skus)))
+    (execute! ctx ::products/confirm-product-mapping "match"
+              {:rows (mapv #(hash-map :external-product-id (str c ":" %) :listing-revision 1 :stock-item-id (item %) :item-revision 1) skus)})
+    (seed-all! ctx (for [i (range n)]
+                     [::sync/source-operation-observed
+                      (operation (str "U" i) 1 :lines (lines (nth skus (mod i 12)) "1")
+                                 :occurred-at (str (.plusSeconds (java.time.Instant/parse "2026-11-10T00:00:00Z") (* 60 i))))]))
+    (let [rounds (quiet)]
+      (is (= n (count (records-of ctx ::provenance/source-acceptances :source-operation-id))) "every sale is accepted once")
+      (is (empty? (filter (comp provenance/import-entry-id? :entry-id) (runtime/coeffect ::entries/pending ctx {}))))
+      [(balance (item (first skus)) "home") rounds])))
+
+
 (deftest first-sync-to-an-empty-queue
   (support/with-store
     (fn [repo _]
-      (let [{:keys [ctx intake! automatic! balance]} (setup! repo)
-            skus (mapv #(str (+ 900 %)) (range 12))
-            item #(str "item-" %)
-            quiet (fn [] (loop [rounds 1] (if (and (zero? (intake!)) (zero? (automatic!))) rounds (recur (inc rounds)))))]
-        (testing "Given 12 listings matched to items with a cutover of 100 at Home, and 340 postings of 1"
-          (seed-all! ctx (concat (for [sku skus]
-                                   [:tover.inventory.stock-items.model/stock-item-registered
-                                    {:stock-item-id (item sku) :product-id "mug" :variant-label sku :unit "pcs" :condition "regular"
-                                     :status        "active"   :revision   1}])
-                                 (for [sku skus] [::sync/external-product-observed (listing sku (str "Listing " sku))])
-                                 (mapcat #(update-in (opening (item %) "home") [2 1] assoc :quantity-change 100) skus)))
-          (execute! ctx ::products/confirm-product-mapping "match"
-                    {:rows (mapv #(hash-map :external-product-id (str c ":" %) :listing-revision 1 :stock-item-id (item %) :item-revision 1) skus)})
-          (seed-all! ctx (for [n (range 340)]
-                           [::sync/source-operation-observed
-                            (operation (str "U" n) 1 :lines (lines (nth skus (mod n 12)) "1")
-                                       :occurred-at (str (.plusSeconds (java.time.Instant/parse "2026-11-10T00:00:00Z") (* 60 n))))]))
-          (testing "when intake and automatic acceptance run until nothing is left"
-            (let [started (System/nanoTime)
-                  rounds  (quiet)
-                  elapsed (quot (- (System/nanoTime) started) 1000000)]
-              (println "first-sync-to-an-empty-queue:" elapsed "ms," rounds "rounds")
-              (testing "then every sale is accepted once, as the connector"
-                (is (= 340 (count (records-of ctx ::provenance/source-acceptances :source-operation-id))))
-                (is (empty? (filter (comp provenance/import-entry-id? :entry-id) (runtime/coeffect ::entries/pending ctx {}))))
-                (is (= (- 100 29) (balance (item (first skus)) "home")) "29 of the 340 sell listing 900")
-                (is (= (- 100 28) (balance (item (peek skus)) "home")))))))))))
+      (testing "36 postings over 12 matched listings with a cutover: all accepted as the connector, in three rounds"
+        (is (= [(- 100 3) 3] (sync-to-an-empty-queue! repo 36)))))))
+
+
+(deftest ^:perf first-sync-of-340-operations
+  ;; Plan 4 Task 5 Step 5's timing run; skipped by the default suite (`tests.edn`), run with `--focus-meta :perf`.
+  (support/with-store
+    (fn [repo _]
+      (is (= [(- 100 29) 3] (sync-to-an-empty-queue! repo 340)) "29 of the 340 sell listing 900"))))

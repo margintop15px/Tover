@@ -584,8 +584,9 @@
 
 (defn automatic-acceptance-plan
   "The events and effects of accepting one eligible proposal as the connector, decided on `facts` loaded inside
-  the commit (`load-facts`, with its `::provenance/facts`) at `now`. Refused when unknown, not the actor's
-  connection, accepted already, stale (the operation or its entry changed, or the entry is gone), not eligible
+  the commit (`command-facts`, with the entry's `::provenance/facts`) at `now`. Refused when unknown, not the actor's
+  connection, accepted already, stale (the operation or its entry changed, the entry is gone, or intake would
+  propose it differently now, as after a changed product or warehouse mapping), not eligible
   (naming the failing conditions), when it would register or change a catalogue record, or as `Accept Reviewed
   Inventory Changes` refuses it."
   {:malli/schema [:=> [:cat :map [:maybe :map] steps/Facts AcceptImportedOperationAutomatically :uuid inst?]
@@ -599,6 +600,10 @@
     (when (or (not= revision (:revision operation)) (not= revision (get-in facts [:imports source-operation-id :revision]))
               (not= entry-id (provenance/import-entry-id source-operation-id)) (not= entry-revision (:revision entry)))
       (fail! :stale))
+    ;; The entry must be what intake proposes under the current facts: a remap since intake saved it would otherwise
+    ;; book the sale on the item or warehouse a member just moved it from.
+    (let [{:keys [propose withdraw]} (assess facts operation {:entry entry :lines (:lines entry)} now)]
+      (when (or (seq propose) withdraw) (fail! :stale)))
     (let [{:keys [next-step failing-conditions]} (steps/classify facts operation)]
       (when-not (= "automatic" next-step)
         (records/fail! :not-eligible (messages :not-eligible) {:conditions failing-conditions :next-step next-step})))

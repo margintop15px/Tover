@@ -2,4 +2,5 @@
 {:plugins              [:hooks]
  :kaocha.hooks/pre-run  [kaocha-hooks/start-instrumentation]
  :kaocha.hooks/post-run [kaocha-hooks/stop-instrumentation]
- :tests                [{:id :unit}]}
+ ;; `^:perf` timing runs are skipped by default; `clojure -M:dev:test --profile :perf --focus-meta :perf` runs them.
+ :tests                [{:id :unit :skip-meta #profile {:perf [] :default [:perf]}}]}
