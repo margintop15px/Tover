@@ -151,7 +151,8 @@
 (defn operation-facts
   "Everything `assess` reads for one source operation, loaded by id beside `shared` (`connection-facts`): its
   acceptance and correction row, the record's latest revision, the operation at the revision the record reflects,
-  the proposals of both resolved with the accepted mappings, and the stored proposals."
+  the proposals of both resolved with the accepted mappings, and the stored proposals. When the latest proposal was
+  discarded, `discarded` is what the source stated at the revision it was saved from."
   {:malli/schema [:=> [:cat :map :map [:maybe :map]] :map]}
   [context shared {:keys [source-operation-id connection-id] :as operation}]
   (let [acceptance (when operation (get (sync/load-rows context ::provenance/source-acceptances [source-operation-id]) source-operation-id))
@@ -159,18 +160,24 @@
         row        (when record-id (get (sync/load-rows context ::provenance/source-corrections [record-id]) record-id))
         latest     (when record-id (entries/latest-revision (:history shared) (acceptance/record-revision-id record-id 1)))
         reflected  (when acceptance (or (:accepted-revision row) (provenance/reflected-revision acceptance)))
-        earlier    (when (and reflected (not= reflected (:revision operation)))
-                     (get (sync/load-rows context ::sync/source-revisions [(str source-operation-id "#" reflected)])
-                          (str source-operation-id "#" reflected)))
-        accepted   (cond (nil? reflected) nil
-                         (= reflected (:revision operation)) operation
-                         earlier (observations/revision-operation (:external-warehouses shared) connection-id operation earlier))
-        related    (sync/load-rows context ::sync/source-operations (vec (distinct (keep :related-operation [operation accepted]))))
+        at         (fn [revision]
+                     (if (= revision (:revision operation))
+                       operation
+                       (let [id (str source-operation-id "#" revision)]
+                         (some->> (get (sync/load-rows context ::sync/source-revisions [id]) id)
+                                  (observations/revision-operation (:external-warehouses shared) connection-id operation)))))
+        accepted   (when reflected (at reflected))
+        desired-id (when latest (provenance/correction-entry-id source-operation-id (:revision latest)))
+        desired    (stored context desired-id)
+        ;; A member's discard (a withdrawal clears the row's kind) of the proposal at the record's latest revision.
+        discarded  (when (and (:kind row) (= desired-id (:entry-id row)) (= "discarded" (get-in desired [:entry :status])))
+                     (at (provenance/reflected-revision row)))
+        related    (sync/load-rows context ::sync/source-operations
+                                   (vec (distinct (keep :related-operation [operation accepted discarded]))))
         resolving  (-> (select-keys shared [:products :baselines :currency])
                        (assoc :mappings (merge (:mappings shared) (when acceptance (accepted-mappings context acceptance)))
                               :warehouse-mappings (warehouses-at shared (instant (:accepted-at acceptance)))
-                              :operations related))
-        desired-id (when latest (provenance/correction-entry-id source-operation-id (:revision latest)))]
+                              :operations related))]
     {:operation         operation
      :connection        (:connection shared)
      :acceptance        acceptance
@@ -179,12 +186,33 @@
      :accepted-proposal (when accepted (proposals/proposal resolving accepted))
      :new-proposal      (when operation (proposals/proposal resolving operation))
      :withdrawn?        (boolean (and operation (nil? (proposals/entry-kind operation))))
+     :accepted-missing? (boolean (and reflected (nil? accepted)))
+     :discarded         (when discarded
+                          {:proposal (proposals/proposal resolving discarded) :withdrawn? (nil? (proposals/entry-kind discarded))})
      :desired-id        desired-id
-     :desired           (stored context desired-id)
+     :desired           desired
      :previous          (when (and (:entry-id row) (not= desired-id (:entry-id row))) (stored context (:entry-id row)))}))
 
 
 ;; Decision
+
+
+(defn unproposable
+  "Why a change of the source cannot be proposed, for the log: `:accepted-revision-missing` when the revision the
+  record reflects is not stored, `:kind-changed` when the source now states another kind (an amendment keeps its
+  record's kind); else nil."
+  {:malli/schema [:=> [:cat :map] [:maybe :keyword]]}
+  [{:keys [accepted-missing? accepted-proposal new-proposal]}]
+  (cond accepted-missing? :accepted-revision-missing
+        (and accepted-proposal new-proposal
+             (not= (get-in accepted-proposal [:entry :kind]) (get-in new-proposal [:entry :kind]))) :kind-changed))
+
+
+(defn- outcome
+  "A difference as what it proposes: its kind and the compared content of an amendment."
+  {:malli/schema [:=> [:cat [:maybe :map]] :any]}
+  [diff]
+  (when diff [(:kind diff) (some-> (:entry diff) compared)]))
 
 
 (defn- pending?
@@ -218,25 +246,27 @@
 
 (defn- correction-entry
   "The pending entry a difference becomes against `latest`: a cancellation carries nothing else; an amendment the
-  new facts over the record's own (store, supplier, reason and, by position, the accepted prices)."
-  {:malli/schema [:=> [:cat :string :map :map [:maybe :map] :uuid] [:tuple :map [:vector :map]]]}
-  [entry-id {:keys [kind entry]} latest stored actor]
+  new facts over the record's own (store, supplier, reason, and each line's accepted price). The record's lines are
+  in the order of `accepted-proposal`'s, so a line keeps the price accepted under its line id; a line the source
+  added takes its proposed price, blank outside the Workspace Currency."
+  {:malli/schema [:=> [:cat :string :map :map [:maybe :map] :map :uuid] [:tuple :map [:vector :map]]]}
+  [entry-id {:keys [kind entry]} latest stored accepted-proposal actor]
   (let [base {:entry-id entry-id :kind   (:kind latest)               :status "pending" :revision (inc (or (get-in stored [:entry :revision]) 0))
               :saved-by actor    :amends (:record-revision-id latest)}]
     (if (= "cancellation" kind)
       [(assoc base :cancel true) []]
       (let [facts  (:facts latest)
-            prices (mapv :unit-price (:lines facts))
+            prices (zipmap (map :line-id (get-in accepted-proposal [:entry :lines])) (map :unit-price (:lines facts)))
             at     (or (instant (:occurred-at entry)) (instant (:occurred-at facts)))]
         [(merge base
                 (present (select-keys facts [:store-id :supplier-id :reason]))
                 (present {:occurred-at       at
                           :from-warehouse-id (:from-warehouse-id entry)           :to-warehouse-id (:to-warehouse-id entry)
                           :reason            (or (:reason facts) (:reason entry))}))
-         (vec (map-indexed (fn [i line]
-                             (present (assoc (select-keys line [:line-id :stock-item-id :quantity :warehouse-id :unit-price])
-                                             :unit-price (or (get prices i) (:unit-price line)))))
-                           (:lines entry)))]))))
+         (mapv (fn [{:keys [line-id] :as line}]
+                 (present (assoc (select-keys line [:line-id :stock-item-id :quantity :warehouse-id])
+                                 :unit-price (if (contains? prices line-id) (get prices line-id) (:unit-price line)))))
+               (:lines entry))]))))
 
 
 (defn- withdrawal-events
@@ -253,7 +283,7 @@
   "What intake does with one accepted operation now (`operation-facts`): `{:events events}`, empty when nothing
   changes, or `{:refusal code}`."
   {:malli/schema [:=> [:cat :map :any] [:map [:events {:optional true} [:vector :map]] [:refusal {:optional true} :keyword]]]}
-  [{:keys [operation acceptance row latest accepted-proposal new-proposal withdrawn? desired-id desired] :as facts} now]
+  [{:keys [operation acceptance row latest accepted-proposal new-proposal withdrawn? discarded desired-id desired] :as facts} now]
   (cond
     (or (nil? operation) (nil? acceptance) (nil? latest)) {:refusal :not-found}
     (:cancelled latest) {:refusal :already-cancelled}
@@ -281,8 +311,12 @@
          edited? (conflict)
          (nil? diff) (if current (withdrawal-events record-id current revision) [])
          (and (nil? current) seen? (= desired-id (:entry-id row))) []
+         ;; A discard holds while the source states what was discarded: a status-only revision brings nothing back.
+         (and (nil? current) discarded
+              (= (outcome diff) (outcome (difference accepted-proposal (when-not (:withdrawn? discarded) (:proposal discarded))))))
+         []
          :else
-         (let [[entry lines] (correction-entry desired-id diff latest desired actor)
+         (let [[entry lines] (correction-entry desired-id diff latest desired accepted-proposal actor)
                same?         (and current (= desired-id (get-in current [:entry :entry-id]))
                                   (= (comparable (:entry current) (:lines current)) (comparable entry lines)))]
            (cond
@@ -394,6 +428,10 @@
                                          (mu/log ::operation-skipped :connection-id connection-id
                                                  :source-operation-id (:source-operation-id operation) :error-type (.getName (class error)))
                                          nil))]
+                 :let      [_ (when-let [reason (some-> facts unproposable)]
+                                ;; Visible, never proposed; ids only, no buyer data.
+                                (mu/log ::correction-not-proposed :reason reason :connection-id connection-id
+                                        :source-operation-id (:source-operation-id operation)))]
                  :when     (and facts (seq (:events (assess facts now))))]
              {:workspace-id (str workspace-id) :connection-id connection-id
               :input        {:source-operation-id (:source-operation-id operation)   :revision       (:revision operation)

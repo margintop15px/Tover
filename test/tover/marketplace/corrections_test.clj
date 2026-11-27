@@ -334,6 +334,64 @@
             (is (= 3 (:revision (correction record))))))))))
 
 
+(deftest discarded-stays-discarded-through-a-status-only-revision
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! corrections! entry pending] :as s} (setup! repo)
+            id (correction-id sale)]
+        (accepted-sale! s)
+        (observe! (posting :quantity "2"))
+        (corrections!)
+        (testing "Given a member discarded the amendment to 2"
+          (execute! ctx ::entries/discard-inventory-draft "discard" {:workspace-id workspace :entry-id id :revision 1})
+          (testing "when the next revision changes only the status"
+            (observe! (posting :quantity "2" :status "customer_received"))
+            (is (= 0 (corrections!)))
+            (testing "then nothing is proposed again"
+              (is (= "discarded" (:status (entry id))))))
+          (testing "and a change of what is compared proposes again"
+            (observe! (posting :quantity "1" :status "customer_received"))
+            (is (= 1 (corrections!)))
+            (is (= [1] (quantities (pending id))))))))))
+
+
+(defn- two-lines
+  "Lines of P1 as `[line-key sku quantity]`."
+  {:malli/schema [:=> [:cat [:* :any]] [:vector :map]]}
+  [& lines]
+  (mapv (fn [[line-key sku quantity]] {:line-key line-key :identifiers [{:type "sku" :value sku}] :quantity quantity}) lines))
+
+
+(deftest amendment-keeps-prices-by-line
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! corrections! pending entry-of]} (setup! repo)
+            id (entry-of "P1")
+            line #(str sale "/" %)]
+        (testing "Given a Sale of 3 red at 500 and 1 blue at 300, accepted"
+          (observe! (posting :lines (two-lines ["1" "100" "3"] ["2" "200" "1"])))
+          (intake!)
+          (save! ctx id 1 {:occurred-at "2026-11-10T09:00:00Z"
+                           :lines       [{:line-id (line 1) :stock-item-id "red" :warehouse-id "home" :quantity 3 :unit-price "500"}
+                                         {:line-id (line 2) :stock-item-id "blue" :warehouse-id "home" :quantity 1 :unit-price "300"}]})
+          (accept-all! ctx "acc-prices" [[id 2]])
+          (testing "when a revision adds a line first and reorders the others"
+            (observe! (posting :lines (two-lines ["3" "100" "1"] ["2" "200" "1"] ["1" "100" "2"])))
+            (is (= 1 (corrections!)))
+            (testing "then each line keeps its own accepted price and the new line has none"
+              (is (= [[(line 3) nil] [(line 2) "300"] [(line 1) "500"]]
+                     (mapv (juxt :line-id :unit-price) (:lines (pending (correction-id sale)))))))))))))
+
+
+(deftest unproposable-changes-are-named
+  (let [sale-proposal {:entry {:kind "sale" :lines []} :missing [] :findings []}]
+    (is (= :kind-changed
+           (corrections/unproposable {:accepted-proposal sale-proposal
+                                      :new-proposal      (assoc-in sale-proposal [:entry :kind] "transfer")})))
+    (is (= :accepted-revision-missing (corrections/unproposable {:accepted-missing? true})))
+    (is (nil? (corrections/unproposable {:accepted-proposal sale-proposal :new-proposal sale-proposal})))))
+
+
 (deftest change-back-withdraws-the-unedited-proposal
   (support/with-store
     (fn [repo _]
