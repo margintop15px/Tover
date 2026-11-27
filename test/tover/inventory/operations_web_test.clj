@@ -519,6 +519,18 @@
         "Open moves to the sale's own rows on the page")))
 
 
+(deftest accept-the-sale-first-says-when-the-sale-is-set-aside
+  (let [sale   (imported-row "P0" "set aside")
+        return (imported-row "R1" "accept the sale first" :kind "return")
+        review {:groups [{:decision "set aside" :id "aside" :label "Set aside" :count 1 :connection-id "c" :operations [sale]}
+                         {:decision   "accept the sale first" :id    "c:fbs-posting:P0" :label         "Accept sale P0" :label-key  "Accept sale {name}"
+                          :label-args {:name "P0"}            :count 1                  :connection-id "c"              :operations [return]}]}
+        model  (imported {:source "imported" :imported review})
+        header (first (filter #(and (:header %) (re-find #"P0" (get-in % [:cells 0 :value]))) (:rows model)))]
+    (is (re-find #"^Bring back sale P0 first – 1 operation$" (get-in header [:cells 0 :value])))
+    (is (nil? (get-in header [:cells 0 :actions])) "there is nothing on the page to open")))
+
+
 (deftest the-source-select-and-the-aside-actions-are-one-node-each
   (let [select (operations/source-select {:connections [{:connection-id "c-1" :account-label "Shop"}] :source "c-1"})
         aside  (operations/aside-actions)]

@@ -448,7 +448,7 @@
                                                                  (catch InterruptedException error (throw error))
                                                                  (catch Exception error
                                                                   ;; One operation that cannot be evaluated never stops the others.
-                                                                   (mu/log ::operation-skipped :error-type (.getName (class error)))
+                                                                   (mu/log ::operation-skipped :connection-id connection-id :source-operation-id id :error-type (.getName (class error)))
                                                                    {}))
                                  entry-revision (or (get-in entry [:entry :revision]) 0)
                                  item (fn [command input]
@@ -495,7 +495,7 @@
                            (catch InterruptedException error (throw error))
                            (catch Exception error
                              ;; The minute sweep tries the connection again.
-                             (mu/log ::intake-skipped :error-type (or (:type (ex-data error)) (.getName (class error))))
+                             (mu/log ::intake-skipped :connection-id connection-id :error-type (or (:type (ex-data error)) (.getName (class error))))
                              []))]
              item)))
     []))

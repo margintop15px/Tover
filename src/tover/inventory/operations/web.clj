@@ -640,12 +640,17 @@
 
 (defn- header-rows
   "The decision that unblocks a group, across the table, with a link to where it is taken; Accept the sale first
-  moves to the sale's own rows on this page (its entry's, or its downloaded operation's)."
-  {:malli/schema [:=> [:cat :map :int :int] [:vector :map]]}
-  [{:keys [decision id] :as g} n width]
+  moves to the sale's own rows on this page (its entry's, or its downloaded operation's); when the sale is set aside
+  (`aside` holds those source operation ids) it reads Bring back sale first, with nothing to open."
+  {:malli/schema [:=> [:cat :map :int :int [:set :string]] [:vector :map]]}
+  [{:keys [decision id] :as g} n width aside]
   (let [href   (decision-href g)
         key    (str "decision|" decision "|" id)
+        g      (cond-> g
+                 (and (= "accept the sale first" decision) (aside id))
+                 (assoc :label-key "Bring back sale {name} first"))
         action (cond
+                 (and (= "accept the sale first" decision) (aside id)) nil
                  (= "accept the sale first" decision)
                  {:type "operations-focus" :groups [(provenance/import-entry-id id) id] :label (i18n/t "Open") :icon "›"}
                  href {:type "operations-open" :href href :label (i18n/t "Open") :icon "›"})]
@@ -690,6 +695,7 @@
         filtered? (boolean (and sources? source))
         select?   (and filtered? (not preview?))
         ops       (for [g (:groups imported) op (:operations g)] op)
+        aside     (set (for [op ops :when (= "set aside" (:next-step op))] (:source-operation-id op)))
         op-of     (into {} (for [op ops :when (:entry-id op)] [(:entry-id op) op]))
         fixes     (into {} (for [e pending :when (and sources? (fix? e))] [(subs (:entry-id e) 4) e]))
         mine      (filter #(or (contains? (set operation-kinds) (:kind %)) (and sources? (fix? %))) pending)
@@ -712,7 +718,7 @@
                     (apply concat (arrange-units (for [g (groups mine accepted below editing preview?)] [(render g (op-of (:entry-id (:entry g))))]) keys view))
                     (mapcat (fn [{:keys [operations] :as g}]
                               (let [kept (arrange-units (keep unit (filter (partial in-source? source) operations)) keys view)]
-                                (when (seq kept) (cons (header-rows g (count kept) (count keys)) (apply concat kept)))))
+                                (when (seq kept) (cons (header-rows g (count kept) (count keys) aside) (apply concat kept)))))
                             (:groups imported)))
         marks     (group-by (fn [{:keys [entry-id line-id field]}] [entry-id line-id (finding-column field "item")])
                             (concat findings
