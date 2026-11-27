@@ -148,7 +148,9 @@
                                         (fn context input))]
           (if (= :command (:type result))
             (try
-              (runtime/execute! context (:id result) (select-keys result [:command-id :input]))
+              ;; A member command loses a serializable race to a processor; it recomputes on fresh facts.
+              (runtime/retrying 3 #(= :conflict (:type %))
+                                #(runtime/execute! context (:id result) (select-keys result [:command-id :input])))
               (:then result)
               (catch ExceptionInfo error
                 (let [{:keys [type retryable?]} (ex-data error)]

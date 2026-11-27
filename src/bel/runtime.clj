@@ -347,19 +347,20 @@
      :message (let [m (str (.getMessage ^Throwable error))] (subs m 0 (min 200 (count m))))}))
 
 
-(defn- retrying
-  "Call `f`, repeating a failure marked :retryable? up to `attempts` times with jittered exponential backoff
-  (20 ms doubling, capped at 1 s). `f` must keep its command identity."
-  {:malli/schema [:=> [:cat :int [:fn fn?]] :any]}
-  [attempts f]
-  (loop [attempt 1]
-    (let [result (try {:value (f)}
-                      (catch clojure.lang.ExceptionInfo error
-                        (if (and (:retryable? (ex-data error)) (< attempt attempts))
-                          (let [base (min 1000 (* 20 (bit-shift-left 1 (dec attempt))))]
-                            (Thread/sleep (long (+ (quot base 2) (rand-int base)))))
-                          (throw error))))]
-      (if (map? result) (:value result) (recur (inc attempt))))))
+(defn retrying
+  "Call `f`, repeating a failure marked :retryable? (and matching `retry?`, when given) up to `attempts` times with
+  jittered exponential backoff (20 ms doubling, capped at 1 s). `f` must keep its command identity."
+  {:malli/schema [:function [:=> [:cat :int [:fn fn?]] :any] [:=> [:cat :int [:fn fn?] [:fn fn?]] :any]]}
+  ([attempts f] (retrying attempts (constantly true) f))
+  ([attempts retry? f]
+   (loop [attempt 1]
+     (let [result (try {:value (f)}
+                       (catch clojure.lang.ExceptionInfo error
+                         (if (and (:retryable? (ex-data error)) (retry? (ex-data error)) (< attempt attempts))
+                           (let [base (min 1000 (* 20 (bit-shift-left 1 (dec attempt))))]
+                             (Thread/sleep (long (+ (quot base 2) (rand-int base)))))
+                           (throw error))))]
+       (if (map? result) (:value result) (recur (inc attempt)))))))
 
 
 (defn- continue!

@@ -788,3 +788,28 @@
         (is (= {:type :page :id ::review :input {:problem "invitation-not-pending"}}
                (handler/execute-action {} ::action {}))
             "a page catch receives only the rejection type")))))
+
+
+(deftest command-descriptors-retry-a-write-conflict
+  (let [descriptor {:type :command :id ::command :command-id "c" :input {:n 1} :then {:type :view :id ::done}}
+        action     {:bel/schema [:map] :bel/output core/ActionResult :bel/fn (fn [_ _] descriptor)}
+        calls      (atom [])
+        outcomes   (atom nil)]
+    (with-redefs [core/get-action  (constantly action)
+                  runtime/execute! (fn [_ id request]
+                                     (swap! calls conj [id request])
+                                     (let [[r & more] @outcomes]
+                                       (reset! outcomes more)
+                                       (if (instance? Throwable r) (throw r) r)))]
+      (reset! outcomes [(ex-info "Concurrent change" {:type :conflict :retryable? true}) {:event-ids [1]}])
+      (is (= (:then descriptor) (handler/execute-action {} ::action {})))
+      (is (= [[::command {:command-id "c" :input {:n 1}}] [::command {:command-id "c" :input {:n 1}}]] @calls)
+          "the retry keeps the command identity and commits once")
+      (reset! calls [])
+      (reset! outcomes [(ex-info "Stale" {:type :stale}) {:event-ids [1]}])
+      (is (= :stale (:type (ex-data (try (handler/execute-action {} ::action {}) (catch Exception e e))))))
+      (is (= 1 (count @calls)) "a rejection is not retried")
+      (reset! calls [])
+      (reset! outcomes [(ex-info "Journal down" {:type :journal-unavailable :retryable? true}) {:event-ids [1]}])
+      (is (= :journal-unavailable (:type (ex-data (try (handler/execute-action {} ::action {}) (catch Exception e e))))))
+      (is (= 1 (count @calls)) "only a write conflict is retried"))))
