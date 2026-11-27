@@ -95,9 +95,10 @@
 
 
 (defn problems
-  "Stock item changes checked against the state the acceptance produces, after the selection's counts apply."
+  "Stock item changes checked against the state the acceptance produces, after the selection's counts apply.
+  `:in-transit` maps a stock item to the source operations whose units are travelling or returning."
   {:malli/schema [:=> [:cat :map [:sequential :map] [:sequential :map] :map] [:sequential Problem]]}
-  [{:keys [products stock-items history entries] :as facts} lines changes after]
+  [{:keys [products stock-items history entries in-transit] :as facts} lines changes after]
   (let [{:keys [items codes]} (produce facts lines changes)
         current               (by :stock-item-id stock-items)
         product               (by :product-id products)
@@ -157,5 +158,8 @@
                         :when (and (not= entry-id (:entry-id c))
                                    (or (some #(= stock-item-id (:stock-item-id %)) (:lines other))
                                        (some #(= stock-item-id (:stock-item-id %)) (:changes other))))]
-                    (flag c :archive-blocked {:field :status :other-entry-id entry-id})))))))
+                    (flag c :archive-blocked {:field :status :other-entry-id entry-id}))
+                  ;; Board 46: units travelling or returning (`:in-transit`, by item) keep the item; `unknown` never does.
+                  (for [source-operation-id (get in-transit stock-item-id)]
+                    (flag c :archive-blocked {:field :status :source-operation-id source-operation-id})))))))
         changes))))

@@ -13,7 +13,7 @@
   an accepted Customer return. A travelling or returning shipment whose domain has not been read for 30 days is
   `unknown`, as is one with a status Tover does not recognise."
   (:require
-    [bel.core :refer [defreadmodel]]
+    [bel.core :as bel :refer [defreadmodel]]
     [bel.runtime :as runtime]
     [clojure.string :as str]
     [tover.catalogues.records :as records]
@@ -277,6 +277,19 @@
         (if connection-id
           [connection-id]
           (sort (map :connection-id (records/all-records context ::connections/connections :connection-id))))))
+
+
+(defmethod runtime/coeffect ::blocking
+  ;; Board 46 · `Stock Item Archived`: of the named stock items, those whose counted units are travelling or
+  ;; returning in any connection, with those operations. Reads nothing when no item is named, or when the registry
+  ;; declares no marketplace connections (an inventory-only registry has no transit).
+  [_ context {:keys [stock-item-ids]}]
+  (if (or (empty? stock-item-ids) (not (contains? (:models @bel/registry) ::connections/connections)))
+    {}
+    (let [now (runtime/coeffect :tover.inventory.acceptance.model/now context {})]
+      (select-keys (apply merge-with (comp vec sort distinct concat) {}
+                          (map #(blocking-items (shipments % now)) (runtime/coeffect ::facts context {})))
+                   stock-item-ids))))
 
 
 (defn- within?

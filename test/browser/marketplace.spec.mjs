@@ -75,7 +75,8 @@ test('confirm several warehouses, reload: still confirmed', async ({ page }) => 
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await signIn(page);
   await page.goto(connection);
-  const unmatched = page.getByRole('link', { name: '3', exact: true });
+  // The fixture also has three cutover baselines; this is the count of unmatched warehouses.
+  const unmatched = page.locator('dt:text-is("Unmatched warehouses") + dd').getByRole('link', { name: '3', exact: true });
   await expect(unmatched).toHaveAttribute('href', `${views}/warehouses`);
   await unmatched.click();
   await expect(page.getByRole('heading', { name: 'Warehouse matching' })).toBeVisible();
@@ -343,5 +344,55 @@ test('the stock differences view shows the detected move, and its Transfer waits
   await expect(page).toHaveURL(/\/operations$/);
   await expect.poll(() => workbench.evaluate((node, id) => (node.model?.rows || []).some(row => row.groupId === id), transfer))
     .toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// Board 46 · Transit Overview and Shipment Details: a view of the Operations page; one read-only table of shipments in
+// transit with state and connection filters, each opening its read-only timeline and the accepted Sale it produced.
+test('the transit view lists the travelling posting, and its details link to the accepted sale', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const colander = page.locator('.marketplace-grid tbody tr').filter({ hasText: 'Colander' });
+  const sale = 'import:browser-ozon:fbo-posting:T1';
+  await page.setViewportSize({ width: 400, height: 860 });
+  await signIn(page);
+  await page.goto('/operations');
+  await page.getByRole('navigation', { name: 'Views' }).getByRole('link', { name: /^Transit/ }).click();
+  await expect(page).toHaveURL(new RegExp(`${views}/transit$`));
+  await expect(page.getByRole('heading', { name: 'Transit', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Views' }).getByRole('link', { name: /^Transit/ })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('navigation', { name: 'Connection' }).getByRole('link', { name: 'Ozon · Browser shop' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('.marketplace-page form')).toHaveCount(0);
+  await expect(page.locator('.marketplace-page [data-command]')).toHaveCount(0);
+  await expect(page.locator('.marketplace-page .management-secondary')).toContainText('Travelling 2');
+  await ready(page, 'marketplace-transit-all');
+  await expect(colander).toHaveCount(1);
+  await expect(colander).toContainText('Posting T1');
+  await expect(colander).toContainText('Travelling');
+  await expect(colander).toContainText('2026-11-21T09:00:00Z');
+  const width = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(width).toBeLessThanOrEqual(400);
+
+  // The state filter: nothing of the Colander is returning.
+  await page.getByRole('navigation', { name: 'Filter' }).getByRole('link', { name: 'Returning', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`${views}/transit\\?state=returning$`));
+  await ready(page, 'marketplace-transit-returning');
+  await expect(colander).toHaveCount(0);
+  await page.getByRole('navigation', { name: 'Filter' }).getByRole('link', { name: 'Travelling', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`${views}/transit\\?state=travelling$`));
+  await ready(page, 'marketplace-transit-travelling');
+  await expect(colander).toHaveCount(1);
+
+  // Shipment Details: the timeline, its actual time apart from Tover's observation time, and the accepted Sale.
+  await colander.getByRole('button', { name: 'Open details' }).click();
+  await expect(page).toHaveURL(new RegExp(`${views}/transit/${encodeURIComponent('browser-ozon:fbo-posting:T1')}$`));
+  await expect(page.getByRole('heading', { name: 'Posting T1', exact: true })).toBeVisible();
+  const timeline = page.locator('section[aria-labelledby="shipment-timeline"] tbody tr');
+  await expect(timeline).toHaveCount(1);
+  await expect(timeline.locator('td')).toHaveText(['1', 'delivering', '2026-11-21T09:00:00Z', '2026-11-20T10:00:00Z']);
+  await expect(page.locator('.management-content').locator('form, input, button')).toHaveCount(0);
+  await page.getByRole('link', { name: 'Sale', exact: true }).click();
+  await expect(page).toHaveURL(/\/operations$/);
+  const workbench = page.locator('operations-workbench');
+  await expect.poll(() => workbench.evaluate((node, id) => (node.model?.rows || []).some(row => row.groupId === id), sale)).toBe(true);
   expect(errors).toEqual([]);
 });

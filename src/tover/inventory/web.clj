@@ -346,11 +346,14 @@
     :barcode-conflict (i18n/t "This barcode belongs to {p0}." {:p0 (or (:name related) (:owner-product related) (i18n/t "another product"))})
     :article-conflict (i18n/t "This article belongs to {p0}." {:p0 (or (:name related) (:owner-product related) (i18n/t "another product"))})
     :unit-locked (i18n/t "The unit is locked by stock history.")
-    :archive-blocked (if-let [w (:warehouse-id related)]
-                       (i18n/t "Cannot archive: stock in {p0}. Count it to 0 there first." {:p0 (warehouse w w)})
-                       (if-let [e (get entry (:other-entry-id related))]
-                         (i18n/t "Cannot archive: pending {p0}." {:p0 e})
-                         (i18n/t "Cannot archive: another pending entry names this item.")))
+    :archive-blocked (cond
+                       (:warehouse-id related)
+                       (let [w (:warehouse-id related)] (i18n/t "Cannot archive: stock in {p0}. Count it to 0 there first." {:p0 (warehouse w w)}))
+                       ;; Board 46: the source operation as its connection names it (`fbs-posting:P1`).
+                       (:source-operation-id related)
+                       (i18n/t "Cannot archive: units in transit in Ozon {p0}." {:p0 (str/replace-first (:source-operation-id related) #"^[^:]*:" "")})
+                       (get entry (:other-entry-id related)) (i18n/t "Cannot archive: pending {p0}." {:p0 (get entry (:other-entry-id related))})
+                       :else (i18n/t "Cannot archive: another pending entry names this item."))
     :restore-needs-product (i18n/t "Restore the product first.")
     :move-conflict (let [what (or (:value related) (:variant-label related) (some-> (:product-id related) (#(product % %))) "")]
                      (if-let [other (:other-item related)]

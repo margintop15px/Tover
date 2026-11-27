@@ -273,3 +273,77 @@
           (testing "and no buyer data"
             (is (not-any? #{:buyer :customer :addressee :address} (mapcat keys (filter map? (tree-seq coll? seq history)))))))
         (is (nil? (runtime/read-model ctx ::transit/shipment-status-history {:source-operation-id "nope"})))))))
+
+
+(deftest cancelled-after-the-sale-is-returning
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe!] :as s} (setup! repo)]
+        (accepted-sale! s :status "delivering" :terminal false :quantity "2")
+        (testing "When Ozon cancels P after its Sale was accepted"
+          (observe! (posting :status "cancelled" :quantity "2"))
+          (let [read (read-transit ctx)]
+            (testing "then its units are returning, still counted, and block archiving"
+              (is (= [[sale "1" "red" 2 "returning" true]] (rows read)))
+              (is (= {"red" [sale]} (transit/blocking-items (:shipments read)))))))))))
+
+
+;; Board 46 · Units in transit block archiving their stock item
+
+
+(defn- archive-blockers
+  "What blocks archiving red when a member counts it to 0 everywhere and archives it: each `:archive-blocked` problem
+  of the review names a source operation, a warehouse or another pending entry."
+  {:malli/schema [:=> [:cat :map] [:vector :any]]}
+  [ctx]
+  (runtime/execute! ctx ::entries/save-shared-inventory-entry
+                    {:command-id "archive-red"
+                     :input      {:workspace-id workspace :entry-id "archive-red" :kind "correction" :occurred-at "2026-11-21T09:00:00Z"
+                                  :lines        [{:line-id "archive-red/1" :stock-item-id "red" :warehouse-id "home" :quantity 0}
+                                                 {:line-id "archive-red/2" :stock-item-id "red" :warehouse-id "ozon-7" :quantity 0}]
+                                  :changes      [{:stock-item-id "red" :archive true}]}})
+  (let [review (runtime/read-model ctx ::acceptance/inventory-review {:selection [{:entry-id "archive-red" :revision 1}] :order ["archive-red"]})]
+    (into [] (comp (filter #(= :archive-blocked (:code %))) (map #(or (:source-operation-id %) (:warehouse-id %) (:other-entry-id %))))
+          (:problems review))))
+
+
+(deftest travelling-units-block-archiving
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx] :as s} (setup! repo)]
+        (accepted-sale! s :status "delivering" :terminal false :quantity "2")
+        (testing "Given 2 red mugs travelling, when a member counts red to 0 and archives it, then the review names P"
+          (is (= [sale] (archive-blockers ctx)))
+          (testing "and the draft shows it on the item before Submit"
+            (is (= [{:code :archive-blocked :related {:source-operation-id sale}}]
+                   (mapv #(select-keys % [:code :related]) (:findings (runtime/read-model ctx ::entries/pending-entries {})))))))))))
+
+
+(deftest returning-units-block-archiving
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake!] :as s} (setup! repo)
+            id (provenance/import-entry-id return)]
+        (accepted-sale! s)
+        (observe! (return-of))
+        (intake!)
+        (testing "Given 1 red mug returning, then the review names the return, besides its pending Customer return"
+          (is (= #{return id} (set (archive-blockers ctx)))))))))
+
+
+(deftest unknown-does-not-block
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx] :as s} (setup! repo)]
+        (accepted-sale! s :status "brand_new_status" :terminal false :quantity "2")
+        (testing "Given P in a status Tover does not recognise, then nothing blocks archiving red"
+          (is (= [] (archive-blockers ctx))))))))
+
+
+(deftest delivered-does-not-block
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx] :as s} (setup! repo)]
+        (accepted-sale! s :quantity "2")
+        (testing "Given P delivered, then nothing blocks archiving red"
+          (is (= [] (archive-blockers ctx))))))))

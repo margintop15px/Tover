@@ -848,14 +848,25 @@
    :stores      (into {} (map (juxt :store-id :status)) stores)})
 
 
+(defn in-transit-input
+  "Board 46 · the input of `:tover.marketplace.transit.model/blocking`: the stock items `entries` archive. The transit
+  model reads marketplace operations, which require this namespace, so it is loaded when first needed instead of
+  required."
+  {:malli/schema [:=> [:cat [:maybe [:sequential :map]]] [:map [:stock-item-ids [:vector :string]]]]}
+  [entries]
+  (requiring-resolve 'tover.marketplace.transit.model/blocking-items)
+  {:stock-item-ids (vec (sort (distinct (for [entry entries change (:changes entry) :when (:archive change)] (:stock-item-id change)))))})
+
+
 ;; Pending entries with blockers, and draft findings over all of them (nil when the rules are unavailable).
 (defreadmodel pending-entries
   {:input  [:map]
    :output [:map [:entries [:vector :map]] [:findings [:maybe [:vector findings/Finding]]]]
    :policy ::records/workspace-member
    :cofx   [[:pending ::pending (constantly {})] [:catalogue ::catalogue (constantly {})]
-            [:history :tover.inventory.acceptance.model/history (constantly {})]]}
-  [{:keys [pending catalogue history]} _]
+            [:history :tover.inventory.acceptance.model/history (constantly {})]
+            [:in-transit :tover.marketplace.transit.model/blocking (fn [{:keys [pending]} _] (in-transit-input pending))]]}
+  [{:keys [pending catalogue history in-transit]} _]
   (let [status   (status-index catalogue)
         entries  (->> pending
                       (sort-by (juxt (comp nil? :occurred-at) :occurred-at :entry-id))
@@ -866,7 +877,7 @@
         replaced (set (keep :amends entries))]
     {:entries  entries
      :findings (findings/derive-within-limit
-                 (assoc catalogue :entries entries
+                 (assoc catalogue :entries entries :in-transit (or in-transit {})
                         ;; A pending revision stands in for its accepted one.
                         :balances (:balances (valuation/replay (without-records (:records history) replaced)
                                                                (:lines history)))))}))

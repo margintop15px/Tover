@@ -497,14 +497,17 @@
    [:catalogue :tover.inventory.entries.model/catalogue (constantly {})]
    [:history ::history (constantly {})]
    [:provenance ::provenance/facts (constantly {})]
+   ;; Board 46: units travelling or returning block archiving their stock item.
+   [:in-transit :tover.marketplace.transit.model/blocking (fn [{:keys [entries]} _] (entries/in-transit-input entries))]
    currency/row-fact])
 
 
 (defn review-input
   "Facts as `review` takes them, from the coeffects in `review-facts`."
   {:malli/schema [:=> [:cat :map] :map]}
-  [{:keys [entries catalogue history currency-row provenance]}]
-  (merge catalogue {:entries entries :history history :currency (currency/current currency-row) :provenance provenance}))
+  [{:keys [entries catalogue history currency-row provenance in-transit]}]
+  (merge catalogue {:entries    entries            :history history :currency (currency/current currency-row) :provenance provenance
+                    :in-transit (or in-transit {})}))
 
 
 (defreadmodel inventory-review

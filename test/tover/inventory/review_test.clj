@@ -259,6 +259,16 @@
     (is (= [[:archive-blocked "other"]] (map (juxt :code :other-entry-id) (:problems result))))))
 
 
+(deftest archive-blocked-by-units-in-transit
+  (testing "Board 46: each operation whose units of the item are travelling or returning blocks archiving it"
+    (let [result (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :archive true}])] {:in-transit {"tee-m" ["c1:fbs-posting:P1" "c1:return:R2"]}})
+                         "c")]
+      (is (= [[:archive-blocked "c1:fbs-posting:P1"] [:archive-blocked "c1:return:R2"]]
+             (map (juxt :code :source-operation-id) (:problems result))))))
+  (is (:valid? (review (facts [(correction "c" [] [{:stock-item-id "tee-m" :archive true}])] {:in-transit {"other" ["c1:fbs-posting:P1"]}}) "c"))
+      "units of another item block nothing"))
+
+
 (deftest restore-needs-an-active-product
   (let [archived (-> catalogue (assoc-in [:products 0 :status] "archived") (assoc-in [:stock-items 0 :status] "archived"))]
     (is (= #{:restore-needs-product}

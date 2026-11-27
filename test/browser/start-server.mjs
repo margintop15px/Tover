@@ -298,7 +298,50 @@ const program = `
             :position-id "browser-ozon/stock-by-warehouse" :finished-domains "stock-by-warehouse" :first-covered-at d1
             :pass-id "browser-m0/stock-by-warehouse" :asked (observations/write-json ["107"])})
       (figure "browser-m0" d1 "205" 10) (figure "browser-m0" d1 "206" 10)
-      (figure "browser-r1" at "205" 5) (figure "browser-r1" at "206" 15)))
+      (figure "browser-r1" at "205" 5) (figure "browser-r1" at "206" 15))
+    ;; Board 46: a Colander listing on a matched FBO hub with 10 from the 1st, its cutover, and an FBO posting T1 of 2
+    ;; colanders still delivering whose Sale was accepted: 2 units travelling, out of the hub's balance of 8.
+    (let [hub (observations/warehouse-id "browser-ozon" "fbo" "207") id "browser-ozon:fbo-posting:T1" sale (str "import:" id)]
+      (put :tover.catalogues.products.model/product-registered {:product-id "browser-product-8" :name "Colander" :status "active" :revision 1})
+      (put :tover.inventory.stock-items.model/stock-item-registered
+           {:stock-item-id "browser-item-8" :product-id "browser-product-8" :unit "pcs" :condition "regular" :status "active" :revision 1})
+      (put :tover.marketplace.sync.model/external-product-observed
+           (assoc (listing "108" "Colander (Ozon)" nil) :identifiers (observations/write-json [{:type "sku" :value "108" :active true}])))
+      (put :tover.marketplace.products.model/external-product-mapped
+           {:external-product-id "browser-ozon:108" :connection-id "browser-ozon" :stock-item-id "browser-item-8" :listing-revision 1
+            :item-revision 1 :identity-basis (observations/write-json {:attributes {} :pack nil :unit "pcs" :variant-label nil})
+            :changed-by (str fixtures/owner-id) :changed-at at :mapping-revision-id "browser-ozon:108#1" :mapping-revision 1 :change "mapped" :state "confirmed"})
+      (put :tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "browser-hub-c" :name "Hub C" :status "active" :revision 1})
+      (put :tover.marketplace.sync.model/external-warehouse-observed
+           {:external-warehouse-id hub :entity-id hub :connection-id "browser-ozon" :source-id "207" :revision 1
+            :payload-hash (apply str (repeat 64 "f")) :adapter-version "test" :observed-at at :last-observed-at at
+            :source-revision-id (str hub "#1") :name "Hub C" :warehouse-type "fbo" :active true :facts (observations/write-json {:name "Hub C"})})
+      (put :tover.marketplace.warehouses.model/external-warehouse-mapped
+           {:external-warehouse-id hub :mapping-revision-id (str hub "#1") :connection-id "browser-ozon" :warehouse-type "fbo"
+            :mapping-revision 1 :changed-by (str fixtures/owner-id) :changed-at at :change "mapped" :warehouse-id "browser-hub-c" :state "confirmed"})
+      (doseq [[record kind n occurred line] [["browser-opening-browser-hub-c" "opening" 0 "2026-11-01T00:00:00Z" {:quantity-change 10 :unit-cost "30.00"}]
+                                             [sale "sale" 1 "2026-11-21T09:00:00Z" {:quantity-change -2 :unit-price "90.00"}]]
+              :let [rid (str record "#1") acceptance (str "browser-acc-" record)]]
+        (put :tover.inventory.acceptance.model/inventory-changes-accepted {:acceptance-id acceptance :actor fixtures/owner-id :recorded-at (java.time.Instant/parse at) :record-count 1})
+        (put :tover.inventory.acceptance.model/inventory-record-accepted
+             {:record-revision-id rid :record-id record :revision 1 :acceptance-id acceptance :kind kind
+              :occurred-at (java.time.Instant/parse occurred) :sequence n :cancelled false})
+        (put :tover.inventory.acceptance.model/inventory-record-line-accepted
+             (merge {:record-line-id (str rid "/0") :record-revision-id rid :position 0 :stock-item-id "browser-item-8" :warehouse-id "browser-hub-c"} line)))
+      (put :tover.marketplace.provenance/cutover-baseline-established
+           {:baseline-id "browser-ozon|browser-item-8|browser-hub-c" :connection-id "browser-ozon" :stock-item-id "browser-item-8"
+            :warehouse-id "browser-hub-c" :instant "2026-11-01T00:00:00Z" :record-id "browser-opening-browser-hub-c" :established-at "2026-11-02T00:00:00Z"})
+      (put :tover.marketplace.sync.model/source-operation-observed
+           {:source-operation-id id :entity-id id :connection-id "browser-ozon" :source-id "T1" :revision 1
+            :payload-hash (apply str (repeat 64 "9")) :adapter-version "test" :observed-at at :last-observed-at (str (java.time.Instant/now))
+            :source-revision-id (str id "#1") :facts (observations/write-json {:status "delivering" :occurred-at "2026-11-21T09:00:00Z"})
+            :kind "fbo-posting" :status "delivering" :terminal false :occurred-at "2026-11-21T09:00:00Z" :from-warehouse hub :complete true
+            :lines (observations/write-json [{:line-key "1" :identifiers [{:type "sku" :value "108"}] :quantity "2"}])})
+      (put :tover.marketplace.provenance/source-operation-accepted
+           {:source-operation-id id :connection-id "browser-ozon" :revision 1 :reflected-revision 1 :record-id sale
+            :accepted-by (str (tover.marketplace.sync.model/connector-actor "browser-ozon")) :edited false
+            :mappings-used (observations/write-json [{:line-key "1" :external-product-id "browser-ozon:108" :mapping-revision 1}])
+            :accepted-at at})))
   ;; This server runs no processors (no journal worker); propose the connection's operations each second as
   ;; Marketplace Operation Intake would. Local only: it reads this store and calls no marketplace.
   (require '[tover.marketplace.operations.model :as imported] '[tover.marketplace.moves.model :as moves])
