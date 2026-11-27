@@ -53,6 +53,43 @@
    "awaiting facts" "Awaiting facts"})
 
 
+(def ^:private status-labels
+  "The Ozon posting and return statuses Tover recognises, by lower-case code."
+  {"awaiting_registration" "Awaiting registration"
+   "acknowledged" "Acknowledged"
+   "awaiting_approve" "Awaiting approval"
+   "awaiting_packaging" "Awaiting packaging"
+   "awaiting_deliver" "Awaiting dispatch"
+   "delivering" "Delivering"
+   "driver_pickup" "With the driver"
+   "sent_by_seller" "Sent by the seller"
+   "arbitration" "Arbitration"
+   "client_arbitration" "Delivery arbitration"
+   "delivered" "Delivered"
+   "not_accepted" "Not accepted"
+   "cancelled" "Cancelled"
+   "disputeopened" "Dispute opened"
+   "onsellerapproval" "Awaiting seller approval"
+   "arrivedatreturnplace" "Arrived at the return place"
+   "onsellerclarification" "Awaiting seller clarification"
+   "onsellerclarificationafterpartialcompensation" "Awaiting seller clarification after partial compensation"
+   "offeredpartialcompensation"                    "Partial compensation offered"
+   "returnmoneyapproved" "Refund approved"
+   "partialcompensationreturned"                   "Partial compensation paid"
+   "movingtoseller" "Moving to the seller"
+   "returnedtoozon" "Returned to Ozon"
+   "returned" "Returned"
+   "receivedbyseller" "Received by the seller"
+   "moneyreturned" "Money returned"
+   "approved" "Approved"
+   "received" "Received"})
+
+
+(defn status-label
+  "An Ozon status as the member reads it; the code itself when Tover does not recognise it."
+  {:malli/schema [:=> [:cat :string] :string]}
+  [status]
+  (if-let [label (status-labels (str/lower-case status))] (i18n/t label) status))
 
 
 (def ^:private columns
@@ -184,9 +221,13 @@
     {:connection connection :connections (operations/query-connections context) :history history :label (labels context)}))
 
 
+(def ^:private TableSection
+  [:map [:id :string] [:title :string] [:headings [:sequential :string]] [:rows [:sequential [:sequential :any]]]])
+
+
 (defn- table-section
-  {:malli/schema [:=> [:cat :string :string [:sequential :string] [:sequential [:sequential :any]]] schema/Hiccup]}
-  [id title headings rows]
+  {:malli/schema [:=> [:cat TableSection] schema/Hiccup]}
+  [{:keys [id title headings rows]}]
   [:section.management-section {:aria-labelledby id}
    [:div.management-section-heading [:h2 {:id id} title]]
    [:div.management-table-wrap
@@ -212,14 +253,15 @@
                                   :subtitle  (str "Ozon · " account-label)
                                   :back-href (transit-path connection-id)  :back-label (i18n/t "All shipments in transit")})
             [:div.management-content
-             (table-section "shipment-lines" (i18n/t "Lines")
-                            [(i18n/t "Stock item") (i18n/t "Quantity") (i18n/t "State") (i18n/t "In totals")]
-                            (for [{:keys [stock-item-id quantity state counted]} lines]
-                              [(label stock-item-id stock-item-id) (some-> quantity str) (i18n/t (state-labels state state)) (i18n/t (if counted "Yes" "No"))]))
-             (table-section "shipment-timeline" (i18n/t "Status history")
-                            [(i18n/t "Revision") (i18n/t "Status") (i18n/t "Actual time") (i18n/t "Observed by Tover")]
-                            (for [{:keys [revision status actual-time observed-at]} statuses]
-                              [revision (or status "—") (or actual-time "—") observed-at]))
+             (table-section {:id       "shipment-lines" :title (i18n/t "Lines")
+                             :headings [(i18n/t "Stock item") (i18n/t "Quantity") (i18n/t "State") (i18n/t "In totals")]
+                             :rows     (for [{:keys [stock-item-id quantity state counted]} lines]
+                                         [(label stock-item-id stock-item-id) (some-> quantity str) (i18n/t (state-labels state state))
+                                          (i18n/t (if counted "Yes" "No"))])})
+             (table-section {:id       "shipment-timeline" :title (i18n/t "Status history")
+                             :headings [(i18n/t "Revision") (i18n/t "Status") (i18n/t "Actual time") (i18n/t "Observed by Tover")]
+                             :rows     (for [{:keys [revision status actual-time observed-at]} statuses]
+                                         [revision (if status (status-label status) "—") (or actual-time "—") observed-at])})
              [:section.management-section {:aria-labelledby "shipment-records"}
               [:div.management-section-heading [:h2#shipment-records (i18n/t "Accepted records")]]
               (if (seq records)

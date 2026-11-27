@@ -12,6 +12,8 @@
     [tover.marketplace.corrections-test :as corrections-test]
     [tover.marketplace.guard-test :as guard-test]
     [tover.marketplace.operations.model :as operations]
+    [tover.marketplace.products.guard :as guard]
+    [tover.marketplace.products.model :as products]
     [tover.marketplace.provenance :as provenance]
     [tover.marketplace.transit.model :as transit]
     [tover.support :as support])
@@ -56,6 +58,7 @@
 (def posting #'corrections-test/posting)
 (def return-of #'corrections-test/return-of)
 (def accept-all! #'corrections-test/accept-all!)
+(def save! #'corrections-test/save!)
 
 
 (defn- read-transit
@@ -163,12 +166,10 @@
 
 
 (defn- state-after
-  "The state of a travelling accepted P1 when its domain was last read `days` before now."
+  "The state of a travelling accepted P1 `days` after Tover last observed it."
   {:malli/schema [:=> [:cat :map :int] :string]}
   [ctx days]
-  (let [read-at (Instant/parse observed)
-        facts   (assoc (transit/load-facts ctx c) :covered-until {"fbs-postings" observed})]
-    (:state (first (transit/shipments facts (.plus read-at (Duration/ofDays days)))))))
+  (:state (first (transit/shipments (transit/load-facts ctx c) (.plus (Instant/parse observed) (Duration/ofDays days))))))
 
 
 (deftest thirty-days
@@ -176,12 +177,26 @@
     (fn [repo _]
       (let [{:keys [ctx] :as s} (setup! repo)]
         (accepted-sale! s :status "delivering" :terminal false)
-        (are [days state] (= state (state-after ctx days))
-          29 "travelling"
-          30 "unknown")
+        (testing "measured from the operation's own last observation: sync re-reads unfinished shipments every run"
+          (are [days state] (= state (state-after ctx days))
+            29 "travelling"
+            30 "unknown"))
         (testing "unknown blocks no archiving"
-          (let [facts (assoc (transit/load-facts ctx c) :covered-until {"fbs-postings" observed})]
-            (is (= {} (transit/blocking-items (transit/shipments facts (.plus (Instant/parse observed) (Duration/ofDays 30))))))))))))
+          (is (= {} (transit/blocking-items (transit/shipments (transit/load-facts ctx c)
+                                                               (.plus (Instant/parse observed) (Duration/ofDays 30)))))))))))
+
+
+(deftest period-bounds
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx] :as s} (setup! repo)
+            read                #(count (:shipments (runtime/read-model ctx ::transit/shipments-in-transit (merge {:connection-id c} %))))]
+        (accepted-sale! s :status "delivering" :terminal false)
+        (testing "the actual time bounds the period, both ends included"
+          (is (= 1 (read {:from "2026-11-10T09:00:00Z" :to "2026-11-10T09:00:00Z"})))
+          (is (= 0 (read {:from "2026-11-11T00:00:00Z"}))))
+        (testing "a bound that does not parse bounds nothing instead of failing"
+          (is (= 1 (read {:from "not an instant at all" :to "2026-13-45T99:99:99Z"}))))))))
 
 
 (deftest before-cutover-and-aside-are-left-out
@@ -375,3 +390,56 @@
         (accepted-sale! s :quantity "2")
         (testing "Given P delivered, then nothing blocks archiving red"
           (is (= [] (archive-blockers ctx))))))))
+
+
+;; Transit follows the accepted record, never today's mapping
+
+
+(deftest suspended-mapping-keeps-the-accepted-sale
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx as-connector] :as s} (setup! repo)]
+        (accepted-sale! s :status "delivering" :terminal false :quantity "2")
+        (testing "Given the Mapping Guard suspended listing 100 after the Sale was accepted"
+          (runtime/execute! as-connector ::guard/suspend-product-mapping
+                            {:command-id "suspend"
+                             :input      {:external-product-id (str c ":100") :mapping-revision 1
+                                          :reasons             [{:rule "listing-identity-changed" :before "1" :after "2"}]}})
+          (let [read (read-transit ctx)]
+            (testing "then the posting is still travelling with the accepted item"
+              (is (= [[sale "1" "red" 2 "travelling" true]] (rows read)))
+              (is (= {"red" [sale]} (transit/blocking-items (:shipments read)))))
+            (testing "and it still blocks archiving red"
+              (is (= [sale] (archive-blockers ctx))))))))))
+
+
+(deftest remapped-listing-keeps-the-accepted-item
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx] :as s} (setup! repo)]
+        (accepted-sale! s :status "delivering" :terminal false :quantity "2")
+        (testing "Given a member moved listing 100 from red to blue after acceptance"
+          (runtime/execute! ctx ::products/change-product-mapping
+                            {:command-id "remap"
+                             :input      {:external-product-id (str c ":100") :mapping-revision 1 :stock-item-id "blue" :item-revision 1}})
+          (let [read (read-transit ctx)]
+            (testing "then transit shows and blocks red, whose stock the Sale deducted, not blue"
+              (is (= [[sale "1" "red" 2 "travelling" true]] (rows read)))
+              (is (= {"red" [sale]} (transit/blocking-items (:shipments read))))
+              (is (= [sale] (archive-blockers ctx))))))))))
+
+
+(deftest edited-quantity-is-the-accepted-one
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe! intake! balance]} (setup! repo)
+            id (provenance/import-entry-id sale)]
+        (testing "Given P of 3 red mugs whose Sale a member edited to 2 before accepting it"
+          (observe! (posting :status "delivering" :terminal false))
+          (intake!)
+          (save! ctx id 1 {:occurred-at "2026-11-10T09:00:00Z"
+                           :lines       [{:line-id (str sale "/1") :stock-item-id "red" :warehouse-id "home" :quantity 2}]})
+          (accept-all! ctx "acc-edited" [[id 2]])
+          (is (= 8 (balance "red" "home")))
+          (testing "then transit shows the 2 accepted units"
+            (is (= [[sale "1" "red" 2 "travelling" true]] (rows (read-transit ctx))))))))))

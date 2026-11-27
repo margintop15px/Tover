@@ -10,8 +10,10 @@
   cancelled in Tover) is not `counted`: its units are still in warehouse stock. Without an accepted Sale it is
   `awaiting facts` while facts are missing, else in the state its status names, with its next step. A return counts
   once its posting's Sale is accepted, or when its posting is history or was never read; it is `returned` only with
-  an accepted Customer return. A travelling or returning shipment whose domain has not been read for 30 days is
-  `unknown`, as is one with a status Tover does not recognise."
+  an accepted Customer return. An operation with a live accepted record shows what was accepted: each record line's
+  stock item and quantity, never today's mapping or source quantity. A travelling or returning shipment Tover has not
+  observed for 30 days is `unknown` (sync re-reads unfinished shipments every run), as is one with a status Tover does
+  not recognise."
   (:require
     [bel.core :as bel :refer [defreadmodel]]
     [bel.runtime :as runtime]
@@ -52,9 +54,8 @@
 
 
 (def Facts
-  "`steps/Facts` of one connection (`operations/load-facts`), with `connection-id` and `covered-until`, the instant
-  each domain was last read up to (`::sync/covered-until`)."
-  [:map [:connection-id Ref] [:covered-until {:optional true} [:map-of :string :any]]])
+  "`steps/Facts` of one connection (`operations/load-facts`), with its `connection-id`."
+  [:map [:connection-id Ref]])
 
 
 ;; Statuses
@@ -79,12 +80,12 @@
     "approved" "received"})
 
 
-(def ^:private domains
-  {"fbs-posting" "fbs-postings" "fbo-posting" "fbo-postings" "return" "returns" "rfbs-return" "rfbs-returns"})
+(def ^:private kinds
+  #{"fbs-posting" "fbo-posting" "return" "rfbs-return"})
 
 
 (def stale-after
-  "A travelling or returning shipment whose domain was not read for this long is `unknown`."
+  "A travelling or returning shipment Tover has not observed for this long is `unknown`."
   (Duration/ofDays 30))
 
 
@@ -119,18 +120,11 @@
         :else nil))
 
 
-(defn- latest
-  {:malli/schema [:=> [:cat [:sequential :any]] [:maybe inst?]]}
-  [values]
-  (reduce (fn [a b] (if (or (nil? a) (and b (.isAfter ^Instant b ^Instant a))) b a)) nil (keep instant values)))
-
-
 (defn- stale?
-  "Whether the operation's domain was last read, up to its position or by the operation's own observation, at
-  least `stale-after` before `now`."
-  {:malli/schema [:=> [:cat :map :map inst?] :boolean]}
-  [{:keys [covered-until]} operation now]
-  (let [read (latest [(get covered-until (domains (:kind operation))) (:last-observed-at operation)])]
+  "Whether Tover last observed the operation at least `stale-after` before `now`."
+  {:malli/schema [:=> [:cat :map inst?] :boolean]}
+  [operation now]
+  (let [read (instant (:last-observed-at operation))]
     (boolean (and read (not (.isBefore ^Instant now ^Instant (.plus ^Instant read ^Duration stale-after)))))))
 
 
@@ -159,6 +153,17 @@
     (when-not (:cancelled record) record)))
 
 
+(defn- accepted-lines
+  "The lines of a live accepted record in position order: the stock item and quantity whose stock it changed, keyed
+  by the source line at the same position."
+  {:malli/schema [:=> [:cat :map [:vector :map]] [:vector :map]]}
+  [record source-lines]
+  (vec (for [[position {:keys [stock-item-id quantity-change]}] (sort-by key (:lines record))]
+         (cond-> {:line-key       (or (:line-key (get source-lines position)) (str position)) :stock-item-id stock-item-id
+                  :after-baseline true}
+           quantity-change (assoc :quantity (abs quantity-change))))))
+
+
 (defn- sale-decided?
   "Whether a return's units left the warehouse with a Sale Tover holds: its posting's Sale is accepted and not
   cancelled, its posting is history, or Tover never read its posting."
@@ -184,7 +189,7 @@
       (let [record (live-record facts records source-operation-id)
             {:keys [missing next-step]} (when-not accepted (steps/classify facts operation))
             by-status                   (let [s (status-state kind (:status operation))]
-                                          (if (and (#{"travelling" "returning"} s) (stale? facts operation now)) "unknown" s))
+                                          (if (and (#{"travelling" "returning"} s) (stale? operation now)) "unknown" s))
             state (cond (return? kind) (if record "returned" by-status)
                         (and (not accepted) (seq missing)) "awaiting facts"
                         :else by-status)
@@ -192,9 +197,12 @@
             ;; Even when cancelled since: what a member entered at acceptance fills what the source does not state.
             accepted-r                  (some->> (get-in facts [:acceptances source-operation-id :record-id]) records)
             actual (or (:occurred-at operation) (:occurred-at accepted-r))]
-        (vec (for [[position {:keys [line-key stock-item-id after-baseline] :as line}] (map-indexed vector lines)
+        ;; What was accepted left the warehouse: a mapping suspended or changed since, or a quantity edited at
+        ;; acceptance, never moves a live record's units to another item or quantity.
+        (vec (for [[position {:keys [line-key stock-item-id after-baseline] :as line}]
+                   (map-indexed vector (if record (accepted-lines record lines) lines))
                    :when (and stock-item-id after-baseline)
-                   :let [quantity (or (:quantity line) (some-> (get-in accepted-r [:lines position :quantity-change]) abs))]]
+                   :let  [quantity (or (:quantity line) (some-> (get-in accepted-r [:lines position :quantity-change]) abs))]]
                (cond-> {:source-operation-id source-operation-id            :connection-id (:connection-id operation) :kind kind
                         :line-key            line-key :stock-item-id stock-item-id :state state :counted counted
                         :observed-at         (str (:observed-at operation))}
@@ -237,7 +245,7 @@
   [facts now]
   (let [records (record-index (:history facts))]
     (without-returned
-      (into [] (comp (filter (comp domains :kind)) (mapcat #(operation-rows facts records now %)))
+      (into [] (comp (filter (comp kinds :kind)) (mapcat #(operation-rows facts records now %)))
             (map val (sort-by key (:operations facts)))))))
 
 
@@ -262,12 +270,10 @@
 
 
 (defn load-facts
-  "`Facts` of one connection: plan 4's operation facts and how far each domain was read."
+  "`Facts` of one connection: plan 4's operation facts."
   {:malli/schema [:=> [:cat :map :string] Facts]}
   [context connection-id]
-  (assoc (operations/load-facts context connection-id)
-         :connection-id connection-id
-         :covered-until (runtime/coeffect ::sync/covered-until context {:connection-id connection-id})))
+  (assoc (operations/load-facts context connection-id) :connection-id connection-id))
 
 
 (defmethod runtime/coeffect ::facts
@@ -293,13 +299,14 @@
 
 
 (defn- within?
-  "Whether the shipment's actual time, else its observation time, is within `from` and `to` (both included)."
+  "Whether the shipment's actual time, else its observation time, is within `from` and `to` (both included); a
+  bound that is absent or does not parse bounds nothing."
   {:malli/schema [:=> [:cat :map [:maybe :string] [:maybe :string]] :boolean]}
   [{:keys [actual-time observed-at]} from to]
-  (let [at (instant (or actual-time observed-at))]
+  (let [at (instant (or actual-time observed-at)) from (instant from) to (instant to)]
     (boolean (and at
-                  (or (nil? from) (not (.isBefore ^Instant at ^Instant (instant from))))
-                  (or (nil? to) (not (.isAfter ^Instant at ^Instant (instant to))))))))
+                  (or (nil? from) (not (.isBefore ^Instant at ^Instant from)))
+                  (or (nil? to) (not (.isAfter ^Instant at ^Instant to)))))))
 
 
 (def ShipmentsInTransit
@@ -373,7 +380,7 @@
   ;; The operation, its connection's facts and its source revisions, each loaded by id; nil for an unknown one.
   [_ context {:keys [source-operation-id]}]
   (when-let [operation (get (sync/load-rows context ::sync/source-operations [source-operation-id]) source-operation-id)]
-    (when (domains (:kind operation))
+    (when (kinds (:kind operation))
       {:operation operation
        :facts     (load-facts context (:connection-id operation))
        :revisions (sync/load-rows context ::sync/source-revisions

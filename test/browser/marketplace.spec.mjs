@@ -388,7 +388,7 @@ test('the transit view lists the travelling posting, and its details link to the
   await expect(page.getByRole('heading', { name: 'Posting T1', exact: true })).toBeVisible();
   const timeline = page.locator('section[aria-labelledby="shipment-timeline"] tbody tr');
   await expect(timeline).toHaveCount(1);
-  await expect(timeline.locator('td')).toHaveText(['1', 'delivering', '2026-11-21T09:00:00Z', '2026-11-20T10:00:00Z']);
+  await expect(timeline.locator('td')).toHaveText(['1', 'Delivering', '2026-11-21T09:00:00Z', '2026-11-20T10:00:00Z']);
   await expect(page.locator('.management-content').locator('form, input, button')).toHaveCount(0);
   await page.getByRole('link', { name: 'Sale', exact: true }).click();
   await expect(page).toHaveURL(/\/operations$/);

@@ -108,6 +108,12 @@
           (is (= ["Отправление P1" "Mug / red" "1" "Доставлено" "Да"] (first (cells (binding [i18n/*locale* "ru"] (web/table ctx c "all")))))))))))
 
 
+(deftest status-labels
+  (is (= "Returned to Ozon" (web/status-label "ReturnedToOzon")) "codes are matched in any case")
+  (is (= "Возвращено в Ozon" (binding [i18n/*locale* "ru"] (web/status-label "ReturnedToOzon"))))
+  (is (= "brand_new_status" (web/status-label "brand_new_status")) "an unknown status shows its code"))
+
+
 (deftest shipment-details
   (support/with-store
     (fn [repo _]
@@ -119,15 +125,19 @@
           (testing "the timeline of one shipment, read-only"
             (is (str/includes? html ">Posting P1<"))
             (is (= 0 (count (re-seq #"<form|<input|<button" html))) "read-only")
-            (is (re-find #"<td>1</td><td>delivering</td><td>2026-11-10T09:00:00Z</td><td>2026-11-20T10:00:00Z</td>" html)
-                "each status with its actual time apart from Tover's observation time")
-            (is (re-find #"<td>2</td><td>delivered</td>" html))
+            (is (re-find #"<td>1</td><td>Delivering</td><td>2026-11-10T09:00:00Z</td><td>2026-11-20T10:00:00Z</td>" html)
+                "each status, translated, with its actual time apart from Tover's observation time")
+            (is (re-find #"<td>2</td><td>Delivered</td>" html))
             (is (re-find #"<td>Mug / red</td><td>1</td><td>Delivered</td><td>Yes</td>" html) "its lines"))
           (testing "with links to the accepted records it produced"
             (is (str/includes? html (str "href=\"/operations#entry=" (codec/url-encode corrections-test/record) "\">Sale<")))
             (is (str/includes? html (str "href=\"/operations#entry=" (codec/url-encode id) "\">Customer return<"))))
           (is (str/includes? html (str "href=\"/operations/marketplace/" c "/transit\">All shipments in transit<")))
           (is (not-any? #(str/includes? html %) ["Ivan Buyer" "+79990001122" "Tverskaya"]) "no buyer data"))
+        (testing "in Russian, the statuses are translated too"
+          (let [html (binding [i18n/*locale* "ru"] (forms/page ctx ::web/shipment-view {:connection-id c :operation-id sale}))]
+            (is (re-find #"<td>1</td><td>Доставляется</td>" html))
+            (is (re-find #"<td>2</td><td>Доставлено</td>" html))))
         (testing "an unknown shipment, or one of another connection, is not found"
           (is (= 404 (:status (ex-data (try (forms/page ctx ::web/shipment-view {:connection-id c :operation-id "nope"}) (catch Exception e e))))))
           (is (= 404 (:status (ex-data (try (forms/page ctx ::web/shipment-view {:connection-id "other" :operation-id sale}) (catch Exception e e)))))))))))
