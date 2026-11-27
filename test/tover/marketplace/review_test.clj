@@ -25,6 +25,7 @@
     [tover.marketplace.products.web :as products-web]
     [tover.marketplace.sync.model :as sync]
     [tover.marketplace.sync.observations :as observations]
+    [tover.shared.i18n :as i18n]
     [tover.shared.web.core]
     [tover.support :as support]))
 
@@ -278,6 +279,21 @@
             (is (= "—" (some #(when (= (cutover/scope-id "red" "home") (:id %)) (get-in % [:cells :waiting]))
                              (:rows (cutover-web/coverage-table ctx c)))))
             (is (= "—" (some #(when (= (str c ":999") (:id %)) (get-in % [:cells :waiting])) (:rows (products-web/table ctx c "unmatched")))))))))))
+
+
+(deftest decisions-read-in-the-members-language
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx observe!]} (ot/setup! repo)]
+        (seed! ctx ::sync/external-product-observed (listing "999" "Spoon"))
+        (observe! (operation "P1" 1 :lines (lines "999" "1")))
+        (testing "the read model carries the message that names the decision"
+          (is (= {:label "Match Spoon" :label-key "Match {name}" :label-args {:name "Spoon"}}
+                 (select-keys (first (:groups (needing-review ctx))) [:label :label-key :label-args]))))
+        (testing "and the Operations page reads it in Russian"
+          (is (= ["Сопоставить Spoon – 1 операция"]
+                 (binding [i18n/*locale* "ru"]
+                   (keep #(when (:header %) (get-in % [:cells 0 :value])) (:rows (model ctx {:source "imported"})))))))))))
 
 
 (deftest no-buyer-data-on-the-page

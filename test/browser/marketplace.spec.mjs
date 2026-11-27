@@ -246,12 +246,13 @@ test('in Preview the proposed correction fits its columns and Set aside waits fo
   const header = sheet.locator('td.operations-decision').filter({ hasText: 'Fix shortage of Whisk' });
   const setAside = page.getByRole('button', { name: 'Set aside', exact: true });
   await signIn(page);
-  // The intake proposes the sale once the cutover test's baseline is accepted (at the latest on its minute sweep).
+  // The fixture's intake loop (each second) proposes the sale once the cutover test has accepted the Whisk
+  // baseline; without that baseline this poll fails well inside the test's own timeout.
   await expect.poll(async () => {
     await page.goto('/operations?source=browser-ozon');
     await expect.poll(() => sheet.evaluate(node => !!node.worksheet)).toBe(true);
     return page.locator('operations-workbench').evaluate(node => node.model?.imported?.['import:browser-ozon:fbo-posting:W1']?.entryRevision ?? null);
-  }, { timeout: 90000, intervals: [2000] }).not.toBeNull();
+  }, { message: 'W1 is proposed after the Whisk baseline is accepted', timeout: 20000, intervals: [1000] }).not.toBeNull();
   await expect(header).toContainText('Fix shortage of Whisk – 1 operation');
   await expect(setAside).toBeDisabled();
 

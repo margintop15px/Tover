@@ -55,7 +55,8 @@
 
 
 (def Group
-  [:map [:decision steps/NextStep] [:id :string] [:label :string] [:count :int] [:connection-id :string]
+  [:map [:decision steps/NextStep] [:id :string] [:label :string] [:label-key :string] [:label-args [:map-of :keyword :string]]
+   [:count :int] [:connection-id :string]
    [:listing-state {:optional true} products/ListingState] [:operations [:vector Row]]])
 
 
@@ -123,7 +124,7 @@
        vals
        (map (fn [operations]
               (let [{:keys [group connection-id listing-state]} (first operations)]
-                (cond-> (assoc (select-keys group [:decision :id :label])
+                (cond-> (assoc (select-keys group [:decision :id :label :label-key :label-args])
                                :count (count operations) :connection-id connection-id
                                :operations (vec (sort-by (juxt (comp nil? :occurred-at) :occurred-at :source-operation-id) operations)))
                   listing-state (assoc :listing-state listing-state)))))
