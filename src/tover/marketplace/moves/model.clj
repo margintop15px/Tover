@@ -6,7 +6,8 @@
   snapshot's observation time. Seller warehouses are not compared. An item is compared only when every FBO
   warehouse holding it (by Ozon's figures or Tover's balance) is matched and has a baseline, and the snapshot is
   not before those baselines. An item with an undecided operation after its cutover is `waiting for operations`;
-  `history`, `set aside` and `no effect` count as decided. The last agreeing snapshot is the latest earlier finished
+  `history`, `set aside` and `no effect` count as decided. So does an accepted operation whose source changed
+  until its correction is decided (pending, unproposable, or still to be proposed, it waits). The last agreeing snapshot is the latest earlier finished
   one without any difference for the item. A move needs one, and differences summing to exactly 0; anything else
   is only shown. Nothing here proposes or accepts.
 
@@ -17,11 +18,14 @@
     [bel.runtime :as runtime]
     [clojure.string :as str]
     [tover.catalogues.records :as records]
+    [tover.inventory.acceptance.model :as acceptance]
     [tover.inventory.valuation :as valuation]
     [tover.marketplace.connections.model :as connections]
+    [tover.marketplace.operations.corrections :as corrections]
     [tover.marketplace.operations.model :as operations]
     [tover.marketplace.operations.proposals :as proposals]
     [tover.marketplace.operations.steps :as steps]
+    [tover.marketplace.provenance :as provenance]
     [tover.marketplace.sync.model :as sync]
     [tover.marketplace.warehouses.model :as warehouses])
   (:import
@@ -277,6 +281,41 @@
            item))))
 
 
+(defn- correcting?
+  "Whether an accepted operation's source change is still undecided (plan 5 task 1): its correction is pending,
+  cannot be proposed (the accepted revision is missing or the kind changed), or intake would propose one now."
+  {:malli/schema [:=> [:cat :map inst?] :boolean]}
+  [facts now]
+  (boolean (or (corrections/target facts) (corrections/unproposable facts) (seq (:events (corrections/assess facts now))))))
+
+
+(defn changed
+  "Stock items on the lines of the connection's accepted operations whose source changed since and whose correction
+  is not decided: the source states a revision other than the one the record reflects, or a correction is
+  proposed. Only those operations are evaluated, each by id."
+  {:malli/schema [:=> [:cat :map steps/Facts :string] [:set :string]]}
+  [context {:keys [acceptances operations]} connection-id]
+  (let [rows       (into {} (map (juxt :record-id identity)) (records/all-records context ::provenance/source-corrections :record-id))
+        candidates (for [[id acceptance] (sort-by key acceptances)
+                         :let            [operation (get operations id)
+                                          row (get rows (:record-id acceptance))
+                                          reflected (max (provenance/reflected-revision acceptance) (or (:accepted-revision row) 0))]
+                         :when           (and operation (or (:kind row) (not= (:revision operation) reflected)))]
+                     operation)]
+    (if (empty? candidates)
+      #{}
+      (let [shared (corrections/connection-facts context connection-id)
+            now    (runtime/coeffect ::acceptance/now context {})]
+        (set (for [operation candidates
+                   :let      [facts (corrections/operation-facts context shared operation)]
+                   :when     (correcting? facts now)
+                   line      (concat (get-in facts [:new-proposal :entry :lines]) (get-in facts [:accepted-proposal :entry :lines])
+                                     (get-in facts [:latest :lines]))
+                   :let      [item (:stock-item-id line)]
+                   :when     item]
+               item))))))
+
+
 (defn load-facts
   "`Facts` of one connection: plan 4's operation facts once (mappings, baselines, operations and history), the
   retained passes and figures, and Tover's balances at every pass from one replay of the mapped items' history."
@@ -286,11 +325,12 @@
         passes          (vec (take sync/retained-passes (sync/finished-passes context connection-id "stock-by-warehouse")))
         facts           {:connection-id      connection-id
                          :passes             passes
-                         :figures            (if (seq passes) (sync/retained-figures context connection-id) [])
+                         :figures            (into [] (mapcat #(sync/stock-figures context connection-id (:run-id %))) passes)
                          :mappings           (:mappings operation-facts)
                          :warehouse-mappings (:warehouse-mappings operation-facts)
                          :baselines          (:baselines operation-facts)
-                         :undecided          (undecided operation-facts connection-id)}
+                         :undecided          (into (undecided operation-facts connection-id)
+                                                   (changed context operation-facts connection-id))}
         history         (narrowed (:history operation-facts) (set (items facts)))
         at              (balances-at history (map :observed-at passes))]
     (assoc (indexed facts)

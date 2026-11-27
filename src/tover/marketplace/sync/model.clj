@@ -941,25 +941,27 @@
 
 
 (defmethod runtime/coeffect ::expired-figures
-  ;; The figures the batch finishing a stock-by-warehouse pass deletes: those of the connection's finished passes
-  ;; older than the newest `retained-passes`, counting the finishing one. Only runs that still have figures are read.
+  ;; The warehouse stock figures the batch finishing a stock-by-warehouse pass deletes (roadmap decision 4). The
+  ;; newest `retained-passes` finished passes of the connection, the finishing one counted, keep theirs. Deleted are
+  ;; those of older finished passes, and those of runs no longer open that started before the oldest retained pass:
+  ;; a pass they never finished. Open runs, other views and other connections keep theirs. Only runs that still have
+  ;; figures are read.
   [_ context {:keys [connection-id run-id domain domain-finished]}]
   (if (and connection-id domain-finished (= "stock-by-warehouse" domain))
-    (let [older   (drop (dec retained-passes) (remove #(= run-id (:run-id %)) (finished-passes context connection-id domain)))
-          figured (set (values-where context ::source-stock :run-id {:connection-id connection-id :source "warehouse-stock"}))]
-      (vec (for [{expired :run-id} older
-                 :when             (figured expired)
-                 stock-id          (sort (values-where context ::source-stock :stock-id (run-figures connection-id expired)))]
+    (let [[kept older] (split-at (dec retained-passes) (remove #(= run-id (:run-id %)) (finished-passes context connection-id domain)))
+          retained     (into #{run-id} (map :run-id) kept)
+          oldest       (some-> (or (last kept) {:observed-at (:started-at (runtime/coeffect ::run context {:run-id run-id}))})
+                               :observed-at instant)
+          finished     (set (map :run-id older))
+          figured      (remove retained (values-where context ::source-stock :run-id {:connection-id connection-id :source "warehouse-stock"}))
+          runs         (load-rows context ::sync-runs (vec (remove finished figured)))
+          abandoned?   (fn [id] (when-let [{:keys [run-state started-at]} (get runs id)]
+                                  (and (not= "open" run-state) oldest (some-> started-at instant (.isBefore ^Instant oldest)))))]
+      (vec (for [expired  (sort figured)
+                 :when    (or (finished expired) (abandoned? expired))
+                 stock-id (sort (values-where context ::source-stock :stock-id (run-figures connection-id expired)))]
              {:stock-id stock-id :run-id expired})))
     []))
-
-
-(defn retained-figures
-  "The warehouse stock figures of every run of the connection that still has them: at most the last
-  `retained-passes` finished passes, and figures of unfinished runs."
-  {:malli/schema [:=> [:cat :map :string] [:vector SourceStock]]}
-  [context connection-id]
-  (rows-where context ::source-stock :stock-id {:connection-id connection-id :source "warehouse-stock"}))
 
 
 ;; Connections due for sync (spans workspaces; read by the scheduler and by the Mapping Guard's sweep)

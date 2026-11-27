@@ -10,6 +10,7 @@
     [clojure.test :refer [deftest is testing use-fixtures]]
     [tover.catalogues.records :as records]
     [tover.inventory.acceptance.model :as acceptance]
+    [tover.marketplace.corrections-test :as corrections-test]
     [tover.marketplace.guard-test :as guard-test]
     [tover.marketplace.moves.model :as moves]
     [tover.marketplace.operations-test :as operations-test]
@@ -29,7 +30,8 @@
                           'tover.inventory.stock-items.model 'tover.inventory.entries.model 'tover.inventory.acceptance.model
                           'tover.marketplace.connections.model 'tover.marketplace.sync.model 'tover.marketplace.products.model
                           'tover.marketplace.products.guard 'tover.marketplace.warehouses.model 'tover.marketplace.provenance
-                          'tover.marketplace.operations.model 'tover.marketplace.moves.model 'tover.workspaces.currency.model])
+                          'tover.marketplace.operations.model 'tover.marketplace.operations.corrections
+                          'tover.marketplace.moves.model 'tover.workspaces.currency.model])
     (f))
   guard-test/unit-authority)
 
@@ -110,18 +112,19 @@
   "Plan 4's connected workspace: red and blue mugs (listings 100 and 200), the seller warehouse as Home, the FBO
   hub 7 as Ozon 7, and here also hub 8 as Ozon 8 and hub 9 as Ozon 9. Red has 10 in Home, Ozon 7 and Ozon 8 from
   the 1st, each its cutover; Ozon 9 has no baseline."
-  {:malli/schema [:=> [:cat :any] :map]}
-  [repo]
-  (let [{:keys [ctx] :as setup} (operations-test/setup! repo)]
-    (seed-all! ctx (concat [[:tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "ozon-8" :name "Ozon 8" :status "active" :revision 1}]
-                            [:tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "ozon-9" :name "Ozon 9" :status "active" :revision 1}]
-                            [::warehouses/external-warehouse-mapped (warehouse-mapped hub-8 "fbo" "ozon-8")]
-                            [::warehouses/external-warehouse-mapped (warehouse-mapped hub-9 "fbo" "ozon-9")]]
-                           (opening "red" "ozon-8")))
-    (assoc setup
-           :pass! (fn [run-id at stated] (seed-all! ctx (pass-events c run-id at stated)))
-           :accept! (fn [& args] (seed-all! ctx (apply accepted args)))
-           :differences (fn [] (runtime/read-model ctx ::moves/stock-differences {:connection-id c})))))
+  {:malli/schema [:function [:=> [:cat :any] :map] [:=> [:cat :any ifn?] :map]]}
+  ([repo] (setup! repo operations-test/setup!))
+  ([repo base]
+   (let [{:keys [ctx] :as setup} (base repo)]
+     (seed-all! ctx (concat [[:tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "ozon-8" :name "Ozon 8" :status "active" :revision 1}]
+                             [:tover.catalogues.warehouses.model/warehouse-registered {:warehouse-id "ozon-9" :name "Ozon 9" :status "active" :revision 1}]
+                             [::warehouses/external-warehouse-mapped (warehouse-mapped hub-8 "fbo" "ozon-8")]
+                             [::warehouses/external-warehouse-mapped (warehouse-mapped hub-9 "fbo" "ozon-9")]]
+                            (opening "red" "ozon-8")))
+     (assoc setup
+            :pass! (fn [run-id at stated] (seed-all! ctx (pass-events c run-id at stated)))
+            :accept! (fn [& args] (seed-all! ctx (apply accepted args)))
+            :differences (fn [] (runtime/read-model ctx ::moves/stock-differences {:connection-id c}))))))
 
 
 (defn- item
@@ -341,3 +344,116 @@
               (is (= 31 (count (sync/finished-passes ctx c "stock-by-warehouse"))) "the passes stay")
               (is (some? (runtime/read-model ctx ::sync/sync-runs {:run-id "R01"})) "the run stays")
               (is (= 1 (count (sync/stock-figures ctx "other" "O1"))) "another connection keeps its figures"))))))))
+
+
+(deftest closed-runs-older-than-the-retained-passes-expire
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [ctx system]} (setup! repo)
+            oct                  #(format "2026-10-%02dT06:00:00Z" %)
+            figures              #(set (map (juxt :connection-id :run-id :source) (records/all-records ctx ::sync/source-stock :stock-id)))
+            started              (fn [run-id at]
+                                   [::sync/marketplace-sync-started {:run-id             run-id               :connection-id c                    :trigger   "schedule"
+                                                                     :triggered-by       (str "connector:" c) :domains       "stock-by-warehouse"
+                                                                     :starting-positions "{}"                 :started-at    at                   :run-state "open"}])
+            failed               (fn [run-id at]
+                                   [::sync/marketplace-sync-failed {:run-id               run-id            :connection-id   c    :failed-domain "stock-by-warehouse"
+                                                                    :reason               "incomplete page" :saved-positions "{}"
+                                                                    :consecutive-failures 1                 :failed-at       at   :run-state     "failed"             :readable-domains "products"}])
+            figure               (fn [connection-id run-id source at]
+                                   (let [product (str connection-id ":100") place (str connection-id ":fbo:7")]
+                                     [::sync/source-stock-observed {:stock-id              (observations/stock-id product source place run-id)
+                                                                    :connection-id         connection-id :run-id run-id :external-product-id product
+                                                                    :external-warehouse-id place :source         source :fulfilment-type     "fbo"   :present 1
+                                                                    :parts                 "[]" :observed-at     at}]))
+            passes               (mapv #(format "P%02d" %) (range 2 31))]
+        (testing "Given 29 finished passes from 2 October, closed runs with partial figures before and after the oldest
+                  of them, an open run's figures, another view's figures and another connection's"
+          (seed-all! ctx (concat [(started "F0" (oct 1)) (figure c "F0" "warehouse-stock" (oct 1)) (failed "F0" (oct 1))
+                                  (figure c "F0" "warehouse-analytics" (oct 1))
+                                  (started "Open0" (oct 1)) (figure c "Open0" "warehouse-stock" (oct 1))
+                                  (figure "other" "O1" "warehouse-stock" (oct 1))]
+                                 (mapcat #(pass-events c %1 (oct %2) {["100" hub-7] 10}) passes (range 2 31))
+                                 [(started "F15" "2026-10-15T07:00:00Z") (figure c "F15" "warehouse-stock" "2026-10-15T07:00:00Z")
+                                  (failed "F15" "2026-10-15T08:00:00Z")
+                                  (started "N" (oct 31))]))
+          (testing "when the batch that finishes the 30th pass is recorded"
+            (runtime/execute! {:workspace-id workspace :bel/system system :bel/service ::sync/marketplace-fetcher :user-id connector}
+                              ::sync/record-source-observations
+                              {:command-id "finish-N"
+                               :input      {:run-id          "N" :domain           "stock-by-warehouse" :batch-key "" :next-position {:cursor "{}"}
+                                            :domain-finished true :adapter-version "test"
+                                            :observations    [{:kind      "stock"               :source  "warehouse-stock" :product-source-id "100"
+                                                               :warehouse {:type "fbo" :id "7"} :present 10}]}})
+            (let [kept (figures)]
+              (testing "then the closed run older than the oldest retained pass loses its warehouse stock figures"
+                (is (not (contains? kept [c "F0" "warehouse-stock"]))))
+              (testing "and nothing else is deleted"
+                (is (contains? kept [c "F15" "warehouse-stock"]) "a closed run after the oldest retained pass")
+                (is (contains? kept [c "Open0" "warehouse-stock"]) "an open run")
+                (is (contains? kept [c "F0" "warehouse-analytics"]) "another view")
+                (is (contains? kept ["other" "O1" "warehouse-stock"]) "another connection")
+                (is (every? #(contains? kept [c % "warehouse-stock"]) (conj passes "N")) "the retained passes")))
+            (testing "and the comparison reads only the retained passes' figures"
+              (is (= (set (conj passes "N")) (set (map :run-id (:figures (moves/load-facts ctx c)))))))))))))
+
+
+;; Accepted operations whose source changed (plan 5 task 1)
+
+
+(def ^:private corrections-setup #'corrections-test/setup!)
+(def ^:private posting #'corrections-test/posting)
+
+
+(defn- fbo-sale
+  "The FBO posting P1: 3 red mugs shipped from hub `hub` on the 10th."
+  {:malli/schema [:=> [:cat :string [:* :any]] :map]}
+  [hub & {:as fields}]
+  (apply posting (mapcat identity (merge {:operation-kind "fbo-posting" :from-warehouse {:type "fbo" :id hub}} fields))))
+
+
+(defn- accepted-fbo-sale!
+  "Given P1 accepted automatically as a sale of 3 from Ozon 7, and a snapshot D1 that agrees with it."
+  {:malli/schema [:=> [:cat :map] :nil]}
+  [{:keys [observe! intake! automatic! accepted source-id pass! differences balance]}]
+  (observe! (fbo-sale "7"))
+  (intake!)
+  (is (= 1 (automatic!)))
+  (is (some? (accepted (source-id "P1"))))
+  (is (= 7 (balance "red" "ozon-7")))
+  (pass! "D1" (day 21) {["100" hub-7] 7 ["100" hub-8] 10})
+  (is (= "equal" (:state (item (differences) "red"))))
+  nil)
+
+
+(deftest restated-warehouse-waits-for-the-correction
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [observe! corrections! pass! differences pending] :as s} (setup! repo corrections-setup)
+            s (assoc s :source-id #(str c ":fbo-posting:" %))]
+        (accepted-fbo-sale! s)
+        (testing "Given Ozon restates the accepted sale as shipped from Ozon 8, and its snapshot shows that"
+          (observe! (fbo-sale "8"))
+          (pass! "D2" (day 22) {["100" hub-7] 10 ["100" hub-8] 7})
+          (testing "then, before the correction is proposed, the item waits and no move is found"
+            (let [red (item (differences) "red")]
+              (is (= [["ozon-7" 10 7 3] ["ozon-8" 7 10 -3]] (rows red)))
+              (is (= "waiting for operations" (:state red)))
+              (is (nil? (:moves red)))))
+          (testing "and while the correction is pending it still waits"
+            (is (= 1 (corrections!)))
+            (is (some? (pending (provenance/correction-entry-id (str c ":fbo-posting:P1") 1))))
+            (is (= "waiting for operations" (:state (item (differences) "red"))))))))))
+
+
+(deftest restated-status-only-is-decided
+  (support/with-store
+    (fn [repo _]
+      (let [{:keys [observe! corrections! differences] :as s} (setup! repo corrections-setup)
+            s (assoc s :source-id #(str c ":fbo-posting:" %))]
+        (accepted-fbo-sale! s)
+        (testing "Given Ozon restates only the status of the accepted sale"
+          (observe! (fbo-sale "7" :status "customer_received" :price "450"))
+          (is (= 0 (corrections!)) "nothing to propose")
+          (testing "then the item is compared as before"
+            (is (= "equal" (:state (item (differences) "red"))))))))))
